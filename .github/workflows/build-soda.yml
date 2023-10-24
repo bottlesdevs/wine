@@ -1,0 +1,56 @@
+name: build-soda
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+env:
+  WINE_VERSION: proton_8.0
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:        
+      - uses: actions/checkout@v2
+
+      - name: remove conflicting dependencies
+        working-directory: /home/runner/work/
+        run: sudo apt purge -y ubuntu-advantage-tools
+
+      - name: download environment and install dependencies
+        working-directory: /home/runner/work/
+        run: |
+          curl -o environment-tkg.sh https://raw.githubusercontent.com/bottlesdevs/build-tools/main/runners/vaniglia/environment-tkg.sh
+          bash environment-tkg.sh
+
+      - name: clone wine-tkg-git repo
+        working-directory: /home/runner/work/
+        run: git clone https://github.com/Frogging-Family/wine-tkg-git.git
+
+      - name: get/set the caffe recipe
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          curl https://raw.githubusercontent.com/bottlesdevs/build-tools/main/runners/vaniglia/wine-tkg-valve.cfg > /home/runner/.config/frogminer/wine-tkg.cfg
+          sed -i "s/_plain_version=\"\"/_plain_version=\"$WINE_VERSION\"/g" /home/runner/.config/frogminer/wine-tkg.cfg
+          sed -i "s/_proton_branch=\"\"/_proton_branch=\"$WINE_VERSION\"/g" /home/runner/.config/frogminer/wine-tkg.cfg
+
+      - name: start build
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: bash non-makepkg-build.sh
+      
+      - name: Package
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/non-makepkg-builds/
+        run: |
+          mv wine-tkg-* soda-$WINE_VERSION-x86_64
+          tar cJvf soda-$WINE_VERSION-x86_64.tar.xz soda-$WINE_VERSION-x86_64
+          mv soda-$WINE_VERSION-x86_64.tar.xz /tmp/soda-$WINE_VERSION-x86_64.tar.xz
+          
+      - uses: "marvinpinto/action-automatic-releases@latest"
+        with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          draft: false
+          prerelease: false
+          automatic_release_tag: "soda-${{ env.WINE_VERSION }}"
+          title: "Soda ${{ env.WINE_VERSION }}"
+          files: "/tmp/soda-${{ env.WINE_VERSION }}-x86_64.tar.xz"
