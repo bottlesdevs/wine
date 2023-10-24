@@ -1,9 +1,9 @@
 name: build-soda
 on:
   push:
-    branches: [ master ]
+    branches: [ stable ]
   pull_request:
-    branches: [ master ]
+    branches: [ stable ]
   workflow_dispatch:
 env:
   WINE_VERSION: proton_8.0
