@@ -39,7 +39,7 @@ jobs:
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: bash non-makepkg-build.sh
       
-      - name: Package
+      - name: package
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/non-makepkg-builds/
         run: |
           mv wine-tkg-* soda-$WINE_VERSION-x86_64
