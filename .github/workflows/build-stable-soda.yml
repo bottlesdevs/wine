@@ -1,4 +1,4 @@
-name: build-soda
+name: build-stable-soda
 on:
   push:
     branches: [ stable ]
@@ -42,15 +42,15 @@ jobs:
       - name: package
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/non-makepkg-builds/
         run: |
-          mv wine-tkg-* soda-$WINE_VERSION-x86_64
-          tar cJvf soda-$WINE_VERSION-x86_64.tar.xz soda-$WINE_VERSION-x86_64
-          mv soda-$WINE_VERSION-x86_64.tar.xz /tmp/soda-$WINE_VERSION-x86_64.tar.xz
+          mv wine-tkg-* soda-$WINE_VERSION-stable-x86_64
+          tar cJvf soda-$WINE_VERSION-stable-x86_64.tar.xz soda-$WINE_VERSION-stable-x86_64
+          mv soda-$WINE_VERSION-stable-x86_64.tar.xz /tmp/soda-$WINE_VERSION-stable-x86_64.tar.xz
           
       - uses: "marvinpinto/action-automatic-releases@latest"
         with:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
           draft: false
           prerelease: false
-          automatic_release_tag: "soda-${{ env.WINE_VERSION }}"
-          title: "Soda ${{ env.WINE_VERSION }}"
-          files: "/tmp/soda-${{ env.WINE_VERSION }}-x86_64.tar.xz"
+          automatic_release_tag: "soda-${{ env.WINE_VERSION }}-stable"
+          title: "Soda ${{ env.WINE_VERSION }} stable"
+          files: "/tmp/soda-${{ env.WINE_VERSION }}-stable-x86_64.tar.xz"
