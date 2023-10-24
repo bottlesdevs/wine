@@ -1,4 +1,4 @@
-name: build-caffe
+name: build-stable-caffe
 on:
   push:
     branches: [ stable ]
@@ -41,16 +41,16 @@ jobs:
       - name: package
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/non-makepkg-builds/
         run: |
-          mv wine-tkg-staging-* caffe-$WINE_VERSION-x86_64
-          tar cJvf caffe-$WINE_VERSION-x86_64.tar.xz caffe-$WINE_VERSION-x86_64
-          mv caffe-$WINE_VERSION-x86_64.tar.xz /tmp/caffe-$WINE_VERSION-x86_64.tar.xz
+          mv wine-tkg-staging-* caffe-$WINE_VERSION-stable-x86_64
+          tar cJvf caffe-$WINE_VERSION-stable-x86_64.tar.xz caffe-$WINE_VERSION-stable-x86_64
+          mv caffe-$WINE_VERSION-stable-x86_64.tar.xz /tmp/caffe-$WINE_VERSION-stable-x86_64.tar.xz
         
       - uses: "marvinpinto/action-automatic-releases@latest"
         with:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
           draft: false
           prerelease: false
-          automatic_release_tag: "caffe-${{ env.WINE_VERSION }}"
-          title: "Caffe ${{ env.WINE_VERSION }}"
-          files: "/tmp/caffe-${{ env.WINE_VERSION }}-x86_64.tar.xz"
+          automatic_release_tag: "caffe-${{ env.WINE_VERSION }}-stable"
+          title: "Caffe ${{ env.WINE_VERSION }} stable"
+          files: "/tmp/caffe-${{ env.WINE_VERSION }}-stable-x86_64.tar.xz"
           
