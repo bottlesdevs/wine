@@ -2,8 +2,6 @@ name: build-caffe
 on:
   push:
     branches: [ caffe ]
-  pull_request:
-    branches: [ caffe ]
   workflow_dispatch:
 env:
   WINE_VERSION: 8.18
