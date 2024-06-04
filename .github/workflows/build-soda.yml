@@ -7,7 +7,7 @@ on:
 env:
   WINE_VERSION: '9.0'
   BRANCH: experimental_9.0
-  REVISION: '1'
+  REVISION: '2'
 jobs:
   build:
     runs-on: ubuntu-latest
