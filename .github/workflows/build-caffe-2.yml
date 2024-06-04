@@ -5,7 +5,7 @@ on:
       - 'caffe'
   workflow_dispatch:
 env:
-  WINE_VERSION: 9.7
+  WINE_VERSION: 9.10
 jobs:
   build:
     runs-on: ubuntu-latest
