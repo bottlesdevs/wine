@@ -33,7 +33,10 @@ jobs:
 
       - name: get/set the soda recipe
         working-directory: /home/runner/.config/frogminer/
-        run: curl https://raw.githubusercontent.com/bottlesdevs/build-tools/main/runners/vaniglia/wine-tkg-valve.cfg > wine-tkg.cfg
+        run: |
+          git clone https://github.com/bottlesdevs/build-tools.git /tmp/build-tools
+          cp /tmp/build-tools/runners/vaniglia/wine-tkg-valve.cfg wine-tkg.cfg
+          cat wine-tkg.cfg
       
       - name: start build
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
