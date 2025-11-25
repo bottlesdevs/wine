@@ -71,3 +71,4 @@ jobs:
           files: "/home/runner/work/wine/wine/vaniglia-${{ steps.vars.outputs.release_version }}-x86_64.tar.gz"
           
 
+
