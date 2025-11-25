@@ -66,7 +66,7 @@ jobs:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
           draft: false
           prerelease: false
-          automatic_release_tag: "${{ steps.vars.outputs.release_version }}"
+          automatic_release_tag: "vaniglia-${{ steps.vars.outputs.release_version }}"
           title: "Vaniglia ${{ steps.vars.outputs.release_version }}"
           files: "/home/runner/work/wine/wine/vaniglia-${{ steps.vars.outputs.release_version }}-x86_64.tar.gz"
           
