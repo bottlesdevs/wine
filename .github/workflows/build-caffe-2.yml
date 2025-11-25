@@ -34,6 +34,14 @@ jobs:
       - name: start build
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: yes|./non-makepkg-build.sh
+        
+      - name: Upload prepare.log on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs
+          path: /home/runner/work/wine-tkg-git/wine-tkg-git/prepare.log
+          if-no-files-found: ignore
 
       - name: package
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/non-makepkg-builds/
