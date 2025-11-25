@@ -5,8 +5,8 @@ on:
       - 'soda'
   workflow_dispatch:
 env:
-  WINE_VERSION: '9.0'
-  BRANCH: experimental_9.0
+  WINE_VERSION: '10.0'
+  BRANCH: experimental_10.0
   REVISION: '1'
 jobs:
   build:
