@@ -55,3 +55,4 @@ jobs:
           automatic_release_tag: "soda-${{ env.WINE_VERSION }}-${{ env.REVISION }}"
           title: "Soda ${{ env.WINE_VERSION }}-${{ env.REVISION }}"
           files: "/tmp/soda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.tar.xz"
+
