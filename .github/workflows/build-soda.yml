@@ -3,10 +3,16 @@ on:
   push:
     branches:
       - 'soda'
-  workflow_dispatch:
+  workflow_dispatch: {}
+permissions:
+  contents: write
 env:
-  WINE_VERSION: '10.0'
-  REVISION: '1'
+  WINE_VERSION: '11.0'
+  REVISION: '2'
+  WINE_TKG_COMMIT: '6e1c41342a249e0029c1f35f36775e1caa5ce1d1'
+  BUILD_TOOLS_COMMIT: 'fcba104217c6daddddebe69d2dc2e39bc9025848'
+  WINE_MONO_VERSION: '10.4.1'
+  WINE_MONO_SHA256: '071f4b2887e1c97a11d791ff3d65be9429eed6dec4c2708888bfd546ba358e23'
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,18 +35,33 @@ jobs:
         run: |
           git clone https://github.com/Frogging-Family/wine-tkg-git.git
           cd wine-tkg-git/wine-tkg-git
+          git checkout "$WINE_TKG_COMMIT"
           sed -i "s/_LOCAL_PRESET=\"\"/_LOCAL_PRESET=\"valve-exp-bleeding\"/g" customization.cfg
 
       - name: get/set the soda recipe
         working-directory: /home/runner/.config/frogminer/
         run: |
           git clone https://github.com/bottlesdevs/build-tools.git /tmp/build-tools
+          git -C /tmp/build-tools checkout "$BUILD_TOOLS_COMMIT"
           cp /tmp/build-tools/runners/vaniglia/wine-tkg-valve.cfg wine-tkg.cfg
           cat wine-tkg.cfg
       
       - name: start build
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: yes|./non-makepkg-build.sh
+
+      - name: bundle Wine Mono
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          mono_file="wine-mono-$WINE_MONO_VERSION-x86.msi"
+          mono_url="https://github.com/wine-mono/wine-mono/releases/download/wine-mono-$WINE_MONO_VERSION/$mono_file"
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          grep -F "#define MONO_VERSION \"$WINE_MONO_VERSION\"" src/ValveSoftware-winegit/dlls/appwiz.cpl/addons.c
+          grep -F "#define MONO_SHA \"$WINE_MONO_SHA256\"" src/ValveSoftware-winegit/dlls/appwiz.cpl/addons.c
+          curl --fail --location --retry 3 --output "/tmp/$mono_file" "$mono_url"
+          echo "$WINE_MONO_SHA256  /tmp/$mono_file" | sha256sum --check -
+          install -Dm644 "/tmp/$mono_file" "$runner_dir/share/wine/mono/$mono_file"
         
       - name: Upload prepare.log on failure
         if: ${{ failure() }}
@@ -57,13 +78,21 @@ jobs:
           tar cJvf soda-$WINE_VERSION-$REVISION-x86_64.tar.xz soda-$WINE_VERSION-$REVISION-x86_64
           mv soda-$WINE_VERSION-$REVISION-x86_64.tar.xz /tmp/soda-$WINE_VERSION-$REVISION-x86_64.tar.xz
 
-      - name: release
-        uses: "marvinpinto/action-automatic-releases@latest"
+      - name: upload
+        uses: actions/upload-artifact@v4
         with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          draft: false
-          prerelease: false
-          automatic_release_tag: "soda-${{ env.WINE_VERSION }}-${{ env.REVISION }}"
-          title: "Soda ${{ env.WINE_VERSION }}-${{ env.REVISION }}"
-          files: "/tmp/soda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.tar.xz"
+          name: soda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
+          path: /tmp/soda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.tar.xz
+          if-no-files-found: error
 
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="soda-$WINE_VERSION-$REVISION"
+          file="/tmp/$tag-x86_64.tar.xz"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$file" --clobber
+          else
+            gh release create "$tag" "$file" --title "Soda $WINE_VERSION-$REVISION"
+          fi
