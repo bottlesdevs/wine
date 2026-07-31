@@ -94,5 +94,5 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$file" --clobber
           else
-            gh release create "$tag" "$file" --title "Soda $WINE_VERSION-$REVISION"
+            gh release create "$tag" "$file" --target "$GITHUB_SHA" --title "Soda $WINE_VERSION-$REVISION"
           fi
