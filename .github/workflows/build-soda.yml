@@ -8,7 +8,7 @@ permissions:
   contents: write
 env:
   WINE_VERSION: '11.0'
-  REVISION: '2'
+  REVISION: '3'
   WINE_TKG_COMMIT: '6e1c41342a249e0029c1f35f36775e1caa5ce1d1'
   BUILD_TOOLS_COMMIT: 'fcba104217c6daddddebe69d2dc2e39bc9025848'
   WINE_MONO_VERSION: '10.4.1'
@@ -37,6 +37,7 @@ jobs:
           cd wine-tkg-git/wine-tkg-git
           git checkout "$WINE_TKG_COMMIT"
           sed -i "s/_LOCAL_PRESET=\"\"/_LOCAL_PRESET=\"valve-exp-bleeding\"/g" customization.cfg
+          cp "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch wine-tkg-userpatches/
 
       - name: get/set the soda recipe
         working-directory: /home/runner/.config/frogminer/
