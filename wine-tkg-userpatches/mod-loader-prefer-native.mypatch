@@ -1,0 +1,36 @@
+diff --git a/dlls/dsound/Makefile.in b/dlls/dsound/Makefile.in
+index 7db6cecc787..272d783c6a9 100644
+--- a/dlls/dsound/Makefile.in
++++ b/dlls/dsound/Makefile.in
+@@ -1,6 +1,7 @@
+ MODULE    = dsound.dll
+ IMPORTLIB = dsound
+ IMPORTS   = dxguid uuid winmm ole32 advapi32 user32
++EXTRADLLFLAGS = -Wb,--prefer-native
+ 
+ SOURCES = \
+ 	buffer.c \
+diff --git a/dlls/version/Makefile.in b/dlls/version/Makefile.in
+index f5e4b574803..5d597645d42 100644
+--- a/dlls/version/Makefile.in
++++ b/dlls/version/Makefile.in
+@@ -1,6 +1,7 @@
+ MODULE    = version.dll
+ IMPORTLIB = version
+ IMPORTS   = kernelbase
++EXTRADLLFLAGS = -Wb,--prefer-native
+ 
+ SOURCES = \
+ 	version.c \
+diff --git a/dlls/winmm/Makefile.in b/dlls/winmm/Makefile.in
+index 012b638a41f..3b7f155e07d 100644
+--- a/dlls/winmm/Makefile.in
++++ b/dlls/winmm/Makefile.in
+@@ -2,6 +2,7 @@ EXTRADEFS = -D_WINMM_
+ MODULE    = winmm.dll
+ IMPORTLIB = winmm
+ IMPORTS   = uuid user32 advapi32 ole32 msacm32
++EXTRADLLFLAGS = -Wb,--prefer-native
+ DELAYIMPORTS = dinput8
+ 
+ SOURCES = \
