@@ -33,6 +33,8 @@ jobs:
           sudo apt install aptitude
           sudo aptitude remove -y '?narrow(?installed,?version(deb.sury.org))'
           sudo apt install -f
+          sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcap-dev:amd64 libpcap-dev:i386
+          sudo apt-get check
 
       - name: clone wine-tkg-git repo
         working-directory: /home/runner/work/
