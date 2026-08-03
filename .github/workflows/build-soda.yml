@@ -24,7 +24,7 @@ env:
     - Added opt-in transparent huge pages with `SODA_USE_THP=1`.
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:        
       - uses: actions/checkout@v4
@@ -39,6 +39,7 @@ jobs:
           sudo aptitude remove -y '?narrow(?installed,?version(deb.sury.org))'
           sudo apt install -f
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcap-dev:amd64 libpcap-dev:i386
+          sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libgudev-1.0-dev:amd64 libgudev-1.0-dev:i386
           sudo apt-get check
 
       - name: clone wine-tkg-git repo
@@ -48,6 +49,7 @@ jobs:
           cd wine-tkg-git/wine-tkg-git
           git checkout "$WINE_TKG_COMMIT"
           sed -i "s/_LOCAL_PRESET=\"\"/_LOCAL_PRESET=\"valve-exp-bleeding\"/g" customization.cfg
+          sed -i '/^ubuntu_pkgs_64=/ s/libgstreamer-plugins-base1.0-dev/libgstreamer-plugins-base1.0-dev:amd64/' wine-tkg-scripts/deps
           cp "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch wine-tkg-userpatches/
 
       - name: get/set the soda recipe
@@ -87,7 +89,11 @@ jobs:
       - name: package
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/non-makepkg-builds/
         run: |
-          mv wine-tkg-* soda-$WINE_VERSION-$REVISION-x86_64
+          runner_dir="$(find . -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          test -f "$runner_dir/lib/wine/x86_64-unix/winegstreamer.so"
+          test -f "$runner_dir/lib/wine/i386-unix/winegstreamer.so"
+          mv "$runner_dir" soda-$WINE_VERSION-$REVISION-x86_64
           tar cJvf soda-$WINE_VERSION-$REVISION-x86_64.tar.xz soda-$WINE_VERSION-$REVISION-x86_64
           mv soda-$WINE_VERSION-$REVISION-x86_64.tar.xz /tmp/soda-$WINE_VERSION-$REVISION-x86_64.tar.xz
 
