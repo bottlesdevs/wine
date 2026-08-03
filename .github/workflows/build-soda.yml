@@ -8,7 +8,7 @@ permissions:
   contents: write
 env:
   WINE_VERSION: '11.0'
-  REVISION: '3'
+  REVISION: '4'
   WINE_TKG_COMMIT: '6e1c41342a249e0029c1f35f36775e1caa5ce1d1'
   BUILD_TOOLS_COMMIT: 'fcba104217c6daddddebe69d2dc2e39bc9025848'
   WINE_MONO_VERSION: '10.4.1'
