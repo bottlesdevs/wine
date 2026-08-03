@@ -17,6 +17,11 @@ env:
     <img src="https://raw.githubusercontent.com/bottlesdevs/data/main/logo/soda-logo.svg" width="64" />
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
+
+    - Fixed depth-only display mode changes used by some older games.
+    - Restored true 32-bit prefixes.
+    - Added automatic local mod loader support for `version.dll`, `winmm.dll`, and `dsound.dll`.
+    - Added opt-in transparent huge pages with `SODA_USE_THP=1`.
 jobs:
   build:
     runs-on: ubuntu-latest
