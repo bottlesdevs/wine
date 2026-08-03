@@ -1,0 +1,37 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index d5b93415c2a..1cfd9cb8b50 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -372,6 +372,9 @@ static void *preload_reserve_start;
+ static void *preload_reserve_end;
+ static BOOL force_exec_prot;  /* whether to force PROT_EXEC on all PROT_READ mmaps */
+ static BOOL enable_write_exceptions;  /* raise exception on writes to executable memory */
++#ifdef MADV_HUGEPAGE
++static BOOL use_transparent_huge_pages;
++#endif
+ 
+ struct range_entry
+ {
+@@ -3910,6 +3913,10 @@ void virtual_init(void)
+ 
+     kernel_writewatch_init();
+ 
++#ifdef MADV_HUGEPAGE
++    if ((preload = getenv( "SODA_USE_THP" ))) use_transparent_huge_pages = !strcmp( preload, "1" );
++#endif
++
+     if (preload_info && *preload_info)
+         for (i = 0; (*preload_info)[i].size; i++)
+             mmap_add_reserved_area( (*preload_info)[i].addr, (*preload_info)[i].size );
+@@ -5494,6 +5501,11 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
+             if (status == STATUS_SUCCESS)
+             {
+                 base = view->base;
++#ifdef MADV_HUGEPAGE
++                if (use_transparent_huge_pages && is_view_valloc( view ) &&
++                    !(view->protect & (VPROT_WRITEWATCH | VPROT_PLACEHOLDER)))
++                    madvise( view->base, view->size, MADV_HUGEPAGE );
++#endif
+                 if (vprot & VPROT_EXEC || force_exec_prot) mprotect_range( base, size, 0, 0 );
+             }
+         }
