@@ -45,6 +45,7 @@ jobs:
           git clone https://github.com/bottlesdevs/build-tools.git /tmp/build-tools
           git -C /tmp/build-tools checkout "$BUILD_TOOLS_COMMIT"
           cp /tmp/build-tools/runners/vaniglia/wine-tkg-valve.cfg wine-tkg.cfg
+          sed -i '$a_NOLIB32="false"' wine-tkg.cfg
           cat wine-tkg.cfg
       
       - name: start build
