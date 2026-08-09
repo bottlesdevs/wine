@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -52,6 +52,13 @@ jobs:
         run: |
           ./package.sh -s cx
           mv /home/runner/work/wine/wine/vaniglia-*.tar.gz /home/runner/work/wine/wine/vaniglia-${{ steps.vars.outputs.release_version }}-cx-x86_64.tar.gz
+
+      - name: Verify package
+        run: |
+          package=/home/runner/work/wine/wine/vaniglia-${{ steps.vars.outputs.release_version }}-cx-x86_64.tar.gz
+          tar -tzf "$package" > "$RUNNER_TEMP/vaniglia-files.txt"
+          grep -q '/bin/wine$' "$RUNNER_TEMP/vaniglia-files.txt"
+          grep -q '/bin/wineserver$' "$RUNNER_TEMP/vaniglia-files.txt"
           
       - uses: "marvinpinto/action-automatic-releases@latest"
         with:
