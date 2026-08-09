@@ -5,7 +5,7 @@ on:
       - 'caffe'
   workflow_dispatch:
 env:
-  WINE_VERSION: 10.0
+  WINE_VERSION: '10.0'
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,13 +27,14 @@ jobs:
       - name: get/set the caffe recipe
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
-          curl https://raw.githubusercontent.com/bottlesdevs/build-tools/main/runners/vaniglia/wine-tkg.cfg >> customization.cfg
+          curl --fail --show-error --location https://raw.githubusercontent.com/bottlesdevs/build-tools/main/runners/vaniglia/wine-tkg.cfg >> customization.cfg
+          echo '_LOCAL_PRESET="none"' >> customization.cfg
           sed -i "s/_staging_version=\"\"/_staging_version=\"v$WINE_VERSION\"/g" customization.cfg
           sed -i "s/_plain_version=\"\"/_plain_version=\"wine-$WINE_VERSION\"/g" customization.cfg
 
       - name: start build
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
-        run: yes|./non-makepkg-build.sh
+        run: ./non-makepkg-build.sh
         
       - name: Upload prepare.log on failure
         if: ${{ failure() }}
@@ -46,9 +47,23 @@ jobs:
       - name: package
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/non-makepkg-builds/
         run: |
-          mv wine-tkg-staging-* caffe-$WINE_VERSION-x86_64
+          runner=$(find . -maxdepth 1 -type d -name 'wine-tkg-staging-*' -print -quit)
+          test -n "$runner"
+          version=$("$runner/bin/wine" --version)
+          case "$version" in
+            "wine-$WINE_VERSION"|"wine-$WINE_VERSION "*) ;;
+            *) exit 1 ;;
+          esac
+          mv "$runner" caffe-$WINE_VERSION-x86_64
           tar cJvf caffe-$WINE_VERSION-x86_64.tar.xz caffe-$WINE_VERSION-x86_64
           mv caffe-$WINE_VERSION-x86_64.tar.xz /tmp/caffe-$WINE_VERSION-x86_64.tar.xz
+
+      - name: Verify package
+        run: |
+          package=/tmp/caffe-$WINE_VERSION-x86_64.tar.xz
+          tar -tJf "$package" > "$RUNNER_TEMP/caffe-files.txt"
+          grep -q '/bin/wine$' "$RUNNER_TEMP/caffe-files.txt"
+          grep -q '/bin/wineserver$' "$RUNNER_TEMP/caffe-files.txt"
 
       - name: release
         uses: "marvinpinto/action-automatic-releases@latest"
