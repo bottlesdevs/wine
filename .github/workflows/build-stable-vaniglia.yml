@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: stable
           path: bottlesdevs_wine
@@ -69,6 +69,3 @@ jobs:
           automatic_release_tag: "vaniglia-${{ steps.vars.outputs.release_version }}"
           title: "Vaniglia ${{ steps.vars.outputs.release_version }}"
           files: "/home/runner/work/wine/wine/vaniglia-${{ steps.vars.outputs.release_version }}-x86_64.tar.gz"
-          
-
-
