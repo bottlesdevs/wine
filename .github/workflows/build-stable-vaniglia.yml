@@ -77,3 +77,20 @@ jobs:
           automatic_release_tag: "vaniglia-${{ steps.vars.outputs.release_version }}"
           title: "Vaniglia ${{ steps.vars.outputs.release_version }}"
           files: "/home/runner/work/wine/wine/vaniglia-${{ steps.vars.outputs.release_version }}-x86_64.tar.gz"
+
+      - name: Format release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        run: |
+          printf '%s\n' \
+            '<img src="https://raw.githubusercontent.com/bottlesdevs/data/main/logo/vaniglia-logo.svg" width="64" />' \
+            '' \
+            'This is a clean Wine build.' \
+            'Built on Ubuntu 22.04.' \
+            '' \
+            '- Wine ${{ steps.vars.outputs.release_version }}' \
+            '- 32-bit and 64-bit Windows applications' |
+          gh release edit "vaniglia-${{ steps.vars.outputs.release_version }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --notes-file -
