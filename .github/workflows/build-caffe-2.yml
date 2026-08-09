@@ -92,7 +92,7 @@ jobs:
             'This is a Wine TKG build.' \
             'Built on Ubuntu 24.04.' \
             '' \
-            '- Wine 10.0 with Wine Staging' \
+            "- Wine $WINE_VERSION with Wine Staging" \
             '- Esync and Fsync support' \
             '- 32-bit and 64-bit Windows applications' |
           gh release edit "caffe-$WINE_VERSION" \
