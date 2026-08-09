@@ -6,6 +6,8 @@ on:
   workflow_dispatch:
 env:
   WINE_VERSION: '10.0'
+  WINE_TKG_COMMIT: 6e1c41342a249e0029c1f35f36775e1caa5ce1d1
+  BUILD_TOOLS_COMMIT: fcba104217c6daddddebe69d2dc2e39bc9025848
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,12 +24,14 @@ jobs:
 
       - name: clone wine-tkg-git repo
         working-directory: /home/runner/work/
-        run: git clone https://github.com/Frogging-Family/wine-tkg-git.git
+        run: |
+          git clone https://github.com/Frogging-Family/wine-tkg-git.git
+          git -C wine-tkg-git checkout "$WINE_TKG_COMMIT"
 
       - name: get/set the caffe recipe
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
-          curl --fail --show-error --location https://raw.githubusercontent.com/bottlesdevs/build-tools/main/runners/vaniglia/wine-tkg.cfg >> customization.cfg
+          curl --fail --show-error --location "https://raw.githubusercontent.com/bottlesdevs/build-tools/$BUILD_TOOLS_COMMIT/runners/vaniglia/wine-tkg.cfg" >> customization.cfg
           echo '_LOCAL_PRESET="none"' >> customization.cfg
           echo '_proton_eac_support="false"' >> customization.cfg
           sed -i "s/_staging_version=\"\"/_staging_version=\"v$WINE_VERSION\"/g" customization.cfg
