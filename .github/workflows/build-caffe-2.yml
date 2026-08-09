@@ -10,7 +10,7 @@ env:
   BUILD_TOOLS_COMMIT: fcba104217c6daddddebe69d2dc2e39bc9025848
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -81,3 +81,20 @@ jobs:
           automatic_release_tag: "caffe-${{ env.WINE_VERSION }}"
           title: "Caffe ${{ env.WINE_VERSION }}"
           files: "/tmp/caffe-${{ env.WINE_VERSION }}-x86_64.tar.xz"
+
+      - name: Format release
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        run: |
+          printf '%s\n' \
+            '<img src="https://raw.githubusercontent.com/bottlesdevs/data/main/logo/caffe-logo.svg" width="64" />' \
+            '' \
+            'This is a Wine TKG build.' \
+            'Built on Ubuntu 24.04.' \
+            '' \
+            '- Wine 10.0 with Wine Staging' \
+            '- Esync and Fsync support' \
+            '- 32-bit and 64-bit Windows applications' |
+          gh release edit "caffe-$WINE_VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --notes-file -
