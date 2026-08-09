@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: cx
           path: bottlesdevs_wine
@@ -61,4 +61,3 @@ jobs:
           automatic_release_tag: "${{ steps.vars.outputs.release_version }}-cx"
           title: "Vaniglia ${{ steps.vars.outputs.release_version }} CX"
           files: "/home/runner/work/wine/wine/vaniglia-${{ steps.vars.outputs.release_version }}-cx-x86_64.tar.gz"
-
