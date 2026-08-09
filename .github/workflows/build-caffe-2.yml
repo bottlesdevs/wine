@@ -29,12 +29,17 @@ jobs:
         run: |
           curl --fail --show-error --location https://raw.githubusercontent.com/bottlesdevs/build-tools/main/runners/vaniglia/wine-tkg.cfg >> customization.cfg
           echo '_LOCAL_PRESET="none"' >> customization.cfg
+          echo '_proton_eac_support="false"' >> customization.cfg
           sed -i "s/_staging_version=\"\"/_staging_version=\"v$WINE_VERSION\"/g" customization.cfg
           sed -i "s/_plain_version=\"\"/_plain_version=\"wine-$WINE_VERSION\"/g" customization.cfg
 
       - name: start build
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: ./non-makepkg-build.sh
+
+      - name: Verify patches
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: "! grep -q 'Patch application has failed' prepare.log"
         
       - name: Upload prepare.log on failure
         if: ${{ failure() }}
@@ -50,10 +55,8 @@ jobs:
           runner=$(find . -maxdepth 1 -type d -name 'wine-tkg-staging-*' -print -quit)
           test -n "$runner"
           version=$("$runner/bin/wine" --version)
-          case "$version" in
-            "wine-$WINE_VERSION"|"wine-$WINE_VERSION "*) ;;
-            *) exit 1 ;;
-          esac
+          escaped_version=${WINE_VERSION//./\\.}
+          printf '%s\n' "$version" | grep -Eq "^wine-$escaped_version(\\.r[0-9]+\\.[^[:space:]]+)?([[:space:]]|$)"
           mv "$runner" caffe-$WINE_VERSION-x86_64
           tar cJvf caffe-$WINE_VERSION-x86_64.tar.xz caffe-$WINE_VERSION-x86_64
           mv caffe-$WINE_VERSION-x86_64.tar.xz /tmp/caffe-$WINE_VERSION-x86_64.tar.xz
