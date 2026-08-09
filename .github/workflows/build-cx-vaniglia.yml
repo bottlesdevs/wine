@@ -57,7 +57,7 @@ jobs:
         run: |
           package=/home/runner/work/wine/wine/vaniglia-${{ steps.vars.outputs.release_version }}-cx-x86_64.tar.gz
           tar -tzf "$package" > "$RUNNER_TEMP/vaniglia-files.txt"
-          grep -q '/bin/wine$' "$RUNNER_TEMP/vaniglia-files.txt"
+          grep -q '/bin/wine64$' "$RUNNER_TEMP/vaniglia-files.txt"
           grep -q '/bin/wineserver$' "$RUNNER_TEMP/vaniglia-files.txt"
           
       - uses: "marvinpinto/action-automatic-releases@latest"
