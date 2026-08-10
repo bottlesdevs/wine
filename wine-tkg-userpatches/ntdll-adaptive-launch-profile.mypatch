@@ -1,0 +1,46 @@
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1550,6 +1550,27 @@
+     return ptr;
+ }
+ 
++static int soda_adaptive_profile_fd = -1;
++
++static void init_soda_adaptive_profile(void)
++{
++    const char *profile;
++
++    profile = getenv( "SODA_ADAPTIVE_PROFILE" );
++    if (!profile || !profile[0]) return;
++    if ((soda_adaptive_profile_fd = open( profile, O_WRONLY | O_CREAT | O_APPEND, 0600 )) != -1)
++        fcntl( soda_adaptive_profile_fd, F_SETFD, FD_CLOEXEC );
++}
++
++static void record_soda_adaptive_path( const char *name )
++{
++    size_t len;
++
++    if (soda_adaptive_profile_fd == -1) return;
++    len = strlen( name ) + 1;
++    if (len <= PATH_MAX) write( soda_adaptive_profile_fd, name, len );
++}
++
+ 
+ /***********************************************************************
+  *\topen_dll_file
+@@ -1576,6 +1597,7 @@
+         return STATUS_DLL_NOT_FOUND;
+     }
+ 
++    record_soda_adaptive_path( name );
+     size.QuadPart = 0;
+     status = NtCreateSection( mapping, STANDARD_RIGHTS_REQUIRED | SECTION_QUERY |
+                               SECTION_MAP_READ | SECTION_MAP_EXECUTE,
+@@ -2444,6 +2466,7 @@
+     dbg_init();
+     startup_info_size = server_init_process();
+     hacks_init();
++    init_soda_adaptive_profile();
+     virtual_map_user_shared_data();
+     init_cpu_info();
+     init_files();

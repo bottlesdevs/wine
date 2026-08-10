@@ -8,7 +8,7 @@ permissions:
   contents: write
 env:
   WINE_VERSION: '11.0'
-  REVISION: '4'
+  REVISION: '5'
   WINE_TKG_COMMIT: '6e1c41342a249e0029c1f35f36775e1caa5ce1d1'
   BUILD_TOOLS_COMMIT: 'fcba104217c6daddddebe69d2dc2e39bc9025848'
   WINE_MONO_VERSION: '10.4.1'
@@ -19,9 +19,11 @@ env:
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
     - Fixed depth-only display mode changes used by some older games.
+    - Fixed Unix paths without a matching DOS drive.
     - Restored true 32-bit prefixes.
     - Added automatic local mod loader support for `version.dll`, `winmm.dll`, and `dsound.dll`.
     - Added opt-in transparent huge pages with `SODA_USE_THP=1`.
+    - Added module load profiles for Bottles Adaptive Launch.
 jobs:
   build:
     runs-on: ubuntu-24.04
