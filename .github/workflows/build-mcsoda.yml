@@ -340,7 +340,7 @@ jobs:
           test -x "$RUNNER_TEMP/$package/bin/wine"
           test -x "$RUNNER_TEMP/$package/bin/wine64"
           test -x "$RUNNER_TEMP/$package/bin/wineserver"
-          test -f "$RUNNER_TEMP/$package/lib/wine/x86_64-unix/winemac.drv.so"
+          test -f "$RUNNER_TEMP/$package/lib/wine/x86_64-unix/winemac.so"
           test -f "$RUNNER_TEMP/$package/lib/wine/i386-windows/ntdll.dll"
           test -f "$RUNNER_TEMP/$package/lib/wine/x86_64-windows/ntdll.dll"
           tar -cJf "$RUNNER_TEMP/$package.tar.xz" -C "$RUNNER_TEMP" "$package"
@@ -387,7 +387,7 @@ jobs:
           shasum -a 256 --check "$package.tar.xz.sha256"
           tar -xJf "$package.tar.xz"
           file "$package/bin/wine" | grep -F 'x86_64'
-          file "$package/lib/wine/x86_64-unix/winemac.drv.so" | grep -F 'x86_64'
+          file "$package/lib/wine/x86_64-unix/winemac.so" | grep -F 'x86_64'
           test -f "$package/lib/wine/i386-windows/ntdll.dll"
           test -f "$package/lib/wine/x86_64-windows/ntdll.dll"
 
