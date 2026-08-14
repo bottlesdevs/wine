@@ -145,6 +145,9 @@ jobs:
           xz -dc mcsoda/macos-crossover-26.3.patch.xz | patch -d "$source_dir" -p1 -F0
           patch -d "$source_dir" -p1 -F0 < mcsoda/macos-disable-linux-futex.patch
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-disable-glibc-malloc.patch"
+          git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-disable-linux-ntsync.patch"
+          git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-disable-linux-teb-hack.patch"
+          git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-disable-linux-cpu-topology.patch"
           cd "$source_dir"
           ./tools/make_requests
           ./tools/make_specfiles

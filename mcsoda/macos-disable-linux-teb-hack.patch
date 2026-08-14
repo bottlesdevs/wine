@@ -1,0 +1,26 @@
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2773,7 +2773,7 @@ static void start_main_thread(void)
+     init_cpu_info();
+     init_files();
+ 
+-#if defined(__x86_64__) || defined(__i386__)
++#if defined(__linux__) && (defined(__x86_64__) || defined(__i386__))
+     set_thread_teb( teb );
+ #endif
+ 
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -3352,10 +3352,12 @@ void signal_init_process(void)
+     exit(1);
+ }
+ 
++#ifdef __linux__
+ void set_thread_teb( TEB *teb )
+ {
+     arch_prctl( ARCH_SET_GS, teb );
+ }
++#endif
+ 
+ /***********************************************************************
+  *           init_syscall_frame
