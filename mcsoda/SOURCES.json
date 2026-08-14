@@ -1,0 +1,25 @@
+{
+  "name": "McSoda",
+  "version": "11.0-1",
+  "base": {
+    "name": "Soda",
+    "wine_source": "ValveSoftware/wine",
+    "wine_tag": "experimental-wine-bleeding-edge-11.0-411656-20260810-pc1d824-w99166a-d3a4c6f-v731c4a",
+    "wine_commit": "99166a7e25b08ccef0168217540542260eaed76f",
+    "wine_tkg_commit": "6e1c41342a249e0029c1f35f36775e1caa5ce1d1",
+    "build_tools_commit": "fcba104217c6daddddebe69d2dc2e39bc9025848"
+  },
+  "macos_layer": {
+    "name": "CrossOver FOSS source",
+    "version": "26.3.0",
+    "url": "https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz",
+    "sha256": "ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872"
+  },
+  "graphics": {
+    "builtin": "WineD3D",
+    "external": [
+      "D3DMetal"
+    ],
+    "notice": "D3DMetal is not distributed with McSoda."
+  }
+}

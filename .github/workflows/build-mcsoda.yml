@@ -1,0 +1,366 @@
+name: build-mcsoda
+
+on:
+  push:
+    branches:
+      - 'mcsoda'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: build-mcsoda-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WINE_VERSION: '11.0'
+  REVISION: '1'
+  VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-411656-20260810-pc1d824-w99166a-d3a4c6f-v731c4a'
+  VALVE_WINE_COMMIT: '99166a7e25b08ccef0168217540542260eaed76f'
+  WINE_TKG_COMMIT: '6e1c41342a249e0029c1f35f36775e1caa5ce1d1'
+  BUILD_TOOLS_COMMIT: 'fcba104217c6daddddebe69d2dc2e39bc9025848'
+  CROSSOVER_VERSION: '26.3.0'
+  CROSSOVER_SHA256: 'ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872'
+  LLVM_MINGW_VERSION: '20260616'
+  LLVM_MINGW_SHA256: '2cab02a2e964bd4aae981150a45985d07c657cfa8d244959eb9e2dcc5eedd7b1'
+  WINE_MONO_VERSION: '10.4.1'
+  WINE_MONO_SHA256: '071f4b2887e1c97a11d791ff3d65be9429eed6dec4c2708888bfd546ba358e23'
+  WINE_GECKO_VERSION: '2.47.4'
+  WINE_GECKO_X86_SHA256: '26cecc47706b091908f7f814bddb074c61beb8063318e9efc5a7f789857793d6'
+  WINE_GECKO_X86_64_SHA256: 'e590b7d988a32d6aa4cf1d8aa3aa3d33766fdd4cf4c89c2dcc2095ecb28d066f'
+  MACOSX_DEPLOYMENT_TARGET: '14.0'
+
+jobs:
+  prepare-source:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare exact Soda source
+        run: |
+          git clone https://github.com/Frogging-Family/wine-tkg-git.git "$RUNNER_TEMP/wine-tkg"
+          git -C "$RUNNER_TEMP/wine-tkg" checkout "$WINE_TKG_COMMIT"
+
+          profile="$RUNNER_TEMP/wine-tkg/wine-tkg-git/wine-tkg-profiles/wine-tkg-valve-exp-bleeding.cfg"
+          sed -i 's/^_bleeding_tag=.*/_bleeding_tag="'"$VALVE_WINE_TAG"'"/' "$profile"
+          grep -Fx '_bleeding_tag="'"$VALVE_WINE_TAG"'"' "$profile"
+
+          config="$RUNNER_TEMP/wine-tkg/wine-tkg-git/customization.cfg"
+          sed -i 's/^_LOCAL_PRESET=.*/_LOCAL_PRESET="valve-exp-bleeding"/' "$config"
+          sed -i 's/^_nomakepkg_dependency_autoresolver=.*/_nomakepkg_dependency_autoresolver="false"/' "$config"
+
+          install -d "$HOME/.config/frogminer"
+          git clone https://github.com/bottlesdevs/build-tools.git "$RUNNER_TEMP/build-tools"
+          git -C "$RUNNER_TEMP/build-tools" checkout "$BUILD_TOOLS_COMMIT"
+          install -m644 "$RUNNER_TEMP/build-tools/runners/vaniglia/wine-tkg-valve.cfg" "$HOME/.config/frogminer/wine-tkg.cfg"
+          printf '%s\n' '_NOCOMPILE="true"' '_NOLIB32="false"' >> "$HOME/.config/frogminer/wine-tkg.cfg"
+
+          patches="$RUNNER_TEMP/wine-tkg/wine-tkg-git/wine-tkg-userpatches"
+          install -m644 wine-tkg-userpatches/mod-loader-prefer-native.mypatch "$patches/"
+          install -m644 wine-tkg-userpatches/ntdll-adaptive-launch-profile.mypatch "$patches/"
+          install -m644 wine-tkg-userpatches/ntdll-handle-unmapped-unix-paths.mypatch "$patches/"
+          install -m644 wine-tkg-userpatches/win32u-fill-depth-only-display-mode.mypatch "$patches/"
+
+          cd "$RUNNER_TEMP/wine-tkg/wine-tkg-git"
+          yes | ./non-makepkg-build.sh
+
+          source_dir="$RUNNER_TEMP/wine-tkg/wine-tkg-git/src/ValveSoftware-winegit"
+          test "$(git -C "$source_dir" merge-base "$VALVE_WINE_COMMIT" HEAD)" = "$VALVE_WINE_COMMIT"
+          grep -F "Bleeding edge tag: $VALVE_WINE_TAG" prepare.log
+          grep -F "Bleeding edge commit: $VALVE_WINE_COMMIT" prepare.log
+          git -C "$source_dir" diff --check
+
+          tar --exclude=.git -cJf "$RUNNER_TEMP/soda-source.tar.xz" -C "$(dirname "$source_dir")" "$(basename "$source_dir")"
+
+      - name: Upload preparation log on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcsoda-source-failure
+          path: ${{ runner.temp }}/wine-tkg/wine-tkg-git/prepare.log
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcsoda-soda-source
+          path: ${{ runner.temp }}/soda-source.tar.xz
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    needs: prepare-source
+    runs-on: macos-26-intel
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcsoda-soda-source
+          path: ${{ runner.temp }}/source-artifact
+
+      - name: Install build dependencies
+        run: |
+          brew install \
+            bison \
+            flex \
+            freetype \
+            gettext \
+            gnutls \
+            gstreamer \
+            jpeg-turbo \
+            libpng \
+            libtiff \
+            libxml2 \
+            libxslt \
+            molten-vk \
+            mpg123 \
+            openal-soft \
+            pkgconf \
+            sdl2-compat \
+            vulkan-loader
+          {
+            echo "$(brew --prefix bison)/bin"
+            echo "$(brew --prefix flex)/bin"
+            echo "$(brew --prefix gettext)/bin"
+          } >> "$GITHUB_PATH"
+
+      - name: Download PE toolchain
+        run: |
+          toolchain_name="llvm-mingw-$LLVM_MINGW_VERSION-ucrt-macos-universal.tar.xz"
+          toolchain_url="https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/$toolchain_name"
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/$toolchain_name" "$toolchain_url"
+          echo "$LLVM_MINGW_SHA256  $RUNNER_TEMP/$toolchain_name" | shasum -a 256 --check
+          install -d "$RUNNER_TEMP/toolchain"
+          tar -xJf "$RUNNER_TEMP/$toolchain_name" -C "$RUNNER_TEMP/toolchain" --strip-components=1
+
+      - name: Apply macOS layer
+        run: |
+          tar -xJf "$RUNNER_TEMP/source-artifact/soda-source.tar.xz" -C "$RUNNER_TEMP"
+          source_dir="$RUNNER_TEMP/ValveSoftware-winegit"
+          xz -dc mcsoda/macos-crossover-26.3.patch.xz | patch -d "$source_dir" -p1 -F0
+          cd "$source_dir"
+          ./tools/make_requests
+          ./tools/make_specfiles
+          ./dlls/winevulkan/make_vulkan -v
+          autoreconf -fiv
+
+      - name: Configure McSoda
+        run: |
+          source_dir="$RUNNER_TEMP/ValveSoftware-winegit"
+          bison_prefix="$(brew --prefix bison)"
+          flex_prefix="$(brew --prefix flex)"
+          gettext_prefix="$(brew --prefix gettext)"
+          brew_prefix="$(brew --prefix)"
+          export PATH="$RUNNER_TEMP/toolchain/bin:$bison_prefix/bin:$flex_prefix/bin:$gettext_prefix/bin:$PATH"
+          export PKG_CONFIG_PATH="$brew_prefix/opt/freetype/lib/pkgconfig:$brew_prefix/opt/gnutls/lib/pkgconfig:$brew_prefix/opt/gstreamer/lib/pkgconfig:$brew_prefix/opt/jpeg-turbo/lib/pkgconfig:$brew_prefix/opt/libpng/lib/pkgconfig:$brew_prefix/opt/libtiff/lib/pkgconfig:$brew_prefix/opt/libxml2/lib/pkgconfig:$brew_prefix/opt/libxslt/lib/pkgconfig:$brew_prefix/opt/molten-vk/lib/pkgconfig:$brew_prefix/opt/mpg123/lib/pkgconfig:$brew_prefix/opt/openal-soft/lib/pkgconfig:$brew_prefix/opt/sdl2-compat/lib/pkgconfig:$brew_prefix/opt/vulkan-loader/lib/pkgconfig"
+          export CFLAGS="-O2 -g0 -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
+          export CXXFLAGS="$CFLAGS"
+          export LDFLAGS="-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
+          install -d "$RUNNER_TEMP/build" "$RUNNER_TEMP/install"
+          cd "$RUNNER_TEMP/build"
+          "$source_dir/configure" \
+            --prefix="$RUNNER_TEMP/install" \
+            --enable-win64 \
+            --enable-archs=i386,x86_64 \
+            --disable-tests \
+            --with-mingw=llvm-mingw \
+            --with-coreaudio \
+            --with-freetype \
+            --with-gnutls \
+            --with-gstreamer \
+            --with-sdl \
+            --with-vulkan \
+            --without-alsa \
+            --without-capi \
+            --without-cups \
+            --without-dbus \
+            --without-gphoto \
+            --without-inotify \
+            --without-netapi \
+            --without-oss \
+            --without-pulse \
+            --without-sane \
+            --without-udev \
+            --without-v4l2 \
+            --without-wayland \
+            --without-xcomposite \
+            --without-xcursor \
+            --without-xfixes \
+            --without-xinerama \
+            --without-xinput \
+            --without-xinput2 \
+            --without-xrandr \
+            --without-xrender \
+            --without-xshape \
+            --without-xshm \
+            --without-xxf86vm
+
+      - name: Build and install McSoda
+        run: |
+          export PATH="$RUNNER_TEMP/toolchain/bin:$PATH"
+          make -C "$RUNNER_TEMP/build" -j"$(sysctl -n hw.logicalcpu)"
+          make -C "$RUNNER_TEMP/build" install
+
+      - name: Bundle media support
+        run: |
+          plugin_dir="$(brew --prefix gstreamer)/lib/gstreamer-1.0"
+          scanner="$(brew --prefix gstreamer)/libexec/gstreamer-1.0/gst-plugin-scanner"
+          install -d "$RUNNER_TEMP/install/lib/gstreamer-1.0" "$RUNNER_TEMP/install/libexec/gstreamer-1.0"
+          cp -R "$plugin_dir"/. "$RUNNER_TEMP/install/lib/gstreamer-1.0/"
+          install -m755 "$scanner" "$RUNNER_TEMP/install/libexec/gstreamer-1.0/gst-plugin-scanner"
+
+      - name: Bundle Wine Mono and Gecko
+        run: |
+          mono_file="wine-mono-$WINE_MONO_VERSION-x86.msi"
+          mono_url="https://github.com/wine-mono/wine-mono/releases/download/wine-mono-$WINE_MONO_VERSION/$mono_file"
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/$mono_file" "$mono_url"
+          echo "$WINE_MONO_SHA256  $RUNNER_TEMP/$mono_file" | shasum -a 256 --check
+          install -Dm644 "$RUNNER_TEMP/$mono_file" "$RUNNER_TEMP/install/share/wine/mono/$mono_file"
+
+          for gecko_arch in x86 x86_64
+          do
+            gecko_file="wine-gecko-$WINE_GECKO_VERSION-$gecko_arch.msi"
+            gecko_url="https://dl.winehq.org/wine/wine-gecko/$WINE_GECKO_VERSION/$gecko_file"
+            if test "$gecko_arch" = x86; then gecko_sha="$WINE_GECKO_X86_SHA256"; else gecko_sha="$WINE_GECKO_X86_64_SHA256"; fi
+            curl --fail --location --retry 3 --output "$RUNNER_TEMP/$gecko_file" "$gecko_url"
+            echo "$gecko_sha  $RUNNER_TEMP/$gecko_file" | shasum -a 256 --check
+            install -Dm644 "$RUNNER_TEMP/$gecko_file" "$RUNNER_TEMP/install/share/wine/gecko/$gecko_file"
+          done
+
+      - name: Bundle runtime libraries
+        run: .github/scripts/bundle-macos-libraries.sh "$RUNNER_TEMP/install"
+
+      - name: Add McSoda metadata
+        run: |
+          install -d "$RUNNER_TEMP/install/share/mcsoda"
+          install -m644 "$RUNNER_TEMP/ValveSoftware-winegit/COPYING.LIB" "$RUNNER_TEMP/install/share/mcsoda/COPYING.LIB"
+          install -m644 mcsoda/SOURCES.json "$RUNNER_TEMP/install/share/mcsoda/SOURCES.json"
+          printf '%s\n' \
+            "GST_PLUGIN_SYSTEM_PATH_1_0=\$RUNNER/lib/gstreamer-1.0" \
+            "GST_PLUGIN_SCANNER=\$RUNNER/libexec/gstreamer-1.0/gst-plugin-scanner" \
+            > "$RUNNER_TEMP/install/share/mcsoda/runtime.env"
+          test ! -e "$RUNNER_TEMP/install/libd3dshared.dylib"
+          test ! -e "$RUNNER_TEMP/install/D3DMetal.framework"
+
+      - name: Build smoke programs
+        run: |
+          export PATH="$RUNNER_TEMP/toolchain/bin:$PATH"
+          i686-w64-mingw32-clang .github/tests/mcsoda-smoke.c -o "$RUNNER_TEMP/smoke-x86.exe"
+          x86_64-w64-mingw32-clang .github/tests/mcsoda-smoke.c -o "$RUNNER_TEMP/smoke-x86_64.exe"
+
+      - name: Package McSoda
+        run: |
+          package="mcsoda-$WINE_VERSION-$REVISION-x86_64"
+          mv "$RUNNER_TEMP/install" "$RUNNER_TEMP/$package"
+          test -x "$RUNNER_TEMP/$package/bin/wine"
+          test -x "$RUNNER_TEMP/$package/bin/wineserver"
+          test -f "$RUNNER_TEMP/$package/lib/wine/x86_64-unix/winemac.drv.so"
+          test -f "$RUNNER_TEMP/$package/lib/wine/i386-windows/ntdll.dll"
+          test -f "$RUNNER_TEMP/$package/lib/wine/x86_64-windows/ntdll.dll"
+          tar -cJf "$RUNNER_TEMP/$package.tar.xz" -C "$RUNNER_TEMP" "$package"
+          shasum -a 256 "$RUNNER_TEMP/$package.tar.xz" > "$RUNNER_TEMP/$package.tar.xz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
+          path: |
+            ${{ runner.temp }}/mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.tar.xz
+            ${{ runner.temp }}/mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.tar.xz.sha256
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcsoda-smoke-programs
+          path: |
+            ${{ runner.temp }}/smoke-x86.exe
+            ${{ runner.temp }}/smoke-x86_64.exe
+          if-no-files-found: error
+
+  smoke-test:
+    needs: build
+    runs-on: macos-26
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
+          path: ${{ runner.temp }}/artifact
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcsoda-smoke-programs
+          path: ${{ runner.temp }}/smoke
+
+      - name: Enable Rosetta
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+
+      - name: Verify archive and binaries
+        run: |
+          package="mcsoda-$WINE_VERSION-$REVISION-x86_64"
+          cd "$RUNNER_TEMP/artifact"
+          shasum -a 256 --check "$package.tar.xz.sha256"
+          tar -xJf "$package.tar.xz"
+          file "$package/bin/wine" | grep -F 'x86_64'
+          file "$package/lib/wine/x86_64-unix/winemac.drv.so" | grep -F 'x86_64'
+          test -f "$package/lib/wine/i386-windows/ntdll.dll"
+          test -f "$package/lib/wine/x86_64-windows/ntdll.dll"
+
+      - name: Test McSoda through Rosetta
+        run: |
+          package="$RUNNER_TEMP/artifact/mcsoda-$WINE_VERSION-$REVISION-x86_64"
+          export WINEPREFIX="$RUNNER_TEMP/mcsoda-prefix"
+          export WINEDEBUG=-all
+          export GST_PLUGIN_SYSTEM_PATH_1_0="$package/lib/gstreamer-1.0"
+          export GST_PLUGIN_SCANNER="$package/libexec/gstreamer-1.0/gst-plugin-scanner"
+          arch -x86_64 "$package/bin/wine" --version | grep -F "wine-$WINE_VERSION"
+          arch -x86_64 "$package/bin/wine" wineboot -u
+          arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/smoke-x86.exe" | tr -d '\r' | grep -Fx 'McSoda smoke test'
+          arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/smoke-x86_64.exe" | tr -d '\r' | grep -Fx 'McSoda smoke test'
+          arch -x86_64 "$package/bin/wineserver" -w
+          arch -x86_64 "$package/bin/wineserver" -k
+
+  release:
+    needs: smoke-test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
+          path: ${{ runner.temp }}/artifact
+
+      - uses: anchore/sbom-action@v0
+        with:
+          path: ${{ runner.temp }}/artifact/mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.tar.xz
+          format: spdx-json
+          output-file: ${{ runner.temp }}/artifact/mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.spdx.json
+          upload-artifact: false
+
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ runner.temp }}/artifact/mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.tar.xz
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="mcsoda-$WINE_VERSION-$REVISION"
+          title="McSoda $WINE_VERSION-$REVISION"
+          notes="McSoda is the macOS runner for Bottles Next. It keeps the Soda 11 Valve Wine base and adds the open macOS integration maintained by CodeWeavers. D3DMetal is supported as an external system component and is not included."
+          files=(
+            "$RUNNER_TEMP/artifact/$tag-x86_64.tar.xz"
+            "$RUNNER_TEMP/artifact/$tag-x86_64.tar.xz.sha256"
+            "$RUNNER_TEMP/artifact/$tag-x86_64.spdx.json"
+          )
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1
+          then
+            gh release upload "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --title "$title" --notes "$notes" --latest=false
+          else
+            gh release create "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$title" --notes "$notes" --latest=false
+          fi
