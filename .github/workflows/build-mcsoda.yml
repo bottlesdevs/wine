@@ -167,6 +167,7 @@ jobs:
             --prefix="$RUNNER_TEMP/install" \
             --enable-win64 \
             --enable-archs=i386,x86_64 \
+            --disable-amd_ags_x64 \
             --disable-tests \
             --with-mingw=llvm-mingw \
             --with-coreaudio \
