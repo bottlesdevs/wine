@@ -149,6 +149,7 @@ jobs:
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-disable-linux-teb-hack.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-disable-linux-cpu-topology.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-fix-clang-indirect-jump.patch"
+          git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-use-portable-strchr.patch"
           cd "$source_dir"
           ./tools/make_requests
           ./tools/make_specfiles
