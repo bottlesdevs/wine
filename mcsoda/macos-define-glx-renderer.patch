@@ -1,0 +1,21 @@
+diff --git a/dlls/winex11.drv/opengl.c b/dlls/winex11.drv/opengl.c
+--- a/dlls/winex11.drv/opengl.c
++++ b/dlls/winex11.drv/opengl.c
+@@ -45,6 +45,8 @@
+ #include "winternl.h"
+ #include "wine/debug.h"
+ 
++char *glx_renderer;
++
+ #ifdef SONAME_LIBGL
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(wgl);
+@@ -185,8 +187,6 @@ static char wglExtensions[4096];
+ static int glxVersion[2];
+ static int glx_opcode;
+ 
+-char *glx_renderer;
+-
+ struct glx_pixel_format
+ {
+     GLXFBConfig fbconfig;
