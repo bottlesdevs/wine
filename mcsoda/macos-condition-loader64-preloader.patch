@@ -1,0 +1,35 @@
+diff --git a/configure.ac b/configure.ac
+index e9774c0ca49..be913adf079 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2174,6 +2174,7 @@ dnl **** Check for CFI directives support ****
+ dnl **** Platform-specific checks ****
+ 
+ AC_SUBST(WINELOADER_PROGRAMS,"wine")
++AC_SUBST(WINELOADER64_PROGRAMS,"wine64")
+ 
+ case $host_os in
+   linux*)
+@@ -2187,6 +2188,7 @@ esac
+ if test "$wine_use_preloader" = "yes"
+ then
+   WINELOADER_PROGRAMS="$WINELOADER_PROGRAMS wine-preloader"
++  WINELOADER64_PROGRAMS="$WINELOADER64_PROGRAMS wine64-preloader"
+   AC_DEFINE(HAVE_WINE_PRELOADER, 1, [Define to 1 if the Wine preloader is being used.])
+ fi
+ 
+diff --git a/loader64/Makefile.in b/loader64/Makefile.in
+index 97a45a81db0..0d383dbbe8a 100644
+--- a/loader64/Makefile.in
++++ b/loader64/Makefile.in
+@@ -7,8 +7,8 @@ SOURCES = \
+ 	preloader_mac.c \
+ 	wine_info.plist.in
+ 
+-PROGRAMS = wine64 wine64-preloader
+-INSTALL_LIB = wine64 wine64-preloader
++PROGRAMS = $(WINELOADER64_PROGRAMS)
++INSTALL_LIB = $(WINELOADER64_PROGRAMS)
+ UNIX_CFLAGS = -fPIE
+ 
+ preloader_EXTRADEFS = -fno-builtin
