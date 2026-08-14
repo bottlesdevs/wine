@@ -1,0 +1,113 @@
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 36e71af5b3d..4682923aa60 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -405,7 +405,6 @@ static const KBDTABLES kbdus_tables =
+ };
+ 
+ static LONG clipping_cursor; /* clipping thread counter */
+-static LONG enable_mouse_in_pointer = -1;
+ 
+ BOOL grab_pointer = TRUE;
+ BOOL grab_fullscreen = FALSE;
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+index 03346f5b5f6..eba7a60e34c 100644
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -1600,6 +1600,11 @@ static void init_egl_platforms( struct opengl_funcs *funcs, const struct opengl_
+ 
+ #else /* SONAME_LIBEGL */
+ 
++static BOOL needs_framebuffer_surface( HWND hwnd )
++{
++    return FALSE;
++}
++
+ static BOOL egl_init( const struct opengl_driver_funcs **driver_funcs )
+ {
+     WARN( "EGL support not compiled in!\n" );
+@@ -1964,11 +1969,13 @@ static struct opengl_drawable *get_window_unused_drawable( HWND hwnd, int format
+         opengl_drawable_release( drawable );
+         drawable = NULL;
+     }
++#ifdef SONAME_LIBEGL
+     if (drawable && (drawable->funcs == &framebuffer_surface_funcs) != raw)
+     {
+         opengl_drawable_release( drawable );
+         drawable = NULL;
+     }
++#endif
+ 
+     /* No compatible window drawable found, try creating a new one. This is not what native
+      * is doing, it allows multiple contexts to be current on separate threads on the same
+@@ -1981,12 +1988,14 @@ static struct opengl_drawable *get_window_unused_drawable( HWND hwnd, int format
+         if (drawable && drawable->client) add_window_client_surface( hwnd, drawable->client );
+     }
+ 
++#ifdef SONAME_LIBEGL
+     if (drawable && drawable->funcs != &framebuffer_surface_funcs && raw)
+     {
+         struct opengl_drawable *surface = framebuffer_surface_create( format, drawable->client, drawable );
+         opengl_drawable_release( drawable );
+         drawable = surface;
+     }
++#endif
+ 
+     TRACE( "hwnd %p, drawable %s\n", hwnd, debugstr_opengl_drawable( drawable ) );
+     return drawable;
+@@ -2184,11 +2193,13 @@ static BOOL win32u_wglSetPixelFormatWINE( HDC hdc, int format )
+         opengl_drawable_release( drawable );
+         drawable = NULL;
+     }
++#ifdef SONAME_LIBEGL
+     if (drawable && (drawable->funcs == &framebuffer_surface_funcs) != needs_framebuffer_surface( hwnd ))
+     {
+         opengl_drawable_release( drawable );
+         drawable = NULL;
+     }
++#endif
+     if (format && (drawable || (drawable = get_window_unused_drawable( hwnd, format ))))
+     {
+         set_window_opengl_drawable( hwnd, drawable, TRUE );
+@@ -2244,7 +2255,11 @@ static BOOL context_unset_current( struct wgl_context *context )
+ 
+ static BOOL needs_framebuffer_update( HWND hwnd, struct opengl_drawable *drawable )
+ {
++#ifdef SONAME_LIBEGL
+     return drawable && (drawable->funcs == &framebuffer_surface_funcs) != needs_framebuffer_surface( hwnd );
++#else
++    return FALSE;
++#endif
+ }
+ 
+ /* return an updated drawable, recreating one if the window drawables have been invalidated (mostly wineandroid) */
+@@ -2314,8 +2329,12 @@ static BOOL context_sync_drawables( struct wgl_context *context, HDC draw_hdc, H
+         if (old_read != old_draw) opengl_drawable_set_context( old_draw, NULL );
+     }
+ 
+-    if ((draw = new_draw) && new_draw->funcs == &framebuffer_surface_funcs) draw = framebuffer_from_opengl_drawable( new_draw )->target;
+-    if ((read = new_read) && new_read->funcs == &framebuffer_surface_funcs) read = framebuffer_from_opengl_drawable( new_read )->target;
++    draw = new_draw;
++    read = new_read;
++#ifdef SONAME_LIBEGL
++    if (draw && draw->funcs == &framebuffer_surface_funcs) draw = framebuffer_from_opengl_drawable( draw )->target;
++    if (read && read->funcs == &framebuffer_surface_funcs) read = framebuffer_from_opengl_drawable( read )->target;
++#endif
+ 
+     if (!ret && (ret = driver_funcs->p_make_current( draw, read, context->driver_private )))
+     {
+@@ -2409,8 +2428,12 @@ static void pop_internal_context( struct wgl_context *context )
+ 
+     TRACE( "context %p\n", context );
+ 
+-    if ((draw = context->draw) && draw->funcs == &framebuffer_surface_funcs) draw = framebuffer_from_opengl_drawable( draw )->target;
+-    if ((read = context->read) && read->funcs == &framebuffer_surface_funcs) read = framebuffer_from_opengl_drawable( read )->target;
++    draw = context->draw;
++    read = context->read;
++#ifdef SONAME_LIBEGL
++    if (draw && draw->funcs == &framebuffer_surface_funcs) draw = framebuffer_from_opengl_drawable( draw )->target;
++    if (read && read->funcs == &framebuffer_surface_funcs) read = framebuffer_from_opengl_drawable( read )->target;
++#endif
+ 
+     driver_funcs->p_make_current( draw, read, context->driver_private );
+ }
