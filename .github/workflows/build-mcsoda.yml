@@ -236,8 +236,10 @@ jobs:
           mono_url="https://github.com/wine-mono/wine-mono/releases/download/wine-mono-$WINE_MONO_VERSION/$mono_file"
           curl --fail --location --retry 3 --output "$RUNNER_TEMP/$mono_file" "$mono_url"
           echo "$WINE_MONO_SHA256  $RUNNER_TEMP/$mono_file" | shasum -a 256 --check
-          install -Dm644 "$RUNNER_TEMP/$mono_file" "$RUNNER_TEMP/install/share/wine/mono/$mono_file"
+          install -d "$RUNNER_TEMP/install/share/wine/mono"
+          install -m644 "$RUNNER_TEMP/$mono_file" "$RUNNER_TEMP/install/share/wine/mono/$mono_file"
 
+          install -d "$RUNNER_TEMP/install/share/wine/gecko"
           for gecko_arch in x86 x86_64
           do
             gecko_file="wine-gecko-$WINE_GECKO_VERSION-$gecko_arch.msi"
@@ -245,7 +247,7 @@ jobs:
             if test "$gecko_arch" = x86; then gecko_sha="$WINE_GECKO_X86_SHA256"; else gecko_sha="$WINE_GECKO_X86_64_SHA256"; fi
             curl --fail --location --retry 3 --output "$RUNNER_TEMP/$gecko_file" "$gecko_url"
             echo "$gecko_sha  $RUNNER_TEMP/$gecko_file" | shasum -a 256 --check
-            install -Dm644 "$RUNNER_TEMP/$gecko_file" "$RUNNER_TEMP/install/share/wine/gecko/$gecko_file"
+            install -m644 "$RUNNER_TEMP/$gecko_file" "$RUNNER_TEMP/install/share/wine/gecko/$gecko_file"
           done
 
       - name: Bundle runtime libraries
