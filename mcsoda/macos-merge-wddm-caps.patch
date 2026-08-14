@@ -1,0 +1,61 @@
+diff --git a/dlls/win32u/d3dkmt.c b/dlls/win32u/d3dkmt.c
+index 461cc42f591..8b600bf5c9f 100644
+--- a/dlls/win32u/d3dkmt.c
++++ b/dlls/win32u/d3dkmt.c
+@@ -721,8 +721,22 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
+         VkPhysicalDeviceProperties2KHR properties2;
+         struct vulkan_instance *instance;
+         D3DKMT_WDDM_2_7_CAPS *data;
++        const char *active_gfx_backend;
+         const char *e;
+ 
++        data = desc->pPrivateDriverData;
++        if (desc->PrivateDriverDataSize < sizeof(*data)) return STATUS_INVALID_PARAMETER;
++        memset( data, 0, sizeof(*data) );
++
++        active_gfx_backend = getenv( "CX_ACTIVE_GRAPHICS_BACKEND" );
++        if (active_gfx_backend && !strcmp( active_gfx_backend, "d3dmetal" ))
++        {
++            data->HwSchEnabled = 1;
++            data->HwSchSupported = 1;
++            data->HwSchEnabledByDefault = 1;
++            return STATUS_SUCCESS;
++        }
++
+         if (!(adapter = get_d3dkmt_object( desc->hAdapter, D3DKMT_ADAPTER ))) return STATUS_INVALID_PARAMETER;
+         if (!(physical_device = adapter->physical_device)) return STATUS_INVALID_PARAMETER;
+         instance = physical_device->instance;
+@@ -739,8 +753,6 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
+          * userspace submission. Allow overriding this value via the
+          * WINE_DISABLE_HARDWARE_SCHEDULING environment variable.
+          */
+-        data = desc->pPrivateDriverData;
+-        memset( data, 0, sizeof(*data) );
+         e = getenv( "WINE_DISABLE_HARDWARE_SCHEDULING" );
+         if ((!e || *e == '\0' || *e == '0') && (driverProperties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY))
+         {
+@@ -751,24 +763,6 @@ NTSTATUS WINAPI NtGdiDdDDIQueryAdapterInfo( D3DKMT_QUERYADAPTERINFO *desc )
+ 
+         return STATUS_SUCCESS;
+     }
+-    /* CW HACK 24905 */
+-    case KMTQAITYPE_WDDM_2_7_CAPS:
+-    {
+-        D3DKMT_WDDM_2_7_CAPS *caps = desc->pPrivateDriverData;
+-        char *active_gfx_backend = getenv("CX_ACTIVE_GRAPHICS_BACKEND");
+-
+-        if (desc->PrivateDriverDataSize < sizeof(*caps))
+-            return STATUS_INVALID_PARAMETER;
+-
+-        if (active_gfx_backend && !strcmp(active_gfx_backend, "d3dmetal"))
+-        {
+-            caps->HwSchEnabled = 1;
+-            caps->HwSchSupported = 1;
+-            caps->HwSchEnabledByDefault = 1;
+-            return STATUS_SUCCESS;
+-        }
+-        /* fallthrough */
+-    }
+     default:
+     {
+         FIXME( "type %d not handled.\n", desc->Type );
