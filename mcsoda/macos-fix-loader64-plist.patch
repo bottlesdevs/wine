@@ -1,0 +1,47 @@
+diff --git a/configure.ac b/configure.ac
+index dfb0ee8913a..e9774c0ca49 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1123,6 +1123,17 @@ case $host_os in
+     ;;
+ esac
+ 
++WINELOADER64_LDFLAGS="$WINELOADER_LDFLAGS"
++WINEPRELOADER64_LDFLAGS="$WINEPRELOADER_LDFLAGS"
++case $host_os in
++  darwin*)
++    WINELOADER64_LDFLAGS=`echo "$WINELOADER64_LDFLAGS" | sed 's,loader/wine_info.plist,loader64/wine_info.plist,g'`
++    WINEPRELOADER64_LDFLAGS=`echo "$WINEPRELOADER64_LDFLAGS" | sed 's,loader/wine_info.plist,loader64/wine_info.plist,g'`
++    ;;
++esac
++AC_SUBST(WINELOADER64_LDFLAGS)
++AC_SUBST(WINEPRELOADER64_LDFLAGS)
++
+ enable_winecoreaudio_drv=${enable_winecoreaudio_drv:-no}
+ enable_wineandroid_drv=${enable_wineandroid_drv:-no}
+ enable_winemac_drv=${enable_winemac_drv:-no}
+diff --git a/loader64/Makefile.in b/loader64/Makefile.in
+index 408ecc04ced..97a45a81db0 100644
+--- a/loader64/Makefile.in
++++ b/loader64/Makefile.in
+@@ -3,7 +3,8 @@ PARENTSRC = ../loader
+ SOURCES = \
+ 	main.c \
+ 	preloader.c \
+-	preloader_mac.c
++	preloader_mac.c \
++	wine_info.plist.in
+ 
+ PROGRAMS = wine64 wine64-preloader
+ INSTALL_LIB = wine64 wine64-preloader
+@@ -13,8 +14,8 @@ preloader_EXTRADEFS = -fno-builtin
+ 
+ wine64_OBJS = main.o
+ wine64_DEPS = $(WINELOADER_DEPENDS)
+-wine64_LDFLAGS = $(WINELOADER_LDFLAGS) $(LDEXECFLAGS) $(PTHREAD_LIBS)
++wine64_LDFLAGS = $(WINELOADER64_LDFLAGS) $(LDEXECFLAGS) $(PTHREAD_LIBS)
+ 
+ wine64_preloader_OBJS = preloader.o
+ wine64_preloader_DEPS = $(WINELOADER_DEPENDS)
+-wine64_preloader_LDFLAGS = $(WINEPRELOADER_LDFLAGS)
++wine64_preloader_LDFLAGS = $(WINEPRELOADER64_LDFLAGS)

@@ -151,6 +151,7 @@ jobs:
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-fix-clang-indirect-jump.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-use-portable-strchr.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-drop-obsolete-nsiproxy-wow64.patch"
+          git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-fix-loader64-plist.patch"
           cd "$source_dir"
           ./tools/make_requests
           ./tools/make_specfiles
