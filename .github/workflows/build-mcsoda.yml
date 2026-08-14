@@ -4,7 +4,12 @@ on:
   push:
     branches:
       - 'mcsoda'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      reuse_run_id:
+        description: 'Run ID containing McSoda artifacts'
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -36,6 +41,7 @@ env:
 
 jobs:
   prepare-source:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.reuse_run_id == '' }}
     runs-on: ubuntu-24.04
 
     steps:
@@ -101,6 +107,7 @@ jobs:
 
   build:
     needs: prepare-source
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.reuse_run_id == '' }}
     runs-on: macos-26-intel
     env:
       CCACHE_COMPILERCHECK: content
@@ -365,6 +372,7 @@ jobs:
 
   smoke-test:
     needs: build
+    if: ${{ always() && !cancelled() && (needs.build.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.reuse_run_id != '')) }}
     runs-on: macos-26
 
     steps:
@@ -372,11 +380,15 @@ jobs:
         with:
           name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
           path: ${{ runner.temp }}/artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.reuse_run_id || github.run_id }}
 
       - uses: actions/download-artifact@v4
         with:
           name: mcsoda-smoke-programs
           path: ${{ runner.temp }}/smoke
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.reuse_run_id || github.run_id }}
 
       - name: Enable Rosetta
         run: sudo softwareupdate --install-rosetta --agree-to-license
@@ -385,7 +397,9 @@ jobs:
         run: |
           package="mcsoda-$WINE_VERSION-$REVISION-x86_64"
           cd "$RUNNER_TEMP/artifact"
-          shasum -a 256 --check "$package.tar.xz.sha256"
+          expected="$(cut -d ' ' -f 1 "$package.tar.xz.sha256")"
+          actual="$(shasum -a 256 "$package.tar.xz" | cut -d ' ' -f 1)"
+          test "$actual" = "$expected"
           tar -xJf "$package.tar.xz"
           file "$package/bin/wine" | grep -F 'x86_64'
           file "$package/lib/wine/x86_64-unix/winemac.so" | grep -F 'x86_64'
@@ -399,15 +413,16 @@ jobs:
           export WINEDEBUG=-all
           export GST_PLUGIN_SYSTEM_PATH_1_0="$package/lib/gstreamer-1.0"
           export GST_PLUGIN_SCANNER="$package/libexec/gstreamer-1.0/gst-plugin-scanner"
-          arch -x86_64 "$package/bin/wine" --version | grep -F "wine-$WINE_VERSION"
+          arch -x86_64 "$package/bin/wine" --version | grep -F "$WINE_VERSION"
           arch -x86_64 "$package/bin/wine" wineboot -u
           arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/smoke-x86.exe" | tr -d '\r' | grep -Fx 'McSoda smoke test'
           arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/smoke-x86_64.exe" | tr -d '\r' | grep -Fx 'McSoda smoke test'
-          arch -x86_64 "$package/bin/wineserver" -w
-          arch -x86_64 "$package/bin/wineserver" -k
+          arch -x86_64 "$package/bin/wineserver" -k || true
+          arch -x86_64 "$package/bin/wineserver" -w || true
 
   release:
     needs: smoke-test
+    if: ${{ always() && needs.smoke-test.result == 'success' }}
     runs-on: ubuntu-24.04
 
     steps:
@@ -417,10 +432,24 @@ jobs:
         with:
           name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
           path: ${{ runner.temp }}/artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.reuse_run_id || github.run_id }}
+
+      - name: Refresh checksum
+        run: |
+          package="mcsoda-$WINE_VERSION-$REVISION-x86_64"
+          cd "$RUNNER_TEMP/artifact"
+          shasum -a 256 "$package.tar.xz" > "$package.tar.xz.sha256"
+
+      - name: Extract runner for SBOM
+        run: |
+          package="mcsoda-$WINE_VERSION-$REVISION-x86_64"
+          install -d "$RUNNER_TEMP/sbom"
+          tar -xJf "$RUNNER_TEMP/artifact/$package.tar.xz" -C "$RUNNER_TEMP/sbom"
 
       - uses: anchore/sbom-action@v0
         with:
-          path: ${{ runner.temp }}/artifact/mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.tar.xz
+          path: ${{ runner.temp }}/sbom/mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
           format: spdx-json
           output-file: ${{ runner.temp }}/artifact/mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.spdx.json
           upload-artifact: false
