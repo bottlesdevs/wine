@@ -297,6 +297,12 @@ jobs:
       - name: Bundle runtime libraries
         run: .github/scripts/bundle-macos-libraries.sh "$RUNNER_TEMP/install"
 
+      - name: Add runner entry points
+        run: |
+          install -d "$RUNNER_TEMP/install/bin"
+          ln -s ../lib/wine/x86_64-unix/wine "$RUNNER_TEMP/install/bin/wine"
+          ln -s ../lib/wine/x86_64-unix/wine64 "$RUNNER_TEMP/install/bin/wine64"
+
       - name: Add McSoda metadata
         run: |
           install -d "$RUNNER_TEMP/install/share/mcsoda"
@@ -320,6 +326,7 @@ jobs:
           package="mcsoda-$WINE_VERSION-$REVISION-x86_64"
           mv "$RUNNER_TEMP/install" "$RUNNER_TEMP/$package"
           test -x "$RUNNER_TEMP/$package/bin/wine"
+          test -x "$RUNNER_TEMP/$package/bin/wine64"
           test -x "$RUNNER_TEMP/$package/bin/wineserver"
           test -f "$RUNNER_TEMP/$package/lib/wine/x86_64-unix/winemac.drv.so"
           test -f "$RUNNER_TEMP/$package/lib/wine/i386-windows/ntdll.dll"
