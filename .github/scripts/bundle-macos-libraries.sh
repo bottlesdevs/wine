@@ -100,11 +100,11 @@ do
     then
         install_name_tool -add_rpath "@loader_path/$relative_dir" "$file_path"
     fi
-done
 
-find "$external_dir" -type f -print | while IFS= read -r file_path
-do
-    if is_macho "$file_path"; then install_name_tool -id "@rpath/$(basename "$file_path")" "$file_path"; fi
+    if otool -D "$file_path" | tail -n +2 | grep -q .
+    then
+        install_name_tool -id "@rpath/$(basename "$file_path")" "$file_path"
+    fi
 done
 
 list_macho_files | while IFS= read -r file_path
