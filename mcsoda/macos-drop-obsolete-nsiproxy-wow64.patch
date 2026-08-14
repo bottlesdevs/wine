@@ -1,0 +1,200 @@
+--- a/dlls/nsiproxy.sys/icmp_echo.c
++++ b/dlls/nsiproxy.sys/icmp_echo.c
+@@ -1231,56 +1231,3 @@
+     handle_free( params->handle );
+     return ret;
+ }
+-
+-#ifdef _WIN64
+-
+-typedef UINT PTR32;
+-
+-NTSTATUS wow64_icmp_listen( void *args )
+-{
+-    struct
+-    {
+-        icmp_handle handle;
+-        PTR32 reply;
+-        ULONGLONG user_reply_ptr;
+-        unsigned int bits, reply_len;
+-        int timeout;
+-    } const *params32 = args;
+-    struct icmp_listen_params params =
+-    {
+-        .handle = params32->handle,
+-        .reply = ULongToPtr( params32->reply ),
+-        .user_reply_ptr = params32->user_reply_ptr,
+-        .bits = params32->bits,
+-        .reply_len = params32->reply_len,
+-        .timeout = params32->timeout
+-    };
+-    return icmp_listen( &params );
+-}
+-
+-NTSTATUS wow64_icmp_send_echo( void *args )
+-{
+-    struct
+-    {
+-        PTR32 dst;
+-        PTR32 request, reply;
+-        UINT request_size, reply_len;
+-        BYTE bits, ttl, tos;
+-        PTR32 handle;
+-    } const *params32 = args;
+-    struct icmp_send_echo_params params =
+-    {
+-        .dst = ULongToPtr( params32->dst ),
+-        .request = ULongToPtr( params32->request ),
+-        .reply = ULongToPtr( params32->reply ),
+-        .request_size = params32->request_size,
+-        .reply_len = params32->reply_len,
+-        .bits = params32->bits,
+-        .ttl = params32->ttl,
+-        .tos = params32->tos,
+-        .handle = ULongToPtr( params32->handle )
+-    };
+-    return icmp_send_echo( &params );
+-}
+-
+-#endif /* _WIN64 */
+--- a/dlls/nsiproxy.sys/nsi.c
++++ b/dlls/nsiproxy.sys/nsi.c
+@@ -352,137 +352,3 @@
+     unix_nsi_get_parameter_ex,
+     unix_nsi_get_notification,
+ };
+-
+-#ifdef _WIN64
+-
+-typedef UINT PTR32;
+-
+-static NTSTATUS wow64_nsi_enumerate_all_ex( void *args )
+-{
+-    struct
+-    {
+-        PTR32 unknown[2];
+-        PTR32 module;
+-        UINT table;
+-        UINT first_arg;
+-        UINT second_arg;
+-        PTR32 key_data;
+-        UINT key_size;
+-        PTR32 rw_data;
+-        UINT rw_size;
+-        PTR32 dynamic_data;
+-        UINT dynamic_size;
+-        PTR32 static_data;
+-        UINT static_size;
+-        UINT count;
+-    } *params32 = args;
+-    struct nsi_enumerate_all_ex params =
+-    {
+-        .unknown[0] = ULongToPtr( params32->unknown[0] ),
+-        .unknown[1] = ULongToPtr( params32->unknown[1] ),
+-        .module = ULongToPtr( params32->module ),
+-        .table = params32->table,
+-        .first_arg = params32->first_arg,
+-        .second_arg = params32->second_arg,
+-        .key_data = ULongToPtr( params32->key_data ),
+-        .key_size = params32->key_size,
+-        .rw_data = ULongToPtr( params32->rw_data ),
+-        .rw_size = params32->rw_size,
+-        .dynamic_data = ULongToPtr( params32->dynamic_data ),
+-        .dynamic_size = params32->dynamic_size,
+-        .static_data = ULongToPtr( params32->static_data ),
+-        .static_size = params32->static_size,
+-        .count = params32->count
+-    };
+-    NTSTATUS status = nsi_enumerate_all_ex( &params );
+-    params32->count = params.count;
+-    return status;
+-}
+-
+-static NTSTATUS wow64_nsi_get_all_parameters_ex( void *args )
+-{
+-    struct
+-    {
+-        PTR32 unknown[2];
+-        PTR32 module;
+-        UINT table;
+-        UINT first_arg;
+-        UINT unknown2;
+-        PTR32 key;
+-        UINT key_size;
+-        PTR32 rw_data;
+-        UINT rw_size;
+-        PTR32 dynamic_data;
+-        UINT dynamic_size;
+-        PTR32 static_data;
+-        UINT static_size;
+-    } const *params32 = args;
+-    struct nsi_get_all_parameters_ex params =
+-    {
+-        .unknown[0] = ULongToPtr( params32->unknown[0] ),
+-        .unknown[1] = ULongToPtr( params32->unknown[1] ),
+-        .module = ULongToPtr( params32->module ),
+-        .table = params32->table,
+-        .first_arg = params32->first_arg,
+-        .unknown2 = params32->unknown2,
+-        .key = ULongToPtr( params32->key ),
+-        .key_size = params32->key_size,
+-        .rw_data = ULongToPtr( params32->rw_data ),
+-        .rw_size = params32->rw_size,
+-        .dynamic_data = ULongToPtr( params32->dynamic_data ),
+-        .dynamic_size = params32->dynamic_size,
+-        .static_data = ULongToPtr( params32->static_data ),
+-        .static_size = params32->static_size
+-    };
+-    return nsi_get_all_parameters_ex( &params );
+-}
+-
+-static NTSTATUS wow64_nsi_get_parameter_ex( void *args )
+-{
+-    struct
+-    {
+-        PTR32 unknown[2];
+-        PTR32 module;
+-        UINT table;
+-        UINT first_arg;
+-        UINT unknown2;
+-        PTR32 key;
+-        UINT key_size;
+-        UINT param_type;
+-        PTR32 data;
+-        UINT data_size;
+-        UINT data_offset;
+-    } const *params32 = args;
+-    struct nsi_get_parameter_ex params =
+-    {
+-        .unknown[0] = ULongToPtr( params32->unknown[0] ),
+-        .unknown[1] = ULongToPtr( params32->unknown[1] ),
+-        .module = ULongToPtr( params32->module ),
+-        .table = params32->table,
+-        .first_arg = params32->first_arg,
+-        .unknown2 = params32->unknown2,
+-        .key = ULongToPtr( params32->key ),
+-        .key_size = params32->key_size,
+-        .param_type = params32->param_type,
+-        .data = ULongToPtr( params32->data ),
+-        .data_size = params32->data_size,
+-        .data_offset = params32->data_offset
+-    };
+-    return nsi_get_parameter_ex( &params );
+-}
+-
+-const unixlib_entry_t __wine_unix_call_wow64_funcs[] =
+-{
+-    icmp_cancel_listen,
+-    icmp_close,
+-    wow64_icmp_listen,
+-    wow64_icmp_send_echo,
+-    wow64_nsi_enumerate_all_ex,
+-    wow64_nsi_get_all_parameters_ex,
+-    wow64_nsi_get_parameter_ex,
+-    unix_nsi_get_notification,
+-};
+-
+-C_ASSERT( ARRAYSIZE(__wine_unix_call_wow64_funcs) == ARRAYSIZE(__wine_unix_call_funcs) );
+-
+-#endif /* _WIN64 */
+
