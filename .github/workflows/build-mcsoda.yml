@@ -187,6 +187,7 @@ jobs:
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-include-pthread.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-condition-xfixes-warp.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-condition-xinput2-desktop.patch"
+          git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-define-glx-renderer.patch"
           cd "$source_dir"
           ./tools/make_requests
           ./tools/make_specfiles
