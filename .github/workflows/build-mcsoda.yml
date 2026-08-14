@@ -152,6 +152,7 @@ jobs:
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-use-portable-strchr.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-drop-obsolete-nsiproxy-wow64.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-fix-loader64-plist.patch"
+          git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-drop-obsolete-unix-call-export.patch"
           cd "$source_dir"
           ./tools/make_requests
           ./tools/make_specfiles

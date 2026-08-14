@@ -1,0 +1,31 @@
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 143d4ca414a..877ddfc1767 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4194,15 +4194,5 @@ NTSTATUS WINAPI compat___wine_unix_call( unixlib_handle_t handle, unsigned int c
+ }
+ 
+-/***********************************************************************
+- *              __wine_unix_call_exported
+- *
+- * CW HACK 22435: Needed by D3DMetal PE DLLs
+- */
+-NTSTATUS WINAPI __wine_unix_call_exported( unixlib_handle_t handle, unsigned int code, void *args )
+-{
+-    return __wine_unix_call( handle, code, args );
+-}
+-
+ NTSTATUS WINAPI compat_wine_nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char *nameA, ULONG *size,
+                                                   UINT disposition )
+ {
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index d9491e77fac..98d92b9c256 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -1774,6 +1774,3 @@
+ 
+ # CW HACK 14391
+ @ stdcall -syscall __wine_rpc_NtReadFile(long long ptr ptr ptr ptr long ptr ptr)
+-
+-# CW HACK 22435
+-@ stdcall __wine_unix_call(int64 long ptr) __wine_unix_call_exported
