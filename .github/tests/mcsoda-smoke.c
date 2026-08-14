@@ -61,6 +61,14 @@ int main(void)
     }
 
     if (!painted) return 4;
+    if (!GetKeyboardLayout(0)) return 5;
+    if (!MapVirtualKeyA('A', MAPVK_VK_TO_VSC)) return 6;
+    {
+        POINT cursor;
+
+        if (!GetCursorPos(&cursor)) return 7;
+    }
     puts("McSoda window test");
+    puts("McSoda input test");
     return 0;
 }

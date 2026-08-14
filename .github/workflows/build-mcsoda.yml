@@ -57,6 +57,8 @@ jobs:
           sudo apt-get install --yes gcc-mingw-w64-i686 gcc-mingw-w64-x86-64
           i686-w64-mingw32-gcc .github/tests/mcsoda-smoke.c -o "$RUNNER_TEMP/smoke-x86.exe" -lgdi32
           x86_64-w64-mingw32-gcc .github/tests/mcsoda-smoke.c -o "$RUNNER_TEMP/smoke-x86_64.exe" -lgdi32
+          i686-w64-mingw32-gcc .github/tests/mcsoda-audio.c -o "$RUNNER_TEMP/audio-x86.exe" -lwinmm
+          x86_64-w64-mingw32-gcc .github/tests/mcsoda-audio.c -o "$RUNNER_TEMP/audio-x86_64.exe" -lwinmm
 
       - uses: actions/upload-artifact@v4
         with:
@@ -64,6 +66,8 @@ jobs:
           path: |
             ${{ runner.temp }}/smoke-x86.exe
             ${{ runner.temp }}/smoke-x86_64.exe
+            ${{ runner.temp }}/audio-x86.exe
+            ${{ runner.temp }}/audio-x86_64.exe
           if-no-files-found: error
 
   prepare-source:
@@ -419,6 +423,9 @@ jobs:
           test -f "$package/lib/wine/i386-windows/ntdll.dll"
           test -f "$package/lib/wine/x86_64-windows/ntdll.dll"
 
+      - name: Show audio devices
+        run: system_profiler SPAudioDataType
+
       - name: Test McSoda through Rosetta
         run: |
           package="$RUNNER_TEMP/artifact/mcsoda-$WINE_VERSION-$REVISION-x86_64"
@@ -428,8 +435,13 @@ jobs:
           export GST_PLUGIN_SCANNER="$package/libexec/gstreamer-1.0/gst-plugin-scanner"
           arch -x86_64 "$package/bin/wine" --version | grep -F "$WINE_VERSION"
           arch -x86_64 "$package/bin/wine" wineboot -u
-          arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/smoke-x86.exe" | tr -d '\r' | grep -Fx 'McSoda window test'
-          arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/smoke-x86_64.exe" | tr -d '\r' | grep -Fx 'McSoda window test'
+          for architecture in x86 x86_64
+          do
+            output="$(arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/smoke-$architecture.exe" | tr -d '\r')"
+            printf '%s\n' "$output" | grep -Fx 'McSoda window test'
+            printf '%s\n' "$output" | grep -Fx 'McSoda input test'
+            arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/audio-$architecture.exe" | tr -d '\r' | grep -Fx 'McSoda audio test'
+          done
           arch -x86_64 "$package/bin/wineserver" -k || true
           arch -x86_64 "$package/bin/wineserver" -w || true
 
