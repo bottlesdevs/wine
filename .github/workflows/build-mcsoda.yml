@@ -205,7 +205,7 @@ jobs:
           export PKG_CONFIG_PATH="$brew_prefix/opt/freetype/lib/pkgconfig:$brew_prefix/opt/gnutls/lib/pkgconfig:$brew_prefix/opt/gstreamer/lib/pkgconfig:$brew_prefix/opt/jpeg-turbo/lib/pkgconfig:$brew_prefix/opt/libpng/lib/pkgconfig:$brew_prefix/opt/libtiff/lib/pkgconfig:$brew_prefix/opt/libxml2/lib/pkgconfig:$brew_prefix/opt/libxslt/lib/pkgconfig:$brew_prefix/opt/molten-vk/lib/pkgconfig:$brew_prefix/opt/mpg123/lib/pkgconfig:$brew_prefix/opt/openal-soft/lib/pkgconfig:$brew_prefix/opt/sdl2-compat/lib/pkgconfig:$brew_prefix/opt/vulkan-loader/lib/pkgconfig"
           export CFLAGS="-O2 -g0 -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
           export CXXFLAGS="$CFLAGS"
-          export LDFLAGS="-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
+          export LDFLAGS="-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET -Wl,-headerpad_max_install_names"
           install -d "$RUNNER_TEMP/build" "$RUNNER_TEMP/install"
           cd "$RUNNER_TEMP/build"
           "$source_dir/configure" \
