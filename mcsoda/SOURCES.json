@@ -1,6 +1,6 @@
 {
   "name": "McSoda",
-  "version": "11.0-1",
+  "version": "11.0-2",
   "base": {
     "name": "Soda",
     "wine_source": "ValveSoftware/wine",
@@ -20,6 +20,21 @@
     "external": [
       "D3DMetal"
     ],
+    "providers": {
+      "D3DMetal": {
+        "layout": "redist/lib",
+        "required": [
+          "external/libd3dshared.dylib",
+          "external/D3DMetal.framework/D3DMetal",
+          "wine"
+        ],
+        "environment": {
+          "CX_ACTIVE_GRAPHICS_BACKEND": "d3dmetal",
+          "CX_APPLEGPTK_LIBD3DSHARED_PATH": "{root}/external/libd3dshared.dylib",
+          "WINEDLLPATH_PREPEND": "{root}/wine"
+        }
+      }
+    },
     "notice": "D3DMetal is not distributed with McSoda."
   }
 }
