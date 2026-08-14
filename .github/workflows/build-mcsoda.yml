@@ -344,7 +344,8 @@ jobs:
           test -f "$RUNNER_TEMP/$package/lib/wine/i386-windows/ntdll.dll"
           test -f "$RUNNER_TEMP/$package/lib/wine/x86_64-windows/ntdll.dll"
           tar -cJf "$RUNNER_TEMP/$package.tar.xz" -C "$RUNNER_TEMP" "$package"
-          shasum -a 256 "$RUNNER_TEMP/$package.tar.xz" > "$RUNNER_TEMP/$package.tar.xz.sha256"
+          cd "$RUNNER_TEMP"
+          shasum -a 256 "$package.tar.xz" > "$package.tar.xz.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -434,7 +435,9 @@ jobs:
         run: |
           tag="mcsoda-$WINE_VERSION-$REVISION"
           title="McSoda $WINE_VERSION-$REVISION"
-          notes="McSoda is the macOS runner for Bottles Next. It keeps the Soda 11 Valve Wine base and adds the open macOS integration maintained by CodeWeavers. D3DMetal is supported as an external system component and is not included."
+          notes='<img src="https://raw.githubusercontent.com/bottlesdevs/data/main/logo/mcsoda-logo.svg" width="64" />
+
+          McSoda is the macOS runner for Bottles Next. It keeps the Soda 11 Valve Wine base and adds the open macOS integration maintained by CodeWeavers. D3DMetal is supported as an external system component and is not included.'
           files=(
             "$RUNNER_TEMP/artifact/$tag-x86_64.tar.xz"
             "$RUNNER_TEMP/artifact/$tag-x86_64.tar.xz.sha256"
