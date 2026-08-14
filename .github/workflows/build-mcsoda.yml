@@ -143,6 +143,7 @@ jobs:
           tar -xJf "$RUNNER_TEMP/source-artifact/soda-source.tar.xz" -C "$RUNNER_TEMP"
           source_dir="$RUNNER_TEMP/ValveSoftware-winegit"
           xz -dc mcsoda/macos-crossover-26.3.patch.xz | patch -d "$source_dir" -p1 -F0
+          patch -d "$source_dir" -p1 -F0 < mcsoda/macos-disable-linux-futex.patch
           cd "$source_dir"
           ./tools/make_requests
           ./tools/make_specfiles
