@@ -155,6 +155,7 @@ jobs:
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-drop-obsolete-unix-call-export.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-condition-loader64-preloader.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-merge-wddm-caps.patch"
+          git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-fix-win32u-no-egl.patch"
           cd "$source_dir"
           ./tools/make_requests
           ./tools/make_specfiles
