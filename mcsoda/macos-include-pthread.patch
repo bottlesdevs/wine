@@ -1,0 +1,12 @@
+diff --git a/dlls/winegstreamer/media-converter/media-converter.h b/dlls/winegstreamer/media-converter/media-converter.h
+index 3dd8864d54f..725b1f2b961 100644
+--- a/dlls/winegstreamer/media-converter/media-converter.h
++++ b/dlls/winegstreamer/media-converter/media-converter.h
+@@ -21,6 +21,7 @@
+ 
+ #define _FILE_OFFSET_BITS 64
+ 
++#include <pthread.h>
+ #include <string.h>
+ #include <utime.h>
+ #include <stdarg.h>
