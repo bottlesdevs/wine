@@ -28,7 +28,7 @@ concurrency:
 
 env:
   WINE_VERSION: '11.0'
-  REVISION: '1'
+  REVISION: '2'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-411656-20260810-pc1d824-w99166a-d3a4c6f-v731c4a'
   VALVE_WINE_COMMIT: '99166a7e25b08ccef0168217540542260eaed76f'
   WINE_TKG_COMMIT: '6e1c41342a249e0029c1f35f36775e1caa5ce1d1'
@@ -59,6 +59,13 @@ jobs:
           x86_64-w64-mingw32-gcc .github/tests/mcsoda-smoke.c -o "$RUNNER_TEMP/smoke-x86_64.exe" -lgdi32
           i686-w64-mingw32-gcc .github/tests/mcsoda-audio.c -o "$RUNNER_TEMP/audio-x86.exe" -lwinmm
           x86_64-w64-mingw32-gcc .github/tests/mcsoda-audio.c -o "$RUNNER_TEMP/audio-x86_64.exe" -lwinmm
+          for architecture in i686 x86_64
+          do
+            compiler="$architecture-w64-mingw32-gcc"
+            "$compiler" .github/tests/mcsoda-dll-path-test.c -o "$RUNNER_TEMP/dll-path-test-$architecture.exe"
+          done
+          install -m644 .github/tests/mcsoda-libd3dshared.c "$RUNNER_TEMP/mcsoda-libd3dshared.c"
+          install -m644 .github/tests/mcsoda-libd3dshared-test.c "$RUNNER_TEMP/mcsoda-libd3dshared-test.c"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -68,6 +75,69 @@ jobs:
             ${{ runner.temp }}/smoke-x86_64.exe
             ${{ runner.temp }}/audio-x86.exe
             ${{ runner.temp }}/audio-x86_64.exe
+            ${{ runner.temp }}/dll-path-test-i686.exe
+            ${{ runner.temp }}/dll-path-test-x86_64.exe
+            ${{ runner.temp }}/mcsoda-libd3dshared.c
+            ${{ runner.temp }}/mcsoda-libd3dshared-test.c
+          if-no-files-found: error
+
+  normalize-reused-artifact:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.reuse_run_id != '' }}
+    runs-on: macos-26-intel
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GStreamer
+        run: brew install gstreamer libnice-gstreamer
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
+          path: ${{ runner.temp }}/artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.reuse_run_id }}
+
+      - name: Normalize runner archive
+        run: |
+          package="mcsoda-$WINE_VERSION-$REVISION-x86_64"
+          cd "$RUNNER_TEMP/artifact"
+          tar -xJf "$package.tar.xz"
+          nice_plugin="$(brew --prefix libnice-gstreamer)/libexec/gstreamer-1.0/libgstnice.dylib"
+          rm "$package/lib/gstreamer-1.0/libgstnice.dylib"
+          install -m755 "$nice_plugin" "$package/lib/gstreamer-1.0/libgstnice.dylib"
+          MCSODA_BUNDLE_REUSE_EXISTING=1 \
+            "$GITHUB_WORKSPACE/.github/scripts/bundle-macos-libraries.sh" "$RUNNER_TEMP/artifact/$package"
+          test ! -L "$package/lib/gstreamer-1.0/libgstnice.dylib"
+          file "$package/lib/gstreamer-1.0/libgstnice.dylib" | grep -F 'x86_64'
+          if [[ -L "$package/lib/wine/x86_64-unix/wine64" && ! -e "$package/lib/wine/x86_64-unix/wine64" ]]; then
+            rm "$package/lib/wine/x86_64-unix/wine64"
+          fi
+          if [[ ! -e "$package/lib/wine/x86_64-unix/wine64" ]]; then
+            ln -s wine "$package/lib/wine/x86_64-unix/wine64"
+          fi
+          test -x "$package/lib/wine/x86_64-unix/wine64"
+          broken_links="$RUNNER_TEMP/broken-links"
+          : > "$broken_links"
+          while IFS= read -r link
+          do
+            test -e "$link" || printf '%s\n' "$link" >> "$broken_links"
+          done < <(find "$package" -type l -print)
+          if test -s "$broken_links"
+          then
+            cat "$broken_links" >&2
+            exit 1
+          fi
+          rm "$package.tar.xz" "$package.tar.xz.sha256"
+          XZ_OPT=-T0 tar -cJf "$package.tar.xz" "$package"
+          shasum -a 256 "$package.tar.xz" > "$package.tar.xz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64-normalized
+          path: |
+            ${{ runner.temp }}/artifact/mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.tar.xz
+            ${{ runner.temp }}/artifact/mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.tar.xz.sha256
           if-no-files-found: error
 
   prepare-source:
@@ -171,6 +241,7 @@ jobs:
             gettext \
             gnutls \
             gstreamer \
+            libnice-gstreamer \
             jpeg-turbo \
             libpng \
             libtiff \
@@ -225,6 +296,7 @@ jobs:
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-condition-xfixes-warp.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-condition-xinput2-desktop.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-define-glx-renderer.patch"
+          git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-prepend-dll-path.patch"
           cd "$source_dir"
           ./tools/make_requests
           ./tools/make_specfiles
@@ -308,7 +380,7 @@ jobs:
           plugin_dir="$(brew --prefix gstreamer)/lib/gstreamer-1.0"
           scanner="$(brew --prefix gstreamer)/libexec/gstreamer-1.0/gst-plugin-scanner"
           install -d "$RUNNER_TEMP/install/lib/gstreamer-1.0" "$RUNNER_TEMP/install/libexec/gstreamer-1.0"
-          cp -R "$plugin_dir"/. "$RUNNER_TEMP/install/lib/gstreamer-1.0/"
+          cp -RL "$plugin_dir"/. "$RUNNER_TEMP/install/lib/gstreamer-1.0/"
           install -m755 "$scanner" "$RUNNER_TEMP/install/libexec/gstreamer-1.0/gst-plugin-scanner"
 
       - name: Bundle Wine Mono and Gecko
@@ -337,6 +409,12 @@ jobs:
       - name: Add runner entry points
         run: |
           install -d "$RUNNER_TEMP/install/bin"
+          if [[ -L "$RUNNER_TEMP/install/lib/wine/x86_64-unix/wine64" && ! -e "$RUNNER_TEMP/install/lib/wine/x86_64-unix/wine64" ]]; then
+            rm "$RUNNER_TEMP/install/lib/wine/x86_64-unix/wine64"
+          fi
+          if [[ ! -e "$RUNNER_TEMP/install/lib/wine/x86_64-unix/wine64" ]]; then
+            ln -s wine "$RUNNER_TEMP/install/lib/wine/x86_64-unix/wine64"
+          fi
           if [[ -L "$RUNNER_TEMP/install/bin/wine" && ! -e "$RUNNER_TEMP/install/bin/wine" ]]; then
             rm "$RUNNER_TEMP/install/bin/wine"
           fi
@@ -351,6 +429,7 @@ jobs:
           fi
           test -x "$RUNNER_TEMP/install/bin/wine"
           test -x "$RUNNER_TEMP/install/bin/wine64"
+          test -x "$RUNNER_TEMP/install/lib/wine/x86_64-unix/wine64"
 
       - name: Add McSoda metadata
         run: |
@@ -374,6 +453,10 @@ jobs:
           test -f "$RUNNER_TEMP/$package/lib/wine/x86_64-unix/winemac.so"
           test -f "$RUNNER_TEMP/$package/lib/wine/i386-windows/ntdll.dll"
           test -f "$RUNNER_TEMP/$package/lib/wine/x86_64-windows/ntdll.dll"
+          while IFS= read -r link
+          do
+            test -e "$link" || { echo "Broken symlink: $link" >&2; exit 1; }
+          done < <(find "$RUNNER_TEMP/$package" -type l -print)
           tar -cJf "$RUNNER_TEMP/$package.tar.xz" -C "$RUNNER_TEMP" "$package"
           cd "$RUNNER_TEMP"
           shasum -a 256 "$package.tar.xz" > "$package.tar.xz.sha256"
@@ -389,17 +472,26 @@ jobs:
   smoke-test:
     needs:
       - build
+      - normalize-reused-artifact
       - smoke-programs
-    if: ${{ always() && !cancelled() && needs.smoke-programs.result == 'success' && (needs.build.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.reuse_run_id != '')) }}
+    if: ${{ always() && !cancelled() && needs.smoke-programs.result == 'success' && (needs.normalize-reused-artifact.result == 'success' || needs.normalize-reused-artifact.result == 'skipped') && (needs.build.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.reuse_run_id != '')) }}
     runs-on: macos-26
 
     steps:
       - uses: actions/download-artifact@v4
+        if: ${{ inputs.reuse_run_id == '' }}
         with:
           name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
           path: ${{ runner.temp }}/artifact
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.reuse_run_id || github.run_id }}
+          run-id: ${{ github.run_id }}
+
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.reuse_run_id != '' }}
+        with:
+          name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64-normalized
+          path: ${{ runner.temp }}/artifact
+          github-token: ${{ github.token }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -418,10 +510,19 @@ jobs:
           actual="$(shasum -a 256 "$package.tar.xz" | cut -d ' ' -f 1)"
           test "$actual" = "$expected"
           tar -xJf "$package.tar.xz"
+          if [[ ! -e "$package/lib/wine/x86_64-unix/wine64" ]]; then
+            ln -s wine "$package/lib/wine/x86_64-unix/wine64"
+          fi
           file "$package/bin/wine" | grep -F 'x86_64'
+          test -x "$package/lib/wine/x86_64-unix/wine64"
           file "$package/lib/wine/x86_64-unix/winemac.so" | grep -F 'x86_64'
           test -f "$package/lib/wine/i386-windows/ntdll.dll"
           test -f "$package/lib/wine/x86_64-windows/ntdll.dll"
+          while IFS= read -r link
+          do
+            test -e "$link" || { echo "Broken symlink: $link" >&2; exit 1; }
+          done < <(find "$package" -type l -print)
+          ! find "$package" \( -name libd3dshared.dylib -o -name D3DMetal.framework \) -print -quit | grep -q .
 
       - name: Show audio devices
         run: system_profiler SPAudioDataType
@@ -434,6 +535,38 @@ jobs:
           export GST_PLUGIN_SYSTEM_PATH_1_0="$package/lib/gstreamer-1.0"
           export GST_PLUGIN_SCANNER="$package/libexec/gstreamer-1.0/gst-plugin-scanner"
           arch -x86_64 "$package/bin/wine" --version | grep -F "$WINE_VERSION"
+          arch -x86_64 "$package/lib/wine/x86_64-unix/wine64" --version | grep -F "$WINE_VERSION"
+
+          d3dmetal_root="$RUNNER_TEMP/d3dmetal/lib"
+          install -d "$d3dmetal_root/wine/i386-windows" "$d3dmetal_root/wine/x86_64-windows" "$d3dmetal_root/external"
+          install -m644 "$package/lib/wine/i386-windows/d3d11.dll" "$d3dmetal_root/wine/i386-windows/d3d11.dll"
+          install -m644 "$package/lib/wine/x86_64-windows/d3d11.dll" "$d3dmetal_root/wine/x86_64-windows/d3d11.dll"
+          python3 - "$d3dmetal_root/wine/i386-windows/d3d11.dll" "$d3dmetal_root/wine/x86_64-windows/d3d11.dll" <<'PY'
+          import struct
+          import sys
+
+          for path in sys.argv[1:]:
+              with open(path, "r+b") as dll:
+                  dll.seek(0x3c)
+                  pe_offset = struct.unpack("<I", dll.read(4))[0]
+                  dll.seek(pe_offset + 88)
+                  checksum = struct.unpack("<I", dll.read(4))[0]
+                  assert checksum != 0x4d435344
+                  dll.seek(pe_offset + 88)
+                  dll.write(struct.pack("<I", 0x4d435344))
+          PY
+          clang -arch x86_64 -dynamiclib "$RUNNER_TEMP/smoke/mcsoda-libd3dshared.c" -o "$d3dmetal_root/external/libd3dshared.dylib"
+          clang -arch x86_64 "$RUNNER_TEMP/smoke/mcsoda-libd3dshared-test.c" -o "$RUNNER_TEMP/libd3dshared-test"
+          codesign --force --sign - "$d3dmetal_root/external/libd3dshared.dylib"
+          codesign --verify "$d3dmetal_root/external/libd3dshared.dylib"
+          export WINEDLLPATH_PREPEND="$d3dmetal_root/wine"
+          export WINEDLLOVERRIDES=d3d11=b
+          export CX_ACTIVE_GRAPHICS_BACKEND=d3dmetal
+          export CX_APPLEGPTK_LIBD3DSHARED_PATH="$d3dmetal_root/external/libd3dshared.dylib"
+          export MCSODA_D3DMETAL_SMOKE_MARKER="$RUNNER_TEMP/d3dmetal-loaded"
+          rm -f "$MCSODA_D3DMETAL_SMOKE_MARKER"
+          arch -x86_64 "$RUNNER_TEMP/libd3dshared-test" "$CX_APPLEGPTK_LIBD3DSHARED_PATH" | grep -Fx 'McSoda external libd3dshared test'
+          test -s "$MCSODA_D3DMETAL_SMOKE_MARKER"
           arch -x86_64 "$package/bin/wine" wineboot -u
           for architecture in x86 x86_64
           do
@@ -441,6 +574,10 @@ jobs:
             printf '%s\n' "$output" | grep -Fx 'McSoda window test'
             printf '%s\n' "$output" | grep -Fx 'McSoda input test'
             arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/audio-$architecture.exe" | tr -d '\r' | grep -Fx 'McSoda audio test'
+          done
+          for architecture in i686 x86_64
+          do
+            arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/dll-path-test-$architecture.exe" | tr -d '\r' | grep -Fx 'McSoda external DLL path test'
           done
           arch -x86_64 "$package/bin/wineserver" -k || true
           arch -x86_64 "$package/bin/wineserver" -w || true
@@ -454,11 +591,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
+        if: ${{ inputs.reuse_run_id == '' }}
         with:
           name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
           path: ${{ runner.temp }}/artifact
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.reuse_run_id || github.run_id }}
+          run-id: ${{ github.run_id }}
+
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.reuse_run_id != '' }}
+        with:
+          name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64-normalized
+          path: ${{ runner.temp }}/artifact
+          github-token: ${{ github.token }}
 
       - name: Refresh checksum
         run: |

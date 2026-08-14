@@ -1,0 +1,37 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index d5ce996..aa852c6 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -389,10 +389,12 @@ void prepend_dll_path(const char *path)
+-
++
+ static void set_dll_path(void)
+ {
+-    char *p, *path = getenv( "WINEDLLPATH" ), *be_runtime = getenv( "PROTON_BATTLEYE_RUNTIME" ), *eac_runtime = getenv( "PROTON_EAC_RUNTIME" );
++    char *p, *path = getenv( "WINEDLLPATH" ), *prepend = getenv( "WINEDLLPATH_PREPEND" );
++    char *be_runtime = getenv( "PROTON_BATTLEYE_RUNTIME" ), *eac_runtime = getenv( "PROTON_EAC_RUNTIME" );
+     int i, count = 0;
+-
++
+     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
++    if (prepend) for (p = prepend, count++; *p; p++) if (*p == ':') count++;
+-
++
+     if (be_runtime)
+         count += 2;
+@@ -403,6 +405,13 @@ static void set_dll_path(void)
+     dll_paths = malloc( (count + 2) * sizeof(*dll_paths) );
+     count = 0;
+-
++
++    if (prepend)
++    {
++        prepend = strdup( prepend );
++        for (p = strtok( prepend, ":" ); p; p = strtok( NULL, ":" )) dll_paths[count++] = strdup( p );
++        free( prepend );
++    }
++
+     if (!build_dir) dll_paths[count++] = dll_dir;
+-
++
+     if (path)

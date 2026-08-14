@@ -34,6 +34,10 @@ copy_dependency()
 
     if test -e "$target"
     then
+        if test "${MCSODA_BUNDLE_REUSE_EXISTING:-0}" = 1
+        then
+            return
+        fi
         source_hash="$(shasum -a 256 "$dependency" | cut -d ' ' -f 1)"
         target_hash="$(shasum -a 256 "$target" | cut -d ' ' -f 1)"
         test "$source_hash" = "$target_hash" || {
