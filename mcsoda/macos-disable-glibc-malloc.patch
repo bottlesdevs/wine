@@ -1,0 +1,34 @@
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -38,7 +38,9 @@
+ #include <sys/mman.h>
+ #include <sys/wait.h>
+ #include <unistd.h>
++#ifdef __GLIBC__
+ #include <malloc.h>
++#endif
+ #include <dlfcn.h>
+ #ifdef HAVE_PWD_H
+ # include <pwd.h>
+@@ -2774,17 +2776,21 @@ static void start_main_thread(void)
+ #if defined(__x86_64__) || defined(__i386__)
+     set_thread_teb( teb );
+ #endif
+ 
++#ifdef __GLIBC__
+     mallopt( M_PERTURB, 0xff );
++#endif
+     init_startup_info();
+     *(ULONG_PTR *)&peb->CloudFileFlags = get_image_address();
+     set_load_order_app_name( main_wargv[0] );
+     init_thread_stack( teb, 0, 0, 0 );
+     NtCreateKeyedEvent( &keyed_event, GENERIC_READ | GENERIC_WRITE, NULL, 0 );
+     load_ntdll();
+     load_wow64_ntdll( main_image_info.Machine );
+     load_apiset_dll();
++#ifdef __GLIBC__
+     mallopt( M_PERTURB, 0 );
++#endif
+ 
+ #if defined(__APPLE__) && defined(__x86_64__)
+     /* This is necessary because we poke PEB into pthread TLS at offset 0x60. It is normally in use by
