@@ -150,6 +150,11 @@ jobs:
             echo "$(brew --prefix flex)/bin"
             echo "$(brew --prefix gettext)/bin"
           } >> "$GITHUB_PATH"
+          install -d "$RUNNER_TEMP/ccache-bin"
+          for compiler in clang clang++ i686-w64-mingw32-clang x86_64-w64-mingw32-clang
+          do
+            ln -s "$(command -v ccache)" "$RUNNER_TEMP/ccache-bin/$compiler"
+          done
           printf '%s\n' "CCACHE_BASEDIR=$RUNNER_TEMP" "CCACHE_DIR=$RUNNER_TEMP/ccache" >> "$GITHUB_ENV"
 
       - name: Download PE toolchain
@@ -195,15 +200,11 @@ jobs:
           flex_prefix="$(brew --prefix flex)"
           gettext_prefix="$(brew --prefix gettext)"
           brew_prefix="$(brew --prefix)"
-          export PATH="$RUNNER_TEMP/toolchain/bin:$bison_prefix/bin:$flex_prefix/bin:$gettext_prefix/bin:$PATH"
+          export PATH="$RUNNER_TEMP/ccache-bin:$RUNNER_TEMP/toolchain/bin:$bison_prefix/bin:$flex_prefix/bin:$gettext_prefix/bin:$PATH"
           export PKG_CONFIG_PATH="$brew_prefix/opt/freetype/lib/pkgconfig:$brew_prefix/opt/gnutls/lib/pkgconfig:$brew_prefix/opt/gstreamer/lib/pkgconfig:$brew_prefix/opt/jpeg-turbo/lib/pkgconfig:$brew_prefix/opt/libpng/lib/pkgconfig:$brew_prefix/opt/libtiff/lib/pkgconfig:$brew_prefix/opt/libxml2/lib/pkgconfig:$brew_prefix/opt/libxslt/lib/pkgconfig:$brew_prefix/opt/molten-vk/lib/pkgconfig:$brew_prefix/opt/mpg123/lib/pkgconfig:$brew_prefix/opt/openal-soft/lib/pkgconfig:$brew_prefix/opt/sdl2-compat/lib/pkgconfig:$brew_prefix/opt/vulkan-loader/lib/pkgconfig"
           export CFLAGS="-O2 -g0 -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
           export CXXFLAGS="$CFLAGS"
           export LDFLAGS="-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
-          export CC="ccache clang"
-          export CXX="ccache clang++"
-          export i386_CC="ccache i686-w64-mingw32-clang"
-          export x86_64_CC="ccache x86_64-w64-mingw32-clang"
           install -d "$RUNNER_TEMP/build" "$RUNNER_TEMP/install"
           cd "$RUNNER_TEMP/build"
           "$source_dir/configure" \
@@ -244,9 +245,14 @@ jobs:
             --without-xshm \
             --without-xxf86vm
 
+      - name: Show configure log on failure
+        if: ${{ failure() }}
+        run: |
+          if test -f "$RUNNER_TEMP/build/config.log"; then tail -n 200 "$RUNNER_TEMP/build/config.log"; fi
+
       - name: Build and install McSoda
         run: |
-          export PATH="$RUNNER_TEMP/toolchain/bin:$PATH"
+          export PATH="$RUNNER_TEMP/ccache-bin:$RUNNER_TEMP/toolchain/bin:$PATH"
           ccache --zero-stats
           make -C "$RUNNER_TEMP/build" -j"$(sysctl -n hw.logicalcpu)"
           make -C "$RUNNER_TEMP/build" install
