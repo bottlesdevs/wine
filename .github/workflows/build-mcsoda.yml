@@ -7,6 +7,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
+  actions: write
   contents: write
   id-token: write
   attestations: write
@@ -40,7 +41,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - id: soda-source-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/soda-source.tar.xz
+          key: mcsoda-source-v1-${{ env.VALVE_WINE_COMMIT }}-${{ env.WINE_TKG_COMMIT }}-${{ env.BUILD_TOOLS_COMMIT }}-${{ hashFiles('wine-tkg-userpatches/mod-loader-prefer-native.mypatch', 'wine-tkg-userpatches/ntdll-adaptive-launch-profile.mypatch', 'wine-tkg-userpatches/ntdll-handle-unmapped-unix-paths.mypatch', 'wine-tkg-userpatches/win32u-fill-depth-only-display-mode.mypatch') }}
+
       - name: Prepare exact Soda source
+        if: steps.soda-source-cache.outputs.cache-hit != 'true'
         run: |
           git clone https://github.com/Frogging-Family/wine-tkg-git.git "$RUNNER_TEMP/wine-tkg"
           git -C "$RUNNER_TEMP/wine-tkg" checkout "$WINE_TKG_COMMIT"
@@ -94,6 +102,10 @@ jobs:
   build:
     needs: prepare-source
     runs-on: macos-26-intel
+    env:
+      CCACHE_COMPILERCHECK: content
+      CCACHE_COMPRESS: 'true'
+      CCACHE_MAXSIZE: 3G
 
     steps:
       - uses: actions/checkout@v4
@@ -103,10 +115,20 @@ jobs:
           name: mcsoda-soda-source
           path: ${{ runner.temp }}/source-artifact
 
+      - id: ccache-restore
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: mcsoda-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ env.LLVM_MINGW_VERSION }}-${{ env.VALVE_WINE_COMMIT }}-${{ hashFiles('.github/workflows/build-mcsoda.yml', 'mcsoda/*.patch', 'mcsoda/*.patch.xz', 'wine-tkg-userpatches/*.mypatch') }}
+          restore-keys: |
+            mcsoda-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ env.LLVM_MINGW_VERSION }}-${{ env.VALVE_WINE_COMMIT }}-
+            mcsoda-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ env.LLVM_MINGW_VERSION }}-
+
       - name: Install build dependencies
         run: |
           brew install \
             bison \
+            ccache \
             flex \
             freetype \
             gettext \
@@ -128,6 +150,7 @@ jobs:
             echo "$(brew --prefix flex)/bin"
             echo "$(brew --prefix gettext)/bin"
           } >> "$GITHUB_PATH"
+          printf '%s\n' "CCACHE_BASEDIR=$RUNNER_TEMP" "CCACHE_DIR=$RUNNER_TEMP/ccache" >> "$GITHUB_ENV"
 
       - name: Download PE toolchain
         run: |
@@ -177,6 +200,10 @@ jobs:
           export CFLAGS="-O2 -g0 -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
           export CXXFLAGS="$CFLAGS"
           export LDFLAGS="-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
+          export CC="ccache clang"
+          export CXX="ccache clang++"
+          export i386_CC="ccache i686-w64-mingw32-clang"
+          export x86_64_CC="ccache x86_64-w64-mingw32-clang"
           install -d "$RUNNER_TEMP/build" "$RUNNER_TEMP/install"
           cd "$RUNNER_TEMP/build"
           "$source_dir/configure" \
@@ -220,8 +247,17 @@ jobs:
       - name: Build and install McSoda
         run: |
           export PATH="$RUNNER_TEMP/toolchain/bin:$PATH"
+          ccache --zero-stats
           make -C "$RUNNER_TEMP/build" -j"$(sysctl -n hw.logicalcpu)"
           make -C "$RUNNER_TEMP/build" install
+          ccache --show-stats
+
+      - name: Save compiler cache
+        if: always() && steps.ccache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: mcsoda-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ env.LLVM_MINGW_VERSION }}-${{ env.VALVE_WINE_COMMIT }}-${{ hashFiles('.github/workflows/build-mcsoda.yml', 'mcsoda/*.patch', 'mcsoda/*.patch.xz', 'wine-tkg-userpatches/*.mypatch') }}
 
       - name: Bundle media support
         run: |
@@ -348,6 +384,8 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
@@ -383,3 +421,24 @@ jobs:
           else
             gh release create "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$title" --notes "$notes" --latest=false
           fi
+
+      - name: Clean stale McSoda caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_CACHE_KEY: mcsoda-source-v1-${{ env.VALVE_WINE_COMMIT }}-${{ env.WINE_TKG_COMMIT }}-${{ env.BUILD_TOOLS_COMMIT }}-${{ hashFiles('wine-tkg-userpatches/mod-loader-prefer-native.mypatch', 'wine-tkg-userpatches/ntdll-adaptive-launch-profile.mypatch', 'wine-tkg-userpatches/ntdll-handle-unmapped-unix-paths.mypatch', 'wine-tkg-userpatches/win32u-fill-depth-only-display-mode.mypatch') }}
+          CCACHE_KEY: mcsoda-ccache-v1-macOS-X64-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ env.LLVM_MINGW_VERSION }}-${{ env.VALVE_WINE_COMMIT }}-${{ hashFiles('.github/workflows/build-mcsoda.yml', 'mcsoda/*.patch', 'mcsoda/*.patch.xz', 'wine-tkg-userpatches/*.mypatch') }}
+        run: |
+          for cache_spec in "mcsoda-source-v1-:$SOURCE_CACHE_KEY" "mcsoda-ccache-v1-:$CCACHE_KEY"
+          do
+            prefix="${cache_spec%%:*}"
+            current_key="${cache_spec#*:}"
+            gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --limit 10000 --json id,key --jq '.[] | [.id, .key] | @tsv' |
+              while IFS=$'\t' read -r cache_id cache_key
+              do
+                case "$cache_key" in
+                  "$prefix"*)
+                    if test "$cache_key" != "$current_key"; then gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"; fi
+                    ;;
+                esac
+              done
+          done
