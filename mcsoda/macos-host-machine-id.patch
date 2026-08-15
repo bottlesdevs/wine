@@ -1,0 +1,62 @@
+diff --git a/server/token.c b/server/token.c
+index d85baba..bfdb00f 100644
+--- a/server/token.c
++++ b/server/token.c
+@@ -218,4 +218,9 @@ void init_user_sid(void)
+-    char machine_id[17];
+-    uint64_t id;
+-    size_t n;
+-    FILE *f;
++#ifdef __APPLE__
++    uuid_t machine_uuid;
++    struct timespec wait = {0};
++#else
++    char machine_id[17];
++    size_t n;
++    FILE *f;
++#endif
++    uint64_t id;
+@@ -223,17 +228,26 @@ void init_user_sid(void)
+-    f = fopen( "/etc/machine-id", "r" );
+-    if (!f)
+-    {
+-        fprintf( stderr, "Failed to open /etc/machine-id, error %s.\n", strerror( errno ));
+-        return;
+-    }
+-
+-    n = fread( machine_id, sizeof(*machine_id), 16, f );
+-    fclose(f);
+-
+-    if (n != 16)
+-    {
+-        fprintf( stderr, "Failed to read /etc/machine-id, error %s.\n", strerror( errno ));
+-        return;
+-    }
+-    machine_id[n] = 0;
+-    id = strtoull( machine_id, NULL, 0x10 );
++#ifdef __APPLE__
++    if (gethostuuid( machine_uuid, &wait ) == -1)
++    {
++        fprintf( stderr, "Failed to read the host UUID, error %s.\n", strerror( errno ));
++        return;
++    }
++    memcpy( &id, machine_uuid, sizeof(id) );
++#else
++    f = fopen( "/etc/machine-id", "r" );
++    if (!f)
++    {
++        fprintf( stderr, "Failed to open /etc/machine-id, error %s.\n", strerror( errno ));
++        return;
++    }
++
++    n = fread( machine_id, sizeof(*machine_id), 16, f );
++    fclose(f);
++
++    if (n != 16)
++    {
++        fprintf( stderr, "Failed to read /etc/machine-id, error %s.\n", strerror( errno ));
++        return;
++    }
++    machine_id[n] = 0;
++    id = strtoull( machine_id, NULL, 0x10 );
++#endif

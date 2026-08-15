@@ -1,6 +1,6 @@
 {
   "name": "McSoda",
-  "version": "11.0-2",
+  "version": "11.0-4",
   "base": {
     "name": "Soda",
     "wine_source": "ValveSoftware/wine",
@@ -26,12 +26,12 @@
         "required": [
           "external/libd3dshared.dylib",
           "external/D3DMetal.framework/D3DMetal",
-          "wine"
+          "wine/{i386,x86_64}-windows/{d3d10,d3d10_1,d3d10core,d3d11,d3d12,d3d12core,dxgi}.dll"
         ],
         "environment": {
           "CX_ACTIVE_GRAPHICS_BACKEND": "d3dmetal",
           "CX_APPLEGPTK_LIBD3DSHARED_PATH": "{root}/external/libd3dshared.dylib",
-          "WINEDLLPATH_PREPEND": "{root}/wine"
+          "WINEDLLPATH_PREPEND": "{isolated-overlay}/wine"
         }
       }
     },

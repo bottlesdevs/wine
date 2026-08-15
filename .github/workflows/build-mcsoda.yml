@@ -32,7 +32,7 @@ concurrency:
 
 env:
   WINE_VERSION: '11.0'
-  REVISION: '3'
+  REVISION: '4'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-411656-20260810-pc1d824-w99166a-d3a4c6f-v731c4a'
   VALVE_WINE_COMMIT: '99166a7e25b08ccef0168217540542260eaed76f'
   WINE_TKG_COMMIT: '6e1c41342a249e0029c1f35f36775e1caa5ce1d1'
@@ -313,6 +313,7 @@ jobs:
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-condition-xinput2-desktop.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-define-glx-renderer.patch"
           git -C "$source_dir" apply "$GITHUB_WORKSPACE/mcsoda/macos-prepend-dll-path.patch"
+          git -C "$source_dir" apply --unidiff-zero "$GITHUB_WORKSPACE/mcsoda/macos-host-machine-id.patch"
           cd "$source_dir"
           ./tools/make_requests
           ./tools/make_specfiles
@@ -551,6 +552,8 @@ jobs:
           install -d "$d3dmetal_root/wine/i386-windows" "$d3dmetal_root/wine/x86_64-windows" "$d3dmetal_root/external"
           install -m644 "$package/lib/wine/i386-windows/d3d11.dll" "$d3dmetal_root/wine/i386-windows/d3d11.dll"
           install -m644 "$package/lib/wine/x86_64-windows/d3d11.dll" "$d3dmetal_root/wine/x86_64-windows/d3d11.dll"
+          printf 'incompatible GPTK core DLL\n' > "$d3dmetal_root/wine/i386-windows/msvcrt.dll"
+          printf 'incompatible GPTK core DLL\n' > "$d3dmetal_root/wine/x86_64-windows/msvcrt.dll"
           python3 - "$d3dmetal_root/wine/i386-windows/d3d11.dll" "$d3dmetal_root/wine/x86_64-windows/d3d11.dll" <<'PY'
           import struct
           import sys
@@ -574,8 +577,9 @@ jobs:
           rm -f "$MCSODA_D3DMETAL_SMOKE_MARKER"
           arch -x86_64 "$RUNNER_TEMP/libd3dshared-test" "$d3dmetal_root/external/libd3dshared.dylib" | grep -Fx 'McSoda external libd3dshared test'
           test -s "$MCSODA_D3DMETAL_SMOKE_MARKER"
-          env -u WINEDLLPATH_PREPEND -u WINEDLLOVERRIDES -u CX_ACTIVE_GRAPHICS_BACKEND \
-            -u CX_APPLEGPTK_LIBD3DSHARED_PATH "$package/bin/wine" wineboot -u
+          wineboot_log="$RUNNER_TEMP/wineboot.log"
+          "$package/bin/wine" wineboot -u 2>&1 | tee "$wineboot_log"
+          ! grep -F '/etc/machine-id' "$wineboot_log"
           for architecture in x86 x86_64
           do
             output="$(env -u WINEDLLPATH_PREPEND -u WINEDLLOVERRIDES -u CX_ACTIVE_GRAPHICS_BACKEND \
