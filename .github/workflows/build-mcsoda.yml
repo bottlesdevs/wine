@@ -10,6 +10,10 @@ on:
         description: 'Run ID containing McSoda artifacts'
         required: false
         type: string
+      reuse_revision:
+        description: 'Revision used by the reused artifact'
+        required: false
+        type: string
       publish:
         description: 'Publish the tested artifacts'
         required: false
@@ -28,7 +32,7 @@ concurrency:
 
 env:
   WINE_VERSION: '11.0'
-  REVISION: '2'
+  REVISION: '3'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-411656-20260810-pc1d824-w99166a-d3a4c6f-v731c4a'
   VALVE_WINE_COMMIT: '99166a7e25b08ccef0168217540542260eaed76f'
   WINE_TKG_COMMIT: '6e1c41342a249e0029c1f35f36775e1caa5ce1d1'
@@ -93,19 +97,26 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: mcsoda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
+          name: mcsoda-${{ env.WINE_VERSION }}-${{ inputs.reuse_revision || env.REVISION }}-x86_64
           path: ${{ runner.temp }}/artifact
           github-token: ${{ github.token }}
           run-id: ${{ inputs.reuse_run_id }}
 
       - name: Normalize runner archive
         run: |
+          source_revision="${{ inputs.reuse_revision || env.REVISION }}"
+          source_package="mcsoda-$WINE_VERSION-$source_revision-x86_64"
           package="mcsoda-$WINE_VERSION-$REVISION-x86_64"
           cd "$RUNNER_TEMP/artifact"
-          tar -xJf "$package.tar.xz"
+          tar -xJf "$source_package.tar.xz"
+          if test "$source_package" != "$package"
+          then
+            mv "$source_package" "$package"
+          fi
           nice_plugin="$(brew --prefix libnice-gstreamer)/libexec/gstreamer-1.0/libgstnice.dylib"
           rm "$package/lib/gstreamer-1.0/libgstnice.dylib"
-          install -m755 "$nice_plugin" "$package/lib/gstreamer-1.0/libgstnice.dylib"
+          cp -L "$nice_plugin" "$package/lib/gstreamer-1.0/libgstnice.dylib"
+          chmod 755 "$package/lib/gstreamer-1.0/libgstnice.dylib"
           MCSODA_BUNDLE_REUSE_EXISTING=1 \
             "$GITHUB_WORKSPACE/.github/scripts/bundle-macos-libraries.sh" "$RUNNER_TEMP/artifact/$package"
           test ! -L "$package/lib/gstreamer-1.0/libgstnice.dylib"
@@ -116,6 +127,10 @@ jobs:
           if [[ ! -e "$package/lib/wine/x86_64-unix/wine64" ]]; then
             ln -s wine "$package/lib/wine/x86_64-unix/wine64"
           fi
+          rm -f "$package/bin/wine" "$package/bin/wine64"
+          install -m755 "$GITHUB_WORKSPACE/mcsoda/launcher.sh" "$package/bin/wine"
+          ln -s wine "$package/bin/wine64"
+          head -n 1 "$package/bin/wine" | grep -Fx '#!/bin/sh'
           test -x "$package/lib/wine/x86_64-unix/wine64"
           broken_links="$RUNNER_TEMP/broken-links"
           : > "$broken_links"
@@ -128,8 +143,9 @@ jobs:
             cat "$broken_links" >&2
             exit 1
           fi
-          rm "$package.tar.xz" "$package.tar.xz.sha256"
+          rm "$source_package.tar.xz" "$source_package.tar.xz.sha256"
           XZ_OPT=-T0 tar -cJf "$package.tar.xz" "$package"
+          test "$(tar -tvJf "$package.tar.xz" "$package/lib/gstreamer-1.0/libgstnice.dylib" | cut -c 1)" = '-'
           shasum -a 256 "$package.tar.xz" > "$package.tar.xz.sha256"
 
       - uses: actions/upload-artifact@v4
@@ -415,18 +431,10 @@ jobs:
           if [[ ! -e "$RUNNER_TEMP/install/lib/wine/x86_64-unix/wine64" ]]; then
             ln -s wine "$RUNNER_TEMP/install/lib/wine/x86_64-unix/wine64"
           fi
-          if [[ -L "$RUNNER_TEMP/install/bin/wine" && ! -e "$RUNNER_TEMP/install/bin/wine" ]]; then
-            rm "$RUNNER_TEMP/install/bin/wine"
-          fi
-          if [[ ! -e "$RUNNER_TEMP/install/bin/wine" ]]; then
-            ln -s ../lib/wine/x86_64-unix/wine "$RUNNER_TEMP/install/bin/wine"
-          fi
-          if [[ -L "$RUNNER_TEMP/install/bin/wine64" && ! -e "$RUNNER_TEMP/install/bin/wine64" ]]; then
-            rm "$RUNNER_TEMP/install/bin/wine64"
-          fi
-          if [[ ! -e "$RUNNER_TEMP/install/bin/wine64" ]]; then
-            ln -s ../lib/wine/x86_64-unix/wine64 "$RUNNER_TEMP/install/bin/wine64"
-          fi
+          rm -f "$RUNNER_TEMP/install/bin/wine" "$RUNNER_TEMP/install/bin/wine64"
+          install -m755 mcsoda/launcher.sh "$RUNNER_TEMP/install/bin/wine"
+          ln -s wine "$RUNNER_TEMP/install/bin/wine64"
+          head -n 1 "$RUNNER_TEMP/install/bin/wine" | grep -Fx '#!/bin/sh'
           test -x "$RUNNER_TEMP/install/bin/wine"
           test -x "$RUNNER_TEMP/install/bin/wine64"
           test -x "$RUNNER_TEMP/install/lib/wine/x86_64-unix/wine64"
@@ -513,11 +521,14 @@ jobs:
           if [[ ! -e "$package/lib/wine/x86_64-unix/wine64" ]]; then
             ln -s wine "$package/lib/wine/x86_64-unix/wine64"
           fi
-          file "$package/bin/wine" | grep -F 'x86_64'
+          head -n 1 "$package/bin/wine" | grep -Fx '#!/bin/sh'
+          file "$package/lib/wine/x86_64-unix/wine" | grep -F 'x86_64'
           test -x "$package/lib/wine/x86_64-unix/wine64"
           file "$package/lib/wine/x86_64-unix/winemac.so" | grep -F 'x86_64'
           test -f "$package/lib/wine/i386-windows/ntdll.dll"
           test -f "$package/lib/wine/x86_64-windows/ntdll.dll"
+          test ! -L "$package/lib/gstreamer-1.0/libgstnice.dylib"
+          file "$package/lib/gstreamer-1.0/libgstnice.dylib" | grep -F 'x86_64'
           while IFS= read -r link
           do
             test -e "$link" || { echo "Broken symlink: $link" >&2; exit 1; }
@@ -532,9 +543,8 @@ jobs:
           package="$RUNNER_TEMP/artifact/mcsoda-$WINE_VERSION-$REVISION-x86_64"
           export WINEPREFIX="$RUNNER_TEMP/mcsoda-prefix"
           export WINEDEBUG=-all
-          export GST_PLUGIN_SYSTEM_PATH_1_0="$package/lib/gstreamer-1.0"
-          export GST_PLUGIN_SCANNER="$package/libexec/gstreamer-1.0/gst-plugin-scanner"
-          arch -x86_64 "$package/bin/wine" --version | grep -F "$WINE_VERSION"
+          env -u GST_PLUGIN_SYSTEM_PATH_1_0 -u GST_PLUGIN_SCANNER \
+            "$package/bin/wine" --version | grep -F "$WINE_VERSION"
           arch -x86_64 "$package/lib/wine/x86_64-unix/wine64" --version | grep -F "$WINE_VERSION"
 
           d3dmetal_root="$RUNNER_TEMP/d3dmetal/lib"
@@ -559,25 +569,24 @@ jobs:
           clang -arch x86_64 "$RUNNER_TEMP/smoke/mcsoda-libd3dshared-test.c" -o "$RUNNER_TEMP/libd3dshared-test"
           codesign --force --sign - "$d3dmetal_root/external/libd3dshared.dylib"
           codesign --verify "$d3dmetal_root/external/libd3dshared.dylib"
-          export WINEDLLPATH_PREPEND="$d3dmetal_root/wine"
-          export WINEDLLOVERRIDES=d3d11=b
-          export CX_ACTIVE_GRAPHICS_BACKEND=d3dmetal
-          export CX_APPLEGPTK_LIBD3DSHARED_PATH="$d3dmetal_root/external/libd3dshared.dylib"
+          export MCSODA_D3DMETAL_ROOT="$d3dmetal_root"
           export MCSODA_D3DMETAL_SMOKE_MARKER="$RUNNER_TEMP/d3dmetal-loaded"
           rm -f "$MCSODA_D3DMETAL_SMOKE_MARKER"
-          arch -x86_64 "$RUNNER_TEMP/libd3dshared-test" "$CX_APPLEGPTK_LIBD3DSHARED_PATH" | grep -Fx 'McSoda external libd3dshared test'
+          arch -x86_64 "$RUNNER_TEMP/libd3dshared-test" "$d3dmetal_root/external/libd3dshared.dylib" | grep -Fx 'McSoda external libd3dshared test'
           test -s "$MCSODA_D3DMETAL_SMOKE_MARKER"
-          arch -x86_64 "$package/bin/wine" wineboot -u
+          env -u WINEDLLPATH_PREPEND -u WINEDLLOVERRIDES -u CX_ACTIVE_GRAPHICS_BACKEND \
+            -u CX_APPLEGPTK_LIBD3DSHARED_PATH "$package/bin/wine" wineboot -u
           for architecture in x86 x86_64
           do
-            output="$(arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/smoke-$architecture.exe" | tr -d '\r')"
+            output="$(env -u WINEDLLPATH_PREPEND -u WINEDLLOVERRIDES -u CX_ACTIVE_GRAPHICS_BACKEND \
+              -u CX_APPLEGPTK_LIBD3DSHARED_PATH "$package/bin/wine" "$RUNNER_TEMP/smoke/smoke-$architecture.exe" | tr -d '\r')"
             printf '%s\n' "$output" | grep -Fx 'McSoda window test'
             printf '%s\n' "$output" | grep -Fx 'McSoda input test'
-            arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/audio-$architecture.exe" | tr -d '\r' | grep -Fx 'McSoda audio test'
+            "$package/bin/wine" "$RUNNER_TEMP/smoke/audio-$architecture.exe" | tr -d '\r' | grep -Fx 'McSoda audio test'
           done
           for architecture in i686 x86_64
           do
-            arch -x86_64 "$package/bin/wine" "$RUNNER_TEMP/smoke/dll-path-test-$architecture.exe" | tr -d '\r' | grep -Fx 'McSoda external DLL path test'
+            "$package/bin/wine" "$RUNNER_TEMP/smoke/dll-path-test-$architecture.exe" | tr -d '\r' | grep -Fx 'McSoda external DLL path test'
           done
           arch -x86_64 "$package/bin/wineserver" -k || true
           arch -x86_64 "$package/bin/wineserver" -w || true
