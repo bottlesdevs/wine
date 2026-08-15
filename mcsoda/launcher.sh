@@ -24,6 +24,32 @@ find_d3dmetal_root()
     done
 }
 
+prepare_d3dmetal_dll_path()
+{
+    root=$1
+    overlay="${TMPDIR:-/tmp}/mcsoda-d3dmetal-$(id -u)"
+
+    umask 077
+    for arch in i386-windows x86_64-windows
+    do
+        install -d "$overlay/wine/$arch"
+        for module in d3d10.dll d3d10_1.dll d3d10core.dll d3d11.dll d3d12.dll d3d12core.dll dxgi.dll
+        do
+            source_module="$root/wine/$arch/$module"
+            target_module="$overlay/wine/$arch/$module"
+            if test -f "$source_module"
+            then
+                rm -f "$target_module"
+                ln -s "$source_module" "$target_module"
+            else
+                rm -f "$target_module"
+            fi
+        done
+    done
+
+    printf '%s\n' "$overlay/wine"
+}
+
 d3dmetal_root=$(find_d3dmetal_root \
     "${MCSODA_D3DMETAL_ROOT:-}" \
     "/Applications/Game Porting Toolkit.app/Contents/Resources/wine/lib" \
@@ -34,8 +60,8 @@ d3dmetal_root=$(find_d3dmetal_root \
 if test -n "$d3dmetal_root"
 then
     : "${CX_APPLEGPTK_LIBD3DSHARED_PATH:=$d3dmetal_root/external/libd3dshared.dylib}"
-    : "${WINEDLLPATH_PREPEND:=$d3dmetal_root/wine}"
-    : "${WINEDLLOVERRIDES:=d3d12,d3d11,d3d10,d3d10core,dxgi=b}"
+    : "${WINEDLLPATH_PREPEND:=$(prepare_d3dmetal_dll_path "$d3dmetal_root")}"
+    : "${WINEDLLOVERRIDES:=d3d12,d3d12core,d3d11,d3d10,d3d10_1,d3d10core,dxgi=b}"
     : "${CX_ACTIVE_GRAPHICS_BACKEND:=d3dmetal}"
     export CX_APPLEGPTK_LIBD3DSHARED_PATH WINEDLLPATH_PREPEND WINEDLLOVERRIDES
     export CX_ACTIVE_GRAPHICS_BACKEND
