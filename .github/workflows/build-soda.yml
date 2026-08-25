@@ -21,6 +21,8 @@ env:
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
     - Updated the Valve experimental bleeding edge base to August 25, 2026.
+    - Fixed Windows Steam client startup.
+    - Fixed a recursive Steam web UI initialization failure.
     - Fixed depth-only display mode changes used by some older games.
     - Fixed Unix paths without a matching DOS drive.
     - Restored true 32-bit prefixes.

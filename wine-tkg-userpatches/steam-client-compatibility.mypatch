@@ -1,0 +1,28 @@
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 34fab3a..c861e9e 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -1156,7 +1156,7 @@ static int use_lsteamclient(void)
+ 
+     if (use != -1) return use;
+ 
+-    use = !get_env( L"PROTON_DISABLE_LSTEAMCLIENT", env, sizeof(env) ) || *env == '0';
++    use = get_env( L"PROTON_DISABLE_LSTEAMCLIENT", env, sizeof(env) ) && *env == '0';
+     if (!use)
+         ERR("lsteamclient disabled.\n");
+     return use;
+diff --git a/dlls/windows.ui/uisettings.c b/dlls/windows.ui/uisettings.c
+index c52bff8..b3edf03 100644
+--- a/dlls/windows.ui/uisettings.c
++++ b/dlls/windows.ui/uisettings.c
+@@ -57,10 +57,6 @@ static HRESULT WINAPI uisettings_QueryInterface( IUISettings *iface, REFIID iid
+     {
+         *out = &impl->IUISettings_iface;
+     }
+-    else if (IsEqualGUID( iid, &IID_IUISettings2 ))
+-    {
+-        *out = &impl->IUISettings2_iface;
+-    }
+     else if (IsEqualGUID( iid, &IID_IUISettings3 ))
+     {
+         *out = &impl->IUISettings3_iface;
