@@ -8,8 +8,10 @@ permissions:
   contents: write
 env:
   WINE_VERSION: '11.0'
-  REVISION: '5'
+  REVISION: '6'
   WINE_TKG_COMMIT: '6e1c41342a249e0029c1f35f36775e1caa5ce1d1'
+  VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-420419-20260825-p3f9b4e-w52c688a-d88bfe4-vd01924'
+  VALVE_WINE_COMMIT: '52c688a2e46ed23dbabf10ac2bb605243df591d8'
   BUILD_TOOLS_COMMIT: 'fcba104217c6daddddebe69d2dc2e39bc9025848'
   WINE_MONO_VERSION: '10.4.1'
   WINE_MONO_SHA256: '071f4b2887e1c97a11d791ff3d65be9429eed6dec4c2708888bfd546ba358e23'
@@ -18,6 +20,7 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
+    - Updated the Valve experimental bleeding edge base to August 25, 2026.
     - Fixed depth-only display mode changes used by some older games.
     - Fixed Unix paths without a matching DOS drive.
     - Restored true 32-bit prefixes.
@@ -51,6 +54,7 @@ jobs:
           cd wine-tkg-git/wine-tkg-git
           git checkout "$WINE_TKG_COMMIT"
           sed -i "s/_LOCAL_PRESET=\"\"/_LOCAL_PRESET=\"valve-exp-bleeding\"/g" customization.cfg
+          sed -i "s|^_bleeding_tag=.*|_bleeding_tag=\"$VALVE_WINE_TAG\"|" wine-tkg-profiles/wine-tkg-valve-exp-bleeding.cfg
           sed -i '/^ubuntu_pkgs_64=/ s/libgstreamer-plugins-base1.0-dev/libgstreamer-plugins-base1.0-dev:amd64/' wine-tkg-scripts/deps
           cp "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch wine-tkg-userpatches/
 
@@ -79,6 +83,10 @@ jobs:
           curl --fail --location --retry 3 --output "/tmp/$mono_file" "$mono_url"
           echo "$WINE_MONO_SHA256  /tmp/$mono_file" | sha256sum --check -
           install -Dm644 "/tmp/$mono_file" "$runner_dir/share/wine/mono/$mono_file"
+
+      - name: verify Valve Wine source
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: test "$(git -C src/ValveSoftware-winegit rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
         
       - name: Upload prepare.log on failure
         if: ${{ failure() }}
@@ -107,6 +115,7 @@ jobs:
           if-no-files-found: error
 
       - name: release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/soda'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
