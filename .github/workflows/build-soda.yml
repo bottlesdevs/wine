@@ -721,6 +721,8 @@ jobs:
             cat "$runtime_log"
             exit 1
           fi
+          printf 'Windows architectures: native=%s, x64=%s, x86=%s\n' \
+            "$native_arch" "$x64_arch" "$x86_arch" | tee -a "$GITHUB_STEP_SUMMARY"
           "$runner_dir/bin/wineserver" -w
 
   release:
