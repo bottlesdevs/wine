@@ -12,6 +12,7 @@ env:
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-424421-20260830-pa9dd3f-w7af9c6-d70d750-v940e9f'
   VALVE_WINE_COMMIT: '7af9c6934eab520987b114b8bec84bdc58e2ec86'
+  PROTON_COMMIT: 'b7a763327f0cb76e9e0bd53dc4de95dee0d4c3b7'
   BUILD_TOOLS_COMMIT: 'fcba104217c6daddddebe69d2dc2e39bc9025848'
   WINE_MONO_VERSION: '10.4.1'
   WINE_MONO_SHA256: '071f4b2887e1c97a11d791ff3d65be9429eed6dec4c2708888bfd546ba358e23'
@@ -39,6 +40,7 @@ jobs:
         run: |
           git clone --filter=blob:none --no-checkout --depth=1 --branch "$VALVE_WINE_TAG" https://github.com/ValveSoftware/wine.git /tmp/valve-wine
           git -C /tmp/valve-wine sparse-checkout set --no-cone \
+            /configure.ac \
             /dlls/dsound/Makefile.in \
             /dlls/version/Makefile.in \
             /dlls/winmm/Makefile.in \
@@ -51,6 +53,11 @@ jobs:
             /dlls/winewayland.drv/window.c
           git -C /tmp/valve-wine checkout --detach "$VALVE_WINE_COMMIT"
           test "$(git -C /tmp/valve-wine rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
+          git clone --filter=blob:none --no-checkout https://github.com/ValveSoftware/Proton.git /tmp/proton
+          git -C /tmp/proton sparse-checkout set --no-cone /wineopenxr
+          git -C /tmp/proton checkout --detach "$PROTON_COMMIT"
+          test "$(git -C /tmp/proton rev-parse HEAD)" = "$PROTON_COMMIT"
+          .github/import-wineopenxr.sh /tmp/valve-wine /tmp/proton/wineopenxr
           for patch in "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch; do
             git -C /tmp/valve-wine apply --check "$patch"
           done
@@ -92,6 +99,7 @@ jobs:
           sudo apt install -f
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcap-dev:amd64 libpcap-dev:i386
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libgudev-1.0-dev:amd64 libgudev-1.0-dev:i386
+          sudo apt-get install -y libopenxr-dev:amd64 libopenxr-dev:i386
           sudo apt-get check
 
       - name: clone wine-tkg-git repo
@@ -104,6 +112,11 @@ jobs:
           sed -i "s|^_bleeding_tag=.*|_bleeding_tag=\"$VALVE_WINE_TAG\"|" wine-tkg-profiles/wine-tkg-valve-exp-bleeding.cfg
           sed -i '/^ubuntu_pkgs_64=/ s/libgstreamer-plugins-base1.0-dev/libgstreamer-plugins-base1.0-dev:amd64/' wine-tkg-scripts/deps
           cp "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch wine-tkg-userpatches/
+          git clone --filter=blob:none --no-checkout https://github.com/ValveSoftware/Proton.git /tmp/proton
+          git -C /tmp/proton sparse-checkout set --no-cone /wineopenxr
+          git -C /tmp/proton checkout --detach "$PROTON_COMMIT"
+          test "$(git -C /tmp/proton rev-parse HEAD)" = "$PROTON_COMMIT"
+          sed -i '/      _source_cleanup/a\      "$GITHUB_WORKSPACE/.github/import-wineopenxr.sh" "${srcdir}/${_winesrcdir}" "/tmp/proton/wineopenxr"' non-makepkg-build.sh
 
       - name: get/set the soda recipe
         working-directory: /home/runner/.config/frogminer/
@@ -153,6 +166,11 @@ jobs:
           test -n "$runner_dir"
           test -f "$runner_dir/lib/wine/x86_64-unix/winegstreamer.so"
           test -f "$runner_dir/lib/wine/i386-unix/winegstreamer.so"
+          test -f "$runner_dir/lib/wine/x86_64-windows/wineopenxr.dll"
+          test -f "$runner_dir/lib/wine/x86_64-unix/wineopenxr.so"
+          test -f "$runner_dir/lib/wine/i386-windows/wineopenxr.dll"
+          test -f "$runner_dir/lib/wine/i386-unix/wineopenxr.so"
+          install -Dm644 /tmp/proton/wineopenxr/wineopenxr64.json "$runner_dir/share/openxr/wineopenxr64.json"
           mv "$runner_dir" "$COMPONENT_NAME"
           tar cJvf "$ARCHIVE_NAME" "$COMPONENT_NAME"
           mv "$ARCHIVE_NAME" "/tmp/$ARCHIVE_NAME"
