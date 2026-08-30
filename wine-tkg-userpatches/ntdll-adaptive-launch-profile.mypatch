@@ -1,14 +1,49 @@
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c
-@@ -1557,6 +1557,27 @@
+@@ -33,6 +33,7 @@
+ #include <spawn.h>
+ #include <string.h>
+ #include <stdlib.h>
++#include <time.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <sys/mman.h>
+@@ -1557,6 +1558,65 @@
      return ptr;
  }
  
 +static int soda_adaptive_profile_fd = -1;
++static BOOL soda_adaptive_profile_v2;
++static size_t soda_adaptive_profile_size;
++static struct timespec soda_adaptive_deadline;
 +
 +static void init_soda_adaptive_profile(void)
 +{
-+    const char *profile;
++    const char *profile, *trace_dir;
++    char trace_path[PATH_MAX];
++    int len;
++
++    if ((trace_dir = getenv( "SODA_ADAPTIVE_TRACE_DIR" )) && trace_dir[0])
++    {
++        len = snprintf( trace_path, sizeof(trace_path), "%s/%u.trace", trace_dir,
++                        (unsigned int)getpid() );
++        if (len <= 0 || (unsigned int)len >= sizeof(trace_path)) return;
++        soda_adaptive_profile_fd = open( trace_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600 );
++        if (soda_adaptive_profile_fd == -1) return;
++        fcntl( soda_adaptive_profile_fd, F_SETFD, FD_CLOEXEC );
++        if (write( soda_adaptive_profile_fd, "SODAAL2", sizeof("SODAAL2") ) !=
++            (ssize_t)sizeof("SODAAL2") ||
++            clock_gettime( CLOCK_MONOTONIC, &soda_adaptive_deadline ) == -1)
++        {
++            close( soda_adaptive_profile_fd );
++            soda_adaptive_profile_fd = -1;
++            return;
++        }
++        soda_adaptive_deadline.tv_sec += 45;
++        soda_adaptive_profile_size = sizeof("SODAAL2");
++        soda_adaptive_profile_v2 = TRUE;
++        return;
++    }
 +
 +    profile = getenv( "SODA_ADAPTIVE_PROFILE" );
 +    if (!profile || !profile[0]) return;
@@ -18,25 +53,36 @@
 +
 +static void record_soda_adaptive_path( const char *name )
 +{
++    struct timespec now;
 +    size_t len;
 +
 +    if (soda_adaptive_profile_fd == -1) return;
++    if (soda_adaptive_profile_v2)
++    {
++        if (clock_gettime( CLOCK_MONOTONIC, &now ) == -1 ||
++            now.tv_sec > soda_adaptive_deadline.tv_sec ||
++            (now.tv_sec == soda_adaptive_deadline.tv_sec &&
++             now.tv_nsec >= soda_adaptive_deadline.tv_nsec)) return;
++    }
 +    len = strlen( name ) + 1;
-+    if (len <= PATH_MAX) write( soda_adaptive_profile_fd, name, len );
++    if (len > PATH_MAX) return;
++    if (soda_adaptive_profile_v2 && soda_adaptive_profile_size + len > 4 * 1024 * 1024) return;
++    if (write( soda_adaptive_profile_fd, name, len ) == (ssize_t)len)
++        soda_adaptive_profile_size += len;
 +}
 +
  
  /***********************************************************************
   *	open_dll_file
-@@ -1583,6 +1604,7 @@
-         return STATUS_DLL_NOT_FOUND;
-     }
- 
-+    record_soda_adaptive_path( name );
-     size.QuadPart = 0;
+@@ -1587,6 +1647,7 @@
      status = NtCreateSection( mapping, STANDARD_RIGHTS_REQUIRED | SECTION_QUERY |
                                SECTION_MAP_READ | SECTION_MAP_EXECUTE,
-@@ -2451,6 +2473,7 @@
+                               NULL, &size, PAGE_EXECUTE_READ, SEC_IMAGE, handle );
++    if (!status) record_soda_adaptive_path( name );
+     NtClose( handle );
+     return status;
+ }
+@@ -2451,6 +2512,7 @@
      dbg_init();
      startup_info_size = server_init_process();
      hacks_init();
