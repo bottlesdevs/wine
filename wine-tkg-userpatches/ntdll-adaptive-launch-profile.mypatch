@@ -1,6 +1,6 @@
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c
-@@ -1550,6 +1550,27 @@
+@@ -1557,6 +1557,27 @@
      return ptr;
  }
  
@@ -27,8 +27,8 @@
 +
  
  /***********************************************************************
-  *\topen_dll_file
-@@ -1576,6 +1597,7 @@
+  *	open_dll_file
+@@ -1583,6 +1604,7 @@
          return STATUS_DLL_NOT_FOUND;
      }
  
@@ -36,7 +36,7 @@
      size.QuadPart = 0;
      status = NtCreateSection( mapping, STANDARD_RIGHTS_REQUIRED | SECTION_QUERY |
                                SECTION_MAP_READ | SECTION_MAP_EXECUTE,
-@@ -2444,6 +2466,7 @@
+@@ -2451,6 +2473,7 @@
      dbg_init();
      startup_info_size = server_init_process();
      hacks_init();

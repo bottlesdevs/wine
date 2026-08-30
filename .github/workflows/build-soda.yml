@@ -8,10 +8,10 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '6'
-  WINE_TKG_COMMIT: '6e1c41342a249e0029c1f35f36775e1caa5ce1d1'
-  VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-420419-20260825-p3f9b4e-w52c688a-d88bfe4-vd01924'
-  VALVE_WINE_COMMIT: '52c688a2e46ed23dbabf10ac2bb605243df591d8'
+  REVISION: '7'
+  WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
+  VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-424421-20260830-pa9dd3f-w7af9c6-d70d750-v940e9f'
+  VALVE_WINE_COMMIT: '7af9c6934eab520987b114b8bec84bdc58e2ec86'
   BUILD_TOOLS_COMMIT: 'fcba104217c6daddddebe69d2dc2e39bc9025848'
   WINE_MONO_VERSION: '10.4.1'
   WINE_MONO_SHA256: '071f4b2887e1c97a11d791ff3d65be9429eed6dec4c2708888bfd546ba358e23'
@@ -30,7 +30,33 @@ env:
     - Added opt-in transparent huge pages with `SODA_USE_THP=1`.
     - Added module load profiles for Bottles Adaptive Launch.
 jobs:
+  patches:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: check Soda patches
+        run: |
+          git clone --filter=blob:none --no-checkout --depth=1 --branch "$VALVE_WINE_TAG" https://github.com/ValveSoftware/wine.git /tmp/valve-wine
+          git -C /tmp/valve-wine sparse-checkout set --no-cone \
+            /dlls/dsound/Makefile.in \
+            /dlls/version/Makefile.in \
+            /dlls/winmm/Makefile.in \
+            /dlls/ntdll/unix/file.c \
+            /dlls/ntdll/unix/loader.c \
+            /dlls/ntdll/unix/virtual.c \
+            /dlls/ntdll/loader.c \
+            /dlls/windows.ui/uisettings.c \
+            /dlls/win32u/sysparams.c \
+            /dlls/winewayland.drv/window.c
+          git -C /tmp/valve-wine checkout --detach "$VALVE_WINE_COMMIT"
+          test "$(git -C /tmp/valve-wine rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
+          for patch in "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch; do
+            git -C /tmp/valve-wine apply --check "$patch"
+          done
+
   build:
+    needs: patches
     runs-on: ubuntu-24.04
     outputs:
       archive_name: ${{ steps.identity.outputs.archive_name }}
