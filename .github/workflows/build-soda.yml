@@ -75,7 +75,8 @@ jobs:
             /dlls/ntdll/loader.c \
             /dlls/windows.ui/uisettings.c \
             /dlls/win32u/sysparams.c \
-            /dlls/winewayland.drv/window.c
+            /dlls/winewayland.drv/window.c \
+            /server/registry.c
           git -C /tmp/valve-wine checkout --detach "$VALVE_WINE_COMMIT"
           test "$(git -C /tmp/valve-wine rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
           git clone --filter=blob:none --no-checkout https://github.com/ValveSoftware/Proton.git /tmp/proton
