@@ -32,7 +32,9 @@ env:
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-424421-20260830-pa9dd3f-w7af9c6-d70d750-v940e9f'
   VALVE_WINE_COMMIT: '7af9c6934eab520987b114b8bec84bdc58e2ec86'
   PROTON_COMMIT: 'b7a763327f0cb76e9e0bd53dc4de95dee0d4c3b7'
+  OPENXR_SDK_COMMIT: '8899a91c17ce9618f565f42408b47db1d6e9ccc7'
   BUILD_TOOLS_COMMIT: 'fcba104217c6daddddebe69d2dc2e39bc9025848'
+  MONADO_VERSION: '21.0.0+git2905.e26a272c1~dfsg1-2build2'
   WINE_MONO_VERSION: '10.4.1'
   WINE_MONO_SHA256: '071f4b2887e1c97a11d791ff3d65be9429eed6dec4c2708888bfd546ba358e23'
   RELEASE_NOTES: |-
@@ -128,7 +130,15 @@ jobs:
           sudo apt install -f
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcap-dev:amd64 libpcap-dev:i386
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libgudev-1.0-dev:amd64 libgudev-1.0-dev:i386
-          sudo apt-get install -y libopenxr-dev:amd64 xvfb
+          sudo apt-get install -y \
+            cmake \
+            g++-mingw-w64-x86-64 \
+            libopenxr-dev:amd64 \
+            "libopenxr1-monado=$MONADO_VERSION" \
+            mesa-vulkan-drivers \
+            "monado-service=$MONADO_VERSION" \
+            ninja-build \
+            xvfb
           sudo apt-get check
 
       - name: clone wine-tkg-git repo
@@ -142,9 +152,11 @@ jobs:
           sed -i '/^ubuntu_pkgs_64=/ s/libgstreamer-plugins-base1.0-dev/libgstreamer-plugins-base1.0-dev:amd64/' wine-tkg-scripts/deps
           cp "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch wine-tkg-userpatches/
           git clone --filter=blob:none --no-checkout https://github.com/ValveSoftware/Proton.git /tmp/proton
-          git -C /tmp/proton sparse-checkout set --no-cone /wineopenxr
+          git -C /tmp/proton sparse-checkout set --no-cone /OpenXR-SDK /wineopenxr
           git -C /tmp/proton checkout --detach "$PROTON_COMMIT"
           test "$(git -C /tmp/proton rev-parse HEAD)" = "$PROTON_COMMIT"
+          git -C /tmp/proton submodule update --init --depth=1 OpenXR-SDK
+          test "$(git -C /tmp/proton/OpenXR-SDK rev-parse HEAD)" = "$OPENXR_SDK_COMMIT"
           sed -i '/      _source_cleanup/a\      "$GITHUB_WORKSPACE/.github/import-wineopenxr.sh" "${srcdir}/${_winesrcdir}" "/tmp/proton/wineopenxr"' non-makepkg-build.sh
 
       - name: get/set the soda recipe
@@ -318,6 +330,83 @@ jobs:
           test "$cpu_count" = 2
           "$runner_dir/bin/wineserver" -w
 
+      - name: verify OpenXR outside Steam
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          runner_dir="$PWD/$runner_dir"
+          mkdir -p /tmp/soda-openxr/app /tmp/soda-openxr/runtime /tmp/soda-openxr/xdg/openxr/1
+          chmod 700 /tmp/soda-openxr/runtime
+
+          cmake -S /tmp/proton/OpenXR-SDK -B /tmp/soda-openxr/loader-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+            -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DBUILD_API_LAYERS=OFF \
+            -DBUILD_CONFORMANCE_TESTS=OFF \
+            -DBUILD_LOADER=ON \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_WITH_SYSTEM_JSONCPP=OFF \
+            -DDYNAMIC_LOADER=ON
+          cmake --build /tmp/soda-openxr/loader-build --target openxr_loader --parallel 2
+          loader_dll="$(find /tmp/soda-openxr/loader-build -type f -iname 'openxr_loader.dll' -print -quit)"
+          test -n "$loader_dll"
+          cp "$loader_dll" /tmp/soda-openxr/app/openxr_loader.dll
+          for dll in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
+            source="$(x86_64-w64-mingw32-g++ -print-file-name="$dll")"
+            test ! -f "$source" || cp "$source" "/tmp/soda-openxr/app/$dll"
+          done
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-openxr-smoke.c" \
+            -I /tmp/proton/OpenXR-SDK/include -O2 -o /tmp/soda-openxr/app/soda-openxr-smoke.exe
+
+          monado_manifest=/usr/share/openxr/1/openxr_monado.json
+          lavapipe_manifest="$(find /usr/share/vulkan/icd.d -type f -name '*lvp*.json' -print -quit)"
+          test -f "$monado_manifest"
+          test -n "$lavapipe_manifest"
+          ln -s "$monado_manifest" /tmp/soda-openxr/xdg/openxr/1/active_runtime.json
+          export XDG_CONFIG_HOME=/tmp/soda-openxr/xdg
+          export XDG_RUNTIME_DIR=/tmp/soda-openxr/runtime
+          export VK_ICD_FILENAMES="$lavapipe_manifest"
+          export SIMULATED_ENABLE=1
+          export XRT_COMPOSITOR_NULL=1
+          export XRT_LOG=info
+          test -z "${XR_RUNTIME_JSON:-}"
+          monado-service >/tmp/soda-openxr/monado.log 2>&1 &
+          monado_pid=$!
+          trap 'kill "$monado_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..100}; do
+            test ! -S "$XDG_RUNTIME_DIR/monado_comp_ipc" || break
+            sleep 0.1
+          done
+          test -S "$XDG_RUNTIME_DIR/monado_comp_ipc"
+
+          unset SteamAppId SteamGameId SteamOverlayGameId STEAM_COMPAT_CLIENT_INSTALL_PATH STEAM_COMPAT_DATA_PATH
+          for process in steam steamwebhelper vrcompositor vrserver; do
+            if pgrep -x "$process"; then
+              exit 1
+            fi
+          done
+          export WINEPREFIX=/tmp/soda-openxr/prefix
+          export SODA_OPENXR_RUNTIME=host
+          export WINEDEBUG=+openxr
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          install -Dm644 /tmp/proton/wineopenxr/wineopenxr64.json \
+            "$WINEPREFIX/drive_c/openxr/wineopenxr64.json"
+          xvfb-run -a "$runner_dir/bin/wine" reg query 'HKLM\Software\Khronos\OpenXR\1' \
+            /v ActiveRuntime >/tmp/soda-openxr/registry.log
+          grep -F 'C:\openxr\wineopenxr64.json' /tmp/soda-openxr/registry.log
+          (
+            cd /tmp/soda-openxr/app
+            xvfb-run -a "$runner_dir/bin/wine" soda-openxr-smoke.exe
+          ) >/tmp/soda-openxr/application.log 2>&1
+          grep -F 'runtime=Monado' /tmp/soda-openxr/application.log
+          grep -F 'system=Simulated HMD' /tmp/soda-openxr/application.log
+          "$runner_dir/bin/wineserver" -w
+
       - name: verify Valve Wine source
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: test "$(git -C src/ValveSoftware-winegit rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
@@ -380,7 +469,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: failure-logs
-          path: /home/runner/work/wine-tkg-git/wine-tkg-git/prepare.log
+          path: |
+            /home/runner/work/wine-tkg-git/wine-tkg-git/prepare.log
+            /tmp/soda-openxr/*.log
           if-no-files-found: ignore
 
       - name: package
