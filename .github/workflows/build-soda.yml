@@ -273,7 +273,8 @@ jobs:
           test -n "$runner_dir"
           export WINEDEBUG=-all
           export WINEPREFIX=/tmp/soda-prefix
-          export WINEUSERNAME=soda-ci
+          export USER=soda-ci
+          unset WINEUSERNAME
           mkdir -p "$WINEPREFIX"
           xvfb-run -a "$runner_dir/bin/wineboot" -u
           username="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%USERNAME%' | tr -d '\r')"
@@ -446,17 +447,26 @@ jobs:
           WINEPREFIX=/tmp/soda-pgo/benchmark-baseline "$baseline_runner/bin/wineboot" -u
           WINEPREFIX=/tmp/soda-pgo/benchmark-pgo "$pgo_runner/bin/wineboot" -u
 
+          measure() {
+            local label="$1"
+            local runner="$2"
+            local prefix="$3"
+            local sample
+            sample="$(WINEPREFIX="$prefix" "$runner/bin/wine" \
+              /tmp/soda-pgo/training64.exe --benchmark | tr -d '\r' | \
+              sed -n '/^[0-9][0-9]*$/p' | tail -1)"
+            test -n "$sample"
+            printf '%s\n' "$sample" >> "/tmp/soda-pgo/evidence/$label-samples.txt"
+          }
+
           for trial in {1..9}; do
-            baseline_sample="$(WINEPREFIX=/tmp/soda-pgo/benchmark-baseline \
-              "$baseline_runner/bin/wine" /tmp/soda-pgo/training64.exe --benchmark | \
-              tr -d '\r' | sed -n '/^[0-9][0-9]*$/p' | tail -1)"
-            pgo_sample="$(WINEPREFIX=/tmp/soda-pgo/benchmark-pgo \
-              "$pgo_runner/bin/wine" /tmp/soda-pgo/training64.exe --benchmark | \
-              tr -d '\r' | sed -n '/^[0-9][0-9]*$/p' | tail -1)"
-            test -n "$baseline_sample"
-            test -n "$pgo_sample"
-            printf '%s\n' "$baseline_sample" >> /tmp/soda-pgo/evidence/baseline-samples.txt
-            printf '%s\n' "$pgo_sample" >> /tmp/soda-pgo/evidence/pgo-samples.txt
+            if ((trial % 2)); then
+              measure baseline "$baseline_runner" /tmp/soda-pgo/benchmark-baseline
+              measure pgo "$pgo_runner" /tmp/soda-pgo/benchmark-pgo
+            else
+              measure pgo "$pgo_runner" /tmp/soda-pgo/benchmark-pgo
+              measure baseline "$baseline_runner" /tmp/soda-pgo/benchmark-baseline
+            fi
           done
           WINEPREFIX=/tmp/soda-pgo/benchmark-baseline "$baseline_runner/bin/wineserver" -w
           WINEPREFIX=/tmp/soda-pgo/benchmark-pgo "$pgo_runner/bin/wineserver" -w
