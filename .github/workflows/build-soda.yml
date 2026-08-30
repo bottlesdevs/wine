@@ -613,13 +613,23 @@ jobs:
           curl --fail --location --retry 3 --output "/tmp/$mono_file" "$mono_url"
           echo "$WINE_MONO_SHA256  /tmp/$mono_file" | sha256sum --check -
           install -Dm644 "/tmp/$mono_file" "$runner_dir/share/wine/mono/$mono_file"
-          test -f "$runner_dir/lib/wine/aarch64-unix/ntdll.so"
-          test -f "$runner_dir/lib/wine/aarch64-windows/ntdll.dll"
-          test -f "$runner_dir/lib/wine/arm64ec-windows/ntdll.dll"
-          test -f "$runner_dir/lib/wine/x86_64-windows/ntdll.dll"
-          test -f "$runner_dir/lib/wine/aarch64-windows/libarm64ecfex.dll"
-          test -f "$runner_dir/lib/wine/aarch64-unix/libwow64fex.dll.so"
-          test -f "$runner_dir/lib/wine/aarch64-windows/wineopenxr.dll"
+          required_files=(
+            lib/wine/aarch64-unix/ntdll.so
+            lib/wine/aarch64-windows/ntdll.dll
+            lib/wine/x86_64-windows/ntdll.dll
+            lib/wine/aarch64-windows/libarm64ecfex.dll
+            lib/wine/aarch64-windows/libwow64fex.dll
+            lib/wine/aarch64-unix/libarm64ecfex.so
+            lib/wine/aarch64-unix/libwow64fex.so
+            lib/wine/aarch64-windows/wineopenxr.dll
+            lib/wine/x86_64-windows/wineopenxr.dll
+          )
+          for required_file in "${required_files[@]}"; do
+            if ! test -f "$runner_dir/$required_file"; then
+              echo "Missing required ARM64 runner file: $required_file" >&2
+              exit 1
+            fi
+          done
           file "$runner_dir/bin/wine" | grep -F 'ARM aarch64'
           if ldd "$runner_dir/bin/wine" | grep -F 'not found'; then
             exit 1
