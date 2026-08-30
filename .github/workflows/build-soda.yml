@@ -134,6 +134,7 @@ jobs:
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libgudev-1.0-dev:amd64 libgudev-1.0-dev:i386
           sudo apt-get install -y \
             cmake \
+            file \
             g++-mingw-w64-i686 \
             g++-mingw-w64-x86-64 \
             libopenxr-dev:amd64 \
@@ -168,8 +169,7 @@ jobs:
           git clone https://github.com/bottlesdevs/build-tools.git /tmp/build-tools
           git -C /tmp/build-tools checkout "$BUILD_TOOLS_COMMIT"
           cp /tmp/build-tools/runners/vaniglia/wine-tkg-valve.cfg wine-tkg.cfg
-          sed -i '$a_NOLIB32="false"' wine-tkg.cfg
-          sed -i '$a_configure_userargs32="--disable-wineopenxr"' wine-tkg.cfg
+          sed -i '$a_NOLIB32="wow64"' wine-tkg.cfg
           if [[ "${{ steps.identity.outputs.pgo }}" == "true" ]]; then
             mkdir -p /tmp/soda-pgo/profiles /tmp/soda-pgo/evidence
             sed -i '$a_GCC_FLAGS="-O2 -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -fprofile-generate=/tmp/soda-pgo/profiles -fprofile-update=prefer-atomic"' wine-tkg.cfg
@@ -201,14 +201,6 @@ jobs:
             "$SODA_RUNNER_DIR/bin/wine" reg add "HKCU\Software\SodaPGO" /v Architecture /d win64 /f
             "$SODA_RUNNER_DIR/bin/wine" cmd /c ver
             "$SODA_RUNNER_DIR/bin/wine" /tmp/soda-pgo/training64.exe
-            "$SODA_RUNNER_DIR/bin/wine" /tmp/soda-pgo/training32.exe
-            "$SODA_RUNNER_DIR/bin/wineserver" -w
-            export WINEPREFIX=/tmp/soda-pgo/prefix32
-            export WINEARCH=win32
-            mkdir -p "$WINEPREFIX"
-            "$SODA_RUNNER_DIR/bin/wineboot" -u
-            "$SODA_RUNNER_DIR/bin/wine" reg add "HKCU\Software\SodaPGO" /v Architecture /d win32 /f
-            "$SODA_RUNNER_DIR/bin/wine" cmd /c ver
             "$SODA_RUNNER_DIR/bin/wine" /tmp/soda-pgo/training32.exe
             "$SODA_RUNNER_DIR/bin/wineserver" -w
           '
@@ -275,6 +267,7 @@ jobs:
           test -n "$runner_dir"
           export WINEDEBUG=-all
           export WINEPREFIX=/tmp/soda-prefix
+          export WINEARCH=win64
           export USER=soda-ci
           unset WINEUSERNAME
           mkdir -p "$WINEPREFIX"
@@ -303,6 +296,7 @@ jobs:
           export PATH="/tmp/soda-browser-bin:$PATH"
           export WINEDEBUG=-all
           export WINEPREFIX=/tmp/soda-url-prefix
+          export WINEARCH=win64
           mkdir -p "$WINEPREFIX"
           xvfb-run -a "$runner_dir/bin/wineboot" -u
           xvfb-run -a "$runner_dir/bin/wine" reg add 'HKCU\Software\Wine\WineBrowser' /v Browsers /t REG_SZ /d xdg-open /f
@@ -401,6 +395,7 @@ jobs:
             fi
           done
           export WINEPREFIX=/tmp/soda-openxr/prefix
+          export WINEARCH=win64
           export SODA_OPENXR_RUNTIME=host
           export WINEDEBUG=+openxr
           mkdir -p "$WINEPREFIX"
@@ -442,6 +437,7 @@ jobs:
           test -n "$baseline_runner"
 
           export WINEDEBUG=-all
+          export WINEARCH=win64
           Xvfb :99 -screen 0 1024x768x24 >/tmp/soda-pgo/evidence/xvfb.log 2>&1 &
           xvfb_pid=$!
           trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
@@ -505,7 +501,10 @@ jobs:
           runner_dir="$(find . -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
           test -n "$runner_dir"
           test -f "$runner_dir/lib/wine/x86_64-unix/winegstreamer.so"
-          test -f "$runner_dir/lib/wine/i386-unix/winegstreamer.so"
+          test -f "$runner_dir/lib/wine/i386-windows/winegstreamer.dll"
+          test ! -e "$runner_dir/lib/wine/i386-unix"
+          file "$runner_dir/lib/wine/x86_64-windows/ntdll.dll" | grep -F 'x86-64'
+          file "$runner_dir/lib/wine/i386-windows/ntdll.dll" | grep -F 'Intel 80386'
           test -f "$runner_dir/lib/wine/x86_64-windows/wineopenxr.dll"
           test -f "$runner_dir/lib/wine/x86_64-unix/wineopenxr.so"
           install -Dm644 /tmp/proton/wineopenxr/wineopenxr64.json "$runner_dir/share/openxr/wineopenxr64.json"
