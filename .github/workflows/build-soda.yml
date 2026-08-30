@@ -426,7 +426,8 @@ jobs:
         run: |
           test "$(uname -m)" = aarch64
           sudo apt-get update
-          sudo apt-get install -y docker.io file xvfb xz-utils
+          sudo apt-get install -y file xvfb xz-utils
+          command -v docker
           sudo systemctl start docker
           docker version
 
