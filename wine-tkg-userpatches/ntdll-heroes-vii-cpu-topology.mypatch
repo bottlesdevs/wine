@@ -1,0 +1,15 @@
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2440,5 +2440,12 @@ static void hacks_init(void)
+     if (main_argc > 1 && strstr(main_argv[1], "edCefRenderProcess.exe"))
+         process_termination_delay = TRUE;
++
++    if (!getenv( "WINE_CPU_TOPOLOGY" ) && main_argc > 1 &&
++        strstr( main_argv[1], "MMH7Game-Win64-Shipping.exe" ))
++    {
++        ERR( "HACK: limiting Heroes VII CPU topology.\n" );
++        setenv( "WINE_CPU_TOPOLOGY", "8", 0 );
++    }
+ }
+ 
+ /***********************************************************************
