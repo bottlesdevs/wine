@@ -328,7 +328,7 @@ jobs:
           xvfb-run -a "$runner_dir/bin/wineboot" -u
           xvfb-run -a "$runner_dir/bin/wine" /tmp/MMH7Game-Win64-Shipping.exe --processors \
             >/tmp/soda-heroes-vii-cpus 2>/tmp/soda-heroes-vii.log
-          grep -F 'HACK: limiting Heroes VII CPU topology.' /tmp/soda-heroes-vii.log
+          grep -F 'HACK: limiting Heroes VII CPU topology to ' /tmp/soda-heroes-vii.log
           test "$(tr -d '\r' </tmp/soda-heroes-vii-cpus)" -le 8
           "$runner_dir/bin/wineserver" -w
 
