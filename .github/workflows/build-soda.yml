@@ -665,31 +665,51 @@ jobs:
           fi
           tar -C /tmp -cJf "/tmp/$ARCHIVE_NAME" "$COMPONENT_NAME"
 
-      - name: verify Windows architectures
-        env:
-          COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
-        run: |
-          runner_dir="/tmp/$COMPONENT_NAME"
-          export FEX_APP_CONFIG="$runner_dir/share/fex-emu/Config.json"
-          export FEX_APP_CONFIG_LOCATION="$runner_dir/share/fex-emu"
-          export WINEDEBUG=-all
-          export WINEPREFIX=/tmp/soda-arm64-prefix
-          mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wine" wineboot -u
-          native_arch="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' | tr -d '\r')"
-          test "$native_arch" = ARM64
-          x64_cmd="$runner_dir/lib/wine/x86_64-windows/cmd.exe"
-          test -f "$x64_cmd"
-          x64_arch="$(xvfb-run -a "$runner_dir/bin/wine" "$x64_cmd" /c echo '%PROCESSOR_ARCHITECTURE%' | tr -d '\r')"
-          test "$x64_arch" = AMD64
-          "$runner_dir/bin/wineserver" -w
-
       - name: upload
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.identity.outputs.component_name }}
           path: /tmp/${{ steps.identity.outputs.archive_name }}
           if-no-files-found: error
+
+      - name: verify Windows architectures
+        env:
+          COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
+        run: |
+          set -o pipefail
+          runner_dir="/tmp/$COMPONENT_NAME"
+          export FEX_APP_CONFIG="$runner_dir/share/fex-emu/Config.json"
+          export FEX_APP_CONFIG_LOCATION="$runner_dir/share/fex-emu"
+          export WINEARCH=win64
+          export WINEDEBUG=+module,+process
+          export WINEPREFIX=/tmp/soda-arm64-prefix
+          runtime_log=/tmp/soda-arm64-runtime.log
+          mkdir -p "$WINEPREFIX"
+          if ! xvfb-run -a "$runner_dir/bin/wine" wineboot -u >"$runtime_log" 2>&1; then
+            cat "$runtime_log"
+            exit 1
+          fi
+          if ! native_arch="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r')"; then
+            cat "$runtime_log"
+            exit 1
+          fi
+          if [[ "$native_arch" != ARM64 ]]; then
+            printf 'Expected ARM64, got: %s\n' "$native_arch" >&2
+            cat "$runtime_log"
+            exit 1
+          fi
+          x64_cmd="$runner_dir/lib/wine/x86_64-windows/cmd.exe"
+          test -f "$x64_cmd"
+          if ! x64_arch="$(xvfb-run -a "$runner_dir/bin/wine" "$x64_cmd" /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r')"; then
+            cat "$runtime_log"
+            exit 1
+          fi
+          if [[ "$x64_arch" != AMD64 ]]; then
+            printf 'Expected AMD64, got: %s\n' "$x64_arch" >&2
+            cat "$runtime_log"
+            exit 1
+          fi
+          "$runner_dir/bin/wineserver" -w
 
   release:
     needs:
