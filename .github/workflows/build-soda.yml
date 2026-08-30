@@ -13,7 +13,17 @@ on:
           - x86_64
           - aarch64
         default: x86_64
+      pgo:
+        description: 'Build a PGO candidate'
+        required: true
+        type: boolean
+        default: false
+      baseline_run_id:
+        description: 'Run ID containing the baseline artifact'
+        required: false
+        type: string
 permissions:
+  actions: read
   contents: read
 env:
   WINE_VERSION: '11.0'
@@ -79,6 +89,7 @@ jobs:
     outputs:
       archive_name: ${{ steps.identity.outputs.archive_name }}
       component_name: ${{ steps.identity.outputs.component_name }}
+      pgo: ${{ steps.identity.outputs.pgo }}
       stable: ${{ steps.identity.outputs.stable }}
 
     steps:        
@@ -88,15 +99,22 @@ jobs:
         id: identity
         run: |
           version="$WINE_VERSION-$REVISION"
+          pgo=false
           stable=false
           if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/soda" ]]; then
+            pgo=true
             stable=true
           else
             version="$version-${GITHUB_SHA::7}"
+            if [[ "${{ inputs.pgo }}" == "true" ]]; then
+              pgo=true
+              version="$version-pgo"
+            fi
           fi
           component_name="soda-$version-x86_64"
           echo "archive_name=$component_name.tar.xz" >> "$GITHUB_OUTPUT"
           echo "component_name=$component_name" >> "$GITHUB_OUTPUT"
+          echo "pgo=$pgo" >> "$GITHUB_OUTPUT"
           echo "stable=$stable" >> "$GITHUB_OUTPUT"
 
       - name: setup
@@ -137,11 +155,88 @@ jobs:
           cp /tmp/build-tools/runners/vaniglia/wine-tkg-valve.cfg wine-tkg.cfg
           sed -i '$a_NOLIB32="false"' wine-tkg.cfg
           sed -i '$a_configure_userargs32="--disable-wineopenxr"' wine-tkg.cfg
+          if [[ "${{ steps.identity.outputs.pgo }}" == "true" ]]; then
+            mkdir -p /tmp/soda-pgo/profiles /tmp/soda-pgo/evidence
+            sed -i '$a_GCC_FLAGS="-O2 -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -fprofile-generate=/tmp/soda-pgo/profiles -fprofile-update=prefer-atomic"' wine-tkg.cfg
+            sed -i '$a_LD_FLAGS="-Wl,-O1,--sort-common,--as-needed -fprofile-generate=/tmp/soda-pgo/profiles"' wine-tkg.cfg
+          fi
           cat wine-tkg.cfg
       
       - name: start build
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: yes|./non-makepkg-build.sh
+
+      - name: train PGO build
+        if: steps.identity.outputs.pgo == 'true'
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-pgo-training.c" \
+            -O2 -municode -ladvapi32 -lgdi32 -o /tmp/soda-pgo/training64.exe
+          i686-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-pgo-training.c" \
+            -O2 -municode -ladvapi32 -lgdi32 -o /tmp/soda-pgo/training32.exe
+          export SODA_RUNNER_DIR="$PWD/$runner_dir"
+          xvfb-run -a bash -c '
+            export WINEDEBUG=-all
+            export WINEPREFIX=/tmp/soda-pgo/prefix64
+            export WINEARCH=win64
+            "$SODA_RUNNER_DIR/bin/wineboot" -u
+            "$SODA_RUNNER_DIR/bin/wine" reg add "HKCU\Software\SodaPGO" /v Architecture /d win64 /f
+            "$SODA_RUNNER_DIR/bin/wine" cmd /c ver
+            "$SODA_RUNNER_DIR/bin/wine" /tmp/soda-pgo/training64.exe
+            "$SODA_RUNNER_DIR/bin/wine" /tmp/soda-pgo/training32.exe
+            "$SODA_RUNNER_DIR/bin/wineserver" -w
+            export WINEPREFIX=/tmp/soda-pgo/prefix32
+            export WINEARCH=win32
+            "$SODA_RUNNER_DIR/bin/wineboot" -u
+            "$SODA_RUNNER_DIR/bin/wine" reg add "HKCU\Software\SodaPGO" /v Architecture /d win32 /f
+            "$SODA_RUNNER_DIR/bin/wine" cmd /c ver
+            "$SODA_RUNNER_DIR/bin/wine" /tmp/soda-pgo/training32.exe
+            "$SODA_RUNNER_DIR/bin/wineserver" -w
+          '
+          find /tmp/soda-pgo/profiles -type f -name '*.gcda' -size +0c \
+            -printf '%s %p\n' | sort > /tmp/soda-pgo/evidence/profile-inventory.txt
+          profile_count="$(wc -l < /tmp/soda-pgo/evidence/profile-inventory.txt)"
+          test "$profile_count" -gt 0
+          grep -F wineserver /tmp/soda-pgo/evidence/profile-inventory.txt
+          first_profile="$(find /tmp/soda-pgo/profiles -type f -name '*.gcda' -size +0c -print -quit)"
+          gcov-dump -l "$first_profile" > /tmp/soda-pgo/evidence/profile-dump.txt
+          grep -Eq 'runs=[1-9]|sum_max=[1-9]' /tmp/soda-pgo/evidence/profile-dump.txt
+
+      - name: rebuild with PGO profiles
+        if: steps.identity.outputs.pgo == 'true'
+        working-directory: /home/runner/work/
+        run: |
+          build_root=/home/runner/work/wine-tkg-git
+          test "$PWD" = /home/runner/work/
+          test -f "$build_root/wine-tkg-git/non-makepkg-build.sh"
+          find "$build_root" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+          git clone https://github.com/Frogging-Family/wine-tkg-git.git
+          cd wine-tkg-git/wine-tkg-git
+          git checkout "$WINE_TKG_COMMIT"
+          sed -i "s/_LOCAL_PRESET=\"\"/_LOCAL_PRESET=\"valve-exp-bleeding\"/g" customization.cfg
+          sed -i "s|^_bleeding_tag=.*|_bleeding_tag=\"$VALVE_WINE_TAG\"|" wine-tkg-profiles/wine-tkg-valve-exp-bleeding.cfg
+          sed -i '/^ubuntu_pkgs_64=/ s/libgstreamer-plugins-base1.0-dev/libgstreamer-plugins-base1.0-dev:amd64/' wine-tkg-scripts/deps
+          cp "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch wine-tkg-userpatches/
+          sed -i '/      _source_cleanup/a\      "$GITHUB_WORKSPACE/.github/import-wineopenxr.sh" "${srcdir}/${_winesrcdir}" "/tmp/proton/wineopenxr"' non-makepkg-build.sh
+          recipe=/home/runner/.config/frogminer/wine-tkg.cfg
+          sed -i '/^_GCC_FLAGS=/d; /^_LD_FLAGS=/d' "$recipe"
+          sed -i '$a_GCC_FLAGS="-O2 -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-missing-profile -fprofile-use=/tmp/soda-pgo/profiles -fprofile-correction -fprofile-partial-training"' "$recipe"
+          sed -i '$a_LD_FLAGS="-Wl,-O1,--sort-common,--as-needed -fprofile-use=/tmp/soda-pgo/profiles"' "$recipe"
+          find /tmp/soda-pgo/profiles -type f -name '*.gcda' -exec touch -a -d @1 {} +
+          touch /tmp/soda-pgo/profile-use-start
+          set +o pipefail
+          yes | ./non-makepkg-build.sh 2>&1 | tee /tmp/soda-pgo/evidence/profile-use-build.log
+          build_status="${PIPESTATUS[1]}"
+          set -o pipefail
+          test "$build_status" -eq 0
+          find /tmp/soda-pgo/profiles -type f -name '*.gcda' \
+            -anewer /tmp/soda-pgo/profile-use-start -printf '%p\n' \
+            > /tmp/soda-pgo/evidence/consumed-profiles.txt
+          consumed_count="$(wc -l < /tmp/soda-pgo/evidence/consumed-profiles.txt)"
+          test "$consumed_count" -gt 0
+          grep -F wineserver /tmp/soda-pgo/evidence/consumed-profiles.txt
 
       - name: bundle Wine Mono
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
@@ -210,6 +305,59 @@ jobs:
       - name: verify Valve Wine source
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: test "$(git -C src/ValveSoftware-winegit rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
+
+      - name: benchmark PGO candidate
+        if: steps.identity.outputs.pgo == 'true' && inputs.baseline_run_id != ''
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        env:
+          BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pgo_runner="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$pgo_runner"
+          pgo_runner="$PWD/$pgo_runner"
+          mkdir -p /tmp/soda-pgo/baseline /tmp/soda-pgo/baseline-extracted
+          gh run download "$BASELINE_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir /tmp/soda-pgo/baseline
+          baseline_archive="$(find /tmp/soda-pgo/baseline -type f -name 'soda-*-x86_64.tar.xz' -print -quit)"
+          test -n "$baseline_archive"
+          tar -C /tmp/soda-pgo/baseline-extracted -xJf "$baseline_archive"
+          baseline_runner="$(find /tmp/soda-pgo/baseline-extracted -mindepth 1 -maxdepth 1 -type d -name 'soda-*-x86_64' -print -quit)"
+          test -n "$baseline_runner"
+
+          export WINEDEBUG=-all
+          Xvfb :99 -screen 0 1024x768x24 >/tmp/soda-pgo/evidence/xvfb.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+          export DISPLAY=:99
+          WINEPREFIX=/tmp/soda-pgo/benchmark-baseline "$baseline_runner/bin/wineboot" -u
+          WINEPREFIX=/tmp/soda-pgo/benchmark-pgo "$pgo_runner/bin/wineboot" -u
+
+          for trial in {1..9}; do
+            baseline_sample="$(WINEPREFIX=/tmp/soda-pgo/benchmark-baseline \
+              "$baseline_runner/bin/wine" /tmp/soda-pgo/training64.exe --benchmark | \
+              tr -d '\r' | sed -n '/^[0-9][0-9]*$/p' | tail -1)"
+            pgo_sample="$(WINEPREFIX=/tmp/soda-pgo/benchmark-pgo \
+              "$pgo_runner/bin/wine" /tmp/soda-pgo/training64.exe --benchmark | \
+              tr -d '\r' | sed -n '/^[0-9][0-9]*$/p' | tail -1)"
+            test -n "$baseline_sample"
+            test -n "$pgo_sample"
+            printf '%s\n' "$baseline_sample" >> /tmp/soda-pgo/evidence/baseline-samples.txt
+            printf '%s\n' "$pgo_sample" >> /tmp/soda-pgo/evidence/pgo-samples.txt
+          done
+          WINEPREFIX=/tmp/soda-pgo/benchmark-baseline "$baseline_runner/bin/wineserver" -w
+          WINEPREFIX=/tmp/soda-pgo/benchmark-pgo "$pgo_runner/bin/wineserver" -w
+
+          baseline_median="$(sort -n /tmp/soda-pgo/evidence/baseline-samples.txt | sed -n '5p')"
+          pgo_median="$(sort -n /tmp/soda-pgo/evidence/pgo-samples.txt | sed -n '5p')"
+          change="$(awk -v baseline="$baseline_median" -v pgo="$pgo_median" \
+            'BEGIN { printf "%.2f", (pgo - baseline) * 100 / baseline }')"
+          printf 'baseline_median_us=%s\npgo_median_us=%s\nchange_percent=%s\n' \
+            "$baseline_median" "$pgo_median" "$change" \
+            > /tmp/soda-pgo/evidence/benchmark.txt
+          printf 'PGO benchmark: baseline %s us, candidate %s us, change %s%%\n' \
+            "$baseline_median" "$pgo_median" "$change" >> "$GITHUB_STEP_SUMMARY"
+          awk -v baseline="$baseline_median" -v pgo="$pgo_median" \
+            'BEGIN { exit !(pgo < baseline) }'
         
       - name: Upload prepare.log on failure
         if: ${{ failure() }}
@@ -241,6 +389,14 @@ jobs:
         with:
           name: ${{ steps.identity.outputs.component_name }}
           path: /tmp/${{ steps.identity.outputs.archive_name }}
+          if-no-files-found: error
+
+      - name: upload PGO evidence
+        if: steps.identity.outputs.pgo == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pgo-evidence-${{ github.sha }}
+          path: /tmp/soda-pgo/evidence/*.txt
           if-no-files-found: error
 
   arm64:
