@@ -5,7 +5,7 @@ on:
       - 'soda'
   workflow_dispatch: {}
 permissions:
-  contents: write
+  contents: read
 env:
   WINE_VERSION: '11.0'
   REVISION: '6'
@@ -32,9 +32,28 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    outputs:
+      archive_name: ${{ steps.identity.outputs.archive_name }}
+      component_name: ${{ steps.identity.outputs.component_name }}
+      stable: ${{ steps.identity.outputs.stable }}
 
     steps:        
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      - name: define build identity
+        id: identity
+        run: |
+          version="$WINE_VERSION-$REVISION"
+          stable=false
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/soda" ]]; then
+            stable=true
+          else
+            version="$version-${GITHUB_SHA::7}"
+          fi
+          component_name="soda-$version-x86_64"
+          echo "archive_name=$component_name.tar.xz" >> "$GITHUB_OUTPUT"
+          echo "component_name=$component_name" >> "$GITHUB_OUTPUT"
+          echo "stable=$stable" >> "$GITHUB_OUTPUT"
 
       - name: setup
         working-directory: /home/runner/work/
@@ -100,32 +119,45 @@ jobs:
 
       - name: package
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/non-makepkg-builds/
+        env:
+          ARCHIVE_NAME: ${{ steps.identity.outputs.archive_name }}
+          COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
         run: |
           runner_dir="$(find . -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
           test -n "$runner_dir"
           test -f "$runner_dir/lib/wine/x86_64-unix/winegstreamer.so"
           test -f "$runner_dir/lib/wine/i386-unix/winegstreamer.so"
-          mv "$runner_dir" soda-$WINE_VERSION-$REVISION-x86_64
-          tar cJvf soda-$WINE_VERSION-$REVISION-x86_64.tar.xz soda-$WINE_VERSION-$REVISION-x86_64
-          mv soda-$WINE_VERSION-$REVISION-x86_64.tar.xz /tmp/soda-$WINE_VERSION-$REVISION-x86_64.tar.xz
+          mv "$runner_dir" "$COMPONENT_NAME"
+          tar cJvf "$ARCHIVE_NAME" "$COMPONENT_NAME"
+          mv "$ARCHIVE_NAME" "/tmp/$ARCHIVE_NAME"
 
       - name: upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: soda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64
-          path: /tmp/soda-${{ env.WINE_VERSION }}-${{ env.REVISION }}-x86_64.tar.xz
+          name: ${{ steps.identity.outputs.component_name }}
+          path: /tmp/${{ steps.identity.outputs.archive_name }}
           if-no-files-found: error
 
+  release:
+    needs: build
+    if: needs.build.outputs.stable == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.component_name }}
+
       - name: release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/soda'
         env:
           GH_TOKEN: ${{ github.token }}
+          ARCHIVE_NAME: ${{ needs.build.outputs.archive_name }}
         run: |
           tag="soda-$WINE_VERSION-$REVISION"
-          file="/tmp/$tag-x86_64.tar.xz"
+          file="$ARCHIVE_NAME"
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$file" --clobber
-            gh release edit "$tag" --title "Soda $WINE_VERSION-$REVISION" --notes "$RELEASE_NOTES" --latest
-          else
-            gh release create "$tag" "$file" --target "$GITHUB_SHA" --title "Soda $WINE_VERSION-$REVISION" --notes "$RELEASE_NOTES" --latest
+            echo "Release $tag already exists." >&2
+            exit 1
           fi
+          gh release create "$tag" "$file" --target "$GITHUB_SHA" --title "Soda $WINE_VERSION-$REVISION" --notes "$RELEASE_NOTES" --latest
