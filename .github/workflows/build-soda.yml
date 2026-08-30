@@ -710,6 +710,17 @@ jobs:
             cat "$runtime_log"
             exit 1
           fi
+          x86_cmd="$runner_dir/lib/wine/i386-windows/cmd.exe"
+          test -f "$x86_cmd"
+          if ! x86_arch="$(xvfb-run -a "$runner_dir/bin/wine" "$x86_cmd" /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r' | grep -E '^(ARM64|AMD64|x86)$' | tail -1)"; then
+            cat "$runtime_log"
+            exit 1
+          fi
+          if [[ "$x86_arch" != x86 ]]; then
+            printf 'Expected x86, got: %s\n' "$x86_arch" >&2
+            cat "$runtime_log"
+            exit 1
+          fi
           "$runner_dir/bin/wineserver" -w
 
   release:
