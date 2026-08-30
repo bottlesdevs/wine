@@ -193,6 +193,7 @@ jobs:
             export WINEDEBUG=-all
             export WINEPREFIX=/tmp/soda-pgo/prefix64
             export WINEARCH=win64
+            mkdir -p "$WINEPREFIX"
             "$SODA_RUNNER_DIR/bin/wineboot" -u
             "$SODA_RUNNER_DIR/bin/wine" reg add "HKCU\Software\SodaPGO" /v Architecture /d win64 /f
             "$SODA_RUNNER_DIR/bin/wine" cmd /c ver
@@ -201,6 +202,7 @@ jobs:
             "$SODA_RUNNER_DIR/bin/wineserver" -w
             export WINEPREFIX=/tmp/soda-pgo/prefix32
             export WINEARCH=win32
+            mkdir -p "$WINEPREFIX"
             "$SODA_RUNNER_DIR/bin/wineboot" -u
             "$SODA_RUNNER_DIR/bin/wine" reg add "HKCU\Software\SodaPGO" /v Architecture /d win32 /f
             "$SODA_RUNNER_DIR/bin/wine" cmd /c ver
@@ -271,6 +273,7 @@ jobs:
           export WINEDEBUG=-all
           export WINEPREFIX=/tmp/soda-prefix
           export WINEUSERNAME=soda-ci
+          mkdir -p "$WINEPREFIX"
           xvfb-run -a "$runner_dir/bin/wineboot" -u
           username="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%USERNAME%' | tr -d '\r')"
           test "$username" = soda-ci
@@ -296,6 +299,7 @@ jobs:
           export PATH="/tmp/soda-browser-bin:$PATH"
           export WINEDEBUG=-all
           export WINEPREFIX=/tmp/soda-url-prefix
+          mkdir -p "$WINEPREFIX"
           xvfb-run -a "$runner_dir/bin/wineboot" -u
           xvfb-run -a "$runner_dir/bin/wine" reg add 'HKCU\Software\Wine\WineBrowser' /v Browsers /t REG_SZ /d xdg-open /f
           long_url="https://soda.invalid/$(printf 'a%.0s' {1..1024})"
@@ -309,6 +313,7 @@ jobs:
 
           export WINEPREFIX=/tmp/soda-topology-prefix
           export WINE_CPU_TOPOLOGY=2
+          mkdir -p "$WINEPREFIX"
           xvfb-run -a "$runner_dir/bin/wineboot" -u
           cpu_count="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%NUMBER_OF_PROCESSORS%' | tr -d '\r')"
           test "$cpu_count" = 2
@@ -316,6 +321,7 @@ jobs:
 
           unset WINE_CPU_TOPOLOGY WINEDEBUG
           export WINEPREFIX=/tmp/soda-heroes-vii-prefix
+          mkdir -p "$WINEPREFIX"
           cp /tmp/soda-compatibility-smoke.exe /tmp/MMH7Game-Win64-Shipping.exe
           xvfb-run -a "$runner_dir/bin/wineboot" -u
           xvfb-run -a "$runner_dir/bin/wine" /tmp/MMH7Game-Win64-Shipping.exe --processors \
@@ -393,6 +399,7 @@ jobs:
           export WINEPREFIX=/tmp/soda-openxr/prefix
           export SODA_OPENXR_RUNTIME=host
           export WINEDEBUG=+openxr
+          mkdir -p "$WINEPREFIX"
           xvfb-run -a "$runner_dir/bin/wineboot" -u
           install -Dm644 /tmp/proton/wineopenxr/wineopenxr64.json \
             "$WINEPREFIX/drive_c/openxr/wineopenxr64.json"
@@ -434,6 +441,7 @@ jobs:
           xvfb_pid=$!
           trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
           export DISPLAY=:99
+          mkdir -p /tmp/soda-pgo/benchmark-baseline /tmp/soda-pgo/benchmark-pgo
           WINEPREFIX=/tmp/soda-pgo/benchmark-baseline "$baseline_runner/bin/wineboot" -u
           WINEPREFIX=/tmp/soda-pgo/benchmark-pgo "$pgo_runner/bin/wineboot" -u
 
@@ -612,6 +620,7 @@ jobs:
           export FEX_APP_CONFIG_LOCATION="$runner_dir/share/fex-emu"
           export WINEDEBUG=-all
           export WINEPREFIX=/tmp/soda-arm64-prefix
+          mkdir -p "$WINEPREFIX"
           xvfb-run -a "$runner_dir/bin/wineboot" -u
           native_arch="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' | tr -d '\r')"
           test "$native_arch" = ARM64
