@@ -32,7 +32,9 @@ env:
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-424421-20260830-pa9dd3f-w7af9c6-d70d750-v940e9f'
   VALVE_WINE_COMMIT: '7af9c6934eab520987b114b8bec84bdc58e2ec86'
   PROTON_COMMIT: 'b7a763327f0cb76e9e0bd53dc4de95dee0d4c3b7'
+  FEX_COMMIT: '1cc4b93e7a71c883ec021b71359f136394dc1f3c'
   OPENXR_SDK_COMMIT: '8899a91c17ce9618f565f42408b47db1d6e9ccc7'
+  PGO_BASELINE_RUN_ID: ''
   BUILD_TOOLS_COMMIT: 'fcba104217c6daddddebe69d2dc2e39bc9025848'
   MONADO_VERSION: '21.0.0+git2905.e26a272c1~dfsg1-2build2'
   WINE_MONO_VERSION: '10.4.1'
@@ -421,12 +423,13 @@ jobs:
         run: test "$(git -C src/ValveSoftware-winegit rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
 
       - name: benchmark PGO candidate
-        if: steps.identity.outputs.pgo == 'true' && inputs.baseline_run_id != ''
+        if: steps.identity.outputs.pgo == 'true'
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         env:
-          BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
+          BASELINE_RUN_ID: ${{ inputs.baseline_run_id || env.PGO_BASELINE_RUN_ID }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          test -n "$BASELINE_RUN_ID"
           pgo_runner="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
           test -n "$pgo_runner"
           pgo_runner="$PWD/$pgo_runner"
@@ -563,6 +566,8 @@ jobs:
           git -C /tmp/proton checkout "$PROTON_COMMIT"
           test "$(git -C /tmp/proton rev-parse HEAD)" = "$PROTON_COMMIT"
           git -C /tmp/proton submodule update --init --recursive wine OpenXR-SDK FEX
+          test "$(git -C /tmp/proton/FEX rev-parse HEAD)" = "$FEX_COMMIT"
+          test "$(git -C /tmp/proton/OpenXR-SDK rev-parse HEAD)" = "$OPENXR_SDK_COMMIT"
           git -C /tmp/proton/wine fetch --no-tags origin "$VALVE_WINE_TAG"
           git -C /tmp/proton/wine checkout --detach "$VALVE_WINE_COMMIT"
           test "$(git -C /tmp/proton/wine rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
@@ -668,6 +673,7 @@ jobs:
       - name: release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           ARCHIVE_NAME: ${{ needs.build.outputs.archive_name }}
           ARM64_ARCHIVE_NAME: ${{ needs.arm64.outputs.archive_name }}
         run: |
