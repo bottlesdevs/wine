@@ -41,6 +41,7 @@ jobs:
           git clone --filter=blob:none --no-checkout --depth=1 --branch "$VALVE_WINE_TAG" https://github.com/ValveSoftware/wine.git /tmp/valve-wine
           git -C /tmp/valve-wine sparse-checkout set --no-cone \
             /configure.ac \
+            /dlls/advapi32/advapi.c \
             /dlls/dsound/Makefile.in \
             /dlls/version/Makefile.in \
             /dlls/winmm/Makefile.in \
@@ -99,7 +100,7 @@ jobs:
           sudo apt install -f
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcap-dev:amd64 libpcap-dev:i386
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libgudev-1.0-dev:amd64 libgudev-1.0-dev:i386
-          sudo apt-get install -y libopenxr-dev:amd64 libopenxr-dev:i386
+          sudo apt-get install -y libopenxr-dev:amd64 xvfb
           sudo apt-get check
 
       - name: clone wine-tkg-git repo
@@ -125,6 +126,7 @@ jobs:
           git -C /tmp/build-tools checkout "$BUILD_TOOLS_COMMIT"
           cp /tmp/build-tools/runners/vaniglia/wine-tkg-valve.cfg wine-tkg.cfg
           sed -i '$a_NOLIB32="false"' wine-tkg.cfg
+          sed -i '$a_configure_userargs32="--disable-wineopenxr"' wine-tkg.cfg
           cat wine-tkg.cfg
       
       - name: start build
@@ -143,6 +145,21 @@ jobs:
           curl --fail --location --retry 3 --output "/tmp/$mono_file" "$mono_url"
           echo "$WINE_MONO_SHA256  /tmp/$mono_file" | sha256sum --check -
           install -Dm644 "/tmp/$mono_file" "$runner_dir/share/wine/mono/$mono_file"
+
+      - name: verify prefix username
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          export WINEDEBUG=-all
+          export WINEPREFIX=/tmp/soda-prefix
+          export WINEUSERNAME=soda-ci
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          username="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%USERNAME%' | tr -d '\r')"
+          test "$username" = soda-ci
+          test -d "$WINEPREFIX/drive_c/users/soda-ci"
+          test ! -e "$WINEPREFIX/drive_c/users/steamuser"
+          "$runner_dir/bin/wineserver" -w
 
       - name: verify Valve Wine source
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
@@ -168,8 +185,6 @@ jobs:
           test -f "$runner_dir/lib/wine/i386-unix/winegstreamer.so"
           test -f "$runner_dir/lib/wine/x86_64-windows/wineopenxr.dll"
           test -f "$runner_dir/lib/wine/x86_64-unix/wineopenxr.so"
-          test -f "$runner_dir/lib/wine/i386-windows/wineopenxr.dll"
-          test -f "$runner_dir/lib/wine/i386-unix/wineopenxr.so"
           install -Dm644 /tmp/proton/wineopenxr/wineopenxr64.json "$runner_dir/share/openxr/wineopenxr64.json"
           mv "$runner_dir" "$COMPONENT_NAME"
           tar cJvf "$ARCHIVE_NAME" "$COMPONENT_NAME"
