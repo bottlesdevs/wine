@@ -673,7 +673,7 @@ jobs:
           export WINEDEBUG=-all
           export WINEPREFIX=/tmp/soda-arm64-prefix
           mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          xvfb-run -a "$runner_dir/bin/wine" wineboot -u
           native_arch="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' | tr -d '\r')"
           test "$native_arch" = ARM64
           x64_cmd="$runner_dir/lib/wine/x86_64-windows/cmd.exe"
