@@ -46,7 +46,7 @@ env:
 
     - Updated the Valve experimental bleeding edge base to August 30, 2026 and Wine-TKG to `04ddf86c`.
     - Adaptive Launch now learns from separate sessions, ranks recurring early module loads, limits stored data, and migrates existing profiles.
-    - Added host OpenXR outside Steam and SteamVR, enabled by Bottles and verified against Monado in CI.
+    - Added host OpenXR outside Steam and SteamVR for 64-bit Windows applications, enabled by Bottles and verified against Monado in CI.
     - Preserved each bottle's configured Windows username when Wine updates a prefix.
     - Limited Heroes of Might and Magic VII to eight reported CPUs by default while preserving explicit `WINE_CPU_TOPOLOGY` values.
     - Kept Valve fixes for child-window fullscreen presentation and long URLs opened through `ShellExecute`.
