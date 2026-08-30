@@ -1,0 +1,117 @@
+name: build-soda-arm64
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  WINE_VERSION: '11.0'
+  REVISION: '7'
+  VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-424421-20260830-pa9dd3f-w7af9c6-d70d750-v940e9f'
+  VALVE_WINE_COMMIT: '7af9c6934eab520987b114b8bec84bdc58e2ec86'
+  PROTON_COMMIT: 'b7a763327f0cb76e9e0bd53dc4de95dee0d4c3b7'
+  WINE_MONO_VERSION: '10.4.1'
+  WINE_MONO_SHA256: '071f4b2887e1c97a11d791ff3d65be9429eed6dec4c2708888bfd546ba358e23'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: setup
+        run: |
+          test "$(uname -m)" = aarch64
+          sudo apt-get update
+          sudo apt-get install -y docker.io file xvfb xz-utils
+          sudo systemctl start docker
+          docker version
+
+      - name: prepare sources
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/ValveSoftware/Proton.git /tmp/proton
+          git -C /tmp/proton checkout "$PROTON_COMMIT"
+          test "$(git -C /tmp/proton rev-parse HEAD)" = "$PROTON_COMMIT"
+          git -C /tmp/proton submodule update --init --recursive wine OpenXR-SDK FEX
+          git -C /tmp/proton/wine fetch --no-tags origin "$VALVE_WINE_TAG"
+          git -C /tmp/proton/wine checkout --detach "$VALVE_WINE_COMMIT"
+          test "$(git -C /tmp/proton/wine rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
+          for patch in "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch; do
+            if [[ "$patch" == *wineopenxr-host-runtime.mypatch ]]; then
+              continue
+            fi
+            git -C /tmp/proton/wine apply --check "$patch"
+            git -C /tmp/proton/wine apply "$patch"
+          done
+          git -C /tmp/proton/wineopenxr apply --check "$GITHUB_WORKSPACE/.github/wineopenxr-host-runtime-proton.mypatch"
+          git -C /tmp/proton/wineopenxr apply "$GITHUB_WORKSPACE/.github/wineopenxr-host-runtime-proton.mypatch"
+
+      - name: configure
+        run: |
+          mkdir /tmp/proton-build
+          cd /tmp/proton-build
+          /tmp/proton/configure.sh --build-name=soda-arm64 --target-arch=arm64 --container-engine=docker
+
+      - name: build Wine and FEX
+        working-directory: /tmp/proton-build
+        run: |
+          make WINE_DEPENDS= WINE_aarch64_DEPENDS= wine
+          make WINE_DEPENDS= WINE_aarch64_DEPENDS= fex
+          make WINE_DEPENDS= WINE_aarch64_DEPENDS= fex_unixlib
+          make WINE_DEPENDS= WINE_aarch64_DEPENDS= wineopenxr
+
+      - name: package
+        run: |
+          version="$WINE_VERSION-$REVISION-${GITHUB_SHA::7}"
+          component_name="soda-$version-aarch64"
+          runner_dir="/tmp/$component_name"
+          proton_files=/tmp/proton-build/obj-soda-arm64/dist/files
+          test -x "$proton_files/bin-arm64/wine"
+          test -x "$proton_files/bin-arm64/wineserver"
+          mkdir "$runner_dir"
+          cp -a "$proton_files"/. "$runner_dir"/
+          mv "$runner_dir/bin-arm64" "$runner_dir/bin"
+          install -Dm644 /tmp/proton/FEX_Config.json "$runner_dir/share/fex-emu/Config.json"
+          install -Dm644 /tmp/proton/wineopenxr/wineopenxr64.json "$runner_dir/share/openxr/wineopenxr64.json"
+          mono_file="wine-mono-$WINE_MONO_VERSION-x86.msi"
+          mono_url="https://github.com/wine-mono/wine-mono/releases/download/wine-mono-$WINE_MONO_VERSION/$mono_file"
+          curl --fail --location --retry 3 --output "/tmp/$mono_file" "$mono_url"
+          echo "$WINE_MONO_SHA256  /tmp/$mono_file" | sha256sum --check -
+          install -Dm644 "/tmp/$mono_file" "$runner_dir/share/wine/mono/$mono_file"
+          test -f "$runner_dir/lib/wine/aarch64-unix/ntdll.so"
+          test -f "$runner_dir/lib/wine/aarch64-windows/ntdll.dll"
+          test -f "$runner_dir/lib/wine/arm64ec-windows/ntdll.dll"
+          test -f "$runner_dir/lib/wine/x86_64-windows/ntdll.dll"
+          test -f "$runner_dir/lib/wine/aarch64-windows/libarm64ecfex.dll"
+          test -f "$runner_dir/lib/wine/aarch64-unix/libwow64fex.dll.so"
+          test -f "$runner_dir/lib/wine/aarch64-windows/wineopenxr.dll"
+          file "$runner_dir/bin/wine" | grep -F 'ARM aarch64'
+          if ldd "$runner_dir/bin/wine" | grep -F 'not found'; then
+            exit 1
+          fi
+          tar -C /tmp -cJf "/tmp/$component_name.tar.xz" "$component_name"
+          echo "component_name=$component_name" >> "$GITHUB_ENV"
+
+      - name: verify Windows architectures
+        run: |
+          runner_dir="/tmp/$component_name"
+          export FEX_APP_CONFIG="$runner_dir/share/fex-emu/Config.json"
+          export FEX_APP_CONFIG_LOCATION="$runner_dir/share/fex-emu"
+          export WINEDEBUG=-all
+          export WINEPREFIX=/tmp/soda-arm64-prefix
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          native_arch="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' | tr -d '\r')"
+          test "$native_arch" = ARM64
+          x64_cmd="$runner_dir/lib/wine/x86_64-windows/cmd.exe"
+          test -f "$x64_cmd"
+          x64_arch="$(xvfb-run -a "$runner_dir/bin/wine" "$x64_cmd" /c echo '%PROCESSOR_ARCHITECTURE%' | tr -d '\r')"
+          test "$x64_arch" = AMD64
+          "$runner_dir/bin/wineserver" -w
+
+      - name: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.component_name }}
+          path: /tmp/${{ env.component_name }}.tar.xz
+          if-no-files-found: error
