@@ -596,7 +596,7 @@ jobs:
           COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
         run: |
           runner_dir="/tmp/$COMPONENT_NAME"
-          proton_files=/tmp/proton-build/obj-soda-arm64/dist/files
+          proton_files=/tmp/proton-build/dist/files
           test -x "$proton_files/bin-arm64/wine"
           test -x "$proton_files/bin-arm64/wineserver"
           mkdir "$runner_dir"
