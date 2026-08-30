@@ -2,9 +2,6 @@ diff --git a/configure.ac b/configure.ac
 index f6904f252ec..12db27d0711 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -2448,1 +2448,2 @@
-+enable_wineopenxr=${enable_wineopenxr:-x86_64,arm64ec,aarch64}
- enable_vcruntime140_1=${enable_vcruntime140_1:-x86_64,arm64ec,aarch64}
 @@ -3443,6 +3443,7 @@ WINE_CONFIG_MAKEFILE(dlls/winehid.sys)
  WINE_CONFIG_MAKEFILE(dlls/winemac.drv)
  WINE_CONFIG_MAKEFILE(dlls/winemapi)

@@ -172,6 +172,7 @@ jobs:
           git -C /tmp/build-tools checkout "$BUILD_TOOLS_COMMIT"
           cp /tmp/build-tools/runners/vaniglia/wine-tkg-valve.cfg wine-tkg.cfg
           sed -i '$a_NOLIB32="false"' wine-tkg.cfg
+          sed -i '$a_configure_userargs32="--disable-wineopenxr"' wine-tkg.cfg
           if [[ "${{ steps.identity.outputs.pgo }}" == "true" ]]; then
             mkdir -p /tmp/soda-pgo/profiles /tmp/soda-pgo/evidence
             sed -i '$a_GCC_FLAGS="-O2 -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -fprofile-generate=/tmp/soda-pgo/profiles -fprofile-update=prefer-atomic"' wine-tkg.cfg
