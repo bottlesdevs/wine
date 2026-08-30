@@ -171,6 +171,42 @@ jobs:
           test ! -e "$WINEPREFIX/drive_c/users/steamuser"
           "$runner_dir/bin/wineserver" -w
 
+      - name: verify compatibility fixes
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          git -C src/ValveSoftware-winegit merge-base --is-ancestor 2a667e28ba7800288f5873a4b13bc0baf6e4a857 HEAD
+          git -C src/ValveSoftware-winegit merge-base --is-ancestor 9358696fe9a2261329f4a83aa6a65fd436106154 HEAD
+          grep -F 'winebrowser.exe"" ""%1' src/ValveSoftware-winegit/loader/wine.inf.in
+          grep -F 'toplevel == hwnd && NtUserGetPresentRect' src/ValveSoftware-winegit/dlls/winex11.drv/init.c
+
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-compatibility-smoke.c" \
+            -O2 -municode -lshell32 -o /tmp/soda-compatibility-smoke.exe
+          mkdir /tmp/soda-browser-bin
+          printf '%s\n' '#!/bin/sh' 'printf "%s" "$1" > /tmp/soda-browser-url' > /tmp/soda-browser-bin/xdg-open
+          chmod +x /tmp/soda-browser-bin/xdg-open
+          export PATH="/tmp/soda-browser-bin:$PATH"
+          export WINEDEBUG=-all
+          export WINEPREFIX=/tmp/soda-url-prefix
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          xvfb-run -a "$runner_dir/bin/wine" reg add 'HKCU\Software\Wine\WineBrowser' /v Browsers /t REG_SZ /d xdg-open /f
+          long_url="https://soda.invalid/$(printf 'a%.0s' {1..1024})"
+          xvfb-run -a "$runner_dir/bin/wine" /tmp/soda-compatibility-smoke.exe "$long_url"
+          for attempt in {1..50}; do
+            test ! -f /tmp/soda-browser-url || break
+            sleep 0.1
+          done
+          test "$(cat /tmp/soda-browser-url)" = "$long_url"
+          "$runner_dir/bin/wineserver" -w
+
+          export WINEPREFIX=/tmp/soda-topology-prefix
+          export WINE_CPU_TOPOLOGY=2
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          cpu_count="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%NUMBER_OF_PROCESSORS%' | tr -d '\r')"
+          test "$cpu_count" = 2
+          "$runner_dir/bin/wineserver" -w
+
       - name: verify Valve Wine source
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: test "$(git -C src/ValveSoftware-winegit rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
