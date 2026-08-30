@@ -690,7 +690,7 @@ jobs:
             cat "$runtime_log"
             exit 1
           fi
-          if ! native_arch="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r')"; then
+          if ! native_arch="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r' | grep -E '^(ARM64|AMD64|x86)$' | tail -1)"; then
             cat "$runtime_log"
             exit 1
           fi
@@ -701,7 +701,7 @@ jobs:
           fi
           x64_cmd="$runner_dir/lib/wine/x86_64-windows/cmd.exe"
           test -f "$x64_cmd"
-          if ! x64_arch="$(xvfb-run -a "$runner_dir/bin/wine" "$x64_cmd" /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r')"; then
+          if ! x64_arch="$(xvfb-run -a "$runner_dir/bin/wine" "$x64_cmd" /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r' | grep -E '^(ARM64|AMD64|x86)$' | tail -1)"; then
             cat "$runtime_log"
             exit 1
           fi
