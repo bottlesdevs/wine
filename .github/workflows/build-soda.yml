@@ -67,6 +67,7 @@ jobs:
             /configure.ac \
             /dlls/advapi32/advapi.c \
             /dlls/dsound/Makefile.in \
+            /dlls/kernelbase/process.c \
             /dlls/version/Makefile.in \
             /dlls/winmm/Makefile.in \
             /dlls/ntdll/unix/file.c \
