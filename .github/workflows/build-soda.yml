@@ -3,7 +3,16 @@ on:
   push:
     branches:
       - 'soda'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: 'Candidate architecture'
+        required: true
+        type: choice
+        options:
+          - x86_64
+          - aarch64
+        default: x86_64
 permissions:
   contents: read
 env:
@@ -65,6 +74,7 @@ jobs:
 
   build:
     needs: patches
+    if: github.event_name == 'push' || inputs.architecture == 'x86_64'
     runs-on: ubuntu-24.04
     outputs:
       archive_name: ${{ steps.identity.outputs.archive_name }}
@@ -197,8 +207,131 @@ jobs:
           path: /tmp/${{ steps.identity.outputs.archive_name }}
           if-no-files-found: error
 
+  arm64:
+    needs: patches
+    if: github.event_name == 'push' || inputs.architecture == 'aarch64'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    outputs:
+      archive_name: ${{ steps.identity.outputs.archive_name }}
+      component_name: ${{ steps.identity.outputs.component_name }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: define build identity
+        id: identity
+        run: |
+          version="$WINE_VERSION-$REVISION"
+          if [[ "$GITHUB_EVENT_NAME" != "push" || "$GITHUB_REF" != "refs/heads/soda" ]]; then
+            version="$version-${GITHUB_SHA::7}"
+          fi
+          component_name="soda-$version-aarch64"
+          echo "archive_name=$component_name.tar.xz" >> "$GITHUB_OUTPUT"
+          echo "component_name=$component_name" >> "$GITHUB_OUTPUT"
+
+      - name: setup
+        run: |
+          test "$(uname -m)" = aarch64
+          sudo apt-get update
+          sudo apt-get install -y docker.io file xvfb xz-utils
+          sudo systemctl start docker
+          docker version
+
+      - name: prepare sources
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/ValveSoftware/Proton.git /tmp/proton
+          git -C /tmp/proton checkout "$PROTON_COMMIT"
+          test "$(git -C /tmp/proton rev-parse HEAD)" = "$PROTON_COMMIT"
+          git -C /tmp/proton submodule update --init --recursive wine OpenXR-SDK FEX
+          git -C /tmp/proton/wine fetch --no-tags origin "$VALVE_WINE_TAG"
+          git -C /tmp/proton/wine checkout --detach "$VALVE_WINE_COMMIT"
+          test "$(git -C /tmp/proton/wine rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
+          for patch in "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch; do
+            if [[ "$patch" == *wineopenxr-host-runtime.mypatch ]]; then
+              continue
+            fi
+            git -C /tmp/proton/wine apply --check "$patch"
+            git -C /tmp/proton/wine apply "$patch"
+          done
+          git -C /tmp/proton/wineopenxr apply --check "$GITHUB_WORKSPACE/.github/wineopenxr-host-runtime-proton.mypatch"
+          git -C /tmp/proton/wineopenxr apply "$GITHUB_WORKSPACE/.github/wineopenxr-host-runtime-proton.mypatch"
+
+      - name: configure
+        run: |
+          mkdir /tmp/proton-build
+          cd /tmp/proton-build
+          /tmp/proton/configure.sh --build-name=soda-arm64 --target-arch=arm64 --container-engine=docker
+
+      - name: build Wine and FEX
+        working-directory: /tmp/proton-build
+        run: |
+          make WINE_DEPENDS= WINE_aarch64_DEPENDS= wine
+          make WINE_DEPENDS= WINE_aarch64_DEPENDS= fex
+          make WINE_DEPENDS= WINE_aarch64_DEPENDS= fex_unixlib
+          make WINE_DEPENDS= WINE_aarch64_DEPENDS= wineopenxr
+
+      - name: package
+        env:
+          ARCHIVE_NAME: ${{ steps.identity.outputs.archive_name }}
+          COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
+        run: |
+          runner_dir="/tmp/$COMPONENT_NAME"
+          proton_files=/tmp/proton-build/obj-soda-arm64/dist/files
+          test -x "$proton_files/bin-arm64/wine"
+          test -x "$proton_files/bin-arm64/wineserver"
+          mkdir "$runner_dir"
+          cp -a "$proton_files"/. "$runner_dir"/
+          mv "$runner_dir/bin-arm64" "$runner_dir/bin"
+          install -Dm644 /tmp/proton/FEX_Config.json "$runner_dir/share/fex-emu/Config.json"
+          install -Dm644 /tmp/proton/wineopenxr/wineopenxr64.json "$runner_dir/share/openxr/wineopenxr64.json"
+          mono_file="wine-mono-$WINE_MONO_VERSION-x86.msi"
+          mono_url="https://github.com/wine-mono/wine-mono/releases/download/wine-mono-$WINE_MONO_VERSION/$mono_file"
+          curl --fail --location --retry 3 --output "/tmp/$mono_file" "$mono_url"
+          echo "$WINE_MONO_SHA256  /tmp/$mono_file" | sha256sum --check -
+          install -Dm644 "/tmp/$mono_file" "$runner_dir/share/wine/mono/$mono_file"
+          test -f "$runner_dir/lib/wine/aarch64-unix/ntdll.so"
+          test -f "$runner_dir/lib/wine/aarch64-windows/ntdll.dll"
+          test -f "$runner_dir/lib/wine/arm64ec-windows/ntdll.dll"
+          test -f "$runner_dir/lib/wine/x86_64-windows/ntdll.dll"
+          test -f "$runner_dir/lib/wine/aarch64-windows/libarm64ecfex.dll"
+          test -f "$runner_dir/lib/wine/aarch64-unix/libwow64fex.dll.so"
+          test -f "$runner_dir/lib/wine/aarch64-windows/wineopenxr.dll"
+          file "$runner_dir/bin/wine" | grep -F 'ARM aarch64'
+          if ldd "$runner_dir/bin/wine" | grep -F 'not found'; then
+            exit 1
+          fi
+          tar -C /tmp -cJf "/tmp/$ARCHIVE_NAME" "$COMPONENT_NAME"
+
+      - name: verify Windows architectures
+        env:
+          COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
+        run: |
+          runner_dir="/tmp/$COMPONENT_NAME"
+          export FEX_APP_CONFIG="$runner_dir/share/fex-emu/Config.json"
+          export FEX_APP_CONFIG_LOCATION="$runner_dir/share/fex-emu"
+          export WINEDEBUG=-all
+          export WINEPREFIX=/tmp/soda-arm64-prefix
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          native_arch="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' | tr -d '\r')"
+          test "$native_arch" = ARM64
+          x64_cmd="$runner_dir/lib/wine/x86_64-windows/cmd.exe"
+          test -f "$x64_cmd"
+          x64_arch="$(xvfb-run -a "$runner_dir/bin/wine" "$x64_cmd" /c echo '%PROCESSOR_ARCHITECTURE%' | tr -d '\r')"
+          test "$x64_arch" = AMD64
+          "$runner_dir/bin/wineserver" -w
+
+      - name: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.identity.outputs.component_name }}
+          path: /tmp/${{ steps.identity.outputs.archive_name }}
+          if-no-files-found: error
+
   release:
-    needs: build
+    needs:
+      - build
+      - arm64
     if: needs.build.outputs.stable == 'true'
     runs-on: ubuntu-24.04
     permissions:
@@ -208,15 +341,21 @@ jobs:
         with:
           name: ${{ needs.build.outputs.component_name }}
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.arm64.outputs.component_name }}
+
       - name: release
         env:
           GH_TOKEN: ${{ github.token }}
           ARCHIVE_NAME: ${{ needs.build.outputs.archive_name }}
+          ARM64_ARCHIVE_NAME: ${{ needs.arm64.outputs.archive_name }}
         run: |
           tag="soda-$WINE_VERSION-$REVISION"
           file="$ARCHIVE_NAME"
+          arm64_file="$ARM64_ARCHIVE_NAME"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists." >&2
             exit 1
           fi
-          gh release create "$tag" "$file" --target "$GITHUB_SHA" --title "Soda $WINE_VERSION-$REVISION" --notes "$RELEASE_NOTES" --latest
+          gh release create "$tag" "$file" "$arm64_file" --target "$GITHUB_SHA" --title "Soda $WINE_VERSION-$REVISION" --notes "$RELEASE_NOTES" --latest
