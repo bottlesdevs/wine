@@ -42,15 +42,15 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    - Updated the Valve experimental bleeding edge base to August 25, 2026.
-    - Fixed Windows Steam client startup.
-    - Fixed a recursive Steam web UI initialization failure.
-    - Fixed depth-only display mode changes used by some older games.
-    - Fixed Unix paths without a matching DOS drive.
-    - Restored true 32-bit prefixes.
-    - Added automatic local mod loader support for `version.dll`, `winmm.dll`, and `dsound.dll`.
-    - Added opt-in transparent huge pages with `SODA_USE_THP=1`.
-    - Added module load profiles for Bottles Adaptive Launch.
+    - Updated the Valve experimental bleeding edge base to August 30, 2026 and Wine-TKG to `04ddf86c`.
+    - Adaptive Launch now learns from separate sessions, ranks recurring early module loads, limits stored data, and migrates existing profiles.
+    - Added host OpenXR outside Steam and SteamVR, enabled by Bottles and verified against Monado in CI.
+    - Preserved each bottle's configured Windows username when Wine updates a prefix.
+    - Limited Heroes of Might and Magic VII to eight reported CPUs by default while preserving explicit `WINE_CPU_TOPOLOGY` values.
+    - Kept Valve fixes for child-window fullscreen presentation and long URLs opened through `ShellExecute`.
+    - Built the x86_64 package with measured PGO and gated it against a non-PGO candidate.
+    - Added an aarch64 package with ARM64, ARM64EC, bundled FEX for x86_64 programs, and host OpenXR support.
+    - Built and verified both packages only in GitHub Actions from pinned sources, with immutable release assets.
 jobs:
   patches:
     runs-on: ubuntu-24.04
