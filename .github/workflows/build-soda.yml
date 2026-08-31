@@ -262,7 +262,7 @@ jobs:
             -printf '%s %p\n' | sort > /tmp/soda-pgo/evidence/profile-inventory.txt
           profile_count="$(wc -l < /tmp/soda-pgo/evidence/profile-inventory.txt)"
           test "$profile_count" -gt 0
-          grep -F wineserver /tmp/soda-pgo/evidence/profile-inventory.txt
+          grep -E '[#/]+server[#/]+' /tmp/soda-pgo/evidence/profile-inventory.txt
           first_profile="$(find /tmp/soda-pgo/profiles -type f -name '*.gcda' -size +0c -print -quit)"
           gcov-dump -l "$first_profile" > /tmp/soda-pgo/evidence/profile-dump.txt
           grep -Eq 'runs=[1-9]|sum_max=[1-9]' /tmp/soda-pgo/evidence/profile-dump.txt
@@ -299,7 +299,7 @@ jobs:
             > /tmp/soda-pgo/evidence/consumed-profiles.txt
           consumed_count="$(wc -l < /tmp/soda-pgo/evidence/consumed-profiles.txt)"
           test "$consumed_count" -gt 0
-          grep -F wineserver /tmp/soda-pgo/evidence/consumed-profiles.txt
+          grep -E '[#/]+server[#/]+' /tmp/soda-pgo/evidence/consumed-profiles.txt
 
       - name: bundle Wine Mono
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
