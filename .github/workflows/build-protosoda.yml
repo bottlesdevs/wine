@@ -21,6 +21,8 @@ env:
   PROTON_COMMIT: '7e88cefffc122ea1584c2156b8d7bae6cf69b2a7'
   PROTON_ARCHIVE: 'GE-Proton11-6-x86_64.tar.gz'
   PROTON_SHA256: '659f8d71f2f78659340120b20c1c5a1464aa138939332a1376dea22f6d2dc2e4'
+  LIBUNWIND_ARCHIVE: 'libunwind8_1.6.2-3build1.1_amd64.deb'
+  LIBUNWIND_SHA256: '825cb8724bb6b3389587e30c03ab3381f56a2422cafe3b1945f37e055c65e942'
   DEFAULT_PFX_SHA256: '2066a782988acb4881cefb10226358b146ee3d036d37651e1a7c58f6c4747e28'
   RELEASE_NOTES: |-
     <img src="https://raw.githubusercontent.com/bottlesdevs/data/main/logo/protosoda-logo.svg" width="64" />
@@ -29,6 +31,7 @@ env:
 
     - Updated the Wine core to Soda 11.0-7, including Adaptive Launch v2, the current Valve base, compatibility fixes, measured PGO, and 64-bit Windows OpenXR support.
     - Updated the launcher, runtime libraries, DXVK, VKD3D, and protonfixes to GE-Proton11-6.
+    - Bundled the pinned libunwind runtime required by the Soda Wine core under Steam Runtime 4.
     - Regenerated the default prefix from the combined runner instead of reusing the GE-Proton prefix.
     - Assembled and tested only in GitHub Actions from pinned release assets. The published archive is the same candidate consumed by the release job.
 jobs:
@@ -60,12 +63,15 @@ jobs:
         run: |
           soda_url="https://github.com/bottlesdevs/wine/releases/download/$SODA_TAG/$SODA_ARCHIVE"
           proton_url="https://github.com/GloriousEggroll/proton-ge-custom/releases/download/$PROTON_TAG/$PROTON_ARCHIVE"
+          libunwind_url="https://archive.ubuntu.com/ubuntu/pool/main/libu/libunwind/$LIBUNWIND_ARCHIVE"
           default_pfx_url="https://raw.githubusercontent.com/GloriousEggroll/proton-ge-custom/$PROTON_COMMIT/default_pfx.py"
           curl --fail --location --retry 3 --output "/tmp/$SODA_ARCHIVE" "$soda_url"
           curl --fail --location --retry 3 --output "/tmp/$PROTON_ARCHIVE" "$proton_url"
+          curl --fail --location --retry 3 --output "/tmp/$LIBUNWIND_ARCHIVE" "$libunwind_url"
           curl --fail --location --retry 3 --output /tmp/default_pfx.py "$default_pfx_url"
           echo "$SODA_SHA256  /tmp/$SODA_ARCHIVE" | sha256sum --check -
           echo "$PROTON_SHA256  /tmp/$PROTON_ARCHIVE" | sha256sum --check -
+          echo "$LIBUNWIND_SHA256  /tmp/$LIBUNWIND_ARCHIVE" | sha256sum --check -
           echo "$DEFAULT_PFX_SHA256  /tmp/default_pfx.py" | sha256sum --check -
 
       - name: assemble ProtoSoda
@@ -79,6 +85,7 @@ jobs:
           mkdir -p "$work_dir" /tmp/protosoda-output
           tar -xJf "/tmp/$SODA_ARCHIVE" -C "$work_dir"
           tar -xzf "/tmp/$PROTON_ARCHIVE" -C "$work_dir"
+          dpkg-deb -x "/tmp/$LIBUNWIND_ARCHIVE" "$work_dir/libunwind"
           test -x "$soda_root/bin/wine"
           test -x "$proton_root/proton"
           test -d "$proton_root/protonfixes"
@@ -98,6 +105,12 @@ jobs:
             cp -a --remove-destination "$soda_root/share/openxr/." \
               "$runner_root/files/share/openxr/"
           fi
+          cp -a --remove-destination \
+            "$work_dir/libunwind/usr/lib/x86_64-linux-gnu/libunwind.so.8" \
+            "$work_dir/libunwind/usr/lib/x86_64-linux-gnu/libunwind.so.8.0.1" \
+            "$runner_root/files/lib/x86_64-linux-gnu/"
+          cp "$work_dir/libunwind/usr/share/doc/libunwind8/copyright" \
+            "$runner_root/LICENSE.libunwind8"
 
           test "$(sha256sum "$runner_root/files/lib/wine/dxvk/version" | cut -d' ' -f1)" = "$dxvk_hash"
           test "$(sha256sum "$runner_root/files/lib/wine/vkd3d-proton/version" | cut -d' ' -f1)" = "$vkd3d_hash"
@@ -109,6 +122,11 @@ jobs:
             "$runner_root/files/lib/wine/i386-windows/ntdll.dll"
           cmp "$soda_root/lib/wine/x86_64-windows/wineopenxr.dll" \
             "$runner_root/files/lib/wine/x86_64-windows/wineopenxr.dll"
+          readelf -d "$runner_root/files/lib/wine/x86_64-unix/ntdll.so" \
+            | grep -F 'Shared library: [libunwind.so.8]'
+          LD_LIBRARY_PATH="$runner_root/files/lib/x86_64-linux-gnu" \
+            ldd "$runner_root/files/lib/wine/x86_64-unix/ntdll.so" \
+            | grep -F "$runner_root/files/lib/x86_64-linux-gnu/libunwind.so.8"
 
           rm -rf "$runner_root/files/share/default_pfx"
           xvfb-run -a python3 /tmp/default_pfx.py \
@@ -131,6 +149,7 @@ jobs:
             "Soda SHA256 $SODA_SHA256" \
             "Proton base $PROTON_TAG-x86_64" \
             "Proton SHA256 $PROTON_SHA256" \
+            "libunwind package SHA256 $LIBUNWIND_SHA256" \
             "Build commit $GITHUB_SHA" \
             > "$runner_root/BUILD_INFO"
 
@@ -157,6 +176,11 @@ jobs:
           grep -q "ProtoSoda-$PROTOSODA_VERSION" "$runner_root/compatibilitytool.vdf"
           test -f "$runner_root/files/lib/wine/x86_64-windows/wineopenxr.dll"
           test -f "$runner_root/files/share/openxr/wineopenxr64.json"
+          test -f "$runner_root/LICENSE.libunwind8"
+          test -L "$runner_root/files/lib/x86_64-linux-gnu/libunwind.so.8"
+          LD_LIBRARY_PATH="$runner_root/files/lib/x86_64-linux-gnu" \
+            ldd "$runner_root/files/lib/wine/x86_64-unix/ntdll.so" \
+            | grep -F "$runner_root/files/lib/x86_64-linux-gnu/libunwind.so.8"
           file "$runner_root/files/bin/wine" | grep -F 'x86-64'
           file "$runner_root/files/lib/wine/x86_64-windows/ntdll.dll" | grep -F 'x86-64'
           file "$runner_root/files/lib/wine/i386-windows/ntdll.dll" | grep -F 'Intel 80386'
