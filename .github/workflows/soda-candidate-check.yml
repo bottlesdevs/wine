@@ -148,7 +148,7 @@ jobs:
             "$runner_dir/bin/wine" soda-openxr-smoke.exe
           ) >/tmp/soda-openxr/application.log 2>&1
           grep -F 'runtime=Monado' /tmp/soda-openxr/application.log
-          grep -F 'system=Simulated HMD' /tmp/soda-openxr/application.log
+          grep -F 'system=Monado: Simulated HMD' /tmp/soda-openxr/application.log
           "$runner_dir/bin/wineserver" -w
 
       - name: package
