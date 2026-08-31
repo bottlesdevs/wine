@@ -89,12 +89,14 @@ jobs:
           vkd3d_hash="$(sha256sum "$proton_root/files/lib/wine/vkd3d-proton/version" | cut -d' ' -f1)"
           protonfixes_hash="$(sha256sum "$proton_root/protonfixes/__init__.py" | cut -d' ' -f1)"
           mv "$proton_root" "$runner_root"
-          cp -a "$soda_root/bin/." "$runner_root/files/bin/"
-          cp -a "$soda_root/lib/." "$runner_root/files/lib/"
-          cp -a "$soda_root/share/wine/." "$runner_root/files/share/wine/"
+          cp -a --remove-destination "$soda_root/bin/." "$runner_root/files/bin/"
+          cp -a --remove-destination "$soda_root/lib/." "$runner_root/files/lib/"
+          cp -a --remove-destination "$soda_root/share/wine/." \
+            "$runner_root/files/share/wine/"
           if test -d "$soda_root/share/openxr"; then
             mkdir -p "$runner_root/files/share/openxr"
-            cp -a "$soda_root/share/openxr/." "$runner_root/files/share/openxr/"
+            cp -a --remove-destination "$soda_root/share/openxr/." \
+              "$runner_root/files/share/openxr/"
           fi
 
           test "$(sha256sum "$runner_root/files/lib/wine/dxvk/version" | cut -d' ' -f1)" = "$dxvk_hash"
