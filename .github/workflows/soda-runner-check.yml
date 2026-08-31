@@ -19,10 +19,12 @@ jobs:
       SOURCE_ARTIFACT: pre-test-soda-11.0-7-8f47303-x86_64
       GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@v7
+
       - name: setup
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb
+          sudo apt-get install -y gcc-mingw-w64-x86-64 xvfb
           mkdir /tmp/soda-runner
           gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
             --name "$SOURCE_ARTIFACT" --dir /tmp/soda-runner
@@ -31,9 +33,28 @@ jobs:
         run: |
           runner_dir="$(find /tmp/soda-runner -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
           test -n "$runner_dir"
-          export WINEPREFIX=/tmp/soda-topology-prefix
-          export WINEARCH=win64
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-compatibility-smoke.c" \
+            -O2 -municode -lshell32 -o /tmp/soda-compatibility-smoke.exe
+          mkdir /tmp/soda-browser-bin
+          printf '%s\n' '#!/bin/sh' 'printf "%s" "$1" > /tmp/soda-browser-url' > /tmp/soda-browser-bin/xdg-open
+          chmod +x /tmp/soda-browser-bin/xdg-open
+          export PATH="/tmp/soda-browser-bin:$PATH"
           export WINEDEBUG=-all
+          export WINEPREFIX=/tmp/soda-url-prefix
+          export WINEARCH=win64
+          mkdir -p "$WINEPREFIX"
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          xvfb-run -a "$runner_dir/bin/wine" reg add 'HKCU\Software\Wine\WineBrowser' /v Browsers /t REG_SZ /d xdg-open /f
+          long_url="https://soda.invalid/$(printf 'a%.0s' {1..1024})"
+          xvfb-run -a "$runner_dir/bin/wine" /tmp/soda-compatibility-smoke.exe "$long_url"
+          for attempt in {1..50}; do
+            test ! -f /tmp/soda-browser-url || break
+            sleep 0.1
+          done
+          test "$(cat /tmp/soda-browser-url)" = "$long_url"
+          "$runner_dir/bin/wineserver" -w
+
+          export WINEPREFIX=/tmp/soda-topology-prefix
           export WINE_CPU_TOPOLOGY=2
           mkdir -p "$WINEPREFIX"
           xvfb-run -a "$runner_dir/bin/wineboot" -u
