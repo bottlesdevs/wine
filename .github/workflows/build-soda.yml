@@ -292,6 +292,8 @@ jobs:
             printf 'Expected username soda-ci, got:\n%s\n' "$username_output" >&2
             exit 1
           fi
+          printf 'Windows username: %s\nWindows profile directories:\n' "$username"
+          find "$WINEPREFIX/drive_c/users" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
           test -d "$WINEPREFIX/drive_c/users/soda-ci"
           test ! -e "$WINEPREFIX/drive_c/users/steamuser"
           "$runner_dir/bin/wineserver" -w
