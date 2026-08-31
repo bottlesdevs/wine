@@ -176,7 +176,7 @@ jobs:
           sed -i '$a_configure_userargs32="--disable-wineopenxr"' wine-tkg.cfg
           if [[ "${{ steps.identity.outputs.pgo }}" == "true" ]]; then
             mkdir -p /tmp/soda-pgo/profiles /tmp/soda-pgo/evidence
-            sed -i '$a_GCC_FLAGS="-O2 -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -fprofile-generate=/tmp/soda-pgo/profiles -fprofile-update=prefer-atomic"' wine-tkg.cfg
+            sed -i '$a_GCC_FLAGS="-O2 -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -fprofile-generate=/tmp/soda-pgo/profiles -fprofile-update=prefer-atomic -fprofile-exclude-files=preloader"' wine-tkg.cfg
             sed -i '$a_LD_FLAGS="-Wl,-O1,--sort-common,--as-needed -fprofile-generate=/tmp/soda-pgo/profiles"' wine-tkg.cfg
           fi
           cat wine-tkg.cfg
@@ -245,7 +245,7 @@ jobs:
           sed -i '/      _source_cleanup/a\      "$GITHUB_WORKSPACE/.github/import-wineopenxr.sh" "${srcdir}/${_winesrcdir}" "/tmp/proton/wineopenxr"' non-makepkg-build.sh
           recipe=/home/runner/.config/frogminer/wine-tkg.cfg
           sed -i '/^_GCC_FLAGS=/d; /^_LD_FLAGS=/d' "$recipe"
-          sed -i '$a_GCC_FLAGS="-O2 -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-missing-profile -fprofile-use=/tmp/soda-pgo/profiles -fprofile-correction -fprofile-partial-training"' "$recipe"
+          sed -i '$a_GCC_FLAGS="-O2 -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-missing-profile -fprofile-use=/tmp/soda-pgo/profiles -fprofile-correction -fprofile-partial-training -fprofile-exclude-files=preloader"' "$recipe"
           sed -i '$a_LD_FLAGS="-Wl,-O1,--sort-common,--as-needed -fprofile-use=/tmp/soda-pgo/profiles"' "$recipe"
           find /tmp/soda-pgo/profiles -type f -name '*.gcda' -exec touch -a -d @1 {} +
           touch /tmp/soda-pgo/profile-use-start
