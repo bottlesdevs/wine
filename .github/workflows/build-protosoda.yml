@@ -171,7 +171,7 @@ jobs:
           export UMU_ID=0
           export SODA_ADAPTIVE_TRACE_DIR=/tmp/protosoda-trace
           runtime_log=/tmp/protosoda-runtime.log
-          if ! timeout 5m xvfb-run -a "$runner_root/proton" runinprefix \
+          if ! timeout 5m xvfb-run -a "$runner_root/proton" waitforexitandrun \
             cmd.exe /c "echo ProtoSoda-$PROTOSODA_VERSION" >"$runtime_log" 2>&1; then
             cat "$runtime_log"
             exit 1
