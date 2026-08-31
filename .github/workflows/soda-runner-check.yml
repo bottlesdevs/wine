@@ -33,6 +33,16 @@ jobs:
         run: |
           runner_dir="$(find /tmp/soda-runner -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
           test -n "$runner_dir"
+          Xvfb :97 -screen 0 1024x768x24 >/tmp/soda-compatibility-xvfb.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+          export DISPLAY=:97
+          for attempt in {1..100}; do
+            test ! -S /tmp/.X11-unix/X97 || break
+            sleep 0.1
+          done
+          test -S /tmp/.X11-unix/X97
+          kill -0 "$xvfb_pid"
           x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-compatibility-smoke.c" \
             -O2 -municode -lshell32 -o /tmp/soda-compatibility-smoke.exe
           mkdir /tmp/soda-browser-bin
@@ -43,10 +53,10 @@ jobs:
           export WINEPREFIX=/tmp/soda-url-prefix
           export WINEARCH=win64
           mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
-          xvfb-run -a "$runner_dir/bin/wine" reg add 'HKCU\Software\Wine\WineBrowser' /v Browsers /t REG_SZ /d xdg-open /f
+          "$runner_dir/bin/wineboot" -u
+          "$runner_dir/bin/wine" reg add 'HKCU\Software\Wine\WineBrowser' /v Browsers /t REG_SZ /d xdg-open /f
           long_url="https://soda.invalid/$(printf 'a%.0s' {1..1024})"
-          xvfb-run -a "$runner_dir/bin/wine" /tmp/soda-compatibility-smoke.exe "$long_url"
+          "$runner_dir/bin/wine" /tmp/soda-compatibility-smoke.exe "$long_url"
           for attempt in {1..50}; do
             test ! -f /tmp/soda-browser-url || break
             sleep 0.1
@@ -57,8 +67,8 @@ jobs:
           export WINEPREFIX=/tmp/soda-topology-prefix
           export WINE_CPU_TOPOLOGY=2
           mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
-          xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%NUMBER_OF_PROCESSORS%'
+          "$runner_dir/bin/wineboot" -u
+          "$runner_dir/bin/wine" cmd /c echo '%NUMBER_OF_PROCESSORS%'
           "$runner_dir/bin/wineserver" -w
 
           unset WINE_CPU_TOPOLOGY WINEDEBUG
@@ -66,13 +76,13 @@ jobs:
           cp "$runner_dir/lib/wine/x86_64-windows/cmd.exe" "$target"
           export WINEPREFIX=/tmp/soda-heroes-vii-prefix
           mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          "$runner_dir/bin/wineboot" -u
 
           set +e
-          xvfb-run -a "$runner_dir/bin/wine" "$target" \
+          "$runner_dir/bin/wine" "$target" \
             /c echo '%NUMBER_OF_PROCESSORS%' >/tmp/renamed.out 2>/tmp/renamed.log
           renamed_status=$?
-          xvfb-run -a "$runner_dir/bin/wine" \
+          "$runner_dir/bin/wine" \
             "$runner_dir/lib/wine/x86_64-windows/cmd.exe" \
             /c echo '%NUMBER_OF_PROCESSORS%' >/tmp/original.out 2>/tmp/original.log
           original_status=$?
@@ -84,6 +94,8 @@ jobs:
           cat /tmp/original.out /tmp/original.log
           test "$renamed_status" -eq 0
           test "$original_status" -eq 0
+          kill "$xvfb_pid"
+          trap - EXIT
 
       - uses: actions/upload-artifact@v7
         if: always()
