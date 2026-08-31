@@ -29,8 +29,8 @@ env:
   WINE_VERSION: '11.0'
   REVISION: '7'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
-  VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-424421-20260830-pa9dd3f-w7af9c6-d70d750-v940e9f'
-  VALVE_WINE_COMMIT: '7af9c6934eab520987b114b8bec84bdc58e2ec86'
+  VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-424754-20260831-pa9dd3f-w09b284-d70d750-v940e9f'
+  VALVE_WINE_COMMIT: '09b284bddbe3b5c6bd3c27f69224819d98ee2eaf'
   PROTON_COMMIT: 'b7a763327f0cb76e9e0bd53dc4de95dee0d4c3b7'
   FEX_COMMIT: '1cc4b93e7a71c883ec021b71359f136394dc1f3c'
   OPENXR_SDK_COMMIT: '8899a91c17ce9618f565f42408b47db1d6e9ccc7'
@@ -44,7 +44,7 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    - Updated the Valve experimental bleeding edge base to August 30, 2026 and Wine-TKG to `04ddf86c`.
+    - Updated the Valve experimental bleeding edge base to August 31, 2026 and Wine-TKG to `04ddf86c`.
     - Adaptive Launch now learns from separate sessions, ranks recurring early module loads, limits stored data, and migrates existing profiles.
     - Added host OpenXR outside Steam and SteamVR for 64-bit Windows applications, enabled by Bottles and verified against Monado in CI.
     - Preserved each bottle's configured Windows username when Wine updates a prefix.
