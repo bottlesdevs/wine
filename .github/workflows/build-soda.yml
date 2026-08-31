@@ -274,6 +274,14 @@ jobs:
           echo "$WINE_MONO_SHA256  /tmp/$mono_file" | sha256sum --check -
           install -Dm644 "/tmp/$mono_file" "$runner_dir/share/wine/mono/$mono_file"
 
+      - name: upload pre-test runner
+        if: steps.identity.outputs.stable == 'false'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pre-test-${{ steps.identity.outputs.component_name }}
+          path: /home/runner/work/wine-tkg-git/wine-tkg-git/non-makepkg-builds/wine-tkg-*
+          if-no-files-found: error
+
       - name: verify prefix username
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
@@ -284,8 +292,12 @@ jobs:
           export WINEARCH=win64
           export USER=soda-ci
           unset WINEUSERNAME
+          runtime_log=/tmp/soda-username.log
           mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          if ! WINEDEBUG=err+all xvfb-run -a "$runner_dir/bin/wineboot" -u >"$runtime_log" 2>&1; then
+            cat "$runtime_log"
+            exit 1
+          fi
           username_output="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%USERNAME%' | tr -d '\r')"
           username="$(printf '%s\n' "$username_output" | sed -n '/^soda-ci$/p' | tail -1)"
           if [[ "$username" != soda-ci ]]; then
@@ -538,6 +550,7 @@ jobs:
           name: failure-logs
           path: |
             /home/runner/work/wine-tkg-git/wine-tkg-git/prepare.log
+            /tmp/soda-*.log
             /tmp/soda-openxr/*.log
           if-no-files-found: ignore
 
