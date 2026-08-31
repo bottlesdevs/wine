@@ -52,7 +52,7 @@ env:
     - Kept Valve fixes for child-window fullscreen presentation and long URLs opened through `ShellExecute`.
     - Preserved pure 32-bit prefixes alongside 64-bit and WoW64 bottles.
     - Built the x86_64 package with measured PGO and gated it against a non-PGO candidate.
-    - Added an aarch64 package with ARM64, ARM64EC, bundled FEX for x86_64 programs, and host OpenXR support.
+    - Added an aarch64 package with ARM64, ARM64EC, bundled FEX for x86 and x86_64 programs, and host OpenXR support.
     - Built and verified both packages only in GitHub Actions from pinned sources, with immutable release assets.
 jobs:
   patches:
