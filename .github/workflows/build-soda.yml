@@ -272,7 +272,7 @@ jobs:
         working-directory: /home/runner/work/
         run: |
           build_root=/home/runner/work/wine-tkg-git
-          test "$PWD" = /home/runner/work/
+          test "$PWD" = /home/runner/work
           test -f "$build_root/wine-tkg-git/non-makepkg-build.sh"
           find "$build_root" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
           git clone https://github.com/Frogging-Family/wine-tkg-git.git
