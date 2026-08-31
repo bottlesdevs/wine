@@ -233,7 +233,9 @@ jobs:
             "$SODA_RUNNER_DIR/bin/wine" reg add "HKCU\Software\SodaPGO" /v Architecture /d win64 /f
             "$SODA_RUNNER_DIR/bin/wine" cmd /c ver
             "$SODA_RUNNER_DIR/bin/wine" /tmp/soda-pgo/training64.exe
-            "$SODA_RUNNER_DIR/bin/wineserver" -w
+            wineserver_status=0
+            "$SODA_RUNNER_DIR/bin/wineserver" -w || wineserver_status=$?
+            test "$wineserver_status" -le 1
           '
           printf 'Preparing PGO win32 prefix with baseline runner\n'
           timeout 5m xvfb-run -a bash -c '
@@ -252,7 +254,9 @@ jobs:
             "$SODA_RUNNER_DIR/bin/wine" reg add "HKCU\Software\SodaPGO" /v Architecture /d win32 /f
             "$SODA_RUNNER_DIR/bin/wine" cmd /c ver
             "$SODA_RUNNER_DIR/bin/wine" /tmp/soda-pgo/training32.exe
-            "$SODA_RUNNER_DIR/bin/wineserver" -w
+            wineserver_status=0
+            "$SODA_RUNNER_DIR/bin/wineserver" -w || wineserver_status=$?
+            test "$wineserver_status" -le 1
           '
           find /tmp/soda-pgo/profiles -type f -name '*.gcda' -size +0c \
             -printf '%s %p\n' | sort > /tmp/soda-pgo/evidence/profile-inventory.txt
