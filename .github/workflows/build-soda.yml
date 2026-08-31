@@ -196,27 +196,59 @@ jobs:
       - name: train PGO build
         if: steps.identity.outputs.pgo == 'true'
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        env:
+          BASELINE_RUN_ID: ${{ inputs.baseline_run_id || env.PGO_BASELINE_RUN_ID }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
           test -n "$runner_dir"
+          test -n "$BASELINE_RUN_ID"
           export SODA_RUNNER_DIR="$PWD/$runner_dir"
-          xvfb-run -a bash -c '
+          mkdir -p /tmp/soda-pgo/training-baseline /tmp/soda-pgo/training-baseline-extracted
+          gh run download "$BASELINE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --dir /tmp/soda-pgo/training-baseline
+          baseline_archive="$(find /tmp/soda-pgo/training-baseline -type f \
+            -name 'soda-*-x86_64.tar.xz' -print -quit)"
+          test -n "$baseline_archive"
+          tar -C /tmp/soda-pgo/training-baseline-extracted -xJf "$baseline_archive"
+          baseline_runner="$(find /tmp/soda-pgo/training-baseline-extracted \
+            -mindepth 1 -maxdepth 1 -type d -name 'soda-*-x86_64' -print -quit)"
+          test -n "$baseline_runner"
+          export BASELINE_RUNNER="$baseline_runner"
+
+          printf 'Preparing PGO win64 prefix with baseline runner\n'
+          timeout 5m xvfb-run -a bash -c '
             export WINEDEBUG=-all
             export WINEPREFIX=/tmp/soda-pgo/prefix64
             export WINEARCH=win64
             mkdir -p "$WINEPREFIX"
-            "$SODA_RUNNER_DIR/bin/wineboot" -u
+            "$BASELINE_RUNNER/bin/wineboot" -u
+            "$BASELINE_RUNNER/bin/wineserver" -w
+          '
+          printf 'Training PGO win64 runner\n'
+          timeout 10m xvfb-run -a bash -c '
+            export WINEDEBUG=-all
+            export WINEPREFIX=/tmp/soda-pgo/prefix64
+            export WINEARCH=win64
             "$SODA_RUNNER_DIR/bin/wine" reg add "HKCU\Software\SodaPGO" /v Architecture /d win64 /f
             "$SODA_RUNNER_DIR/bin/wine" cmd /c ver
             "$SODA_RUNNER_DIR/bin/wine" /tmp/soda-pgo/training64.exe
             "$SODA_RUNNER_DIR/bin/wineserver" -w
           '
-          xvfb-run -a bash -c '
+          printf 'Preparing PGO win32 prefix with baseline runner\n'
+          timeout 5m xvfb-run -a bash -c '
             export WINEDEBUG=-all
             export WINEPREFIX=/tmp/soda-pgo/prefix32
             export WINEARCH=win32
             mkdir -p "$WINEPREFIX"
-            "$SODA_RUNNER_DIR/bin/wineboot" -u
+            "$BASELINE_RUNNER/bin/wineboot" -u
+            "$BASELINE_RUNNER/bin/wineserver" -w
+          '
+          printf 'Training PGO win32 runner\n'
+          timeout 10m xvfb-run -a bash -c '
+            export WINEDEBUG=-all
+            export WINEPREFIX=/tmp/soda-pgo/prefix32
+            export WINEARCH=win32
             "$SODA_RUNNER_DIR/bin/wine" reg add "HKCU\Software\SodaPGO" /v Architecture /d win32 /f
             "$SODA_RUNNER_DIR/bin/wine" cmd /c ver
             "$SODA_RUNNER_DIR/bin/wine" /tmp/soda-pgo/training32.exe
