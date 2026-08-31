@@ -258,6 +258,10 @@ jobs:
             "$SODA_RUNNER_DIR/bin/wineserver" -w || wineserver_status=$?
             test "$wineserver_status" -le 1
           '
+          find /tmp/soda-pgo/profiles -type f -name '*conftest*.gcda' \
+            -print -delete | sort \
+            > /tmp/soda-pgo/evidence/excluded-configure-profiles.txt
+          test -s /tmp/soda-pgo/evidence/excluded-configure-profiles.txt
           find /tmp/soda-pgo/profiles -type f -name '*.gcda' -size +0c \
             -printf '%s %p\n' | sort > /tmp/soda-pgo/evidence/profile-inventory.txt
           profile_count="$(wc -l < /tmp/soda-pgo/evidence/profile-inventory.txt)"
@@ -604,6 +608,8 @@ jobs:
           name: failure-logs
           path: |
             /home/runner/work/wine-tkg-git/wine-tkg-git/prepare.log
+            /home/runner/work/wine-tkg-git/wine-tkg-git/src/*-build/config.log
+            /tmp/soda-pgo/evidence
             /tmp/soda-*.log
             /tmp/soda-openxr/*.log
           if-no-files-found: ignore
