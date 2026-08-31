@@ -579,7 +579,8 @@ jobs:
           test -f "$runner_dir/lib/wine/x86_64-unix/winegstreamer.so"
           test -f "$runner_dir/lib/wine/i386-unix/winegstreamer.so"
           test -f "$runner_dir/lib/wine/i386-windows/winegstreamer.dll"
-          test -x "$runner_dir/bin/wine64"
+          test -x "$runner_dir/bin/wine"
+          file "$runner_dir/bin/wine" | grep -F 'x86-64'
           file "$runner_dir/lib/wine/x86_64-windows/ntdll.dll" | grep -F 'x86-64'
           file "$runner_dir/lib/wine/i386-windows/ntdll.dll" | grep -F 'Intel 80386'
           test -f "$runner_dir/lib/wine/x86_64-windows/wineopenxr.dll"
