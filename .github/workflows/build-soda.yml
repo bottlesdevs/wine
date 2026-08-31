@@ -452,9 +452,11 @@ jobs:
           export XRT_COMPOSITOR_NULL=1
           export XRT_LOG=info
           test -z "${XR_RUNTIME_JSON:-}"
-          monado-service >/tmp/soda-openxr/monado.log 2>&1 &
+          mkfifo /tmp/soda-openxr/monado-input
+          exec 3<>/tmp/soda-openxr/monado-input
+          monado-service </tmp/soda-openxr/monado-input >/tmp/soda-openxr/monado.log 2>&1 &
           monado_pid=$!
-          trap 'kill "$monado_pid" 2>/dev/null || true' EXIT
+          trap 'kill "$monado_pid" 2>/dev/null || true; exec 3>&-' EXIT
           for attempt in {1..100}; do
             test ! -S "$XDG_RUNTIME_DIR/monado_comp_ipc" || break
             sleep 0.1

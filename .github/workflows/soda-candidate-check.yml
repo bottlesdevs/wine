@@ -103,10 +103,13 @@ jobs:
 
           Xvfb :98 -screen 0 1024x768x24 >/tmp/soda-openxr/xvfb.log 2>&1 &
           xvfb_pid=$!
-          monado-service >/tmp/soda-openxr/monado.log 2>&1 &
+          mkfifo /tmp/soda-openxr/monado-input
+          exec 3<>/tmp/soda-openxr/monado-input
+          monado-service </tmp/soda-openxr/monado-input >/tmp/soda-openxr/monado.log 2>&1 &
           monado_pid=$!
           cleanup() {
             kill "$monado_pid" "$xvfb_pid" 2>/dev/null || true
+            exec 3>&-
           }
           trap cleanup EXIT
           export DISPLAY=:98
