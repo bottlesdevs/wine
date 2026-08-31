@@ -430,7 +430,7 @@ jobs:
             -DBUILD_WITH_SYSTEM_JSONCPP=OFF \
             -DDYNAMIC_LOADER=ON
           cmake --build /tmp/soda-openxr/loader-build --target openxr_loader --parallel 2
-          loader_dll="$(find /tmp/soda-openxr/loader-build -type f -iname 'openxr_loader.dll' -print -quit)"
+          loader_dll="$(find /tmp/soda-openxr/loader-build -type f -iname '*openxr_loader.dll' -print -quit)"
           test -n "$loader_dll"
           cp "$loader_dll" /tmp/soda-openxr/app/openxr_loader.dll
           for dll in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
