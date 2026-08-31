@@ -286,8 +286,12 @@ jobs:
           unset WINEUSERNAME
           mkdir -p "$WINEPREFIX"
           xvfb-run -a "$runner_dir/bin/wineboot" -u
-          username="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%USERNAME%' | tr -d '\r')"
-          test "$username" = soda-ci
+          username_output="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%USERNAME%' | tr -d '\r')"
+          username="$(printf '%s\n' "$username_output" | sed -n '/^soda-ci$/p' | tail -1)"
+          if [[ "$username" != soda-ci ]]; then
+            printf 'Expected username soda-ci, got:\n%s\n' "$username_output" >&2
+            exit 1
+          fi
           test -d "$WINEPREFIX/drive_c/users/soda-ci"
           test ! -e "$WINEPREFIX/drive_c/users/steamuser"
           "$runner_dir/bin/wineserver" -w
@@ -302,8 +306,12 @@ jobs:
           export WINEARCH=win32
           mkdir -p "$WINEPREFIX"
           xvfb-run -a "$runner_dir/bin/wineboot" -u
-          architecture="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' | tr -d '\r')"
-          test "$architecture" = x86
+          architecture_output="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' | tr -d '\r')"
+          architecture="$(printf '%s\n' "$architecture_output" | sed -n '/^x86$/p' | tail -1)"
+          if [[ "$architecture" != x86 ]]; then
+            printf 'Expected x86, got:\n%s\n' "$architecture_output" >&2
+            exit 1
+          fi
           grep -F '#arch=win32' "$WINEPREFIX/system.reg"
           "$runner_dir/bin/wineserver" -w
 
@@ -342,8 +350,12 @@ jobs:
           export WINE_CPU_TOPOLOGY=2
           mkdir -p "$WINEPREFIX"
           xvfb-run -a "$runner_dir/bin/wineboot" -u
-          cpu_count="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%NUMBER_OF_PROCESSORS%' | tr -d '\r')"
-          test "$cpu_count" = 2
+          cpu_output="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%NUMBER_OF_PROCESSORS%' | tr -d '\r')"
+          cpu_count="$(printf '%s\n' "$cpu_output" | sed -n '/^[0-9][0-9]*$/p' | tail -1)"
+          if [[ "$cpu_count" != 2 ]]; then
+            printf 'Expected 2 processors, got:\n%s\n' "$cpu_output" >&2
+            exit 1
+          fi
           "$runner_dir/bin/wineserver" -w
 
           unset WINE_CPU_TOPOLOGY WINEDEBUG
@@ -354,13 +366,19 @@ jobs:
           xvfb-run -a "$runner_dir/bin/wine" /tmp/MMH7Game-Win64-Shipping.exe --processors \
             >/tmp/soda-heroes-vii-cpus 2>/tmp/soda-heroes-vii.log
           grep -F 'HACK: limiting Heroes VII CPU topology to ' /tmp/soda-heroes-vii.log
-          test "$(tr -d '\r' </tmp/soda-heroes-vii-cpus)" -le 8
+          cpu_count="$(tr -d '\r' </tmp/soda-heroes-vii-cpus | sed -n '/^[0-9][0-9]*$/p' | tail -1)"
+          test -n "$cpu_count"
+          test "$cpu_count" -le 8
           "$runner_dir/bin/wineserver" -w
 
           export WINEDEBUG=-all
           export WINE_CPU_TOPOLOGY=2
-          cpu_count="$(xvfb-run -a "$runner_dir/bin/wine" /tmp/MMH7Game-Win64-Shipping.exe --processors | tr -d '\r')"
-          test "$cpu_count" = 2
+          cpu_output="$(xvfb-run -a "$runner_dir/bin/wine" /tmp/MMH7Game-Win64-Shipping.exe --processors | tr -d '\r')"
+          cpu_count="$(printf '%s\n' "$cpu_output" | sed -n '/^[0-9][0-9]*$/p' | tail -1)"
+          if [[ "$cpu_count" != 2 ]]; then
+            printf 'Expected 2 processors, got:\n%s\n' "$cpu_output" >&2
+            exit 1
+          fi
           "$runner_dir/bin/wineserver" -w
 
       - name: verify OpenXR outside Steam
