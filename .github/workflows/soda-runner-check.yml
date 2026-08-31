@@ -31,18 +31,27 @@ jobs:
         run: |
           runner_dir="$(find /tmp/soda-runner -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
           test -n "$runner_dir"
+          export WINEPREFIX=/tmp/soda-topology-prefix
+          export WINEARCH=win64
+          export WINEDEBUG=-all
+          export WINE_CPU_TOPOLOGY=2
+          mkdir -p "$WINEPREFIX"
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%NUMBER_OF_PROCESSORS%'
+          "$runner_dir/bin/wineserver" -w
+
+          unset WINE_CPU_TOPOLOGY WINEDEBUG
           target=/tmp/MMH7Game-Win64-Shipping.exe
           cp "$runner_dir/lib/wine/x86_64-windows/cmd.exe" "$target"
           export WINEPREFIX=/tmp/soda-heroes-vii-prefix
-          export WINEARCH=win64
           mkdir -p "$WINEPREFIX"
-          WINEDEBUG=-all xvfb-run -a "$runner_dir/bin/wineboot" -u
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
 
           set +e
-          WINEDEBUG=+ntdll xvfb-run -a "$runner_dir/bin/wine" "$target" \
+          xvfb-run -a "$runner_dir/bin/wine" "$target" \
             /c echo '%NUMBER_OF_PROCESSORS%' >/tmp/renamed.out 2>/tmp/renamed.log
           renamed_status=$?
-          WINEDEBUG=+ntdll xvfb-run -a "$runner_dir/bin/wine" \
+          xvfb-run -a "$runner_dir/bin/wine" \
             "$runner_dir/lib/wine/x86_64-windows/cmd.exe" \
             /c echo '%NUMBER_OF_PROCESSORS%' >/tmp/original.out 2>/tmp/original.log
           original_status=$?
