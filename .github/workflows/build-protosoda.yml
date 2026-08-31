@@ -1,0 +1,262 @@
+name: build-protosoda
+on:
+  push:
+    branches:
+      - 'protosoda'
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: 'Green candidate run to release'
+        required: false
+        type: string
+permissions:
+  actions: read
+  contents: read
+env:
+  PROTOSODA_VERSION: '11.0-2'
+  SODA_TAG: 'soda-11.0-7'
+  SODA_ARCHIVE: 'soda-11.0-7-x86_64.tar.xz'
+  SODA_SHA256: '4b231c4fd7087e5f6d762093f2a486b0b3011da9b963e4879a1c6dbfe0b2b69f'
+  PROTON_TAG: 'GE-Proton11-6'
+  PROTON_COMMIT: '7e88cefffc122ea1584c2156b8d7bae6cf69b2a7'
+  PROTON_ARCHIVE: 'GE-Proton11-6-x86_64.tar.gz'
+  PROTON_SHA256: '659f8d71f2f78659340120b20c1c5a1464aa138939332a1376dea22f6d2dc2e4'
+  DEFAULT_PFX_SHA256: '2066a782988acb4881cefb10226358b146ee3d036d37651e1a7c58f6c4747e28'
+  RELEASE_NOTES: |-
+    <img src="https://raw.githubusercontent.com/bottlesdevs/data/main/logo/protosoda-logo.svg" width="64" />
+
+    ProtoSoda combines Soda 11.0-7 with the Proton layout and runtime required by UMU.
+
+    - Updated the Wine core to Soda 11.0-7, including Adaptive Launch v2, the current Valve base, compatibility fixes, measured PGO, and 64-bit Windows OpenXR support.
+    - Updated the launcher, runtime libraries, DXVK, VKD3D, and protonfixes to GE-Proton11-6.
+    - Regenerated the default prefix from the combined runner instead of reusing the GE-Proton prefix.
+    - Assembled and tested only in GitHub Actions from pinned release assets. The published archive is the same candidate consumed by the release job.
+jobs:
+  build:
+    if: github.event_name == 'push' || inputs.candidate_run_id == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      archive_name: ${{ steps.identity.outputs.archive_name }}
+      artifact_name: ${{ steps.identity.outputs.artifact_name }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: define build identity
+        id: identity
+        run: |
+          archive_name="ProtoSoda-$PROTOSODA_VERSION.tar.gz"
+          artifact_name="protosoda-$PROTOSODA_VERSION-${GITHUB_SHA::7}"
+          echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+
+      - name: setup
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y file xvfb
+
+      - name: download pinned runners
+        run: |
+          soda_url="https://github.com/bottlesdevs/wine/releases/download/$SODA_TAG/$SODA_ARCHIVE"
+          proton_url="https://github.com/GloriousEggroll/proton-ge-custom/releases/download/$PROTON_TAG/$PROTON_ARCHIVE"
+          default_pfx_url="https://raw.githubusercontent.com/GloriousEggroll/proton-ge-custom/$PROTON_COMMIT/default_pfx.py"
+          curl --fail --location --retry 3 --output "/tmp/$SODA_ARCHIVE" "$soda_url"
+          curl --fail --location --retry 3 --output "/tmp/$PROTON_ARCHIVE" "$proton_url"
+          curl --fail --location --retry 3 --output /tmp/default_pfx.py "$default_pfx_url"
+          echo "$SODA_SHA256  /tmp/$SODA_ARCHIVE" | sha256sum --check -
+          echo "$PROTON_SHA256  /tmp/$PROTON_ARCHIVE" | sha256sum --check -
+          echo "$DEFAULT_PFX_SHA256  /tmp/default_pfx.py" | sha256sum --check -
+
+      - name: assemble ProtoSoda
+        env:
+          ARCHIVE_NAME: ${{ steps.identity.outputs.archive_name }}
+        run: |
+          work_dir=/tmp/protosoda-build
+          soda_root="$work_dir/soda-11.0-7-x86_64"
+          proton_root="$work_dir/GE-Proton11-6-x86_64"
+          runner_root="$work_dir/ProtoSoda-$PROTOSODA_VERSION"
+          mkdir -p "$work_dir" /tmp/protosoda-output
+          tar -xJf "/tmp/$SODA_ARCHIVE" -C "$work_dir"
+          tar -xzf "/tmp/$PROTON_ARCHIVE" -C "$work_dir"
+          test -x "$soda_root/bin/wine"
+          test -x "$proton_root/proton"
+          test -d "$proton_root/protonfixes"
+          test -f "$proton_root/files/lib/wine/dxvk/version"
+          test -f "$proton_root/files/lib/wine/vkd3d-proton/version"
+
+          dxvk_hash="$(sha256sum "$proton_root/files/lib/wine/dxvk/version" | cut -d' ' -f1)"
+          vkd3d_hash="$(sha256sum "$proton_root/files/lib/wine/vkd3d-proton/version" | cut -d' ' -f1)"
+          protonfixes_hash="$(sha256sum "$proton_root/protonfixes/__init__.py" | cut -d' ' -f1)"
+          mv "$proton_root" "$runner_root"
+          cp -a "$soda_root/bin/." "$runner_root/files/bin/"
+          cp -a "$soda_root/lib/." "$runner_root/files/lib/"
+          cp -a "$soda_root/share/wine/." "$runner_root/files/share/wine/"
+          if test -d "$soda_root/share/openxr"; then
+            mkdir -p "$runner_root/files/share/openxr"
+            cp -a "$soda_root/share/openxr/." "$runner_root/files/share/openxr/"
+          fi
+
+          test "$(sha256sum "$runner_root/files/lib/wine/dxvk/version" | cut -d' ' -f1)" = "$dxvk_hash"
+          test "$(sha256sum "$runner_root/files/lib/wine/vkd3d-proton/version" | cut -d' ' -f1)" = "$vkd3d_hash"
+          test "$(sha256sum "$runner_root/protonfixes/__init__.py" | cut -d' ' -f1)" = "$protonfixes_hash"
+          cmp "$soda_root/bin/wine" "$runner_root/files/bin/wine"
+          cmp "$soda_root/lib/wine/x86_64-windows/ntdll.dll" \
+            "$runner_root/files/lib/wine/x86_64-windows/ntdll.dll"
+          cmp "$soda_root/lib/wine/i386-windows/ntdll.dll" \
+            "$runner_root/files/lib/wine/i386-windows/ntdll.dll"
+          cmp "$soda_root/lib/wine/x86_64-windows/wineopenxr.dll" \
+            "$runner_root/files/lib/wine/x86_64-windows/wineopenxr.dll"
+
+          rm -rf "$runner_root/files/share/default_pfx"
+          xvfb-run -a python3 /tmp/default_pfx.py \
+            "$runner_root/files/share/default_pfx" "$runner_root/files" 0
+          test -f "$runner_root/files/share/default_pfx/system.reg"
+          test -f "$runner_root/files/share/default_pfx/user.reg"
+
+          grep -qx 'CURRENT_PREFIX_VERSION="GE-Proton11-6"' "$runner_root/proton"
+          sed -i "s/^CURRENT_PREFIX_VERSION=.*/CURRENT_PREFIX_VERSION=\"$PROTOSODA_VERSION\"/" \
+            "$runner_root/proton"
+          grep -q '"GE-Proton11-6-x86_64"' "$runner_root/compatibilitytool.vdf"
+          sed -i "s/GE-Proton11-6-x86_64/ProtoSoda-$PROTOSODA_VERSION/g" \
+            "$runner_root/compatibilitytool.vdf"
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          printf '%s %s\n' "$source_date_epoch" "ProtoSoda-$PROTOSODA_VERSION" \
+            > "$runner_root/version"
+          printf '%s\n' \
+            "ProtoSoda $PROTOSODA_VERSION" \
+            "Soda source $SODA_TAG" \
+            "Soda SHA256 $SODA_SHA256" \
+            "Proton base $PROTON_TAG-x86_64" \
+            "Proton SHA256 $PROTON_SHA256" \
+            "Build commit $GITHUB_SHA" \
+            > "$runner_root/BUILD_INFO"
+
+          tar -C "$work_dir" --sort=name --mtime="@$source_date_epoch" \
+            --owner=0 --group=0 --numeric-owner --use-compress-program='gzip -n' \
+            -cf "/tmp/protosoda-output/$ARCHIVE_NAME" "ProtoSoda-$PROTOSODA_VERSION"
+          cd /tmp/protosoda-output
+          sha256sum "$ARCHIVE_NAME" > "$ARCHIVE_NAME.sha256"
+          tar -tzf "$ARCHIVE_NAME" >/dev/null
+
+      - name: verify packaged runner
+        env:
+          ARCHIVE_NAME: ${{ steps.identity.outputs.archive_name }}
+        run: |
+          verify_dir=/tmp/protosoda-verify
+          runner_root="$verify_dir/ProtoSoda-$PROTOSODA_VERSION"
+          mkdir -p "$verify_dir" /tmp/protosoda-compat /tmp/protosoda-steam /tmp/protosoda-trace
+          tar -xzf "/tmp/protosoda-output/$ARCHIVE_NAME" -C "$verify_dir"
+          test "$(find "$verify_dir" -mindepth 1 -maxdepth 1 | wc -l)" = 1
+          grep -qx "ProtoSoda $PROTOSODA_VERSION" "$runner_root/BUILD_INFO"
+          grep -qx "Soda source $SODA_TAG" "$runner_root/BUILD_INFO"
+          grep -qx "Proton base $PROTON_TAG-x86_64" "$runner_root/BUILD_INFO"
+          grep -qx "CURRENT_PREFIX_VERSION=\"$PROTOSODA_VERSION\"" "$runner_root/proton"
+          grep -q "ProtoSoda-$PROTOSODA_VERSION" "$runner_root/compatibilitytool.vdf"
+          test -f "$runner_root/files/lib/wine/x86_64-windows/wineopenxr.dll"
+          test -f "$runner_root/files/share/openxr/wineopenxr64.json"
+          file "$runner_root/files/bin/wine" | grep -F 'x86-64'
+          file "$runner_root/files/lib/wine/x86_64-windows/ntdll.dll" | grep -F 'x86-64'
+          file "$runner_root/files/lib/wine/i386-windows/ntdll.dll" | grep -F 'Intel 80386'
+
+          export STEAM_COMPAT_DATA_PATH=/tmp/protosoda-compat
+          export STEAM_COMPAT_CLIENT_INSTALL_PATH=/tmp/protosoda-steam
+          export STEAM_COMPAT_LIBRARY_PATHS=/tmp
+          export STEAM_COMPAT_MOUNTS=/tmp
+          export STEAM_COMPAT_APP_ID=0
+          export SteamAppId=0
+          export SteamGameId=0
+          export UMU_ID=0
+          export SODA_ADAPTIVE_TRACE_DIR=/tmp/protosoda-trace
+          runtime_log=/tmp/protosoda-runtime.log
+          if ! timeout 5m xvfb-run -a "$runner_root/proton" runinprefix \
+            cmd.exe /c "echo ProtoSoda-$PROTOSODA_VERSION" >"$runtime_log" 2>&1; then
+            cat "$runtime_log"
+            exit 1
+          fi
+          grep -F "ProtoSoda-$PROTOSODA_VERSION" "$runtime_log"
+          if ! x86_arch="$(timeout 5m xvfb-run -a "$runner_root/proton" runinprefix \
+            "$runner_root/files/lib/wine/i386-windows/cmd.exe" /c \
+            "echo %PROCESSOR_ARCHITECTURE%" 2>>"$runtime_log" | tr -d '\r' | \
+            grep -E '^(AMD64|x86)$' | tail -1)"; then
+            cat "$runtime_log"
+            exit 1
+          fi
+          test "$x86_arch" = x86
+          trace_file="$(find /tmp/protosoda-trace -type f -size +8c -print -quit)"
+          test -n "$trace_file"
+          test "$(head -c 7 "$trace_file")" = SODAAL2
+          "$runner_root/files/bin/wineserver" -w
+          printf 'ProtoSoda runtime: launcher=pass, x86=%s, adaptive=v2\n' "$x86_arch" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.identity.outputs.artifact_name }}
+          path: /tmp/protosoda-output
+          if-no-files-found: error
+
+      - name: upload runtime log on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: protosoda-failure-${{ github.sha }}
+          path: /tmp/protosoda-runtime.log
+          if-no-files-found: ignore
+
+  release:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.candidate_run_id != '' &&
+      github.ref == 'refs/heads/protosoda'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: download verified candidate
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "Candidate run ID must be numeric." >&2
+            exit 1
+          fi
+          conclusion="$(gh run view "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion)"
+          head_sha="$(gh run view "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json headSha --jq .headSha)"
+          workflow="$(gh run view "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json workflowName --jq .workflowName)"
+          test "$conclusion" = success
+          test "$head_sha" = "$GITHUB_SHA"
+          test "$workflow" = build-protosoda
+          gh run download "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir /tmp/candidate
+
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="protosoda-$PROTOSODA_VERSION"
+          archive_name="ProtoSoda-$PROTOSODA_VERSION.tar.gz"
+          archive="$(find /tmp/candidate -type f -name "$archive_name" -print -quit)"
+          checksum="$(find /tmp/candidate -type f -name "$archive_name.sha256" -print -quit)"
+          test -n "$archive"
+          test -n "$checksum"
+          test "$(find /tmp/candidate -type f -name "$archive_name" | wc -l)" = 1
+          test "$(find /tmp/candidate -type f -name "$archive_name.sha256" | wc -l)" = 1
+          cp "$archive" "/tmp/$archive_name"
+          cp "$checksum" "/tmp/$archive_name.sha256"
+          cd /tmp
+          sha256sum --check "$archive_name.sha256"
+          test "$(tar -tzf "$archive_name" | sed 's#/.*##' | sort -u)" = "ProtoSoda-$PROTOSODA_VERSION"
+          tar -xOf "$archive_name" "ProtoSoda-$PROTOSODA_VERSION/BUILD_INFO" \
+            | grep -qx "Build commit $GITHUB_SHA"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists." >&2
+            exit 1
+          fi
+          digest="$(cut -d' ' -f1 "$archive_name.sha256")"
+          notes="$(printf '%s\n\nSHA-256: %s' "$RELEASE_NOTES" "$digest")"
+          gh release create "$tag" "$archive_name" --target "$GITHUB_SHA" \
+            --title "ProtoSoda $PROTOSODA_VERSION" --notes "$notes" --latest=false
