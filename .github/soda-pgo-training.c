@@ -18,7 +18,7 @@ static ULONGLONG run_workload(DWORD iterations)
     DWORD i;
 
     if (!QueryPerformanceFrequency(&frequency)) return 0;
-    if (!GetTempPathW(ARRAY_SIZE(temp_path), temp_path)) return 0;
+    if (!GetTempPathW(ARRAYSIZE(temp_path), temp_path)) return 0;
     if (!GetTempFileNameW(temp_path, L"sdp", 0, temp_file)) return 0;
 
     file = CreateFileW(temp_file, GENERIC_READ | GENERIC_WRITE, 0, NULL,
@@ -52,7 +52,7 @@ static ULONGLONG run_workload(DWORD iterations)
         result_sink += WaitForSingleObject(event, 0);
         ResetEvent(event);
         result_sink += MultiByteToWideChar(CP_UTF8, 0, "Soda PGO", -1,
-                                           wide_text, ARRAY_SIZE(wide_text));
+                                           wide_text, ARRAYSIZE(wide_text));
         result_sink += GetFileAttributesW(temp_file);
         PatBlt(dc, i & 15, (i >> 4) & 15, 8, 8, PATCOPY);
 
