@@ -27,10 +27,10 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '7'
+  REVISION: '8'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
-  VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-424754-20260831-pa9dd3f-w09b284-d70d750-v940e9f'
-  VALVE_WINE_COMMIT: '09b284bddbe3b5c6bd3c27f69224819d98ee2eaf'
+  VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
+  VALVE_WINE_COMMIT: '0509a0b64a4852741364c95bcdc67ae8f74ef11d'
   PROTON_COMMIT: 'b7a763327f0cb76e9e0bd53dc4de95dee0d4c3b7'
   FEX_COMMIT: '1cc4b93e7a71c883ec021b71359f136394dc1f3c'
   OPENXR_SDK_COMMIT: '8899a91c17ce9618f565f42408b47db1d6e9ccc7'
@@ -44,7 +44,8 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    - Updated the Valve experimental bleeding edge base to August 31, 2026 and Wine-TKG to `04ddf86c`.
+    - Updated the Valve experimental bleeding edge base to September 4, 2026 and Wine-TKG to `04ddf86c`.
+    - Added the MS-ICU runtime required by .NET applications for time zones and Unicode data.
     - Adaptive Launch now learns from separate sessions, ranks recurring early module loads, limits stored data, and migrates existing profiles.
     - Added host OpenXR outside Steam and SteamVR for 64-bit Windows applications, enabled by Bottles and verified against Monado in CI.
     - Preserved each bottle's configured Windows username when Wine updates a prefix.
@@ -63,27 +64,13 @@ jobs:
       - name: check Soda patches
         run: |
           git clone --filter=blob:none --no-checkout --depth=1 --branch "$VALVE_WINE_TAG" https://github.com/ValveSoftware/wine.git /tmp/valve-wine
-          git -C /tmp/valve-wine sparse-checkout set --no-cone \
-            /configure.ac \
-            /dlls/advapi32/advapi.c \
-            /dlls/dsound/Makefile.in \
-            /dlls/kernelbase/process.c \
-            /dlls/version/Makefile.in \
-            /dlls/winmm/Makefile.in \
-            /dlls/ntdll/unix/file.c \
-            /dlls/ntdll/unix/loader.c \
-            /dlls/ntdll/unix/virtual.c \
-            /dlls/ntdll/loader.c \
-            /dlls/windows.ui/uisettings.c \
-            /dlls/win32u/sysparams.c \
-            /dlls/winewayland.drv/window.c \
-            /server/registry.c
           git -C /tmp/valve-wine checkout --detach "$VALVE_WINE_COMMIT"
           test "$(git -C /tmp/valve-wine rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
           git clone --filter=blob:none --no-checkout https://github.com/ValveSoftware/Proton.git /tmp/proton
           git -C /tmp/proton sparse-checkout set --no-cone /wineopenxr
           git -C /tmp/proton checkout --detach "$PROTON_COMMIT"
           test "$(git -C /tmp/proton rev-parse HEAD)" = "$PROTON_COMMIT"
+          .github/import-msicu.sh /tmp/valve-wine
           .github/import-wineopenxr.sh /tmp/valve-wine /tmp/proton/wineopenxr
           for patch in "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch; do
             git -C /tmp/valve-wine apply --check "$patch"
@@ -164,7 +151,7 @@ jobs:
           test "$(git -C /tmp/proton rev-parse HEAD)" = "$PROTON_COMMIT"
           git -C /tmp/proton submodule update --init --depth=1 OpenXR-SDK
           test "$(git -C /tmp/proton/OpenXR-SDK rev-parse HEAD)" = "$OPENXR_SDK_COMMIT"
-          sed -i '/      _source_cleanup/a\      "$GITHUB_WORKSPACE/.github/import-wineopenxr.sh" "${srcdir}/${_winesrcdir}" "/tmp/proton/wineopenxr"' non-makepkg-build.sh
+          sed -i '/      _source_cleanup/a\      "$GITHUB_WORKSPACE/.github/import-msicu.sh" "${srcdir}/${_winesrcdir}"\n      "$GITHUB_WORKSPACE/.github/import-wineopenxr.sh" "${srcdir}/${_winesrcdir}" "/tmp/proton/wineopenxr"' non-makepkg-build.sh
 
       - name: get/set the soda recipe
         working-directory: /home/runner/.config/frogminer/
@@ -188,10 +175,35 @@ jobs:
             -O2 -municode -ladvapi32 -lgdi32 -o /tmp/soda-pgo/training64.exe
           i686-w64-mingw32-gcc .github/soda-pgo-training.c \
             -O2 -municode -ladvapi32 -lgdi32 -o /tmp/soda-pgo/training32.exe
+
+      - name: build ICU smoke programs
+        run: |
+          mkdir -p /tmp/soda-icu
+          x86_64-w64-mingw32-gcc .github/soda-icu-smoke.c \
+            -O2 -Wall -Wextra -Werror -o /tmp/soda-icu/smoke64.exe
+          i686-w64-mingw32-gcc .github/soda-icu-smoke.c \
+            -O2 -Wall -Wextra -Werror -o /tmp/soda-icu/smoke32.exe
       
       - name: start build
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: yes|./non-makepkg-build.sh
+
+      - name: verify packaged Unix runtime
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          for arch in i386 x86_64; do
+            unix_dir="$runner_dir/lib/wine/$arch-unix"
+            test -f "$unix_dir/ntdll.so"
+            test -f "$unix_dir/win32u.so"
+            test -f "$unix_dir/winebus.so"
+            test -f "$unix_dir/winevulkan.so"
+            test -f "$unix_dir/winex11.so"
+            module_count="$(find "$unix_dir" -maxdepth 1 -type f -name '*.so' | wc -l)"
+            test "$module_count" -ge 30
+            printf '%s Unix modules: %s\n' "$arch" "$module_count"
+          done
 
       - name: train PGO build
         if: steps.identity.outputs.pgo == 'true'
@@ -286,7 +298,7 @@ jobs:
           sed -i "s|^_bleeding_tag=.*|_bleeding_tag=\"$VALVE_WINE_TAG\"|" wine-tkg-profiles/wine-tkg-valve-exp-bleeding.cfg
           sed -i '/^ubuntu_pkgs_64=/ s/libgstreamer-plugins-base1.0-dev/libgstreamer-plugins-base1.0-dev:amd64/' wine-tkg-scripts/deps
           cp "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch wine-tkg-userpatches/
-          sed -i '/      _source_cleanup/a\      "$GITHUB_WORKSPACE/.github/import-wineopenxr.sh" "${srcdir}/${_winesrcdir}" "/tmp/proton/wineopenxr"' non-makepkg-build.sh
+          sed -i '/      _source_cleanup/a\      "$GITHUB_WORKSPACE/.github/import-msicu.sh" "${srcdir}/${_winesrcdir}"\n      "$GITHUB_WORKSPACE/.github/import-wineopenxr.sh" "${srcdir}/${_winesrcdir}" "/tmp/proton/wineopenxr"' non-makepkg-build.sh
           recipe=/home/runner/.config/frogminer/wine-tkg.cfg
           sed -i '/^_GCC_FLAGS=/d; /^_LD_FLAGS=/d' "$recipe"
           sed -i '$a_GCC_FLAGS="-O2 -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-missing-profile -fprofile-use=/tmp/soda-pgo/profiles -fprofile-correction -fprofile-partial-training -fprofile-exclude-files=preloader"' "$recipe"
@@ -304,6 +316,24 @@ jobs:
           consumed_count="$(wc -l < /tmp/soda-pgo/evidence/consumed-profiles.txt)"
           test "$consumed_count" -gt 0
           grep -E '[#/]+server[#/]+' /tmp/soda-pgo/evidence/consumed-profiles.txt
+
+      - name: verify packaged PGO Unix runtime
+        if: steps.identity.outputs.pgo == 'true'
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          for arch in i386 x86_64; do
+            unix_dir="$runner_dir/lib/wine/$arch-unix"
+            test -f "$unix_dir/ntdll.so"
+            test -f "$unix_dir/win32u.so"
+            test -f "$unix_dir/winebus.so"
+            test -f "$unix_dir/winevulkan.so"
+            test -f "$unix_dir/winex11.so"
+            module_count="$(find "$unix_dir" -maxdepth 1 -type f -name '*.so' | wc -l)"
+            test "$module_count" -ge 30
+            printf '%s PGO Unix modules: %s\n' "$arch" "$module_count"
+          done
 
       - name: bundle Wine Mono
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
@@ -373,6 +403,32 @@ jobs:
           grep -F '#arch=win32' "$WINEPREFIX/system.reg"
           "$runner_dir/bin/wineserver" -w
 
+      - name: verify MS-ICU runtime
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          export TZ=America/Denver
+          export WINEDEBUG=-all
+
+          export WINEPREFIX=/tmp/soda-icu-prefix64
+          export WINEARCH=win64
+          mkdir -p "$WINEPREFIX"
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          xvfb-run -a "$runner_dir/bin/wine" /tmp/soda-icu/smoke64.exe \
+            | tr -d '\r' | tee /tmp/soda-icu/runtime64.log
+          grep -F 'ICU 72.1 timezone=America/Denver' /tmp/soda-icu/runtime64.log
+          "$runner_dir/bin/wineserver" -w
+
+          export WINEPREFIX=/tmp/soda-icu-prefix32
+          export WINEARCH=win32
+          mkdir -p "$WINEPREFIX"
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          xvfb-run -a "$runner_dir/bin/wine" /tmp/soda-icu/smoke32.exe \
+            | tr -d '\r' | tee /tmp/soda-icu/runtime32.log
+          grep -F 'ICU 72.1 timezone=America/Denver' /tmp/soda-icu/runtime32.log
+          "$runner_dir/bin/wineserver" -w
+
       - name: verify compatibility fixes
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
@@ -388,8 +444,6 @@ jobs:
           done
           test -S /tmp/.X11-unix/X97
           kill -0 "$xvfb_pid"
-          git -C src/ValveSoftware-winegit merge-base --is-ancestor 2a667e28ba7800288f5873a4b13bc0baf6e4a857 HEAD
-          git -C src/ValveSoftware-winegit merge-base --is-ancestor 9358696fe9a2261329f4a83aa6a65fd436106154 HEAD
           grep -F 'winebrowser.exe"" ""%1' src/ValveSoftware-winegit/loader/wine.inf.in
           grep -F 'toplevel == hwnd && NtUserGetPresentRect' src/ValveSoftware-winegit/dlls/winex11.drv/init.c
 
@@ -678,7 +732,12 @@ jobs:
         run: |
           test "$(uname -m)" = aarch64
           sudo apt-get update
-          sudo apt-get install -y file xvfb xz-utils
+          sudo apt-get install -y \
+            file \
+            gcc-mingw-w64-i686 \
+            gcc-mingw-w64-x86-64 \
+            xvfb \
+            xz-utils
           command -v docker
           sudo systemctl start docker
           docker version
@@ -694,6 +753,7 @@ jobs:
           git -C /tmp/proton/wine fetch --no-tags origin "$VALVE_WINE_TAG"
           git -C /tmp/proton/wine checkout --detach "$VALVE_WINE_COMMIT"
           test "$(git -C /tmp/proton/wine rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
+          .github/import-msicu.sh /tmp/proton/wine
           for patch in "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch; do
             if [[ "$patch" == *wineopenxr-host-runtime.mypatch ]]; then
               continue
@@ -703,6 +763,14 @@ jobs:
           done
           git -C /tmp/proton/wineopenxr apply --check "$GITHUB_WORKSPACE/.github/wineopenxr-host-runtime-proton.mypatch"
           git -C /tmp/proton/wineopenxr apply "$GITHUB_WORKSPACE/.github/wineopenxr-host-runtime-proton.mypatch"
+
+      - name: build ICU smoke programs
+        run: |
+          mkdir -p /tmp/soda-icu
+          x86_64-w64-mingw32-gcc .github/soda-icu-smoke.c \
+            -O2 -Wall -Wextra -Werror -o /tmp/soda-icu/smoke64.exe
+          i686-w64-mingw32-gcc .github/soda-icu-smoke.c \
+            -O2 -Wall -Wextra -Werror -o /tmp/soda-icu/smoke32.exe
 
       - name: configure
         run: |
@@ -741,6 +809,9 @@ jobs:
             lib/wine/aarch64-unix/ntdll.so
             lib/wine/aarch64-windows/ntdll.dll
             lib/wine/x86_64-windows/ntdll.dll
+            lib/wine/i386-windows/icu.dll
+            lib/wine/x86_64-windows/icu.dll
+            lib/wine/aarch64-windows/icu.dll
             lib/wine/aarch64-windows/libarm64ecfex.dll
             lib/wine/aarch64-windows/libwow64fex.dll
             lib/wine/aarch64-unix/libarm64ecfex.so
@@ -817,6 +888,15 @@ jobs:
           fi
           printf 'Windows architectures: native=%s, x64=%s, x86=%s\n' \
             "$native_arch" "$x64_arch" "$x86_arch" | tee -a "$GITHUB_STEP_SUMMARY"
+
+          export TZ=America/Denver
+          export WINEDEBUG=-all
+          "$runner_dir/bin/wine" /tmp/soda-icu/smoke64.exe \
+            | tr -d '\r' | tee /tmp/soda-icu/runtime64.log
+          grep -F 'ICU 72.1 timezone=America/Denver' /tmp/soda-icu/runtime64.log
+          "$runner_dir/bin/wine" /tmp/soda-icu/smoke32.exe \
+            | tr -d '\r' | tee /tmp/soda-icu/runtime32.log
+          grep -F 'ICU 72.1 timezone=America/Denver' /tmp/soda-icu/runtime32.log
           "$runner_dir/bin/wineserver" -w
 
   release:

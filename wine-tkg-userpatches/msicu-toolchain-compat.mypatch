@@ -1,0 +1,46 @@
+diff --git a/include/msvcrt/stdio.h b/include/msvcrt/stdio.h
+--- a/include/msvcrt/stdio.h
++++ b/include/msvcrt/stdio.h
+@@ -340,6 +340,19 @@ static inline int __cdecl _sprintf_l(char *buffer, const char *format, _locale_t
+     return ret < 0 ? -1 : ret;
+ }
+ 
++static inline int __cdecl _snprintf_l(char *buffer, size_t size, const char *format, _locale_t locale, ...) __WINE_CRT_PRINTF_ATTR(3, 5);
++static inline int __cdecl _snprintf_l(char *buffer, size_t size, const char *format, _locale_t locale, ...)
++{
++    int ret;
++    va_list args;
++
++    va_start(args, locale);
++    ret = __stdio_common_vsprintf(_CRT_INTERNAL_LOCAL_PRINTF_OPTIONS | _CRT_INTERNAL_PRINTF_LEGACY_VSPRINTF_NULL_TERMINATION,
++                                  buffer, size, format, locale, args);
++    va_end(args);
++    return ret < 0 ? -1 : ret;
++}
++
+ static inline int __cdecl vsscanf(const char *buffer, const char *format, va_list args) __WINE_CRT_SCANF_ATTR(2, 0);
+ static inline int __cdecl vsscanf(const char *buffer, const char *format, va_list args)
+ {
+diff --git a/libs/icui18n/unum.cpp b/libs/icui18n/unum.cpp
+--- a/libs/icui18n/unum.cpp
++++ b/libs/icui18n/unum.cpp
+@@ -36,6 +36,10 @@
+ 
+ U_NAMESPACE_USE
+ 
++#if defined(__clang__) && (defined(__aarch64__) || defined(__arm64ec__))
++#pragma clang optimize off
++#endif
++
+ 
+ U_CAPI UNumberFormat* U_EXPORT2
+ unum_open(  UNumberFormatStyle    style,
+@@ -1230,4 +1234,8 @@ unum_formatUFormattable(const UNumberFormat* fmt,
+     return res.extract(result, resultLength, *status);
+ }
+ 
++#if defined(__clang__) && (defined(__aarch64__) || defined(__arm64ec__))
++#pragma clang optimize on
++#endif
++
+ #endif /* #if !UCONFIG_NO_FORMATTING */

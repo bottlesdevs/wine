@@ -1,0 +1,88 @@
+diff --git a/libs/icucommon/ucnv_lmb.cpp b/libs/icucommon/ucnv_lmb.cpp
+index 090627e6892..fc0f19c6b89 100644
+--- a/libs/icucommon/ucnv_lmb.cpp
++++ b/libs/icucommon/ucnv_lmb.cpp
+@@ -39,10 +39,6 @@
+ #include "ucnv_bld.h"
+ #include "ucnv_cnv.h"
+ 
+-#ifdef EBCDIC_RTL
+-    #include "ascii_a.h"
+-#endif
+-
+ /*
+   LMBCS
+ 
+diff --git a/libs/icucommon/uprefs.cpp b/libs/icucommon/uprefs.cpp
+index bf8674165a1..0df7507377e 100644
+--- a/libs/icucommon/uprefs.cpp
++++ b/libs/icucommon/uprefs.cpp
+@@ -292,7 +292,6 @@ int32_t GetLocaleInfoExWrapper(LPCWSTR lpLocaleName, LCTYPE LCType, LPWSTR lpLCD
+ {
+     RETURN_VALUE_IF(U_FAILURE(*status), 0);
+ 
+-#ifndef UPREFS_TEST
+     *status = U_ZERO_ERROR;
+     int32_t result = GetLocaleInfoEx(lpLocaleName, LCType, lpLCData, cchData);
+ 
+@@ -302,10 +301,5 @@ int32_t GetLocaleInfoExWrapper(LPCWSTR lpLocaleName, LCTYPE LCType, LPWSTR lpLCD
+         *status = getUErrorCodeFromLastError();
+     }
+     return result;
+-#else
+-    #include "uprefstest.h"
+-    UPrefsTest prefTests;
+-    return prefTests.MockGetLocaleInfoEx(lpLocaleName, LCType, lpLCData, cchData, status);
+-#endif
+ }
+ 
+ // Copies a string to a buffer if its size allows it and returns the size.
+diff --git a/libs/icui18n/calendar.cpp b/libs/icui18n/calendar.cpp
+index 979bb45c99a..d4ba2281274 100644
+--- a/libs/icui18n/calendar.cpp
++++ b/libs/icui18n/calendar.cpp
+@@ -98,7 +98,6 @@
+  * which depend on include files and library from ../tools/toolutil, the following circular link:
+  *   CPPFLAGS+=-I$(top_srcdir)/tools/toolutil
+  *   LIBS+=$(LIBICUTOOLUTIL)
+  */
+-#include "udbgutil.h"
+ #include <stdio.h>
+ 
+ /**
+diff --git a/libs/icucommon/ucln_imp.h b/libs/icucommon/ucln_imp.h
+index 0500329eb07..bb02b10d7b0 100644
+--- a/libs/icucommon/ucln_imp.h
++++ b/libs/icucommon/ucln_imp.h
+@@ -71,7 +71,6 @@
+  *           static void ucln_registerAutomaticCleanup()
+  *           static void ucln_unRegisterAutomaticCleanup()
+  */
+-#include "ucln_local_hook.c"
+ 
+ #elif defined(UCLN_AUTO_ATEXIT)
+ /*
+diff --git a/libs/icucommon/unicode/uconfig.h b/libs/icucommon/unicode/uconfig.h
+index d452aeb3af6..e2fbedf069e 100644
+--- a/libs/icucommon/unicode/uconfig.h
++++ b/libs/icucommon/unicode/uconfig.h
+@@ -56,7 +56,6 @@
+  * @internal ICU 4.0
+  */
+ #if defined(UCONFIG_USE_LOCAL)
+-#include "uconfig_local.h"
+ #endif
+ 
+ //IGNORE_WINDOWS_HEADERS_END
+diff --git a/libs/icui18n/fmtable.cpp b/libs/icui18n/fmtable.cpp
+index 9e826861c02..9fb44da7262 100644
+--- a/libs/icui18n/fmtable.cpp
++++ b/libs/icui18n/fmtable.cpp
+@@ -825,7 +825,6 @@ void Formattable::setDecimalNumber(StringPiece numberString, UErrorCode &status)
+ using namespace std;
+ 
+ #include "unicode/datefmt.h"
+-#include "unistrm.h"
+ 
+ class FormattableStreamer /* not : public UObject because all methods are static */ {
+ public:

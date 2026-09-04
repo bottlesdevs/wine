@@ -1,0 +1,234 @@
+diff --git a/configure.ac b/configure.ac
+index 7434ef9323b..6549a39174a 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -187,7 +187,7 @@ case "$host_cpu" in
+   x86_64)          HOST_ARCH=x86_64 ;;
+ esac
+ m4_set_add_all([_AC_SUBST_VARS],[HOST_ARCH]m4_foreach([cpu],[aarch64,arm,arm64ec,i386,x86_64],
+-                                [m4_foreach([var],[CC,CFLAGS,EXTRACFLAGS,CXXFLAGS,LDFLAGS,DEBUG,TARGET,STRIP,DELAYLOADFLAG,DISABLED_SUBDIRS],[,cpu[_]var])]))
++                                [m4_foreach([var],[CC,CXX,CFLAGS,EXTRACFLAGS,CXXFLAGS,LDFLAGS,DEBUG,TARGET,STRIP,DELAYLOADFLAG,DISABLED_SUBDIRS],[,cpu[_]var])]))
+ 
+ AC_SUBST(toolsdir,[$with_wine_tools])
+ AC_MSG_CHECKING([for the directory containing the Wine tools])
+@@ -391,7 +391,9 @@ AS_VAR_IF([PE_ARCHS],[none],[cross_archs=])
+ 
+ saved_CC=$CC
++saved_CXX=$CXX
+ saved_CFLAGS=$CFLAGS
+ saved_CPPFLAGS=$CPPFLAGS
++saved_CXXFLAGS=$CXXFLAGS
+ saved_LDFLAGS=$LDFLAGS
+ 
+ AS_UNSET(extra_arch)
+@@ -444,8 +446,12 @@ do
+     CPPFLAGS=""
+     AS_VAR_SET_IF([${wine_arch}_CFLAGS],[],[AS_VAR_SET([${wine_arch}_CFLAGS],[${CROSSCFLAGS:-"-g -O2"}])])
+     AS_VAR_SET_IF([${wine_arch}_LDFLAGS],[],[AS_VAR_SET([${wine_arch}_LDFLAGS],[$CROSSLDFLAGS])])
++    AS_VAR_SET_IF([${wine_arch}_CXX],[],[AS_VAR_COPY([${wine_arch}_CXX],[${wine_arch}_CC])])
++    AS_VAR_SET_IF([${wine_arch}_CXXFLAGS],[],[AS_VAR_COPY([${wine_arch}_CXXFLAGS],[${wine_arch}_CFLAGS])])
+     AS_VAR_COPY([CC],[${wine_arch}_CC])
++    AS_VAR_COPY([CXX],[${wine_arch}_CXX])
+     AS_VAR_COPY([CFLAGS],[${wine_arch}_CFLAGS])
++    AS_VAR_COPY([CXXFLAGS],[${wine_arch}_CXXFLAGS])
+     AS_VAR_COPY([LDFLAGS],[${wine_arch}_LDFLAGS])
+     AS_VAR_SET([${wine_arch}_EXTRACFLAGS],["-D__WINE_PE_BUILD -Wall"])
+ 
+@@ -492,6 +498,7 @@ do
+         AS_VAR_APPEND([${wine_arch}_EXTRACFLAGS],[" $llvm_extra_cflags"])
+         AS_VAR_APPEND([${wine_arch}_LDFLAGS],[" $llvm_extra_ldflags"])
+         CFLAGS="$CFLAGS $llvm_extra_cflags $llvm_cflags"
++        CXXFLAGS="$CXXFLAGS $llvm_extra_cflags $llvm_cflags"
+     else
+         AS_VAR_PUSHDEF([wine_cv_crosscc], [wine_cv_${wine_arch}_crosscc])
+         AC_CACHE_CHECK([whether $CC works], wine_cv_crosscc,
+@@ -537,6 +544,35 @@ This is an error since --enable-archs=$wine_arch was requested.])])
+           AS_VAR_APPEND([${wine_arch}_CC],[" $res"]) ;;
+     esac
+ 
++    AS_VAR_PUSHDEF([wine_cv_crosscxx_cxx17],[ac_cv_${wine_arch}_crosscxx_cxx17])
++    AC_MSG_CHECKING([for $CXX option to enable C++17 features])
++    AC_LANG_PUSH([C++])
++    AC_CACHE_VAL([wine_cv_crosscxx_cxx17],
++        [AS_VAR_SET([wine_cv_crosscxx_cxx17],[no])
++         for arg in '' '-std=gnu++17'
++         do
++             test -z "$arg" || CXX="$CXX $arg"
++             AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [[static_assert(__cplusplus >= 201703L);]])],
++                               [AS_VAR_SET([wine_cv_crosscxx_cxx17],[$arg])],
++                               [AS_VAR_SET([wine_cv_crosscxx_cxx17],[no])])
++             AS_VAR_COPY([CXX],[${wine_arch}_CXX])
++             AS_VAR_IF([wine_cv_crosscxx_cxx17],[no],[],[break])
++         done])
++    AS_VAR_COPY([res],[wine_cv_crosscxx_cxx17])
++    AC_LANG_POP([C++])
++    AS_VAR_POPDEF([wine_cv_crosscxx_cxx17])
++    case "x$res" in
++      x) AC_MSG_RESULT([none needed]) ;;
++      xno) AC_MSG_RESULT([unsupported])
++           AS_VAR_SET_IF([enable_archs],
++                [AC_MSG_ERROR([$wine_arch PE cross-compiler supporting C++17 not found.
++This is an error since --enable-archs=$wine_arch was requested.])])
++           continue
++           ;;
++      x*) AC_MSG_RESULT([$res])
++          AS_VAR_APPEND([${wine_arch}_CXX],[" $res"]) ;;
++    esac
++
+     AS_VAR_IF([wine_arch],[i386],[],
+               [AS_VAR_PUSHDEF([wine_cv_seh_support],[ac_cv_${wine_arch}_seh_support])
+                AC_CACHE_CHECK([whether $CC supports SEH directives], wine_cv_seh_support,
+@@ -584,10 +620,12 @@ do
+     case $wine_arch in
+       i386) WINE_TRY_PE_CFLAGS([-fno-omit-frame-pointer])
+             WINE_TRY_PE_CFLAGS([-mpreferred-stack-boundary=2])
++            WINE_TRY_PE_CFLAGS([-mlong-double-64])
+             WINE_TRY_PE_CFLAGS([-Wl,--disable-stdcall-fixup],
+                                [AS_VAR_APPEND([${wine_arch}_LDFLAGS],[" -Wl,--disable-stdcall-fixup"])]) ;;
+       x86_64) WINE_TRY_PE_CFLAGS([-Wformat-overflow])
+               WINE_TRY_PE_CFLAGS([-Wnonnull])
++              WINE_TRY_PE_CFLAGS([-mlong-double-64])
+               WINE_TRY_PE_CFLAGS([-mcx16])
+               WINE_TRY_PE_CFLAGS([-mcmodel=small]) ;;
+     esac
+@@ -653,7 +691,9 @@ done
+ 
+ CC=$saved_CC
++CXX=$saved_CXX
+ CFLAGS=$saved_CFLAGS
+ CPPFLAGS=$saved_CPPFLAGS
++CXXFLAGS=$saved_CXXFLAGS
+ LDFLAGS=$saved_LDFLAGS
+ 
+ case $HOST_ARCH in
+diff --git a/tools/make_makefiles b/tools/make_makefiles
+index eca6bd98f81..75ff0c936f9 100755
+--- a/tools/make_makefiles
++++ b/tools/make_makefiles
+@@ -289,7 +289,11 @@ sub assign_sources_to_makefiles(@)
+         {
+             next unless $dir eq "dlls/winewayland.drv";
+         }
+-        elsif ($name !~ /\.(S|c|desktop|in|inl|l|m|mc|po|rc|rh|sfd|svg|x|y)$/)
++        elsif ($name =~ /^msvcrt\/[^.]+$/) # C++ header without extension
++        {
++            next unless $dir eq "include";
++        }
++        elsif ($name !~ /\.(S|c|cpp|desktop|in|inl|l|m|mc|po|rc|rh|sfd|svg|x|y)$/)
+         {
+             next;
+         }
+diff --git a/tools/makedep.c b/tools/makedep.c
+index a4ed58b11b1..4238b53fc54 100644
+--- a/tools/makedep.c
++++ b/tools/makedep.c
+@@ -98,7 +98,8 @@ struct incl_file
+ #define FLAG_SFD_FONTS      0x00400000  /* sfd file generated bitmap fonts */
+ #define FLAG_C_IMPLIB       0x01000000  /* file is part of an import library */
+ #define FLAG_C_UNIX         0x02000000  /* file is part of a Unix library */
+-#define FLAG_ARM64EC_X64    0x04000000  /* use x86_64 object on ARM64EC */
++#define FLAG_C_CXX          0x04000000  /* file uses C++ */
++#define FLAG_ARM64EC_X64    0x08000000  /* use x86_64 object on ARM64EC */
+ 
+ static const struct
+ {
+@@ -1147,6 +1148,16 @@ static void parse_c_file( struct file *source, FILE *file )
+ }
+ 
+ 
++/*******************************************************************
++ *         parse_cxx_file
++ */
++static void parse_cxx_file( struct file *source, FILE *file )
++{
++    source->flags |= FLAG_C_CXX;
++    parse_c_file( source, file );
++}
++
++
+ /*******************************************************************
+  *         parse_rc_file
+  */
+@@ -1258,8 +1269,10 @@ static const struct
+ } parse_functions[] =
+ {
+     { ".c",   parse_c_file },
+-    { ".cpp", parse_c_file },
++    { ".cpp", parse_cxx_file },
+     { ".h",   parse_c_file },
++    { ".hpp", parse_cxx_file },
++    { ".ipp", parse_cxx_file },
+     { ".inl", parse_c_file },
+     { ".l",   parse_c_file },
+     { ".m",   parse_c_file },
+@@ -1297,6 +1310,12 @@ static struct file *load_file( const char *name )
+         parse_functions[i].parse( file, f );
+         break;
+     }
++    if (i == ARRAY_SIZE(parse_functions))
++    {
++        /* check for C++ header with no extension */
++        char *dir = strstr( name, "/msvcrt/" );
++        if (dir && !strchr( dir, '.' )) parse_cxx_file( file, f );
++    }
+ 
+     fclose( f );
+     input_file_name = NULL;
+@@ -1658,7 +1677,7 @@ static void parse_file( struct makefile *make, struct incl_file *source, int src
+ 
+     if (strendswith( file->name, ".m" )) file->flags |= FLAG_C_UNIX;
+     if (file->flags & FLAG_C_UNIX) source->use_msvcrt = 0;
+-    else if (file->flags & FLAG_C_IMPLIB) source->use_msvcrt = 1;
++    else if (file->flags & (FLAG_C_IMPLIB | FLAG_C_CXX)) source->use_msvcrt = 1;
+ 
+     if (source->sourcename)
+     {
+@@ -2096,5 +2115,9 @@ static void get_dependencies( struct incl_file *file, struct incl_file *source )
+     {
+         if (file->owner == source) return;  /* already processed */
++        if (!(source->file->flags & FLAG_C_CXX) && file->file && (file->file->flags & FLAG_C_CXX))
++        {
++            return;  /* ignore C++ dependencies for non-C++ sources */
++        }
+         if (file->type == INCL_IMPORTLIB)
+         {
+             if (!(source->file->flags & (FLAG_IDL_TYPELIB | FLAG_IDL_REGTYPELIB)))
+@@ -3384,6 +3407,10 @@ static void output_source_one_arch( struct makefile *make, struct incl_file *sou
+     {
+         if (!unix_lib_supported) return;
+     }
++    else if (source->file->flags & FLAG_C_CXX)
++    {
++        return;
++    }
+     else if (archs.count > 1 && is_using_msvcrt( make ))
+     {
+         if (!so_dll_supported) return;
+@@ -4079,13 +4102,22 @@ static void output_sources( struct makefile *make )
+         char *obj = xstrdup( source->name );
+         char *ext = get_extension( obj );
+ 
+-        if (!ext) fatal_error( "unsupported file type %s\n", source->name );
+-        *ext++ = 0;
++        if (ext)
++        {
++            *ext++ = 0;
+ 
+-        for (j = 0; output_source_funcs[j].ext; j++)
+-            if (!strcmp( ext, output_source_funcs[j].ext )) break;
++            for (j = 0; output_source_funcs[j].ext; j++)
++                if (!strcmp( ext, output_source_funcs[j].ext )) break;
+ 
+-        output_source_funcs[j].fn( make, source, obj );
++            output_source_funcs[j].fn( make, source, obj );
++        }
++        else
++        {
++            if (source->file->flags & FLAG_C_CXX)
++                output_source_h( make, source, obj );
++            else
++                fatal_error( "unsupported file type %s\n", source->name );
++        }
+         strarray_addall_uniq( &make->dependencies, source->dependencies );
+     }
+ 
