@@ -645,15 +645,19 @@ jobs:
 
           baseline_median="$(sort -n /tmp/soda-pgo/evidence/baseline-samples.txt | sed -n '5p')"
           pgo_median="$(sort -n /tmp/soda-pgo/evidence/pgo-samples.txt | sed -n '5p')"
-          change="$(awk -v baseline="$baseline_median" -v pgo="$pgo_median" \
+          median_change="$(awk -v baseline="$baseline_median" -v pgo="$pgo_median" \
             'BEGIN { printf "%.2f", (pgo - baseline) * 100 / baseline }')"
-          printf 'baseline_median_us=%s\npgo_median_us=%s\nchange_percent=%s\n' \
-            "$baseline_median" "$pgo_median" "$change" \
+          paste /tmp/soda-pgo/evidence/baseline-samples.txt \
+            /tmp/soda-pgo/evidence/pgo-samples.txt \
+            | awk '{ printf "%.6f\n", ($2 - $1) * 100 / $1 }' \
+            | sort -n > /tmp/soda-pgo/evidence/paired-change-samples.txt
+          paired_change_median="$(sed -n '5p' /tmp/soda-pgo/evidence/paired-change-samples.txt)"
+          printf 'baseline_median_us=%s\npgo_median_us=%s\nmedian_change_percent=%s\npaired_change_median_percent=%s\n' \
+            "$baseline_median" "$pgo_median" "$median_change" "$paired_change_median" \
             > /tmp/soda-pgo/evidence/benchmark.txt
-          printf 'PGO benchmark: baseline %s us, candidate %s us, change %s%%\n' \
-            "$baseline_median" "$pgo_median" "$change" >> "$GITHUB_STEP_SUMMARY"
-          awk -v baseline="$baseline_median" -v pgo="$pgo_median" \
-            'BEGIN { exit !(pgo < baseline) }'
+          printf 'PGO benchmark: baseline %s us, candidate %s us, paired change %s%%\n' \
+            "$baseline_median" "$pgo_median" "$paired_change_median" >> "$GITHUB_STEP_SUMMARY"
+          awk -v change="$paired_change_median" 'BEGIN { exit !(change < 0) }'
         
       - name: Upload prepare.log on failure
         if: ${{ failure() }}
