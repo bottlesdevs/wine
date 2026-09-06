@@ -13,10 +13,10 @@ permissions:
   actions: read
   contents: read
 env:
-  PROTOSODA_VERSION: '11.0-2'
-  SODA_TAG: 'soda-11.0-7'
-  SODA_ARCHIVE: 'soda-11.0-7-x86_64.tar.xz'
-  SODA_SHA256: '4b231c4fd7087e5f6d762093f2a486b0b3011da9b963e4879a1c6dbfe0b2b69f'
+  PROTOSODA_VERSION: '11.0-3'
+  SODA_TAG: 'soda-11.0-8'
+  SODA_ARCHIVE: 'soda-11.0-8-x86_64.tar.xz'
+  SODA_SHA256: 'd764aa6697f06fffb4f883930d265f45546381dfc10da17e419ac3ea0b0b8041'
   PROTON_TAG: 'GE-Proton11-6'
   PROTON_COMMIT: '7e88cefffc122ea1584c2156b8d7bae6cf69b2a7'
   PROTON_ARCHIVE: 'GE-Proton11-6-x86_64.tar.gz'
@@ -27,13 +27,12 @@ env:
   RELEASE_NOTES: |-
     <img src="https://raw.githubusercontent.com/bottlesdevs/data/main/logo/protosoda-logo.svg" width="64" />
 
-    ProtoSoda combines Soda 11.0-7 with the Proton layout and runtime required by UMU.
+    ProtoSoda combines Soda 11.0-8 with the Proton layout and runtime required by UMU.
 
-    - Updated the Wine core to Soda 11.0-7, including Adaptive Launch v2, the current Valve base, compatibility fixes, measured PGO, and 64-bit Windows OpenXR support.
+    - Updated the Wine core to Soda 11.0-8, including Adaptive Launch v2, the MS-ICU runtime, the current Valve base, compatibility fixes, PGO, and 64-bit Windows OpenXR support.
     - Updated the launcher, runtime libraries, DXVK, VKD3D, and protonfixes to GE-Proton11-6.
     - Bundled the pinned libunwind runtime required by the Soda Wine core under Steam Runtime 4.
     - Regenerated the default prefix from the combined runner instead of reusing the GE-Proton prefix.
-    - Assembled and tested only in GitHub Actions from pinned release assets. The published archive is the same candidate consumed by the release job.
 jobs:
   build:
     if: github.event_name == 'push' || inputs.candidate_run_id == ''
@@ -57,7 +56,19 @@ jobs:
       - name: setup
         run: |
           sudo apt-get update
-          sudo apt-get install -y file xvfb
+          sudo apt-get install -y \
+            file \
+            gcc-mingw-w64-i686 \
+            gcc-mingw-w64-x86-64 \
+            xvfb
+
+      - name: build ICU smoke programs
+        run: |
+          mkdir -p /tmp/protosoda-icu
+          x86_64-w64-mingw32-gcc .github/protosoda-icu-smoke.c \
+            -O2 -Wall -Wextra -Werror -o /tmp/protosoda-icu/smoke64.exe
+          i686-w64-mingw32-gcc .github/protosoda-icu-smoke.c \
+            -O2 -Wall -Wextra -Werror -o /tmp/protosoda-icu/smoke32.exe
 
       - name: download pinned runners
         run: |
@@ -79,7 +90,7 @@ jobs:
           ARCHIVE_NAME: ${{ steps.identity.outputs.archive_name }}
         run: |
           work_dir=/tmp/protosoda-build
-          soda_root="$work_dir/soda-11.0-7-x86_64"
+          soda_root="$work_dir/soda-11.0-8-x86_64"
           proton_root="$work_dir/GE-Proton11-6-x86_64"
           runner_root="$work_dir/ProtoSoda-$PROTOSODA_VERSION"
           mkdir -p "$work_dir" /tmp/protosoda-output
@@ -120,6 +131,10 @@ jobs:
             "$runner_root/files/lib/wine/x86_64-windows/ntdll.dll"
           cmp "$soda_root/lib/wine/i386-windows/ntdll.dll" \
             "$runner_root/files/lib/wine/i386-windows/ntdll.dll"
+          cmp "$soda_root/lib/wine/x86_64-windows/icu.dll" \
+            "$runner_root/files/lib/wine/x86_64-windows/icu.dll"
+          cmp "$soda_root/lib/wine/i386-windows/icu.dll" \
+            "$runner_root/files/lib/wine/i386-windows/icu.dll"
           cmp "$soda_root/lib/wine/x86_64-windows/wineopenxr.dll" \
             "$runner_root/files/lib/wine/x86_64-windows/wineopenxr.dll"
           readelf -d "$runner_root/files/lib/wine/x86_64-unix/ntdll.so" \
@@ -184,6 +199,8 @@ jobs:
           file "$runner_root/files/bin/wine" | grep -F 'x86-64'
           file "$runner_root/files/lib/wine/x86_64-windows/ntdll.dll" | grep -F 'x86-64'
           file "$runner_root/files/lib/wine/i386-windows/ntdll.dll" | grep -F 'Intel 80386'
+          test -f "$runner_root/files/lib/wine/x86_64-windows/icu.dll"
+          test -f "$runner_root/files/lib/wine/i386-windows/icu.dll"
 
           export STEAM_COMPAT_DATA_PATH=/tmp/protosoda-compat
           export STEAM_COMPAT_CLIENT_INSTALL_PATH=/tmp/protosoda-steam
@@ -209,6 +226,14 @@ jobs:
             exit 1
           fi
           test "$x86_arch" = x86
+          export TZ=America/Denver
+          export WINEDEBUG=-all
+          timeout 5m xvfb-run -a "$runner_root/proton" runinprefix \
+            /tmp/protosoda-icu/smoke64.exe | tr -d '\r' | tee /tmp/protosoda-icu/runtime64.log
+          grep -F 'ICU 72.1 timezone=America/Denver' /tmp/protosoda-icu/runtime64.log
+          timeout 5m xvfb-run -a "$runner_root/proton" runinprefix \
+            /tmp/protosoda-icu/smoke32.exe | tr -d '\r' | tee /tmp/protosoda-icu/runtime32.log
+          grep -F 'ICU 72.1 timezone=America/Denver' /tmp/protosoda-icu/runtime32.log
           trace_file="$(find /tmp/protosoda-trace -type f -size +8c -print -quit)"
           test -n "$trace_file"
           test "$(head -c 7 "$trace_file")" = SODAAL2
