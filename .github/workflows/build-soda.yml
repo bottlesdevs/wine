@@ -125,6 +125,7 @@ jobs:
           sudo apt install -f
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcap-dev:amd64 libpcap-dev:i386
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libgudev-1.0-dev:amd64 libgudev-1.0-dev:i386
+          sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcsclite-dev:amd64 libpcsclite-dev:i386
           sudo apt-get install -y \
             cmake \
             file \
@@ -686,6 +687,10 @@ jobs:
           test -f "$runner_dir/lib/wine/x86_64-unix/winegstreamer.so"
           test -f "$runner_dir/lib/wine/i386-unix/winegstreamer.so"
           test -f "$runner_dir/lib/wine/i386-windows/winegstreamer.dll"
+          test -f "$runner_dir/lib/wine/x86_64-unix/winscard.so"
+          test -f "$runner_dir/lib/wine/i386-unix/winscard.so"
+          test -f "$runner_dir/lib/wine/x86_64-windows/winscard.dll"
+          test -f "$runner_dir/lib/wine/i386-windows/winscard.dll"
           test -x "$runner_dir/bin/wine"
           file "$runner_dir/bin/wine" | grep -F 'x86-64'
           file "$runner_dir/lib/wine/x86_64-windows/ntdll.dll" | grep -F 'x86-64'
