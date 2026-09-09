@@ -929,6 +929,7 @@ jobs:
           name: ${{ needs.arm64.outputs.component_name }}
 
       - name: release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/soda'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
