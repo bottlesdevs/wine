@@ -126,11 +126,16 @@ jobs:
           mkdir -p /home/runner/.config/frogminer/
           sudo apt purge -y ubuntu-advantage-tools python3-update-manager
           sudo dpkg --add-architecture i386 && sudo apt update
+          sudo apt-mark hold grub-common grub-efi-amd64-bin python3 python3-apt shim-signed
           sudo apt install aptitude
           sudo aptitude remove -y '?narrow(?installed,?version(deb.sury.org))'
           sudo apt install -f
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcap-dev:amd64 libpcap-dev:i386
-          sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libgudev-1.0-dev:amd64 libgudev-1.0-dev:i386
+          sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" \
+            libgudev-1.0-dev:amd64 \
+            libgudev-1.0-dev:i386 \
+            libvulkan-dev:amd64 \
+            libvulkan-dev:i386
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcsclite-dev:amd64 libpcsclite-dev:i386
           sudo apt-get install -y \
             cmake \
