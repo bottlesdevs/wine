@@ -56,7 +56,7 @@ env:
     - Added standard accessibility proxies and expanded UI Automation support used by Office controls.
     - Fixed Click-to-Run MSI registration, software licensing calls, print preview, HTTP redirects and request options, and large XML documents.
     - Kept the Soda 11.0-10 compatibility fixes, MS-ICU runtime, Adaptive Launch, host OpenXR, pure 32-bit prefixes, x86_64 PGO, and aarch64 support.
-    - Built and verified both packages only in GitHub Actions from pinned sources, with immutable release assets.
+    - Built both packages in GitHub Actions from the pinned Wine, Proton, and Wine-TKG revisions.
 jobs:
   patches:
     runs-on: ubuntu-24.04
