@@ -64,6 +64,8 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: check Soda patches
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           git clone --filter=blob:none --no-checkout --depth=1 --branch "$VALVE_WINE_TAG" https://github.com/ValveSoftware/wine.git /tmp/valve-wine
           git -C /tmp/valve-wine checkout --detach "$VALVE_WINE_COMMIT"
@@ -201,6 +203,8 @@ jobs:
       
       - name: start build
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: yes|./non-makepkg-build.sh
 
       - name: verify packaged Unix runtime
@@ -301,6 +305,8 @@ jobs:
       - name: rebuild with PGO profiles
         if: steps.identity.outputs.pgo == 'true'
         working-directory: /home/runner/work/
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           build_root=/home/runner/work/wine-tkg-git
           test "$PWD" = /home/runner/work
@@ -766,6 +772,8 @@ jobs:
           docker version
 
       - name: prepare sources
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           git clone --filter=blob:none --no-checkout https://github.com/ValveSoftware/Proton.git /tmp/proton
           git -C /tmp/proton checkout "$PROTON_COMMIT"

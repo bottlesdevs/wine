@@ -133,9 +133,14 @@ materialize_blob "$icudata_commit" nls/icudtl.dat "$icudata_blob"
 materialize_git_blob() {
   local expected="$1"
   local actual
+  local -a headers=(-H 'Accept: application/vnd.github.raw+json')
+
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    headers+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+  fi
 
   actual="$(curl --fail --location --retry 3 \
-    -H 'Accept: application/vnd.github.raw+json' \
+    "${headers[@]}" \
     "https://api.github.com/repos/wine-mirror/wine/git/blobs/$expected" | \
     git -C "$source_dir" hash-object -w --stdin)"
   test "$actual" = "$expected"
