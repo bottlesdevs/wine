@@ -27,7 +27,8 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '10'
+  REVISION: '11-experimental'
+  RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
   VALVE_WINE_COMMIT: '0509a0b64a4852741364c95bcdc67ae8f74ef11d'
@@ -44,19 +45,17 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    - Updated the Valve experimental bleeding edge base to September 4, 2026 and Wine-TKG to `04ddf86c`.
-    - Fixed first-run KiriKiri WMV and WMA playback by detecting its media reader and releasing flushed samples.
-    - Fixed Battle.net crashes caused by a missing Steam game ID during XInput setup.
-    - Fixed WMV and WMA playback when Proton's media converter database is unavailable.
-    - Added the MS-ICU runtime required by .NET applications for time zones and Unicode data.
-    - Adaptive Launch now learns from separate sessions, ranks recurring early module loads, limits stored data, and migrates existing profiles.
-    - Added host OpenXR outside Steam and SteamVR for 64-bit Windows applications, enabled by Bottles and verified against Monado in CI.
-    - Preserved each bottle's configured Windows username when Wine updates a prefix.
-    - Limited Heroes of Might and Magic VII to eight reported CPUs by default while preserving explicit `WINE_CPU_TOPOLOGY` values.
-    - Kept Valve fixes for child-window fullscreen presentation and long URLs opened through `ShellExecute`.
-    - Preserved pure 32-bit prefixes alongside 64-bit and WoW64 bottles.
-    - Built the x86_64 package with measured PGO and gated it against a non-PGO candidate.
-    - Added an aarch64 package with ARM64, ARM64EC, bundled FEX for x86 and x86_64 programs, and host OpenXR support.
+    Soda 11.0-11 Experimental, codenamed Windows Escape, adds the first public Office compatibility patch set. It remains a prerelease and does not replace the current stable Soda build.
+
+    - Added experimental Microsoft Office 365 support for Click-to-Run installation, activation, Word, Excel, PowerPoint, OneNote, and classic Outlook.
+    - Added the WinRT APIs used by Office for accounts, application data, package queries, system identity, globalization, networking, HTTP, JSON, media, and input.
+    - Added an Office authentication broker for Microsoft sign-in and account recovery flows.
+    - Fixed Direct2D and DirectComposition paths used by Office, WebView2, and composition swap chains.
+    - Fixed Wayland child surfaces, tool popups, focus input, disabled overlays, monitor placement, and cross-process WebView2 windows.
+    - Fixed X11 popup presentation and Office font rendering.
+    - Added standard accessibility proxies and expanded UI Automation support used by Office controls.
+    - Fixed Click-to-Run MSI registration, software licensing calls, print preview, HTTP redirects and request options, and large XML documents.
+    - Kept the Soda 11.0-10 compatibility fixes, MS-ICU runtime, Adaptive Launch, host OpenXR, pure 32-bit prefixes, x86_64 PGO, and aarch64 support.
     - Built and verified both packages only in GitHub Actions from pinned sources, with immutable release assets.
 jobs:
   patches:
@@ -77,6 +76,7 @@ jobs:
           .github/import-wineopenxr.sh /tmp/valve-wine /tmp/proton/wineopenxr
           for patch in "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch; do
             git -C /tmp/valve-wine apply --check "$patch"
+            git -C /tmp/valve-wine apply "$patch"
           done
 
   build:
@@ -87,7 +87,8 @@ jobs:
       archive_name: ${{ steps.identity.outputs.archive_name }}
       component_name: ${{ steps.identity.outputs.component_name }}
       pgo: ${{ steps.identity.outputs.pgo }}
-      stable: ${{ steps.identity.outputs.stable }}
+      publish: ${{ steps.identity.outputs.publish }}
+      prerelease: ${{ steps.identity.outputs.prerelease }}
 
     steps:        
       - uses: actions/checkout@v7
@@ -97,10 +98,14 @@ jobs:
         run: |
           version="$WINE_VERSION-$REVISION"
           pgo=false
-          stable=false
+          publish=false
+          prerelease=false
           if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/soda" ]]; then
             pgo=true
-            stable=true
+            publish=true
+            if [[ "$REVISION" == *-experimental ]]; then
+              prerelease=true
+            fi
           else
             version="$version-${GITHUB_SHA::7}"
             if [[ "${{ inputs.pgo }}" == "true" ]]; then
@@ -112,7 +117,8 @@ jobs:
           echo "archive_name=$component_name.tar.xz" >> "$GITHUB_OUTPUT"
           echo "component_name=$component_name" >> "$GITHUB_OUTPUT"
           echo "pgo=$pgo" >> "$GITHUB_OUTPUT"
-          echo "stable=$stable" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
       - name: setup
         working-directory: /home/runner/work/
@@ -915,7 +921,7 @@ jobs:
     needs:
       - build
       - arm64
-    if: needs.build.outputs.stable == 'true'
+    if: needs.build.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -937,10 +943,18 @@ jobs:
           ARM64_ARCHIVE_NAME: ${{ needs.arm64.outputs.archive_name }}
         run: |
           tag="soda-$WINE_VERSION-$REVISION"
+          title="Soda $WINE_VERSION-$REVISION"
           file="$ARCHIVE_NAME"
           arm64_file="$ARM64_ARCHIVE_NAME"
+          release_flags=(--latest)
+          if [[ -n "$RELEASE_CODENAME" ]]; then
+            title="$title - $RELEASE_CODENAME"
+          fi
+          if [[ "${{ needs.build.outputs.prerelease }}" == "true" ]]; then
+            release_flags=(--prerelease)
+          fi
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists." >&2
             exit 1
           fi
-          gh release create "$tag" "$file" "$arm64_file" --target "$GITHUB_SHA" --title "Soda $WINE_VERSION-$REVISION" --notes "$RELEASE_NOTES" --latest
+          gh release create "$tag" "$file" "$arm64_file" --target "$GITHUB_SHA" --title "$title" --notes "$RELEASE_NOTES" "${release_flags[@]}"
