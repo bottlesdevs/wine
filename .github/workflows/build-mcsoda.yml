@@ -3,7 +3,16 @@ name: build-mcsoda
 on:
   push:
     branches:
-      - 'mcsoda'
+      - 'soda'
+    paths:
+      - '.github/scripts/bundle-macos-libraries.sh'
+      - '.github/tests/mcsoda-*.c'
+      - '.github/workflows/build-mcsoda.yml'
+      - 'mcsoda/**'
+      - 'wine-tkg-userpatches/mod-loader-prefer-native.mypatch'
+      - 'wine-tkg-userpatches/ntdll-adaptive-launch-profile.mypatch'
+      - 'wine-tkg-userpatches/ntdll-handle-unmapped-unix-paths.mypatch'
+      - 'wine-tkg-userpatches/win32u-fill-depth-only-display-mode.mypatch'
   workflow_dispatch:
     inputs:
       reuse_run_id:
@@ -597,7 +606,7 @@ jobs:
 
   release:
     needs: smoke-test
-    if: ${{ always() && needs.smoke-test.result == 'success' && (github.event_name == 'push' || inputs.publish) }}
+    if: ${{ always() && needs.smoke-test.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.publish }}
     runs-on: ubuntu-24.04
 
     steps:

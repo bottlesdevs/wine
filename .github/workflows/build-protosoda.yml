@@ -2,7 +2,10 @@ name: build-protosoda
 on:
   push:
     branches:
-      - 'protosoda'
+      - 'soda'
+    paths:
+      - '.github/protosoda-icu-smoke.c'
+      - '.github/workflows/build-protosoda.yml'
   workflow_dispatch:
     inputs:
       candidate_run_id:
@@ -260,7 +263,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.candidate_run_id != '' &&
-      github.ref == 'refs/heads/protosoda'
+      github.ref == 'refs/heads/soda'
     runs-on: ubuntu-24.04
     permissions:
       actions: read
