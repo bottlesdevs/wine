@@ -1,0 +1,282 @@
+Windows.Media closed captioning properties.
+
+diff --git a/dlls/windows.media/captions.c b/dlls/windows.media/captions.c
+index d484456..7aaed6d 100644
+--- a/dlls/windows.media/captions.c
++++ b/dlls/windows.media/captions.c
+@@ -20,6 +20,7 @@
+ #include "private.h"
+
+ #include "wine/debug.h"
++#include "wine/list.h"
+
+ WINE_DEFAULT_DEBUG_CHANNEL(media);
+
+@@ -27,9 +28,21 @@ struct captions_statics
+ {
+     IActivationFactory IActivationFactory_iface;
+     IClosedCaptionPropertiesStatics IClosedCaptionPropertiesStatics_iface;
++    IClosedCaptionPropertiesStatics2 IClosedCaptionPropertiesStatics2_iface;
+     LONG ref;
+ };
+
++struct captions_handler
++{
++    struct list entry;
++    IEventHandler_IInspectable *handler;
++    EventRegistrationToken token;
++};
++
++static struct list properties_changed_handlers = LIST_INIT( properties_changed_handlers );
++static SRWLOCK properties_changed_lock = SRWLOCK_INIT;
++static LONG64 properties_changed_token;
++
+ static inline struct captions_statics *impl_from_IActivationFactory( IActivationFactory *iface )
+ {
+     return CONTAINING_RECORD( iface, struct captions_statics, IActivationFactory_iface );
+@@ -57,6 +70,13 @@ static HRESULT WINAPI factory_QueryInterface( IActivationFactory *iface, REFIID
+         return S_OK;
+     }
+
++    if (IsEqualGUID( iid, &IID_IClosedCaptionPropertiesStatics2 ))
++    {
++        *out = &impl->IClosedCaptionPropertiesStatics2_iface;
++        IInspectable_AddRef( *out );
++        return S_OK;
++    }
++
+     FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
+     *out = NULL;
+     return E_NOINTERFACE;
+@@ -231,10 +251,76 @@ static const struct IClosedCaptionPropertiesStaticsVtbl captions_statics_vtbl =
+     captions_get_RegionOpacity,
+ };
+
++DEFINE_IINSPECTABLE( captions2, IClosedCaptionPropertiesStatics2, struct captions_statics,
++                     IActivationFactory_iface )
++
++static HRESULT WINAPI captions2_add_PropertiesChanged( IClosedCaptionPropertiesStatics2 *iface,
++                                                        IEventHandler_IInspectable *handler,
++                                                        EventRegistrationToken *token )
++{
++    struct captions_handler *entry;
++
++    TRACE( "iface %p, handler %p, token %p.\n", iface, handler, token );
++
++    if (!handler || !token) return E_POINTER;
++    if (!(entry = calloc( 1, sizeof(*entry) ))) return E_OUTOFMEMORY;
++
++    IEventHandler_IInspectable_AddRef( handler );
++    entry->handler = handler;
++    entry->token.value = InterlockedIncrement64( &properties_changed_token );
++
++    AcquireSRWLockExclusive( &properties_changed_lock );
++    list_add_tail( &properties_changed_handlers, &entry->entry );
++    ReleaseSRWLockExclusive( &properties_changed_lock );
++
++    *token = entry->token;
++    return S_OK;
++}
++
++static HRESULT WINAPI captions2_remove_PropertiesChanged( IClosedCaptionPropertiesStatics2 *iface,
++                                                           EventRegistrationToken token )
++{
++    struct captions_handler *entry, *next, *removed = NULL;
++
++    TRACE( "iface %p, token %#I64x.\n", iface, token.value );
++
++    AcquireSRWLockExclusive( &properties_changed_lock );
++    LIST_FOR_EACH_ENTRY_SAFE( entry, next, &properties_changed_handlers, struct captions_handler, entry )
++    {
++        if (entry->token.value != token.value) continue;
++        list_remove( &entry->entry );
++        removed = entry;
++        break;
++    }
++    ReleaseSRWLockExclusive( &properties_changed_lock );
++
++    if (removed)
++    {
++        IEventHandler_IInspectable_Release( removed->handler );
++        free( removed );
++    }
++    return S_OK;
++}
++
++static const struct IClosedCaptionPropertiesStatics2Vtbl captions_statics2_vtbl =
++{
++    captions2_QueryInterface,
++    captions2_AddRef,
++    captions2_Release,
++    /* IInspectable methods */
++    captions2_GetIids,
++    captions2_GetRuntimeClassName,
++    captions2_GetTrustLevel,
++    /* IClosedCaptionPropertiesStatics2 methods */
++    captions2_add_PropertiesChanged,
++    captions2_remove_PropertiesChanged,
++};
++
+ static struct captions_statics captions_statics =
+ {
+     {&factory_vtbl},
+     {&captions_statics_vtbl},
++    {&captions_statics2_vtbl},
+     1,
+ };
+
+diff --git a/dlls/windows.media/private.h b/dlls/windows.media/private.h
+index ba61c8d..963324b 100644
+--- a/dlls/windows.media/private.h
++++ b/dlls/windows.media/private.h
+@@ -29,6 +29,8 @@
+
+ #include "activation.h"
+
++#define WINDOWS_FOUNDATION_UNIVERSALAPICONTRACT_VERSION 0xf0000
++
+ #define WIDL_using_Windows_Foundation
+ #define WIDL_using_Windows_Foundation_Collections
+ #include "windows.foundation.h"
+diff --git a/dlls/windows.media/tests/media.c b/dlls/windows.media/tests/media.c
+index bcd72be..ca46523 100644
+--- a/dlls/windows.media/tests/media.c
++++ b/dlls/windows.media/tests/media.c
+@@ -25,6 +25,8 @@
+
+ #include "roapi.h"
+
++#define WINDOWS_FOUNDATION_UNIVERSALAPICONTRACT_VERSION 0xf0000
++
+ #define WIDL_using_Windows_Foundation
+ #define WIDL_using_Windows_Foundation_Collections
+ #include "windows.foundation.h"
+@@ -52,11 +54,56 @@ static void check_interface_( unsigned int line, void *obj, const IID *iid, BOOL
+         IUnknown_Release( unk );
+ }
+
++struct event_handler
++{
++    IEventHandler_IInspectable IEventHandler_IInspectable_iface;
++    LONG ref;
++};
++
++static HRESULT WINAPI event_handler_QueryInterface( IEventHandler_IInspectable *iface, REFIID iid, void **out )
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!IsEqualGUID( iid, &IID_IUnknown ) && !IsEqualGUID( iid, &IID_IEventHandler_IInspectable ))
++        return E_NOINTERFACE;
++    *out = iface;
++    IEventHandler_IInspectable_AddRef( iface );
++    return S_OK;
++}
++
++static ULONG WINAPI event_handler_AddRef( IEventHandler_IInspectable *iface )
++{
++    struct event_handler *impl = CONTAINING_RECORD( iface, struct event_handler, IEventHandler_IInspectable_iface );
++    return InterlockedIncrement( &impl->ref );
++}
++
++static ULONG WINAPI event_handler_Release( IEventHandler_IInspectable *iface )
++{
++    struct event_handler *impl = CONTAINING_RECORD( iface, struct event_handler, IEventHandler_IInspectable_iface );
++    return InterlockedDecrement( &impl->ref );
++}
++
++static HRESULT WINAPI event_handler_Invoke( IEventHandler_IInspectable *iface, IInspectable *sender, IInspectable *args )
++{
++    return S_OK;
++}
++
++static const IEventHandler_IInspectableVtbl event_handler_vtbl =
++{
++    event_handler_QueryInterface,
++    event_handler_AddRef,
++    event_handler_Release,
++    event_handler_Invoke,
++};
++
+ static void test_CaptionStatics(void)
+ {
+     static const WCHAR *caption_properties_name = L"Windows.Media.ClosedCaptioning.ClosedCaptionProperties";
++    struct event_handler handler = {{&event_handler_vtbl}, 1};
+     IClosedCaptionPropertiesStatics *caption_statics;
++    IClosedCaptionPropertiesStatics2 *caption_statics2;
+     IActivationFactory *factory;
++    EventRegistrationToken token;
+     HSTRING str;
+     HRESULT hr;
+     LONG ref;
+@@ -87,6 +134,33 @@ static void test_CaptionStatics(void)
+     hr = IActivationFactory_QueryInterface( factory, &IID_IClosedCaptionPropertiesStatics, (void **)&caption_statics );
+     ok( hr == S_OK, "got hr %#lx.\n", hr );
+
++    hr = IActivationFactory_QueryInterface( factory, &IID_IClosedCaptionPropertiesStatics2,
++                                            (void **)&caption_statics2 );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    if (SUCCEEDED(hr))
++    {
++        hr = IClosedCaptionPropertiesStatics2_add_PropertiesChanged( caption_statics2, NULL, &token );
++        ok( hr == E_POINTER, "got hr %#lx.\n", hr );
++        hr = IClosedCaptionPropertiesStatics2_add_PropertiesChanged(
++                caption_statics2, &handler.IEventHandler_IInspectable_iface, NULL );
++        ok( hr == E_POINTER, "got hr %#lx.\n", hr );
++        ok( handler.ref == 1, "got ref %ld.\n", handler.ref );
++
++        token.value = 0;
++        hr = IClosedCaptionPropertiesStatics2_add_PropertiesChanged(
++                caption_statics2, &handler.IEventHandler_IInspectable_iface, &token );
++        ok( hr == S_OK, "got hr %#lx.\n", hr );
++        ok( token.value != 0, "got token %#I64x.\n", token.value );
++        ok( handler.ref == 2, "got ref %ld.\n", handler.ref );
++
++        hr = IClosedCaptionPropertiesStatics2_remove_PropertiesChanged( caption_statics2, token );
++        ok( hr == S_OK, "got hr %#lx.\n", hr );
++        ok( handler.ref == 1, "got ref %ld.\n", handler.ref );
++
++        ref = IClosedCaptionPropertiesStatics2_Release( caption_statics2 );
++        ok( ref == 3, "got ref %ld.\n", ref );
++    }
++
+     color = 0xdeadbeef;
+     hr = IClosedCaptionPropertiesStatics_get_FontColor( caption_statics, &color );
+     ok( hr == S_OK, "get_FontColor returned %#lx\n", hr );
+diff --git a/include/windows.media.closedcaptioning.idl b/include/windows.media.closedcaptioning.idl
+index 5e53ced..19aaa89 100644
+--- a/include/windows.media.closedcaptioning.idl
++++ b/include/windows.media.closedcaptioning.idl
+@@ -35,6 +35,7 @@ namespace Windows.Media.ClosedCaptioning {
+     typedef enum ClosedCaptionStyle ClosedCaptionStyle;
+
+     interface IClosedCaptionPropertiesStatics;
++    interface IClosedCaptionPropertiesStatics2;
+
+     runtimeclass ClosedCaptionProperties;
+
+@@ -127,10 +128,25 @@ namespace Windows.Media.ClosedCaptioning {
+         [propget] HRESULT RegionOpacity([out, retval] Windows.Media.ClosedCaptioning.ClosedCaptionOpacity *value);
+     }
+
++    [
++        contract(Windows.Foundation.UniversalApiContract, 15.0),
++        exclusiveto(Windows.Media.ClosedCaptioning.ClosedCaptionProperties),
++        uuid(9de26870-37de-4197-8845-9a48dc5ac317)
++    ]
++    interface IClosedCaptionPropertiesStatics2 : IInspectable
++    {
++        [eventadd] HRESULT PropertiesChanged(
++            [in] Windows.Foundation.EventHandler<IInspectable *> *handler,
++            [out, retval] EventRegistrationToken *token
++        );
++        [eventremove] HRESULT PropertiesChanged([in] EventRegistrationToken token);
++    }
++
+     [
+         contract(Windows.Foundation.UniversalApiContract, 1.0),
+         marshaling_behavior(agile),
+         static(Windows.Media.ClosedCaptioning.IClosedCaptionPropertiesStatics, Windows.Foundation.UniversalApiContract, 1.0),
++        static(Windows.Media.ClosedCaptioning.IClosedCaptionPropertiesStatics2, Windows.Foundation.UniversalApiContract, 15.0),
+         threading(both)
+     ]
+     runtimeclass ClosedCaptionProperties

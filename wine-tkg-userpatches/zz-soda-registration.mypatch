@@ -1,0 +1,77 @@
+Register the new Soda modules and IDL files in the build.
+
+diff --git a/configure.ac b/configure.ac
+index 7434ef9..2a0aa95 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -3379,6 +3379,8 @@ WINE_CONFIG_MAKEFILE(dlls/windows.devices.bluetooth)
+ WINE_CONFIG_MAKEFILE(dlls/windows.devices.bluetooth/tests)
+ WINE_CONFIG_MAKEFILE(dlls/windows.devices.enumeration)
+ WINE_CONFIG_MAKEFILE(dlls/windows.devices.enumeration/tests)
++WINE_CONFIG_MAKEFILE(dlls/windows.devices.input)
++WINE_CONFIG_MAKEFILE(dlls/windows.devices.input/tests)
+ WINE_CONFIG_MAKEFILE(dlls/windows.devices.usb)
+ WINE_CONFIG_MAKEFILE(dlls/windows.devices.usb/tests)
+ WINE_CONFIG_MAKEFILE(dlls/windows.gaming.input)
+@@ -3715,6 +3717,7 @@ WINE_CONFIG_MAKEFILE(programs/view)
+ WINE_CONFIG_MAKEFILE(programs/wevtutil)
+ WINE_CONFIG_MAKEFILE(programs/where)
+ WINE_CONFIG_MAKEFILE(programs/whoami)
++WINE_CONFIG_MAKEFILE(programs/wine4officeauth)
+ WINE_CONFIG_MAKEFILE(programs/wineboot)
+ WINE_CONFIG_MAKEFILE(programs/winebrowser)
+ WINE_CONFIG_MAKEFILE(programs/winecfg)
+diff --git a/include/Makefile.in b/include/Makefile.in
+index 4351581..4679889 100644
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -907,6 +907,7 @@ SOURCES = \
+ 	windows.graphics.imaging.idl \
+ 	windows.h \
+ 	windows.management.deployment.idl \
++	windows.management.idl \
+ 	windows.media.capture.idl \
+ 	windows.media.closedcaptioning.idl \
+ 	windows.media.core.idl \
+@@ -927,6 +928,7 @@ SOURCES = \
+ 	windows.perception.spatial.idl \
+ 	windows.perception.spatial.surfaces.idl \
+ 	windows.security.authentication.onlineid.idl \
++	windows.security.authentication.web.core.idl \
+ 	windows.security.authorization.appcapabilityaccess.idl \
+ 	windows.security.credentials.idl \
+ 	windows.security.credentials.ui.idl \
+@@ -957,6 +959,7 @@ SOURCES = \
+ 	windows.ui.xaml.hosting.desktopwindowxamlsource.idl \
+ 	windows.ui.xaml.idl \
+ 	windows.ui.xaml.interop.idl \
++	windows.web.http.idl \
+ 	windowscontracts.idl \
+ 	windowsx.h \
+ 	wine/afd.h \
+@@ -1106,8 +1109,10 @@ SOURCES = \
+
+ INSTALL_LIB = \
+ 	windows.applicationmodel.winmd \
++	windows.foundation.winmd \
+ 	windows.globalization.winmd \
+ 	windows.graphics.winmd \
++	windows.management.winmd \
+ 	windows.media.winmd \
+ 	windows.networking.winmd \
+ 	windows.perception.winmd \
+diff --git a/loader/wine.inf.in b/loader/wine.inf.in
+index 924a77e..0e54cb4 100644
+--- a/loader/wine.inf.in
++++ b/loader/wine.inf.in
+@@ -1372,8 +1372,10 @@ sortdefault.nls
+
+ [WinmdFiles]
+ windows.applicationmodel.winmd
++windows.foundation.winmd
+ windows.globalization.winmd
+ windows.graphics.winmd
++windows.management.winmd
+ windows.media.winmd
+ windows.networking.winmd
+ windows.perception.winmd

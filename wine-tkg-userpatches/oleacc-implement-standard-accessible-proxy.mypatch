@@ -1,15 +1,50 @@
-diff --git a/dlls/oleacc/oleacc.spec b/dlls/oleacc/oleacc.spec
---- a/dlls/oleacc/oleacc.spec
-+++ b/dlls/oleacc/oleacc.spec
-@@ -6,2 +6,2 @@
--@ stub CreateStdAccessibleProxyA
--@ stub CreateStdAccessibleProxyW
-+@ stdcall CreateStdAccessibleProxyA(ptr str long ptr ptr)
-+@ stdcall CreateStdAccessibleProxyW(ptr wstr long ptr ptr)
+diff --git a/dlls/oleacc/client.c b/dlls/oleacc/client.c
+index d16285a139c..9efc9dc7d7e 100644
+--- a/dlls/oleacc/client.c
++++ b/dlls/oleacc/client.c
+@@ -902,5 +902,5 @@ static const struct win_class_data classes[] = {
+
+-HRESULT create_client_object(HWND hwnd, const IID *iid, void **obj)
++static HRESULT create_client_object_with_data(HWND hwnd, const struct win_class_data *data,
++        const IID *iid, void **obj)
+ {
+-    const struct win_class_data *data;
+     Client *client;
+@@ -915,4 +915,2 @@ HRESULT create_client_object(HWND hwnd, const IID *iid, void **obj)
+
+-    data = find_class_data(hwnd, classes);
+-
+     client->IAccessible_iface.lpVtbl = &ClientVtbl;
+@@ -935 +933,23 @@ HRESULT create_client_object(HWND hwnd, const IID *iid, void **obj)
+ }
++
++HRESULT create_client_object(HWND hwnd, const IID *iid, void **obj)
++{
++    return create_client_object_with_data(hwnd, find_class_data(hwnd, classes), iid, obj);
++}
++
++HRESULT create_client_object_for_class(HWND hwnd, const WCHAR *class_name, const IID *iid, void **obj)
++{
++    const struct win_class_data *data = NULL;
++    int i;
++
++    for (i = 0; classes[i].name; i++)
++    {
++        if (!wcsicmp(class_name, classes[i].name))
++        {
++            data = &classes[i];
++            break;
++        }
++    }
++
++    return create_client_object_with_data(hwnd, data, iid, obj);
++}
 diff --git a/dlls/oleacc/main.c b/dlls/oleacc/main.c
+index b2096d5d557..0e38ef4bd90 100644
 --- a/dlls/oleacc/main.c
 +++ b/dlls/oleacc/main.c
-@@ -103,0 +104,44 @@
+@@ -103,2 +103,46 @@ HRESULT WINAPI CreateStdAccessibleObject( HWND hwnd, LONG idObject,
+
 +HRESULT WINAPI CreateStdAccessibleProxyW( HWND hwnd, LPCWSTR class_name, LONG object_id,
 +        REFIID iid, void **object )
 +{
@@ -54,50 +89,32 @@ diff --git a/dlls/oleacc/main.c b/dlls/oleacc/main.c
 +    return hr;
 +}
 +
-diff --git a/dlls/oleacc/client.c b/dlls/oleacc/client.c
---- a/dlls/oleacc/client.c
-+++ b/dlls/oleacc/client.c
-@@ -903 +903,2 @@
--HRESULT create_client_object(HWND hwnd, const IID *iid, void **obj)
-+static HRESULT create_client_object_with_data(HWND hwnd, const struct win_class_data *data,
-+        const IID *iid, void **obj)
-@@ -905 +905,0 @@
--    const struct win_class_data *data;
-@@ -916,2 +915,0 @@
--    data = find_class_data(hwnd, classes);
--
-@@ -934,0 +933,22 @@
-+}
-+
-+HRESULT create_client_object(HWND hwnd, const IID *iid, void **obj)
-+{
-+    return create_client_object_with_data(hwnd, find_class_data(hwnd, classes), iid, obj);
-+}
-+
-+HRESULT create_client_object_for_class(HWND hwnd, const WCHAR *class_name, const IID *iid, void **obj)
-+{
-+    const struct win_class_data *data = NULL;
-+    int i;
-+
-+    for (i = 0; classes[i].name; i++)
-+    {
-+        if (!wcsicmp(class_name, classes[i].name))
-+        {
-+            data = &classes[i];
-+            break;
-+        }
-+    }
-+
-+    return create_client_object_with_data(hwnd, data, iid, obj);
+ HRESULT WINAPI ObjectFromLresult( LRESULT result, REFIID riid, WPARAM wParam, void **ppObject )
+diff --git a/dlls/oleacc/oleacc.spec b/dlls/oleacc/oleacc.spec
+index 9ad6e915965..7024a80a82a 100644
+--- a/dlls/oleacc/oleacc.spec
++++ b/dlls/oleacc/oleacc.spec
+@@ -5,4 +5,4 @@
+ @ stdcall CreateStdAccessibleObject(ptr long ptr ptr)
+-@ stub CreateStdAccessibleProxyA
+-@ stub CreateStdAccessibleProxyW
++@ stdcall CreateStdAccessibleProxyA(ptr str long ptr ptr)
++@ stdcall CreateStdAccessibleProxyW(ptr wstr long ptr ptr)
+ @ stdcall -private DllGetClassObject(ptr ptr ptr)
 diff --git a/dlls/oleacc/oleacc_private.h b/dlls/oleacc/oleacc_private.h
+index 2b9ac0ec060..5d091a94797 100644
 --- a/dlls/oleacc/oleacc_private.h
 +++ b/dlls/oleacc/oleacc_private.h
-@@ -30,0 +31 @@
+@@ -30,2 +30,3 @@ const struct win_class_data* find_class_data(HWND, const struct win_class_data*)
+ HRESULT create_client_object(HWND, const IID*, void**);
 +HRESULT create_client_object_for_class(HWND, const WCHAR*, const IID*, void**);
+ HRESULT create_window_object(HWND, const IID*, void**);
 diff --git a/dlls/oleacc/tests/main.c b/dlls/oleacc/tests/main.c
+index 325ac495e60..ff555644cdc 100644
 --- a/dlls/oleacc/tests/main.c
 +++ b/dlls/oleacc/tests/main.c
-@@ -1650,0 +1651,30 @@
+@@ -1650,2 +1650,32 @@ static void test_CreateStdAccessibleObject_classes(void)
+
 +static void test_CreateStdAccessibleProxy(void)
 +{
 +    VARIANT child, role;
@@ -128,5 +145,8 @@ diff --git a/dlls/oleacc/tests/main.c b/dlls/oleacc/tests/main.c
 +    DestroyWindow(hwnd);
 +}
 +
-@@ -2061,0 +2092 @@
+ typedef struct
+@@ -2061,2 +2091,3 @@ START_TEST(main)
+     test_CreateStdAccessibleObject_classes();
 +    test_CreateStdAccessibleProxy();
+     test_default_edit_accessible_object();

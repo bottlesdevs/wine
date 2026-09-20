@@ -1,0 +1,51 @@
+--- a/dlls/winewayland.drv/display.c
++++ b/dlls/winewayland.drv/display.c
+@@ -184,6 +184,20 @@
+      * to right, but ensure the primary output is first. */
+     qsort(output_info_array->data, num_outputs, sizeof(struct output_info),
+           output_info_cmp_primary_x_y);
++
++    /* The primary monitor is always at the origin of the virtual screen, which
++     * applications rely on, so move all the outputs along with it. */
++    if (num_outputs)
++    {
++        struct output_info *primary = output_info_array->data;
++        int origin_x = primary->x, origin_y = primary->y;
++
++        wl_array_for_each(info, output_info_array)
++        {
++            info->x -= origin_x;
++            info->y -= origin_y;
++        }
++    }
+ }
+
+ static void wayland_add_device_gpu(const struct gdi_device_manager *device_manager,
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -643,6 +643,25 @@
+
+     SetRect(&rect, 0, 0, window_width, window_height);
+     OffsetRect(&rect, data->rects.window.left, data->rects.window.top);
++
++    /* A maximized window lies on a monitor, which applications rely on, so
++     * center it on the nearest one instead of keeping its old position. */
++    if ((state & WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED) && !(flags & SWP_NOSIZE))
++    {
++        HMONITOR hmonitor;
++        MONITORINFO mi;
++
++        mi.cbSize = sizeof(mi);
++        if ((hmonitor = NtUserMonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST)) &&
++            NtUserGetMonitorInfo(hmonitor, &mi))
++        {
++            OffsetRect(&rect,
++                       mi.rcWork.left + (mi.rcWork.right - mi.rcWork.left - window_width) / 2 - rect.left,
++                       mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top - window_height) / 2 - rect.top);
++            flags &= ~SWP_NOMOVE;
++        }
++    }
++
+     NtUserSetRawWindowPos(hwnd, rect, flags, FALSE);
+ }
+

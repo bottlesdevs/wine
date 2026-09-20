@@ -1,0 +1,641 @@
+System identification and platform diagnostics settings.
+
+diff --git a/dlls/twinapi.appcore/Makefile.in b/dlls/twinapi.appcore/Makefile.in
+index a68379f..c41b2e9 100644
+--- a/dlls/twinapi.appcore/Makefile.in
++++ b/dlls/twinapi.appcore/Makefile.in
+@@ -8,4 +8,5 @@ SOURCES = \
+ 	application_view.c \
+ 	classes.idl \
+ 	client_device_information.c \
+-	main.c
++	main.c \
++	retail_info.c
+diff --git a/dlls/twinapi.appcore/classes.idl b/dlls/twinapi.appcore/classes.idl
+index 3ad10af..a002438 100644
+--- a/dlls/twinapi.appcore/classes.idl
++++ b/dlls/twinapi.appcore/classes.idl
+@@ -37,6 +37,7 @@ namespace Windows.Security.ExchangeActiveSyncProvisioning {
+ }
+ namespace Windows.System.Profile {
+     runtimeclass AnalyticsInfo;
++    runtimeclass RetailInfo;
+ }
+ namespace Windows.System.UserProfile {
+     runtimeclass AdvertisingManager;
+diff --git a/dlls/twinapi.appcore/main.c b/dlls/twinapi.appcore/main.c
+index eab55d3..9bbbffc 100644
+--- a/dlls/twinapi.appcore/main.c
++++ b/dlls/twinapi.appcore/main.c
+@@ -73,6 +73,8 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
+         IActivationFactory_QueryInterface( client_device_information_factory, &IID_IActivationFactory, (void **)factory );
+     else if (!wcscmp( buffer, RuntimeClass_Windows_System_Profile_AnalyticsInfo ))
+         IActivationFactory_QueryInterface( analytics_info_factory, &IID_IActivationFactory, (void **)factory );
++    else if (!wcscmp( buffer, RuntimeClass_Windows_System_Profile_RetailInfo ))
++        IActivationFactory_QueryInterface( retail_info_factory, &IID_IActivationFactory, (void **)factory );
+     else if (!wcscmp( buffer, RuntimeClass_Windows_System_UserProfile_AdvertisingManager ))
+         IActivationFactory_QueryInterface( advertising_manager_factory, &IID_IActivationFactory, (void **)factory );
+     else if (!wcscmp( buffer, RuntimeClass_Windows_UI_ViewManagement_ApplicationView ))
+diff --git a/dlls/twinapi.appcore/private.h b/dlls/twinapi.appcore/private.h
+index bb62d7f..328bc2b 100644
+--- a/dlls/twinapi.appcore/private.h
++++ b/dlls/twinapi.appcore/private.h
+@@ -26,6 +26,7 @@
+ #include "winstring.h"
+ #include "appnotify.h"
+ #include "activation.h"
++#include "roapi.h"
+
+ #define WIDL_using_Windows_Foundation
+ #define WIDL_using_Windows_Foundation_Collections
+@@ -44,6 +45,7 @@
+ extern IActivationFactory *application_view_factory;
+ extern IActivationFactory *client_device_information_factory;
+ extern IActivationFactory *analytics_info_factory;
++extern IActivationFactory *retail_info_factory;
+ extern IActivationFactory *advertising_manager_factory;
+
+ #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
+diff --git a/dlls/twinapi.appcore/retail_info.c b/dlls/twinapi.appcore/retail_info.c
+new file mode 100644
+index 0000000..ef49c93
+--- /dev/null
++++ b/dlls/twinapi.appcore/retail_info.c
+@@ -0,0 +1,152 @@
++/*
++ * Windows.System.Profile.RetailInfo implementation
++ *
++ * Copyright 2026
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include "private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(twinapi);
++
++struct retail_info_factory
++{
++    IActivationFactory IActivationFactory_iface;
++    IRetailInfoStatics IRetailInfoStatics_iface;
++    LONG ref;
++};
++
++static inline struct retail_info_factory *impl_from_IActivationFactory( IActivationFactory *iface )
++{
++    return CONTAINING_RECORD( iface, struct retail_info_factory, IActivationFactory_iface );
++}
++
++static HRESULT WINAPI factory_QueryInterface( IActivationFactory *iface, REFIID iid, void **out )
++{
++    struct retail_info_factory *impl = impl_from_IActivationFactory( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IActivationFactory ))
++    {
++        IActivationFactory_AddRef( (*out = &impl->IActivationFactory_iface) );
++        return S_OK;
++    }
++    if (IsEqualGUID( iid, &IID_IRetailInfoStatics ))
++    {
++        IRetailInfoStatics_AddRef( (*out = &impl->IRetailInfoStatics_iface) );
++        return S_OK;
++    }
++
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI factory_AddRef( IActivationFactory *iface )
++{
++    struct retail_info_factory *impl = impl_from_IActivationFactory( iface );
++    return InterlockedIncrement( &impl->ref );
++}
++
++static ULONG WINAPI factory_Release( IActivationFactory *iface )
++{
++    struct retail_info_factory *impl = impl_from_IActivationFactory( iface );
++    return InterlockedDecrement( &impl->ref );
++}
++
++static HRESULT WINAPI factory_GetIids( IActivationFactory *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI factory_GetRuntimeClassName( IActivationFactory *iface, HSTRING *class_name )
++{
++    return WindowsCreateString( RuntimeClass_Windows_System_Profile_RetailInfo,
++                                wcslen( RuntimeClass_Windows_System_Profile_RetailInfo ), class_name );
++}
++
++static HRESULT WINAPI factory_GetTrustLevel( IActivationFactory *iface, TrustLevel *trust_level )
++{
++    *trust_level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI factory_ActivateInstance( IActivationFactory *iface, IInspectable **out )
++{
++    if (out) *out = NULL;
++    return E_NOTIMPL;
++}
++
++static const IActivationFactoryVtbl factory_vtbl =
++{
++    factory_QueryInterface,
++    factory_AddRef,
++    factory_Release,
++    factory_GetIids,
++    factory_GetRuntimeClassName,
++    factory_GetTrustLevel,
++    factory_ActivateInstance,
++};
++
++DEFINE_IINSPECTABLE( statics, IRetailInfoStatics, struct retail_info_factory, IActivationFactory_iface );
++
++static HRESULT WINAPI statics_get_IsDemoModeEnabled( IRetailInfoStatics *iface, boolean *value )
++{
++    TRACE( "iface %p, value %p.\n", iface, value );
++    *value = FALSE;
++    return S_OK;
++}
++
++static HRESULT WINAPI statics_get_Properties( IRetailInfoStatics *iface,
++                                               IMapView_HSTRING_IInspectable **value )
++{
++    IMap_HSTRING_IInspectable *map;
++    IPropertySet *property_set;
++    HSTRING class_name;
++    HSTRING_HEADER header;
++    HRESULT hr;
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++    *value = NULL;
++
++    WindowsCreateStringReference( RuntimeClass_Windows_Foundation_Collections_PropertySet,
++                                  wcslen( RuntimeClass_Windows_Foundation_Collections_PropertySet ),
++                                  &header, &class_name );
++    if (FAILED(hr = RoActivateInstance( class_name, (IInspectable **)&property_set ))) return hr;
++
++    hr = IPropertySet_QueryInterface( property_set, &IID_IMap_HSTRING_IInspectable, (void **)&map );
++    IPropertySet_Release( property_set );
++    if (FAILED(hr)) return hr;
++
++    hr = IMap_HSTRING_IInspectable_GetView( map, value );
++    IMap_HSTRING_IInspectable_Release( map );
++    return hr;
++}
++
++static const IRetailInfoStaticsVtbl statics_vtbl =
++{
++    statics_QueryInterface,
++    statics_AddRef,
++    statics_Release,
++    statics_GetIids,
++    statics_GetRuntimeClassName,
++    statics_GetTrustLevel,
++    statics_get_IsDemoModeEnabled,
++    statics_get_Properties,
++};
++
++static struct retail_info_factory factory =
++{
++    {&factory_vtbl},
++    {&statics_vtbl},
++    1,
++};
++
++IActivationFactory *retail_info_factory = &factory.IActivationFactory_iface;
+diff --git a/dlls/twinapi.appcore/tests/twinapi.c b/dlls/twinapi.appcore/tests/twinapi.c
+index 35c33fb..79549c4 100644
+--- a/dlls/twinapi.appcore/tests/twinapi.c
++++ b/dlls/twinapi.appcore/tests/twinapi.c
+@@ -233,6 +233,51 @@ static void test_AdvertisingManager(void)
+     ok( ref == 1, "got ref %ld.\n", ref );
+ }
+
++static void test_RetailInfo(void)
++{
++    static const WCHAR *class_name = RuntimeClass_Windows_System_Profile_RetailInfo;
++    IMapView_HSTRING_IInspectable *properties;
++    IRetailInfoStatics *retail_info_statics;
++    IActivationFactory *factory;
++    boolean enabled = TRUE;
++    HSTRING str;
++    HRESULT hr;
++    LONG ref;
++
++    hr = WindowsCreateString( class_name, wcslen( class_name ), &str );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++
++    hr = RoGetActivationFactory( str, &IID_IActivationFactory, (void **)&factory );
++    WindowsDeleteString( str );
++    ok( hr == S_OK || broken( hr == REGDB_E_CLASSNOTREG ), "got hr %#lx.\n", hr );
++    if (hr == REGDB_E_CLASSNOTREG)
++    {
++        win_skip( "%s runtimeclass not registered, skipping tests.\n", wine_dbgstr_w( class_name ) );
++        return;
++    }
++
++    check_interface( factory, &IID_IUnknown, TRUE );
++    check_interface( factory, &IID_IInspectable, TRUE );
++    check_interface( factory, &IID_IAgileObject, TRUE );
++
++    hr = IActivationFactory_QueryInterface( factory, &IID_IRetailInfoStatics, (void **)&retail_info_statics );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++
++    hr = IRetailInfoStatics_get_IsDemoModeEnabled( retail_info_statics, &enabled );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    ok( !enabled, "got enabled %u.\n", enabled );
++
++    hr = IRetailInfoStatics_get_Properties( retail_info_statics, &properties );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    ok( !!properties, "got properties %p.\n", properties );
++    if (properties) IMapView_HSTRING_IInspectable_Release( properties );
++
++    ref = IRetailInfoStatics_Release( retail_info_statics );
++    ok( ref == 2, "got ref %ld.\n", ref );
++    ref = IActivationFactory_Release( factory );
++    ok( ref == 1, "got ref %ld.\n", ref );
++}
++
+ static void test_ApplicationView(void)
+ {
+     static const WCHAR *class_name = RuntimeClass_Windows_UI_ViewManagement_ApplicationView;
+@@ -273,6 +318,7 @@ START_TEST(twinapi)
+
+     test_EasClientDeviceInformation();
+     test_AnalyticsVersionInfo();
++    test_RetailInfo();
+     test_AdvertisingManager();
+     test_ApplicationView();
+
+diff --git a/dlls/windows.system.profile.systemid/Makefile.in b/dlls/windows.system.profile.systemid/Makefile.in
+index d6b490e..4cefd1b 100644
+--- a/dlls/windows.system.profile.systemid/Makefile.in
++++ b/dlls/windows.system.profile.systemid/Makefile.in
+@@ -3,4 +3,5 @@ IMPORTS = combase
+
+ SOURCES = \
+ 	classes.idl \
++	diagnostics.c \
+ 	main.c
+diff --git a/dlls/windows.system.profile.systemid/classes.idl b/dlls/windows.system.profile.systemid/classes.idl
+index 1ca3293..445babd 100644
+--- a/dlls/windows.system.profile.systemid/classes.idl
++++ b/dlls/windows.system.profile.systemid/classes.idl
+@@ -24,5 +24,6 @@
+ import "windows.system.profile.idl";
+
+ namespace Windows.System.Profile {
++    runtimeclass PlatformDiagnosticsAndUsageDataSettings;
+     runtimeclass SystemIdentification;
+ }
+diff --git a/dlls/windows.system.profile.systemid/diagnostics.c b/dlls/windows.system.profile.systemid/diagnostics.c
+new file mode 100644
+index 0000000..c720835
+--- /dev/null
++++ b/dlls/windows.system.profile.systemid/diagnostics.c
+@@ -0,0 +1,141 @@
++/* WinRT Windows.System.Profile.PlatformDiagnosticsAndUsageDataSettings implementation
++ *
++ * Copyright (C) 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include "private.h"
++
++struct platform_diagnostics_statics
++{
++    IActivationFactory IActivationFactory_iface;
++    IPlatformDiagnosticsAndUsageDataSettingsStatics IPlatformDiagnosticsAndUsageDataSettingsStatics_iface;
++    LONG ref;
++    LONG next_token;
++};
++
++static inline struct platform_diagnostics_statics *impl_from_IActivationFactory( IActivationFactory *iface )
++{
++    return CONTAINING_RECORD( iface, struct platform_diagnostics_statics, IActivationFactory_iface );
++}
++
++static HRESULT WINAPI factory_QueryInterface( IActivationFactory *iface, REFIID iid, void **out )
++{
++    struct platform_diagnostics_statics *impl = impl_from_IActivationFactory( iface );
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IActivationFactory ))
++        *out = &impl->IActivationFactory_iface;
++    else if (IsEqualGUID( iid, &IID_IPlatformDiagnosticsAndUsageDataSettingsStatics ))
++        *out = &impl->IPlatformDiagnosticsAndUsageDataSettingsStatics_iface;
++    if (!*out) return E_NOINTERFACE;
++    IInspectable_AddRef( *out );
++    return S_OK;
++}
++
++static ULONG WINAPI factory_AddRef( IActivationFactory *iface )
++{
++    return InterlockedIncrement( &impl_from_IActivationFactory( iface )->ref );
++}
++
++static ULONG WINAPI factory_Release( IActivationFactory *iface )
++{
++    return InterlockedDecrement( &impl_from_IActivationFactory( iface )->ref );
++}
++
++static HRESULT WINAPI factory_GetIids( IActivationFactory *iface, ULONG *count, IID **iids )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI factory_GetRuntimeClassName( IActivationFactory *iface, HSTRING *name )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI factory_GetTrustLevel( IActivationFactory *iface, TrustLevel *level )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI factory_ActivateInstance( IActivationFactory *iface, IInspectable **instance )
++{
++    return E_NOTIMPL;
++}
++
++static const IActivationFactoryVtbl factory_vtbl =
++{
++    factory_QueryInterface,
++    factory_AddRef,
++    factory_Release,
++    factory_GetIids,
++    factory_GetRuntimeClassName,
++    factory_GetTrustLevel,
++    factory_ActivateInstance,
++};
++
++DEFINE_IINSPECTABLE( diagnostics_statics, IPlatformDiagnosticsAndUsageDataSettingsStatics,
++        struct platform_diagnostics_statics, IActivationFactory_iface )
++
++static HRESULT WINAPI diagnostics_statics_get_CollectionLevel(
++        IPlatformDiagnosticsAndUsageDataSettingsStatics *iface, PlatformDataCollectionLevel *value )
++{
++    if (!value) return E_POINTER;
++    *value = PlatformDataCollectionLevel_Security;
++    return S_OK;
++}
++
++static HRESULT WINAPI diagnostics_statics_add_CollectionLevelChanged(
++        IPlatformDiagnosticsAndUsageDataSettingsStatics *iface, __FIEventHandler_1_IInspectable *handler,
++        EventRegistrationToken *token )
++{
++    struct platform_diagnostics_statics *impl = CONTAINING_RECORD( iface,
++            struct platform_diagnostics_statics, IPlatformDiagnosticsAndUsageDataSettingsStatics_iface );
++
++    if (!handler || !token) return E_POINTER;
++    token->value = InterlockedIncrement( &impl->next_token );
++    return S_OK;
++}
++
++static HRESULT WINAPI diagnostics_statics_remove_CollectionLevelChanged(
++        IPlatformDiagnosticsAndUsageDataSettingsStatics *iface, EventRegistrationToken token )
++{
++    return S_OK;
++}
++
++static HRESULT WINAPI diagnostics_statics_CanCollectDiagnostics(
++        IPlatformDiagnosticsAndUsageDataSettingsStatics *iface, PlatformDataCollectionLevel level, boolean *value )
++{
++    if (!value) return E_POINTER;
++    *value = level == PlatformDataCollectionLevel_Security;
++    return S_OK;
++}
++
++static const IPlatformDiagnosticsAndUsageDataSettingsStaticsVtbl diagnostics_statics_vtbl =
++{
++    diagnostics_statics_QueryInterface,
++    diagnostics_statics_AddRef,
++    diagnostics_statics_Release,
++    diagnostics_statics_GetIids,
++    diagnostics_statics_GetRuntimeClassName,
++    diagnostics_statics_GetTrustLevel,
++    diagnostics_statics_get_CollectionLevel,
++    diagnostics_statics_add_CollectionLevelChanged,
++    diagnostics_statics_remove_CollectionLevelChanged,
++    diagnostics_statics_CanCollectDiagnostics,
++};
++
++static struct platform_diagnostics_statics platform_diagnostics_statics =
++{
++    {&factory_vtbl},
++    {&diagnostics_statics_vtbl},
++    1,
++};
++
++IActivationFactory *platform_diagnostics_factory = &platform_diagnostics_statics.IActivationFactory_iface;
+diff --git a/dlls/windows.system.profile.systemid/main.c b/dlls/windows.system.profile.systemid/main.c
+index b00cbc5..f5aaf8b 100644
+--- a/dlls/windows.system.profile.systemid/main.c
++++ b/dlls/windows.system.profile.systemid/main.c
+@@ -319,6 +319,8 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
+
+     if (!wcscmp( name, RuntimeClass_Windows_System_Profile_SystemIdentification ))
+         IActivationFactory_QueryInterface( system_id_factory, &IID_IActivationFactory, (void **)factory );
++    else if (!wcscmp( name, RuntimeClass_Windows_System_Profile_PlatformDiagnosticsAndUsageDataSettings ))
++        IActivationFactory_QueryInterface( platform_diagnostics_factory, &IID_IActivationFactory, (void **)factory );
+
+     if (*factory) return S_OK;
+     return CLASS_E_CLASSNOTAVAILABLE;
+diff --git a/dlls/windows.system.profile.systemid/private.h b/dlls/windows.system.profile.systemid/private.h
+index d1bcd39..1a697f2 100644
+--- a/dlls/windows.system.profile.systemid/private.h
++++ b/dlls/windows.system.profile.systemid/private.h
+@@ -35,6 +35,8 @@
+ #include "windows.system.profile.h"
+ #include "windows.storage.streams.h"
+
++extern IActivationFactory *platform_diagnostics_factory;
++
+ #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
+     static inline impl_type *impl_from( iface_type *iface )                                        \
+     {                                                                                              \
+diff --git a/dlls/windows.system.profile.systemid/tests/systemid.c b/dlls/windows.system.profile.systemid/tests/systemid.c
+index 4141ecf..930855c 100644
+--- a/dlls/windows.system.profile.systemid/tests/systemid.c
++++ b/dlls/windows.system.profile.systemid/tests/systemid.c
+@@ -144,6 +144,51 @@ static void test_SystemIdentification_Statics(void)
+     ok( ref == 1, "got ref %ld.\n", ref );
+ }
+
++static void test_PlatformDiagnosticsAndUsageDataSettings(void)
++{
++    static const WCHAR class_name[] = L"Windows.System.Profile.PlatformDiagnosticsAndUsageDataSettings";
++    IPlatformDiagnosticsAndUsageDataSettingsStatics *statics = NULL;
++    IActivationFactory *factory = NULL;
++    PlatformDataCollectionLevel level;
++    HSTRING str;
++    boolean value;
++    HRESULT hr;
++
++    hr = WindowsCreateString( class_name, ARRAY_SIZE(class_name) - 1, &str );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    hr = RoGetActivationFactory( str, &IID_IActivationFactory, (void **)&factory );
++    WindowsDeleteString( str );
++    ok( hr == S_OK || broken( hr == REGDB_E_CLASSNOTREG ), "got hr %#lx.\n", hr );
++    if (FAILED( hr ))
++    {
++        win_skip( "%s runtimeclass not registered, skipping tests.\n", wine_dbgstr_w( class_name ) );
++        return;
++    }
++
++    check_interface( factory, &IID_IUnknown, TRUE );
++    check_interface( factory, &IID_IInspectable, TRUE );
++    check_interface( factory, &IID_IAgileObject, TRUE );
++    hr = IActivationFactory_QueryInterface( factory,
++            &IID_IPlatformDiagnosticsAndUsageDataSettingsStatics, (void **)&statics );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++
++    hr = IPlatformDiagnosticsAndUsageDataSettingsStatics_get_CollectionLevel( statics, NULL );
++    ok( hr == E_POINTER, "got hr %#lx.\n", hr );
++    hr = IPlatformDiagnosticsAndUsageDataSettingsStatics_get_CollectionLevel( statics, &level );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    ok( level >= PlatformDataCollectionLevel_Security && level <= PlatformDataCollectionLevel_Full,
++        "got level %u.\n", level );
++    hr = IPlatformDiagnosticsAndUsageDataSettingsStatics_CanCollectDiagnostics( statics, level, &value );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    ok( value, "current collection level %u cannot be collected.\n", level );
++    hr = IPlatformDiagnosticsAndUsageDataSettingsStatics_CanCollectDiagnostics(
++            statics, PlatformDataCollectionLevel_Full, NULL );
++    ok( hr == E_POINTER, "got hr %#lx.\n", hr );
++
++    IPlatformDiagnosticsAndUsageDataSettingsStatics_Release( statics );
++    IActivationFactory_Release( factory );
++}
++
+ START_TEST(systemid)
+ {
+     HRESULT hr;
+@@ -152,6 +197,7 @@ START_TEST(systemid)
+     ok( hr == S_OK, "RoInitialize failed, hr %#lx\n", hr );
+
+     test_SystemIdentification_Statics();
++    test_PlatformDiagnosticsAndUsageDataSettings();
+
+     RoUninitialize();
+ }
+diff --git a/include/windows.system.profile.idl b/include/windows.system.profile.idl
+index be3cb80..eb61eba 100644
+--- a/include/windows.system.profile.idl
++++ b/include/windows.system.profile.idl
+@@ -29,15 +29,20 @@ import "windows.storage.streams.idl";
+ import "windows.system.idl";
+
+ namespace Windows.System.Profile {
++    typedef enum PlatformDataCollectionLevel PlatformDataCollectionLevel;
+     typedef enum SystemIdentificationSource SystemIdentificationSource;
+     interface IAnalyticsInfoStatics;
+     interface IAnalyticsInfoStatics2;
+     interface IAnalyticsVersionInfo;
+     interface IAnalyticsVersionInfo2;
++    interface IRetailInfoStatics;
++    interface IPlatformDiagnosticsAndUsageDataSettingsStatics;
+     interface ISystemIdentificationInfo;
+     interface ISystemIdentificationStatics;
+     runtimeclass AnalyticsVersionInfo;
+     runtimeclass AnalyticsInfo;
++    runtimeclass RetailInfo;
++    runtimeclass PlatformDiagnosticsAndUsageDataSettings;
+     runtimeclass SystemIdentification;
+     runtimeclass SystemIdentificationInfo;
+
+@@ -51,6 +56,31 @@ namespace Windows.System.Profile {
+         Registry = 3,
+     };
+
++    [contract(Windows.Foundation.UniversalApiContract, 2.0)]
++    enum PlatformDataCollectionLevel
++    {
++        Security = 0,
++        Basic    = 1,
++        Enhanced = 2,
++        Full     = 3,
++    };
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 2.0),
++        exclusiveto(Windows.System.Profile.PlatformDiagnosticsAndUsageDataSettings),
++        uuid(b6e24c1b-7b1c-4b32-8c62-a66597ce723a)
++    ]
++    interface IPlatformDiagnosticsAndUsageDataSettingsStatics : IInspectable
++    {
++        [propget] HRESULT CollectionLevel([out, retval] Windows.System.Profile.PlatformDataCollectionLevel *value);
++        [eventadd] HRESULT CollectionLevelChanged(
++                [in] Windows.Foundation.EventHandler<IInspectable *> *handler,
++                [out, retval] EventRegistrationToken *token);
++        [eventremove] HRESULT CollectionLevelChanged([in] EventRegistrationToken token);
++        HRESULT CanCollectDiagnostics([in] Windows.System.Profile.PlatformDataCollectionLevel level,
++                [out, retval] boolean *value);
++    }
++
+     [
+         contract(Windows.Foundation.UniversalApiContract, 1.0),
+         exclusiveto(Windows.System.Profile.AnalyticsInfo),
+@@ -73,6 +103,17 @@ namespace Windows.System.Profile {
+         [propget] HRESULT DeviceFamilyVersion([out, retval] HSTRING *value);
+     }
+
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.System.Profile.RetailInfo),
++        uuid(0712c6b8-8b92-4f2a-8499-031f1798d6ef)
++    ]
++    interface IRetailInfoStatics : IInspectable
++    {
++        [propget] HRESULT IsDemoModeEnabled([out, retval] boolean *value);
++        [propget] HRESULT Properties([out, retval] Windows.Foundation.Collections.IMapView<HSTRING, IInspectable *> **value);
++    }
++
+     [
+         contract(Windows.Foundation.UniversalApiContract, 3.0),
+         exclusiveto(Windows.System.Profile.SystemIdentificationInfo),
+@@ -117,6 +158,27 @@ namespace Windows.System.Profile {
+     {
+     }
+
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        marshaling_behavior(agile),
++        static(Windows.System.Profile.IRetailInfoStatics, Windows.Foundation.UniversalApiContract, 1.0),
++        threading(both)
++    ]
++    runtimeclass RetailInfo
++    {
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 2.0),
++        marshaling_behavior(agile),
++        static(Windows.System.Profile.IPlatformDiagnosticsAndUsageDataSettingsStatics,
++                Windows.Foundation.UniversalApiContract, 2.0),
++        threading(both)
++    ]
++    runtimeclass PlatformDiagnosticsAndUsageDataSettings
++    {
++    }
++
+     [
+         contract(Windows.Foundation.UniversalApiContract, 3.0),
+         marshaling_behavior(agile),

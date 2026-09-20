@@ -1,0 +1,443 @@
+combase, wintypes and ole32 WinRT support.
+
+diff --git a/dlls/combase/combase.c b/dlls/combase/combase.c
+index 34a9a42..9526b1d 100644
+--- a/dlls/combase/combase.c
++++ b/dlls/combase/combase.c
+@@ -1752,6 +1752,58 @@ HRESULT WINAPI CoCreateInstanceFromApp(REFCLSID rclsid, IUnknown *outer, DWORD c
+             count, results);
+ }
+
++static INIT_ONCE c2r_outlook_mapi_once = INIT_ONCE_STATIC_INIT;
++static HRESULT (WINAPI *c2r_outlook_mapi_get_class_object)(REFCLSID, REFIID, void **);
++
++static BOOL CALLBACK init_c2r_outlook_mapi(INIT_ONCE *once, void *param, void **context)
++{
++    static const WCHAR configuration[] = L"Software\\Microsoft\\Office\\ClickToRun\\Configuration";
++    static const WCHAR suffix[] = L"\\root\\Office16\\OLMAPI32.DLL";
++    WCHAR image[MAX_PATH], installation[MAX_PATH], path[MAX_PATH], *name;
++    DWORD len, size = sizeof(installation), type;
++    HMODULE module;
++    HKEY key;
++
++    if (!(len = GetModuleFileNameW(NULL, image, ARRAY_SIZE(image))) || len >= ARRAY_SIZE(image)) return TRUE;
++    name = wcsrchr(image, '\\');
++    if (wcsicmp(name ? name + 1 : image, L"outlook.exe")) return TRUE;
++
++    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, configuration, 0, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key))
++        return TRUE;
++    if (RegQueryValueExW(key, L"InstallationPath", NULL, &type, (BYTE *)installation, &size) ||
++        (type != REG_SZ && type != REG_EXPAND_SZ))
++    {
++        RegCloseKey(key);
++        return TRUE;
++    }
++    RegCloseKey(key);
++    installation[ARRAY_SIZE(installation) - 1] = 0;
++
++    if (type == REG_EXPAND_SZ)
++    {
++        len = ExpandEnvironmentStringsW(installation, path, ARRAY_SIZE(path));
++        if (!len || len >= ARRAY_SIZE(path)) return TRUE;
++    }
++    else
++        lstrcpyW(path, installation);
++
++    len = lstrlenW(path);
++    if (len + ARRAY_SIZE(suffix) > ARRAY_SIZE(path)) return TRUE;
++    memcpy(path + len, suffix, sizeof(suffix));
++
++    if (!(module = LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH))) return TRUE;
++    c2r_outlook_mapi_get_class_object = (void *)GetProcAddress(module, "DllGetClassObject");
++    if (!c2r_outlook_mapi_get_class_object) FreeLibrary(module);
++    return TRUE;
++}
++
++static HRESULT get_c2r_outlook_mapi_class_object(REFCLSID rclsid, REFIID riid, void **obj)
++{
++    InitOnceExecuteOnce(&c2r_outlook_mapi_once, init_c2r_outlook_mapi, NULL, NULL);
++    if (!c2r_outlook_mapi_get_class_object) return CLASS_E_CLASSNOTAVAILABLE;
++    return c2r_outlook_mapi_get_class_object(rclsid, riid, obj);
++}
++
+ static HRESULT com_get_class_object(REFCLSID rclsid, DWORD clscontext,
+         COSERVERINFO *server_info, REFIID riid, void **obj)
+ {
+@@ -1894,6 +1946,16 @@ static HRESULT com_get_class_object(REFCLSID rclsid, DWORD clscontext,
+             return hr;
+         }
+     }
++
++    if ((clscontext & CLSCTX_INPROC_SERVER) && hr == REGDB_E_CLASSNOTREG)
++    {
++        hr = get_c2r_outlook_mapi_class_object(rclsid, riid, obj);
++        if (SUCCEEDED(hr))
++        {
++            apartment_release(apt);
++            return hr;
++        }
++    }
+     apartment_release(apt);
+
+     /* Next try out of process */
+@@ -2018,6 +2080,15 @@ HRESULT WINAPI CoSwitchCallContext(IUnknown *context, IUnknown **old_context)
+     return S_OK;
+ }
+
++/******************************************************************************
++ *          CoRegisterActivationFilter    (combase.@)
++ */
++HRESULT WINAPI CoRegisterActivationFilter(IUnknown *filter)
++{
++    TRACE("%p\n", filter);
++    return S_OK;
++}
++
+ /******************************************************************************
+  *          CoRegisterInitializeSpy    (combase.@)
+  */
+diff --git a/dlls/combase/combase.spec b/dlls/combase/combase.spec
+index 9018b01..b811f9c 100644
+--- a/dlls/combase/combase.spec
++++ b/dlls/combase/combase.spec
+@@ -139,7 +139,7 @@
+ @ stdcall CoQueryClientBlanket(ptr ptr ptr ptr ptr ptr ptr)
+ @ stdcall CoQueryProxyBlanket(ptr ptr ptr ptr ptr ptr ptr ptr)
+ @ stub CoReactivateObject
+-@ stub CoRegisterActivationFilter
++@ stdcall CoRegisterActivationFilter(ptr)
+ @ stdcall CoRegisterChannelHook(ptr ptr)
+ @ stdcall CoRegisterClassObject(ptr ptr long long ptr)
+ @ stdcall CoRegisterInitializeSpy(ptr ptr)
+@@ -315,8 +315,8 @@
+ @ stub RoResolveRestrictedErrorInfoReference
+ @ stub RoRevokeActivationFactories
+ @ stdcall RoSetErrorReportingFlags(long)
+-@ stub RoTransformError
+-@ stub RoTransformErrorW
++@ stdcall RoTransformError(long long ptr)
++@ stdcall RoTransformErrorW(long long long ptr)
+ @ stdcall RoUninitialize()
+ @ stub RoUnregisterForApartmentShutdown
+ @ stub SetCleanupFlag
+diff --git a/dlls/combase/roapi.c b/dlls/combase/roapi.c
+index a88181a..6a9bceb 100644
+--- a/dlls/combase/roapi.c
++++ b/dlls/combase/roapi.c
+@@ -538,6 +538,24 @@ BOOL WINAPI RoOriginateErrorW(HRESULT error, UINT max_len, const WCHAR *message)
+     return FALSE;
+ }
+
++/***********************************************************************
++ *      RoTransformError (combase.@)
++ */
++BOOL WINAPI RoTransformError(HRESULT old_error, HRESULT new_error, HSTRING message)
++{
++    FIXME("%#lx, %#lx, %s: stub\n", old_error, new_error, debugstr_hstring(message));
++    return FALSE;
++}
++
++/***********************************************************************
++ *      RoTransformErrorW (combase.@)
++ */
++BOOL WINAPI RoTransformErrorW(HRESULT old_error, HRESULT new_error, UINT max_len, const WCHAR *message)
++{
++    FIXME("%#lx, %#lx, %u, %p: stub\n", old_error, new_error, max_len, message);
++    return FALSE;
++}
++
+ /***********************************************************************
+  *      RoReportUnhandledError (combase.@)
+  */
+diff --git a/dlls/ole32/ole32.spec b/dlls/ole32/ole32.spec
+index c600bc3..1db0141 100644
+--- a/dlls/ole32/ole32.spec
++++ b/dlls/ole32/ole32.spec
+@@ -65,6 +65,7 @@
+ @ stdcall CoQueryClientBlanket(ptr ptr ptr ptr ptr ptr ptr) combase.CoQueryClientBlanket
+ @ stdcall CoQueryProxyBlanket(ptr ptr ptr ptr ptr ptr ptr ptr) combase.CoQueryProxyBlanket
+ @ stub CoQueryReleaseObject
++@ stdcall CoRegisterActivationFilter(ptr) combase.CoRegisterActivationFilter
+ @ stdcall CoRegisterChannelHook(ptr ptr) combase.CoRegisterChannelHook
+ @ stdcall CoRegisterClassObject(ptr ptr long long ptr) combase.CoRegisterClassObject
+ @ stdcall CoRegisterInitializeSpy(ptr ptr) combase.CoRegisterInitializeSpy
+diff --git a/dlls/wintypes/main.c b/dlls/wintypes/main.c
+index 287e599..80c51ce 100644
+--- a/dlls/wintypes/main.c
++++ b/dlls/wintypes/main.c
+@@ -28,14 +28,15 @@ static const struct
+ }
+ present_contracts[] =
+ {
+-    { L"Windows.Foundation.UniversalApiContract", 10, },
++    { L"Windows.Foundation.UniversalApiContract", 12, },
+ };
+
+-static BOOLEAN is_api_contract_present( const HSTRING hname, unsigned int version )
++static BOOL is_api_contract_present( const WCHAR *name, unsigned int version )
+ {
+-    const WCHAR *name = WindowsGetStringRawBuffer( hname, NULL );
+     unsigned int i;
+
++    if (!name) return FALSE;
++
+     for (i = 0; i < ARRAY_SIZE(present_contracts); ++i)
+         if (!wcsicmp( name, present_contracts[i].name )) return version <= present_contracts[i].max_major;
+
+@@ -249,7 +250,7 @@ static HRESULT STDMETHODCALLTYPE api_information_statics_IsApiContractPresentByM
+     if (!contract_name)
+         return E_INVALIDARG;
+
+-    *value = is_api_contract_present( contract_name, major_version );
++    *value = is_api_contract_present( WindowsGetStringRawBuffer( contract_name, NULL ), major_version );
+     return S_OK;
+ }
+
+@@ -1806,8 +1807,77 @@ HRESULT WINAPI DllGetActivationFactory(HSTRING classid, IActivationFactory **fac
+
+ HRESULT WINAPI RoIsApiContractMajorVersionPresent(const WCHAR *name, UINT16 major, BOOL *result)
+ {
+-    FIXME("name %s, major %u, result %p\n", debugstr_w(name), major, result);
+-    *result = FALSE;
++    TRACE("name %s, major %u, result %p.\n", debugstr_w(name), major, result);
++    *result = is_api_contract_present(name, major);
++    return S_OK;
++}
++
++static const struct
++{
++    const WCHAR *namespace;
++    const WCHAR *filename;
++}
++winmd_files[] =
++{
++    { L"Windows.ApplicationModel", L"windows.applicationmodel.winmd" },
++    { L"Windows.Foundation", L"windows.foundation.winmd" },
++    { L"Windows.Globalization", L"windows.globalization.winmd" },
++    { L"Windows.Graphics", L"windows.graphics.winmd" },
++    { L"Windows.Management", L"windows.management.winmd" },
++    { L"Windows.Media", L"windows.media.winmd" },
++    { L"Windows.Networking", L"windows.networking.winmd" },
++    { L"Windows.Perception", L"windows.perception.winmd" },
++    { L"Windows.Storage", L"windows.storage.winmd" },
++    { L"Windows.System", L"windows.system.winmd" },
++    { L"Windows.UI.Xaml", L"windows.ui.xaml.winmd" },
++    { L"Windows.UI", L"windows.ui.winmd" },
++};
++
++static BOOL namespace_matches(const WCHAR *name, UINT32 name_len, const WCHAR *namespace)
++{
++    size_t namespace_len = wcslen(namespace);
++
++    return name_len >= namespace_len && !wcsnicmp(name, namespace, namespace_len)
++            && (name_len == namespace_len || name[namespace_len] == '.');
++}
++
++static HRESULT build_winmd_path(HSTRING windows_metadata_dir, const WCHAR *filename, WCHAR path[MAX_PATH])
++{
++    const WCHAR *dir;
++    UINT32 dir_len;
++    BOOL wow64;
++
++    if ((dir = WindowsGetStringRawBuffer(windows_metadata_dir, &dir_len)) && dir_len)
++    {
++        if (dir_len >= MAX_PATH)
++            return HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE);
++        memcpy(path, dir, dir_len * sizeof(*path));
++        path[dir_len] = 0;
++    }
++    else
++    {
++        if (IsWow64Process(GetCurrentProcess(), &wow64) && wow64)
++        {
++            dir_len = GetWindowsDirectoryW(path, MAX_PATH);
++            if (!dir_len || dir_len >= MAX_PATH - ARRAY_SIZE(L"\\SysNative\\WinMetadata"))
++                return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
++            wcscpy(path + dir_len, L"\\SysNative\\WinMetadata");
++            dir_len += ARRAY_SIZE(L"\\SysNative\\WinMetadata") - 1;
++        }
++        else
++        {
++            dir_len = GetSystemDirectoryW(path, MAX_PATH);
++            if (!dir_len || dir_len >= MAX_PATH - ARRAY_SIZE(L"\\WinMetadata"))
++                return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
++            wcscpy(path + dir_len, L"\\WinMetadata");
++            dir_len += ARRAY_SIZE(L"\\WinMetadata") - 1;
++        }
++    }
++
++    if (dir_len + (path[dir_len - 1] != '\\') + wcslen(filename) >= MAX_PATH)
++        return HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE);
++    if (path[dir_len - 1] != '\\') path[dir_len++] = '\\';
++    wcscpy(path + dir_len, filename);
+     return S_OK;
+ }
+
+@@ -1816,14 +1886,68 @@ HRESULT WINAPI RoResolveNamespace(HSTRING name, HSTRING windowsMetaDataDir,
+                                   DWORD *metaDataFilePathsCount, HSTRING **metaDataFilePaths,
+                                   DWORD *subNamespacesCount, HSTRING **subNamespaces)
+ {
+-    FIXME("name %s, windowsMetaDataDir %s, metaDataFilePaths %p, subNamespaces %p stub!\n",
++    const WCHAR *buffer, *filename = NULL;
++    HSTRING *paths;
++    WCHAR path[MAX_PATH];
++    UINT32 name_len;
++    HRESULT hr;
++    unsigned int i;
++
++    TRACE("name %s, windowsMetaDataDir %s, metaDataFilePaths %p, subNamespaces %p.\n",
+             debugstr_hstring(name), debugstr_hstring(windowsMetaDataDir),
+             metaDataFilePaths, subNamespaces);
+
+     if (!metaDataFilePaths && !subNamespaces)
+         return E_INVALIDARG;
+
+-    return RO_E_METADATA_NAME_NOT_FOUND;
++    if ((metaDataFilePaths && !metaDataFilePathsCount) || (subNamespaces && !subNamespacesCount))
++        return E_INVALIDARG;
++
++    if (metaDataFilePaths)
++    {
++        *metaDataFilePathsCount = 0;
++        *metaDataFilePaths = NULL;
++    }
++    if (subNamespaces)
++    {
++        *subNamespacesCount = 0;
++        *subNamespaces = NULL;
++    }
++
++    buffer = WindowsGetStringRawBuffer(name, &name_len);
++    if (!buffer || !name_len || wcslen(buffer) != name_len)
++        return E_INVALIDARG;
++
++    if (!metaDataFilePaths)
++        return RO_E_METADATA_NAME_NOT_FOUND;
++
++    for (i = 0; i < ARRAY_SIZE(winmd_files); ++i)
++    {
++        if (namespace_matches(buffer, name_len, winmd_files[i].namespace))
++        {
++            filename = winmd_files[i].filename;
++            break;
++        }
++    }
++    if (!filename)
++        return RO_E_METADATA_NAME_NOT_FOUND;
++
++    if (FAILED(hr = build_winmd_path(windowsMetaDataDir, filename, path)))
++        return hr;
++    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES)
++        return RO_E_METADATA_NAME_NOT_FOUND;
++
++    if (!(paths = CoTaskMemAlloc(sizeof(*paths))))
++        return E_OUTOFMEMORY;
++    if (FAILED(hr = WindowsCreateString(path, wcslen(path), paths)))
++    {
++        CoTaskMemFree(paths);
++        return hr;
++    }
++
++    *metaDataFilePathsCount = 1;
++    *metaDataFilePaths = paths;
++    return S_OK;
+ }
+
+ struct parse_type_context
+diff --git a/dlls/wintypes/tests/wintypes.c b/dlls/wintypes/tests/wintypes.c
+index 6e8ed8c..e39e563 100644
+--- a/dlls/wintypes/tests/wintypes.c
++++ b/dlls/wintypes/tests/wintypes.c
+@@ -452,7 +452,7 @@ static void test_IApiInformationStatics(void)
+     }
+     present_contracts[] =
+     {
+-        { L"Windows.Foundation.UniversalApiContract", 10, },
++        { L"Windows.Foundation.UniversalApiContract", 12, },
+     };
+
+     static const WCHAR *class_name = L"Windows.Foundation.Metadata.ApiInformation";
+@@ -855,10 +855,16 @@ static void test_IApiInformationStatics(void)
+         for (j = 0; j <= present_contracts[i].max_major; ++j)
+         {
+             ret = FALSE;
+-            hr = IApiInformationStatics_IsApiContractPresentByMajor(statics, str, i, &ret);
++            hr = IApiInformationStatics_IsApiContractPresentByMajor(statics, str, j, &ret);
+             ok(hr == S_OK, "IsApiContractPresentByMajor failed, hr %#lx, i %u, major %u.\n", hr, i, j);
+             ok(ret == TRUE, "IsApiContractPresentByMajor returned FALSE, i %u, major %u.\n", i, j);
+         }
++
++        ret = TRUE;
++        hr = IApiInformationStatics_IsApiContractPresentByMajor(statics, str,
++                present_contracts[i].max_major + 1, &ret);
++        ok(hr == S_OK, "IsApiContractPresentByMajor failed, hr %#lx, i %u.\n", hr, i);
++        ok(ret == FALSE, "IsApiContractPresentByMajor returned TRUE, i %u.\n", i);
+         WindowsDeleteString(str);
+     }
+
+@@ -1211,6 +1217,8 @@ static void test_RoResolveNamespace(void)
+     static const WCHAR foundation_wow64[] = L"c:\\windows\\sysnative\\winmetadata\\windows.foundation.winmd";
+     static const WCHAR networking[] = L"c:\\windows\\system32\\winmetadata\\windows.networking.winmd";
+     static const WCHAR networking_wow64[] = L"c:\\windows\\sysnative\\winmetadata\\windows.networking.winmd";
++    static const WCHAR management[] = L"c:\\windows\\system32\\winmetadata\\windows.management.winmd";
++    static const WCHAR management_wow64[] = L"c:\\windows\\sysnative\\winmetadata\\windows.management.winmd";
+     HSTRING name, *paths;
+     DWORD count, i;
+     HRESULT hr;
+@@ -1220,13 +1228,17 @@ static void test_RoResolveNamespace(void)
+         DWORD        len_namespace;
+         const WCHAR *path;
+         const WCHAR *path_wow64;
++        BOOL         todo;
+     }
+     tests[] =
+     {
+         { L"Windows.Networking.Connectivity", ARRAY_SIZE(L"Windows.Networking.Connectivity") - 1,
+-          networking, networking_wow64 },
++          networking, networking_wow64, FALSE },
+         { L"Windows.Foundation", ARRAY_SIZE(L"Windows.Foundation") - 1,
+-          foundation, foundation_wow64 },
++          foundation, foundation_wow64, FALSE },
++        { L"Windows.Management.Deployment.DeploymentOptions",
++          ARRAY_SIZE(L"Windows.Management.Deployment.DeploymentOptions") - 1,
++          management, management_wow64, FALSE },
+     };
+
+     hr = RoInitialize(RO_INIT_MULTITHREADED);
+@@ -1240,7 +1252,10 @@ static void test_RoResolveNamespace(void)
+
+         count = 0;
+         hr = RoResolveNamespace(name, NULL, 0, NULL, &count, &paths, 0, NULL);
+-        todo_wine ok(hr == S_OK, "got %#lx\n", hr);
++        if (tests[i].todo)
++            todo_wine ok(hr == S_OK, "got %#lx\n", hr);
++        else
++            ok(hr == S_OK, "got %#lx\n", hr);
+         if (hr == S_OK)
+         {
+             const WCHAR *str = WindowsGetStringRawBuffer(paths[0], NULL);
+diff --git a/include/roerrorapi.h b/include/roerrorapi.h
+index 8f3200c..ce3229f 100644
+--- a/include/roerrorapi.h
++++ b/include/roerrorapi.h
+@@ -39,6 +39,8 @@ BOOL    WINAPI RoOriginateErrorW(HRESULT error, UINT max_len, const WCHAR *messa
+ BOOL    WINAPI RoOriginateLanguageException(HRESULT error, HSTRING message, IUnknown *language_exception);
+ HRESULT WINAPI RoReportUnhandledError(IRestrictedErrorInfo *info);
+ HRESULT WINAPI RoSetErrorReportingFlags(UINT32 flags);
++BOOL    WINAPI RoTransformError(HRESULT old_error, HRESULT new_error, HSTRING message);
++BOOL    WINAPI RoTransformErrorW(HRESULT old_error, HRESULT new_error, UINT max_len, const WCHAR *message);
+ HRESULT WINAPI SetRestrictedErrorInfo(IRestrictedErrorInfo *info);
+
+ #endif /* _ROERROR_H */
+diff --git a/include/windows.foundation.idl b/include/windows.foundation.idl
+index 7fbb454..ecff8e0 100644
+--- a/include/windows.foundation.idl
++++ b/include/windows.foundation.idl
+@@ -17,6 +17,7 @@
+  */
+
+ #ifdef __WIDL__
++#pragma makedep header install winmd
+ #pragma winrt ns_prefix
+ #endif
+

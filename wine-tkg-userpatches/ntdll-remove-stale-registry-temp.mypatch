@@ -1,0 +1,23 @@
+From: Mirko Brombin <brombin94@gmail.com>
+Subject: [PATCH] ntdll: Remove a stale temporary file left by an interrupted registry save.
+
+---
+--- a/dlls/ntdll/unix/registry.c
++++ b/dlls/ntdll/unix/registry.c
+@@ -985,7 +985,15 @@
+     }
+     sprintf( tmp, "%s/%s", config_dir, temp_fn );
+
+-    if ((fd = open( tmp, O_CREAT | O_EXCL | O_WRONLY, 0666 )) == -1)
++    if ((fd = open( tmp, O_CREAT | O_EXCL | O_WRONLY, 0666 )) == -1 && errno == EEXIST)
++    {
++        /* savers hold the flush mutex, so an existing file is left over from an
++         * interrupted save and would otherwise make every later save fail */
++        WARN( "removing stale %s\n", debugstr_a(tmp) );
++        unlink( tmp );
++        fd = open( tmp, O_CREAT | O_EXCL | O_WRONLY, 0666 );
++    }
++    if (fd == -1)
+     {
+         ret = errno_to_status( errno );
+         goto done;

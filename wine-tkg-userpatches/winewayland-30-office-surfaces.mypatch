@@ -1,0 +1,1403 @@
+winewayland: Office surfaces, popups and foreign toplevels.
+
+Combined because the changes are stacked on the same functions and each
+Soda userpatch must apply on its own to the pinned Valve Wine commit:
+- keep a toplevel for windows with client surfaces;
+- stack client surfaces in window z-order, children get no input region;
+- owned tool popups (menus, flyouts) stay subsurfaces of their owner;
+- popups go above all client surfaces of their toplevel;
+- restack outside the win_data lock and query window geometry before
+  taking it on the present path (win32u takes user_mutex before
+  win_data_mutex, the old order deadlocked Outlook and OneNote);
+- xdg-foreign v2 and xdg-activation v1 for embedded foreign toplevels.
+
+diff --git a/dlls/winewayland.drv/Makefile.in b/dlls/winewayland.drv/Makefile.in
+index 10915b10334..7c19e676ac6 100644
+--- a/dlls/winewayland.drv/Makefile.in
++++ b/dlls/winewayland.drv/Makefile.in
+@@ -26,6 +26,8 @@ SOURCES = \
+ 	window.c \
+ 	window_surface.c \
+ 	wlr-data-control-unstable-v1.xml \
++	xdg-activation-v1.xml \
++	xdg-foreign-unstable-v2.xml \
+ 	xdg-output-unstable-v1.xml \
+ 	xdg-shell.xml \
+ 	xdg-toplevel-icon-v1.xml
+diff --git a/dlls/winewayland.drv/opengl.c b/dlls/winewayland.drv/opengl.c
+index 8a47f3d3e4b..11df5a523a7 100644
+--- a/dlls/winewayland.drv/opengl.c
++++ b/dlls/winewayland.drv/opengl.c
+@@ -107,7 +107,7 @@ static BOOL wayland_opengl_surface_create(HWND hwnd, BOOL raw, int format, struc
+     }
+     *attrib++ = EGL_NONE;
+
+-    if (!(client = wayland_client_surface_create(hwnd))) return FALSE;
++    if (!(client = wayland_client_surface_create(hwnd, format, raw))) return FALSE;
+     gl = opengl_drawable_create(sizeof(*gl), &wayland_drawable_funcs, format, &client->client);
+     client_surface_release(&client->client);
+     if (!gl) return FALSE;
+diff --git a/dlls/winewayland.drv/vulkan.c b/dlls/winewayland.drv/vulkan.c
+index 543d2b4284d..408e4be7909 100644
+--- a/dlls/winewayland.drv/vulkan.c
++++ b/dlls/winewayland.drv/vulkan.c
+@@ -48,7 +48,7 @@ static VkResult wayland_vulkan_surface_create(HWND hwnd, BOOL raw, const struct
+
+     TRACE("%p %p %p %p\n", hwnd, instance, handle, client);
+
+-    if (!(surface = wayland_client_surface_create(hwnd))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++    if (!(surface = wayland_client_surface_create(hwnd, 0, raw))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+     create_info_host.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+     create_info_host.pNext = NULL;
+     create_info_host.flags = 0; /* reserved */
+diff --git a/dlls/winewayland.drv/wayland.c b/dlls/winewayland.drv/wayland.c
+index acc340d98c7..84a90625fc7 100644
+--- a/dlls/winewayland.drv/wayland.c
++++ b/dlls/winewayland.drv/wayland.c
+@@ -127,6 +127,21 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
+                              version < 2 ? version : 2);
+         xdg_wm_base_add_listener(process_wayland.xdg_wm_base, &xdg_wm_base_listener, NULL);
+     }
++    else if (strcmp(interface, "zxdg_exporter_v2") == 0)
++    {
++        process_wayland.zxdg_exporter_v2 =
++            wl_registry_bind(registry, id, &zxdg_exporter_v2_interface, 1);
++    }
++    else if (strcmp(interface, "xdg_activation_v1") == 0)
++    {
++        process_wayland.xdg_activation_v1 =
++            wl_registry_bind(registry, id, &xdg_activation_v1_interface, 1);
++    }
++    else if (strcmp(interface, "zxdg_importer_v2") == 0)
++    {
++        process_wayland.zxdg_importer_v2 =
++            wl_registry_bind(registry, id, &zxdg_importer_v2_interface, 1);
++    }
+     else if (strcmp(interface, "wl_shm") == 0)
+     {
+         process_wayland.wl_shm = wl_registry_bind(registry, id, &wl_shm_interface, 1);
+diff --git a/dlls/winewayland.drv/wayland_pointer.c b/dlls/winewayland.drv/wayland_pointer.c
+index c4fdb33a766..7e021362ac5 100644
+--- a/dlls/winewayland.drv/wayland_pointer.c
++++ b/dlls/winewayland.drv/wayland_pointer.c
+@@ -196,6 +196,8 @@ static void pointer_handle_enter(void *data, struct wl_pointer *wl_pointer,
+
+     TRACE("hwnd=%p\n", hwnd);
+
++    wayland_activate_foreign_child(hwnd, serial);
++
+     pthread_mutex_lock(&pointer->mutex);
+     pointer->focused_hwnd = hwnd;
+     pointer->enter_serial = serial;
+@@ -269,6 +271,9 @@ static void pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
+
+     TRACE("hwnd=%p button=%#x state=%u\n", hwnd, button, state);
+
++    if (state == WL_POINTER_BUTTON_STATE_PRESSED)
++        wayland_activate_foreign_child(hwnd, serial);
++
+     NtUserSendHardwareInput(hwnd, 0, &input, 0);
+ }
+
+diff --git a/dlls/winewayland.drv/wayland_surface.c b/dlls/winewayland.drv/wayland_surface.c
+index b0b51212ec6..4ec6381c9df 100644
+--- a/dlls/winewayland.drv/wayland_surface.c
++++ b/dlls/winewayland.drv/wayland_surface.c
+@@ -28,12 +28,277 @@
+ #include <stdlib.h>
+ #include <unistd.h>
+
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++
+ #include "waylanddrv.h"
+ #include "wine/debug.h"
+ #include "wine/server.h"
+
+ WINE_DEFAULT_DEBUG_CHANNEL(waylanddrv);
+
++static const WCHAR xdg_foreign_handle_prop[] =
++    {'_','_','w','i','n','e','_','w','a','y','l','a','n','d','_','x','d','g','_',
++     'f','o','r','e','i','g','n','_','h','a','n','d','l','e',0};
++static const WCHAR xdg_foreign_child_prop[] =
++    {'_','_','w','i','n','e','_','w','a','y','l','a','n','d','_','x','d','g','_',
++     'f','o','r','e','i','g','n','_','c','h','i','l','d',0};
++static const WCHAR xdg_activation_token_prop[] =
++    {'_','_','w','i','n','e','_','w','a','y','l','a','n','d','_','x','d','g','_',
++     'a','c','t','i','v','a','t','i','o','n','_','t','o','k','e','n',0};
++
++struct foreign_activation_request
++{
++    struct xdg_activation_token_v1 *token;
++    HWND child;
++};
++
++static BOOL atom_get_ascii(RTL_ATOM atom, char *string, size_t size)
++{
++    char buffer[sizeof(ATOM_BASIC_INFORMATION) + MAX_ATOM_LEN * sizeof(WCHAR)];
++    ATOM_BASIC_INFORMATION *info = (ATOM_BASIC_INFORMATION *)buffer;
++    unsigned int i, len;
++
++    if (!atom || NtQueryInformationAtom(atom, AtomBasicInformation,
++                                        info, sizeof(buffer), NULL))
++        return FALSE;
++
++    len = info->NameLength / sizeof(WCHAR);
++    if (!len || len >= size) return FALSE;
++
++    for (i = 0; i < len; i++)
++    {
++        if (info->Name[i] > 0x7f) return FALSE;
++        string[i] = info->Name[i];
++    }
++    string[len] = 0;
++    return TRUE;
++}
++
++static void foreign_activation_token_handle_done(void *private,
++                                                 struct xdg_activation_token_v1 *token,
++                                                 const char *token_string)
++{
++    struct foreign_activation_request *request = private;
++    WCHAR tokenW[MAX_ATOM_LEN + 1];
++    RTL_ATOM atom, old_atom;
++    size_t i, len = strlen(token_string);
++
++    TRACE("done child=%p token=%s\n", request->child, token_string);
++
++    if (request->token != token || len > MAX_ATOM_LEN || !NtUserIsWindow(request->child))
++        goto done;
++
++    for (i = 0; i < len; i++) tokenW[i] = (unsigned char)token_string[i];
++    tokenW[len] = 0;
++    if (NtAddAtom(tokenW, len * sizeof(WCHAR), &atom)) goto done;
++
++    old_atom = HandleToULong(NtUserRemoveProp(request->child, xdg_activation_token_prop));
++    if (old_atom) NtDeleteAtom(old_atom);
++    if (!NtUserSetProp(request->child, xdg_activation_token_prop, ULongToHandle(atom)) ||
++        !NtUserPostMessage(request->child, WM_WAYLAND_ACTIVATE_FOREIGN, 0, 0))
++    {
++        NtUserRemoveProp(request->child, xdg_activation_token_prop);
++        NtDeleteAtom(atom);
++    }
++
++done:
++    xdg_activation_token_v1_destroy(token);
++    free(request);
++}
++
++static const struct xdg_activation_token_v1_listener foreign_activation_token_listener =
++{
++    foreign_activation_token_handle_done,
++};
++
++static void wayland_request_surface_activation(struct wayland_surface *surface)
++{
++    struct foreign_activation_request *request;
++
++    if (!process_wayland.xdg_activation_v1 || !surface->wl_surface) return;
++    if (!(request = calloc(1, sizeof(*request)))) return;
++
++    request->child = surface->hwnd;
++    request->token = xdg_activation_v1_get_activation_token(process_wayland.xdg_activation_v1);
++    if (!request->token)
++    {
++        free(request);
++        return;
++    }
++
++    xdg_activation_token_v1_add_listener(request->token,
++                                         &foreign_activation_token_listener, request);
++    xdg_activation_token_v1_set_surface(request->token, surface->wl_surface);
++    xdg_activation_token_v1_commit(request->token);
++    wl_display_flush(process_wayland.wl_display);
++}
++
++void wayland_activate_foreign_child(HWND hwnd, uint32_t serial)
++{
++    struct foreign_activation_request *request;
++    struct wayland_win_data *data;
++    struct wl_seat *seat;
++    HWND child, root = NtUserGetAncestor(hwnd, GA_ROOT);
++
++    child = root ? NtUserGetProp(root, xdg_foreign_child_prop) : 0;
++    TRACE("request hwnd=%p root=%p child=%p serial=%u\n", hwnd, root, child, serial);
++    if (!process_wayland.xdg_activation_v1 || !root || !child || child == hwnd ||
++        !NtUserIsWindow(child))
++        return;
++
++    if (!(data = wayland_win_data_get(hwnd))) return;
++    if (!data->wayland_surface || !wayland_surface_is_toplevel(data->wayland_surface))
++    {
++        wayland_win_data_release(data);
++        return;
++    }
++
++    if (!(request = calloc(1, sizeof(*request))))
++    {
++        wayland_win_data_release(data);
++        return;
++    }
++
++    request->child = child;
++    request->token = xdg_activation_v1_get_activation_token(process_wayland.xdg_activation_v1);
++    if (!request->token)
++    {
++        free(request);
++        wayland_win_data_release(data);
++        return;
++    }
++
++    xdg_activation_token_v1_add_listener(request->token,
++                                         &foreign_activation_token_listener, request);
++    pthread_mutex_lock(&process_wayland.seat.mutex);
++    if ((seat = process_wayland.seat.wl_seat) && serial)
++        xdg_activation_token_v1_set_serial(request->token, serial, seat);
++    pthread_mutex_unlock(&process_wayland.seat.mutex);
++    xdg_activation_token_v1_set_surface(request->token,
++                                        data->wayland_surface->wl_surface);
++    xdg_activation_token_v1_commit(request->token);
++    TRACE("committed request for child=%p\n", child);
++    wayland_win_data_release(data);
++    wl_display_flush(process_wayland.wl_display);
++}
++
++void wayland_surface_activate_from_token(HWND hwnd)
++{
++    struct wayland_win_data *data;
++    char token[MAX_ATOM_LEN + 1];
++    RTL_ATOM atom;
++
++    atom = HandleToULong(NtUserRemoveProp(hwnd, xdg_activation_token_prop));
++    TRACE("consume hwnd=%p atom=%u\n", hwnd, atom);
++    if (!atom) return;
++
++    if (process_wayland.xdg_activation_v1 && atom_get_ascii(atom, token, sizeof(token)) &&
++        (data = wayland_win_data_get(hwnd)))
++    {
++        if (data->wayland_surface && wayland_surface_is_toplevel(data->wayland_surface))
++        {
++            xdg_activation_v1_activate(process_wayland.xdg_activation_v1, token,
++                                       data->wayland_surface->wl_surface);
++            wl_display_flush(process_wayland.wl_display);
++        }
++        wayland_win_data_release(data);
++    }
++
++    NtDeleteAtom(atom);
++}
++
++static void xdg_exported_v2_handle_handle(void *private,
++                                          struct zxdg_exported_v2 *exported,
++                                          const char *handle)
++{
++    struct wayland_surface *surface = private;
++    WCHAR handleW[MAX_ATOM_LEN + 1];
++    RTL_ATOM atom, old_atom;
++    size_t i, len = strlen(handle);
++
++    if (surface->zxdg_exported_v2 != exported || len > MAX_ATOM_LEN) return;
++
++    for (i = 0; i < len; i++) handleW[i] = (unsigned char)handle[i];
++    handleW[len] = 0;
++
++    if (NtAddAtom(handleW, len * sizeof(WCHAR), &atom)) return;
++
++    old_atom = HandleToULong(NtUserRemoveProp(surface->hwnd, xdg_foreign_handle_prop));
++    if (!NtUserSetProp(surface->hwnd, xdg_foreign_handle_prop, ULongToHandle(atom)))
++    {
++        NtDeleteAtom(atom);
++        return;
++    }
++
++    if (old_atom) NtDeleteAtom(old_atom);
++    surface->exported_handle_atom = atom;
++    TRACE("exported hwnd=%p handle=%s\n", surface->hwnd, handle);
++}
++
++static const struct zxdg_exported_v2_listener xdg_exported_v2_listener =
++{
++    xdg_exported_v2_handle_handle,
++};
++
++static void xdg_imported_v2_handle_destroyed(void *private,
++                                             struct zxdg_imported_v2 *imported)
++{
++    struct wayland_surface *surface = private;
++
++    if (surface->zxdg_imported_v2 != imported) return;
++    if (surface->foreign_parent_hwnd &&
++        NtUserGetProp(surface->foreign_parent_hwnd, xdg_foreign_child_prop) == surface->hwnd)
++        NtUserRemoveProp(surface->foreign_parent_hwnd, xdg_foreign_child_prop);
++    zxdg_imported_v2_destroy(imported);
++    surface->zxdg_imported_v2 = NULL;
++    surface->imported_handle_atom = 0;
++    surface->foreign_parent_hwnd = 0;
++    surface->foreign_activation_pending = FALSE;
++}
++
++static const struct zxdg_imported_v2_listener xdg_imported_v2_listener =
++{
++    xdg_imported_v2_handle_destroyed,
++};
++
++void wayland_surface_update_foreign_parent(struct wayland_surface *surface)
++{
++    char handle[MAX_ATOM_LEN + 1];
++    RTL_ATOM atom;
++    HWND parent;
++
++    if (!process_wayland.zxdg_importer_v2 || !wayland_surface_is_toplevel(surface)) return;
++    if (!(parent = NtUserGetAncestor(surface->hwnd, GA_ROOT)) || parent == surface->hwnd) return;
++
++    atom = HandleToULong(NtUserGetProp(parent, xdg_foreign_handle_prop));
++    if (!atom || (surface->zxdg_imported_v2 && surface->imported_handle_atom == atom)) return;
++
++    if (surface->zxdg_imported_v2)
++    {
++        zxdg_imported_v2_destroy(surface->zxdg_imported_v2);
++        surface->zxdg_imported_v2 = NULL;
++        surface->imported_handle_atom = 0;
++    }
++
++    if (!atom_get_ascii(atom, handle, sizeof(handle))) return;
++
++    surface->zxdg_imported_v2 =
++        zxdg_importer_v2_import_toplevel(process_wayland.zxdg_importer_v2, handle);
++    if (!surface->zxdg_imported_v2) return;
++
++    zxdg_imported_v2_add_listener(surface->zxdg_imported_v2,
++                                  &xdg_imported_v2_listener, surface);
++    zxdg_imported_v2_set_parent_of(surface->zxdg_imported_v2, surface->wl_surface);
++    surface->imported_handle_atom = atom;
++    surface->foreign_parent_hwnd = parent;
++    NtUserSetProp(parent, xdg_foreign_child_prop, surface->hwnd);
++    surface->foreign_activation_pending = TRUE;
++    wl_display_flush(process_wayland.wl_display);
++    TRACE("imported parent hwnd=%p for hwnd=%p handle=%s\n",
++          parent, surface->hwnd, handle);
++}
++
+ static void xdg_surface_handle_configure(void *private, struct xdg_surface *xdg_surface,
+                                          uint32_t serial)
+ {
+@@ -276,6 +541,19 @@ void wayland_surface_make_toplevel(struct wayland_surface *surface)
+
+     wayland_surface_assign_icon(surface);
+
++    if (process_wayland.zxdg_exporter_v2 &&
++        NtUserGetAncestor(surface->hwnd, GA_ROOT) == surface->hwnd)
++    {
++        surface->zxdg_exported_v2 =
++            zxdg_exporter_v2_export_toplevel(process_wayland.zxdg_exporter_v2,
++                                              surface->wl_surface);
++        if (surface->zxdg_exported_v2)
++            zxdg_exported_v2_add_listener(surface->zxdg_exported_v2,
++                                          &xdg_exported_v2_listener, surface);
++    }
++    else
++        wayland_surface_update_foreign_parent(surface);
++
+     wl_surface_commit(surface->wl_surface);
+     wl_display_flush(process_wayland.wl_display);
+
+@@ -338,6 +616,31 @@ void wayland_surface_clear_role(struct wayland_surface *surface)
+ {
+     TRACE("surface=%p\n", surface);
+
++    if (surface->zxdg_imported_v2)
++    {
++        if (surface->foreign_parent_hwnd &&
++            NtUserGetProp(surface->foreign_parent_hwnd, xdg_foreign_child_prop) == surface->hwnd)
++            NtUserRemoveProp(surface->foreign_parent_hwnd, xdg_foreign_child_prop);
++        zxdg_imported_v2_destroy(surface->zxdg_imported_v2);
++        surface->zxdg_imported_v2 = NULL;
++        surface->imported_handle_atom = 0;
++        surface->foreign_parent_hwnd = 0;
++        surface->foreign_activation_pending = FALSE;
++    }
++
++    if (surface->zxdg_exported_v2)
++    {
++        zxdg_exported_v2_destroy(surface->zxdg_exported_v2);
++        surface->zxdg_exported_v2 = NULL;
++    }
++
++    if (surface->exported_handle_atom)
++    {
++        NtUserRemoveProp(surface->hwnd, xdg_foreign_handle_prop);
++        NtDeleteAtom(surface->exported_handle_atom);
++        surface->exported_handle_atom = 0;
++    }
++
+     switch (surface->role)
+     {
+     case WAYLAND_SURFACE_ROLE_NONE:
+@@ -688,10 +991,8 @@ static void wayland_surface_reconfigure_subsurface(struct wayland_surface *surfa
+         TRACE("hwnd=%p pos=%d,%d\n", surface->hwnd, x, y);
+
+         wl_subsurface_set_position(surface->wl_subsurface, x, y);
+-        if (toplevel_data->client_surface)
+-            wl_subsurface_place_above(surface->wl_subsurface, toplevel_data->client_surface->wl_surface);
+-        else
+-            wl_subsurface_place_above(surface->wl_subsurface, toplevel_surface->wl_surface);
++        /* popups go above every client surface of their toplevel */
++        toplevel_data->restack_pending = TRUE;
+         wl_surface_commit(toplevel_surface->wl_surface);
+
+         memset(&surface->processing, 0, sizeof(surface->processing));
+@@ -997,6 +1298,40 @@ static struct wayland_client_surface *impl_from_client_surface(struct client_sur
+     return CONTAINING_RECORD(client, struct wayland_client_surface, client);
+ }
+
++static void foreign_activation_frame_done(void *private, struct wl_callback *callback,
++                                          uint32_t callback_data)
++{
++    struct wayland_client_surface *client = private;
++    struct wayland_win_data *data;
++
++    if (client->foreign_activation_frame_callback != callback) return;
++    wl_callback_destroy(callback);
++    client->foreign_activation_frame_callback = NULL;
++
++    if ((data = wayland_win_data_get(client->client.hwnd)))
++    {
++        if (data->wayland_surface && data->wayland_surface->foreign_activation_pending)
++        {
++            data->wayland_surface->foreign_activation_pending = FALSE;
++            wayland_request_surface_activation(data->wayland_surface);
++        }
++        wayland_win_data_release(data);
++    }
++}
++
++static const struct wl_callback_listener foreign_activation_frame_listener =
++{
++    foreign_activation_frame_done,
++};
++
++static void wayland_client_surface_schedule_activation(struct wayland_client_surface *client)
++{
++    if (client->foreign_activation_frame_callback) return;
++    if (!(client->foreign_activation_frame_callback = wl_surface_frame(client->wl_surface))) return;
++    wl_callback_add_listener(client->foreign_activation_frame_callback,
++                             &foreign_activation_frame_listener, client);
++}
++
+ static void wayland_client_surface_destroy(struct client_surface *client)
+ {
+     struct wayland_client_surface *surface = impl_from_client_surface(client);
+@@ -1005,6 +1340,8 @@ static void wayland_client_surface_destroy(struct client_surface *client)
+
+     if (surface->wp_viewport)
+         wp_viewport_destroy(surface->wp_viewport);
++    if (surface->foreign_activation_frame_callback)
++        wl_callback_destroy(surface->foreign_activation_frame_callback);
+     if (surface->wl_subsurface)
+         wl_subsurface_destroy(surface->wl_subsurface);
+     if (surface->wl_surface)
+@@ -1024,28 +1361,60 @@ static void wayland_client_surface_detach(struct client_surface *client)
+     }
+ }
+
++static void wayland_client_surface_attach_rect(struct wayland_client_surface *client, HWND toplevel,
++                                               const RECT *rect);
++
+ static void wayland_client_surface_update(struct client_surface *client)
+ {
+     struct wayland_client_surface *surface = impl_from_client_surface(client);
+     HWND hwnd = client->hwnd, toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
+     struct wayland_win_data *data;
++    BOOL visible = toplevel && NtUserIsWindowVisible(hwnd);
++    RECT client_rect, toplevel_rect;
++
++    /* This runs on every present, possibly while another thread holds the
++     * win32u user lock and waits for the win_data lock, so query the window
++     * geometry before taking the win_data lock. */
++    NtUserGetClientRect(hwnd, &client_rect, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
++    toplevel_rect = client_rect;
++    if (toplevel)
++        NtUserMapWindowPoints(hwnd, toplevel, (POINT *)&toplevel_rect, 2, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
+
+     if (!(data = wayland_win_data_get(hwnd))) return;
+
+-    if (toplevel && NtUserIsWindowVisible(hwnd))
+-        wayland_client_surface_attach(surface, toplevel);
++    if (visible && data->client_surface == surface)
++    {
++        wayland_client_surface_attach_rect(surface, toplevel, &toplevel_rect);
++        if (!surface->toplevel && data->wayland_surface)
++            wayland_client_surface_attach_rect(surface, hwnd, &client_rect);
++    }
+     else
+         wayland_client_surface_attach(surface, NULL);
+
+     wayland_win_data_release(data);
++
++    if (toplevel) wayland_restack_client_surfaces(toplevel);
+ }
+
+ static void wayland_client_surface_present(struct client_surface *client, HDC hdc)
+ {
+     struct wayland_client_surface *surface = impl_from_client_surface(client);
+     HWND hwnd = client->hwnd, toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
++    struct wayland_win_data *data;
++
+     ensure_window_surface_contents(toplevel);
+     set_client_surface(hwnd, surface);
++    if (hwnd != toplevel) ensure_window_surface_contents(hwnd);
++    if (hwnd != toplevel && (data = wayland_win_data_get(hwnd)))
++    {
++        if (data->wayland_surface)
++        {
++            wayland_surface_update_foreign_parent(data->wayland_surface);
++            if (data->wayland_surface->foreign_activation_pending)
++                wayland_client_surface_schedule_activation(surface);
++        }
++        wayland_win_data_release(data);
++    }
+ }
+
+ static const struct client_surface_funcs wayland_client_surface_funcs =
+@@ -1056,12 +1425,15 @@ static const struct client_surface_funcs wayland_client_surface_funcs =
+     .present = wayland_client_surface_present,
+ };
+
+-struct wayland_client_surface *wayland_client_surface_create(HWND hwnd)
++struct wayland_client_surface *wayland_client_surface_create(HWND hwnd, int format, BOOL raw)
+ {
+     struct wayland_client_surface *client;
+     struct wl_region *empty_region;
+
+-    if (!(client = client_surface_create(sizeof(*client), &wayland_client_surface_funcs, hwnd))) return NULL;
++    if ((client = (struct wayland_client_surface *)get_unused_client_surface(hwnd, format, raw))) return client;
++    if (!(client = reusable_client_surface_create(sizeof(*client), &wayland_client_surface_funcs,
++                                                  hwnd, format, raw))) return NULL;
++    client->client.host_scaled = TRUE;
+
+     client->wl_surface =
+         wl_compositor_create_surface(process_wayland.wl_compositor);
+@@ -1098,7 +1470,115 @@ err:
+     return NULL;
+ }
+
+-void wayland_client_surface_attach(struct wayland_client_surface *client, HWND toplevel)
++/* Stack the client subsurfaces of a toplevel in window z-order. Each of them
++ * is placed right above the parent surface when reconfigured, so without this
++ * the last reconfigured child ends up below its siblings, and an opaque
++ * sibling that Windows paints underneath can hide it completely. */
++static HWND *build_hwnd_list(HWND parent, BOOL children, ULONG *count)
++{
++    HWND *list;
++    NTSTATUS status;
++
++    *count = 128;
++    for (;;)
++    {
++        if (!(list = malloc(*count * sizeof(*list)))) return NULL;
++        status = NtUserBuildHwndList(0, parent, children, children, 0, *count, list, count);
++        if (!status) break;
++        free(list);
++        if (status != STATUS_BUFFER_TOO_SMALL) return NULL;
++    }
++    /* the list ends with HWND_BOTTOM */
++    (*count)--;
++    return list;
++}
++
++/**********************************************************************
++ *          wayland_restack_client_surfaces
++ *
++ * Stacks the client surfaces of a toplevel in painting order, with its owned
++ * popups above them. Walking the window tree takes the win32u user lock,
++ * which may be held while waiting for the win_data lock, so this must be
++ * called without holding the win_data lock.
++ */
++void wayland_restack_client_surfaces(HWND toplevel)
++{
++    HWND *list, *popups = NULL, *stack = NULL, *order;
++    struct wayland_client_surface *client;
++    struct wayland_win_data *toplevel_data, *data;
++    struct wayland_surface *surface, *popup;
++    struct wl_surface *below;
++    ULONG count, popup_count;
++    UINT i, depth = 0, done = 0;
++
++    if (!(toplevel_data = wayland_win_data_get(toplevel))) return;
++    if (!toplevel_data->restack_pending)
++    {
++        wayland_win_data_release(toplevel_data);
++        return;
++    }
++    wayland_win_data_release(toplevel_data);
++
++    if (!(list = build_hwnd_list(toplevel, TRUE, &count))) return;
++
++    /* The list is in pre-order with siblings from the top. Reversing its
++     * post-order gives the painting order. */
++    if (!(stack = malloc(2 * (count + 1) * sizeof(*stack)))) goto done;
++    order = stack + count + 1;
++    for (i = 0; i < count; i++)
++    {
++        HWND parent = NtUserGetAncestor(list[i], GA_PARENT);
++
++        while (depth && stack[depth - 1] != parent) order[done++] = stack[--depth];
++        stack[depth++] = list[i];
++    }
++    while (depth) order[done++] = stack[--depth];
++
++    /* top level windows are listed from the top */
++    if (!(popups = build_hwnd_list(0, FALSE, &popup_count))) goto done;
++
++    if (!(toplevel_data = wayland_win_data_get(toplevel))) goto done;
++    toplevel_data->restack_pending = FALSE;
++    if (!(surface = toplevel_data->wayland_surface))
++    {
++        wayland_win_data_release(toplevel_data);
++        goto done;
++    }
++
++    below = surface->wl_surface;
++    if ((client = toplevel_data->client_surface) && client->toplevel == toplevel && client->wl_subsurface)
++        below = client->wl_surface;
++
++    for (i = done; i--;)
++    {
++        if (!(data = wayland_win_data_get_nolock(order[i])) || !(client = data->client_surface)) continue;
++        if (client->toplevel != toplevel || !client->wl_subsurface) continue;
++        wl_subsurface_place_above(client->wl_subsurface, below);
++        below = client->wl_surface;
++    }
++
++    /* owned popups are subsurfaces of the toplevel as well and must stay
++     * above all of its client surfaces */
++    for (i = popup_count; i--;)
++    {
++        if (!(data = wayland_win_data_get_nolock(popups[i])) || !(popup = data->wayland_surface)) continue;
++        if (popup == surface || popup->role != WAYLAND_SURFACE_ROLE_SUBSURFACE) continue;
++        if (popup->toplevel_hwnd != toplevel || !popup->wl_subsurface) continue;
++        wl_subsurface_place_above(popup->wl_subsurface, below);
++        below = popup->wl_surface;
++    }
++
++    wl_surface_commit(surface->wl_surface);
++    wayland_win_data_release(toplevel_data);
++
++done:
++    free(popups);
++    free(stack);
++    free(list);
++}
++
++static void wayland_client_surface_attach_rect(struct wayland_client_surface *client, HWND toplevel,
++                                               const RECT *rect)
+ {
+     struct wayland_win_data *toplevel_data;
+     struct wayland_surface *surface;
+@@ -1142,14 +1622,26 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
+         client->toplevel = toplevel;
+     }
+
+-    NtUserGetClientRect(hwnd, &client_rect, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
+-    NtUserMapWindowPoints(hwnd, toplevel, (POINT *)&client_rect, 2, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
++    if (rect) client_rect = *rect;
++    else
++    {
++        NtUserGetClientRect(hwnd, &client_rect, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
++        NtUserMapWindowPoints(hwnd, toplevel, (POINT *)&client_rect, 2, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
++    }
+
+     wayland_surface_reconfigure_client(surface, client, &client_rect);
++    /* reconfiguring puts the client surface right above its parent, below
++     * its siblings, restore the window stacking once the lock is released */
++    toplevel_data->restack_pending = TRUE;
+     /* Commit to apply subsurface positioning. */
+     wl_surface_commit(surface->wl_surface);
+ }
+
++void wayland_client_surface_attach(struct wayland_client_surface *client, HWND toplevel)
++{
++    wayland_client_surface_attach_rect(client, toplevel, NULL);
++}
++
+ static void dummy_buffer_release(void *data, struct wl_buffer *buffer)
+ {
+     struct wayland_shm_buffer *shm_buffer = data;
+diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
+index 9452d237fa3..e19d4654c0a 100644
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -34,6 +34,8 @@
+ #include "relative-pointer-unstable-v1-client-protocol.h"
+ #include "text-input-unstable-v3-client-protocol.h"
+ #include "viewporter-client-protocol.h"
++#include "xdg-activation-v1-client-protocol.h"
++#include "xdg-foreign-unstable-v2-client-protocol.h"
+ #include "xdg-output-unstable-v1-client-protocol.h"
+ #include "xdg-shell-client-protocol.h"
+ #include "wlr-data-control-unstable-v1-client-protocol.h"
+@@ -67,6 +69,7 @@ enum wayland_window_message
+     WM_WAYLAND_INIT_DISPLAY_DEVICES = WM_WINE_FIRST_DRIVER_MSG,
+     WM_WAYLAND_CONFIGURE,
+     WM_WAYLAND_SET_FOREGROUND,
++    WM_WAYLAND_ACTIVATE_FOREIGN,
+ };
+
+ enum wayland_surface_config_state
+@@ -168,6 +171,9 @@ struct wayland
+     struct zxdg_output_manager_v1 *zxdg_output_manager_v1;
+     struct wl_compositor *wl_compositor;
+     struct xdg_wm_base *xdg_wm_base;
++    struct xdg_activation_v1 *xdg_activation_v1;
++    struct zxdg_exporter_v2 *zxdg_exporter_v2;
++    struct zxdg_importer_v2 *zxdg_importer_v2;
+     struct wl_shm *wl_shm;
+     struct wp_viewporter *wp_viewporter;
+     struct wl_subcompositor *wl_subcompositor;
+@@ -244,6 +250,7 @@ struct wayland_client_surface
+     struct wl_surface *wl_surface;
+     struct wl_subsurface *wl_subsurface;
+     struct wp_viewport *wp_viewport;
++    struct wl_callback *foreign_activation_frame_callback;
+ };
+
+ struct wayland_shm_buffer
+@@ -267,6 +274,12 @@ struct wayland_surface
+     struct wp_viewport *wp_viewport;
+     struct wayland_shm_buffer *small_icon_buffer;
+     struct wayland_shm_buffer *big_icon_buffer;
++    struct zxdg_exported_v2 *zxdg_exported_v2;
++    struct zxdg_imported_v2 *zxdg_imported_v2;
++    RTL_ATOM exported_handle_atom;
++    RTL_ATOM imported_handle_atom;
++    HWND foreign_parent_hwnd;
++    BOOL foreign_activation_pending;
+
+     enum wayland_surface_role role;
+     union
+@@ -312,6 +325,9 @@ void wayland_output_use_xdg_extension(struct wayland_output *output);
+ struct wayland_surface *wayland_surface_create(HWND hwnd);
+ void wayland_surface_destroy(struct wayland_surface *surface);
+ void wayland_surface_make_toplevel(struct wayland_surface *surface);
++void wayland_surface_update_foreign_parent(struct wayland_surface *surface);
++void wayland_activate_foreign_child(HWND hwnd, uint32_t serial);
++void wayland_surface_activate_from_token(HWND hwnd);
+ void wayland_surface_make_subsurface(struct wayland_surface *surface,
+                                      struct wayland_surface *parent);
+ void wayland_surface_clear_role(struct wayland_surface *surface);
+@@ -328,8 +344,9 @@ void wayland_surface_coords_from_window(struct wayland_surface *surface,
+ void wayland_surface_coords_to_window(struct wayland_surface *surface,
+                                       double surface_x, double surface_y,
+                                       int *window_x, int *window_y);
+-struct wayland_client_surface *wayland_client_surface_create(HWND hwnd);
++struct wayland_client_surface *wayland_client_surface_create(HWND hwnd, int format, BOOL raw);
+ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND toplevel);
++void wayland_restack_client_surfaces(HWND toplevel);
+ void wayland_surface_ensure_contents(struct wayland_surface *surface);
+ void wayland_surface_set_title(struct wayland_surface *surface, LPCWSTR title);
+ void wayland_surface_assign_icon(struct wayland_surface *surface);
+@@ -372,6 +389,8 @@ struct wayland_win_data
+     BOOL is_fullscreen;
+     BOOL managed;
+     BOOL layered_attribs_set;
++    /* the client surfaces and popups of this toplevel need restacking */
++    BOOL restack_pending;
+ };
+
+ struct wayland_win_data *wayland_win_data_get(HWND hwnd);
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 07e0858fb39..cb9991f7804 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -193,13 +193,14 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
+     struct wayland_surface *surface;
+     enum wayland_surface_role role;
+     BOOL visible;
++    DWORD style = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
+     DWORD exstyle = NtUserGetWindowLongW(data->hwnd, GWL_EXSTYLE);
+     struct wl_region *input_region;
+
+     TRACE("hwnd=%p\n", data->hwnd);
+
+-    visible = ((NtUserGetWindowLongW(data->hwnd, GWL_STYLE) & WS_VISIBLE) == WS_VISIBLE) &&
+-               (!(exstyle & WS_EX_LAYERED) || data->layered_attribs_set);
++    visible = ((style & WS_VISIBLE) == WS_VISIBLE) &&
++               (!(exstyle & WS_EX_LAYERED) || data->layered_attribs_set || data->client_surface);
+
+     if (!visible) role = WAYLAND_SURFACE_ROLE_NONE;
+     else if (toplevel_surface) role = WAYLAND_SURFACE_ROLE_SUBSURFACE;
+@@ -216,8 +217,11 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
+     if (!(surface = data->wayland_surface) && !(surface = wayland_surface_create(data->hwnd))) return FALSE;
+
+     /* Pass through mouse events for layered, transparent windows, to match
+-     * Windows behavior. */
+-    input_region = ((exstyle & WS_EX_TRANSPARENT) && (exstyle & WS_EX_LAYERED)) ?
++     * Windows behavior. Child windows only get a subsurface to host their
++     * client surface; their pointer input belongs to the toplevel, which
++     * routes it to the right child by position. */
++    input_region = (((exstyle & WS_EX_TRANSPARENT) && (exstyle & WS_EX_LAYERED)) ||
++                    (role == WAYLAND_SURFACE_ROLE_SUBSURFACE && (style & WS_CHILD))) ?
+                    wl_compositor_create_region(process_wayland.wl_compositor) :
+                    NULL;
+     wl_surface_set_input_region(surface->wl_surface, input_region);
+@@ -369,6 +373,19 @@ static inline HWND get_active_window(void)
+     return NtUserGetGUIThreadInfo(GetCurrentThreadId(), &info) ? info.hwndActive : 0;
+ }
+
++static BOOL is_mso_border_effect_window(HWND hwnd)
++{
++    static const WCHAR border_effect[] = u"MSO_BORDEREFFECT_WINDOW_CLASS";
++    WCHAR class_name[ARRAY_SIZE(border_effect)];
++    UNICODE_STRING name = {.Buffer = class_name, .MaximumLength = sizeof(class_name)};
++    DWORD style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
++    DWORD ex_style = NtUserGetWindowLongW(hwnd, GWL_EXSTYLE);
++
++    return NtUserGetClassName(hwnd, FALSE, &name) == ARRAY_SIZE(border_effect) - 1 &&
++           !wcsncmp(class_name, border_effect, ARRAY_SIZE(border_effect) - 1) &&
++           (style & WS_POPUP) && (ex_style & WS_EX_LAYERED);
++}
++
+ /***********************************************************************
+  *		is_window_managed
+  *
+@@ -381,6 +398,12 @@ static BOOL is_window_managed(HWND hwnd, UINT swp_flags, BOOL fullscreen)
+     /* child windows are not managed */
+     style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+     if ((style & (WS_CHILD|WS_POPUP)) == WS_CHILD) return FALSE;
++    /* owned tool popups (menus, flyouts) stay attached to their owner, even
++     * when active, since a Wayland toplevel cannot be positioned */
++    ex_style = NtUserGetWindowLongW(hwnd, GWL_EXSTYLE);
++    if ((style & WS_POPUP) && !(style & (WS_CAPTION|WS_THICKFRAME)) &&
++        (ex_style & WS_EX_TOOLWINDOW) && NtUserGetWindowRelative(hwnd, GW_OWNER))
++        return FALSE;
+     /* activated windows are managed */
+     if (!(swp_flags & (SWP_NOACTIVATE|SWP_HIDEWINDOW))) return TRUE;
+     if (hwnd == get_active_window()) return TRUE;
+@@ -396,7 +419,6 @@ static BOOL is_window_managed(HWND hwnd, UINT swp_flags, BOOL fullscreen)
+         if (fullscreen) return TRUE;
+     }
+     /* application windows are managed */
+-    ex_style = NtUserGetWindowLongW(hwnd, GWL_EXSTYLE);
+     if (ex_style & WS_EX_APPWINDOW) return TRUE;
+     /* windows that own popups are managed */
+     if (has_owned_popups(hwnd)) return TRUE;
+@@ -443,9 +465,13 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     struct wayland_surface *toplevel_surface;
+     struct wayland_client_surface *client;
+     struct wayland_win_data *data, *toplevel_data;
+-    BOOL managed, fullscreen = swp_flags & WINE_SWP_FULLSCREEN;
++    BOOL border_effect, managed;
++    BOOL fullscreen = swp_flags & WINE_SWP_FULLSCREEN;
++
++    TRACE("hwnd %p new_rects %s after %p flags %08x\n", hwnd,
++          debugstr_window_rects(new_rects), insert_after, swp_flags);
+
+-    TRACE("hwnd %p new_rects %s after %p flags %08x\n", hwnd, debugstr_window_rects(new_rects), insert_after, swp_flags);
++    if ((border_effect = is_mso_border_effect_window(hwnd))) surface = NULL;
+
+     /* Get the managed state with win_data unlocked, as is_window_managed
+      * may need to query win_data information about other HWNDs and thus
+@@ -455,16 +481,18 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     if (!(data = wayland_win_data_get(hwnd))) return;
+     toplevel_data = toplevel && toplevel != hwnd ? wayland_win_data_get_nolock(toplevel) : NULL;
+     toplevel_surface = toplevel_data ? toplevel_data->wayland_surface : NULL;
+-
++    /* a moved child or popup may change the stacking of its toplevel */
++    if (toplevel_data) toplevel_data->restack_pending = TRUE;
+     data->rects = *new_rects;
+     data->is_fullscreen = fullscreen;
+     data->managed = managed;
+
+-    if (!surface)
++    if (!surface && (border_effect || !NtUserIsWindowVisible(hwnd) ||
++        (toplevel != hwnd && !data->client_surface)))
+     {
+         if ((client = data->client_surface))
+         {
+-            if (toplevel && NtUserIsWindowVisible(hwnd))
++            if (!border_effect && toplevel && NtUserIsWindowVisible(hwnd))
+                 wayland_client_surface_attach(client, toplevel);
+             else
+                 wayland_client_surface_attach(client, NULL);
+@@ -477,11 +505,11 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+         }
+     }
+     else if (wayland_win_data_create_wayland_surface(data, toplevel_surface))
+-    {
+         wayland_win_data_update_wayland_state(data);
+-    }
+
+     wayland_win_data_release(data);
++
++    if (toplevel) wayland_restack_client_surfaces(toplevel);
+ }
+
+ static void wayland_configure_window(HWND hwnd)
+@@ -622,6 +650,9 @@ LRESULT WAYLAND_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+     case WM_WAYLAND_SET_FOREGROUND:
+         NtUserSetForegroundWindowInternal(hwnd);
+         return 0;
++    case WM_WAYLAND_ACTIVATE_FOREIGN:
++        wayland_surface_activate_from_token(hwnd);
++        return 0;
+     default:
+         FIXME("got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, (long)wp, lp);
+         return 0;
+@@ -780,6 +811,8 @@ LRESULT WAYLAND_SysCommand(HWND hwnd, WPARAM wparam, LPARAM lparam, const POINT
+ void set_client_surface(HWND hwnd, struct wayland_client_surface *new_client)
+ {
+     HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
++    /* called on every present, query this before taking the win_data lock */
++    BOOL visible = toplevel && NtUserIsWindowVisible(hwnd);
+     struct wayland_client_surface *old_client;
+     struct wayland_win_data *data;
+
+@@ -795,14 +828,24 @@ void set_client_surface(HWND hwnd, struct wayland_client_surface *new_client)
+
+         if ((data->client_surface = new_client))
+         {
+-            if (toplevel && NtUserIsWindowVisible(hwnd))
++            if (visible)
+                 wayland_client_surface_attach(new_client, toplevel);
+             else
+                 wayland_client_surface_attach(new_client, NULL);
+         }
+     }
+
++    if (new_client && visible && !new_client->toplevel)
++    {
++        wayland_client_surface_attach(new_client, toplevel);
++        if (!new_client->toplevel && toplevel != hwnd &&
++            wayland_win_data_create_wayland_surface(data, NULL))
++            wayland_win_data_update_wayland_state(data);
++    }
++
+     wayland_win_data_release(data);
++
++    if (toplevel) wayland_restack_client_surfaces(toplevel);
+ }
+
+ BOOL set_window_surface_contents(HWND hwnd, struct wayland_shm_buffer *shm_buffer, HRGN damage_region)
+@@ -826,6 +869,10 @@ BOOL set_window_surface_contents(HWND hwnd, struct wayland_shm_buffer *shm_buffe
+             TRACE("Wayland surface not configured yet, not flushing\n");
+         }
+     }
++    else if (is_mso_border_effect_window(hwnd))
++    {
++        committed = TRUE;
++    }
+
+     /* Update the latest window buffer for the wayland surface. Note that we
+      * only care whether the buffer contains the latest window contents,
+diff --git a/dlls/winewayland.drv/xdg-activation-v1.xml b/dlls/winewayland.drv/xdg-activation-v1.xml
+new file mode 100644
+index 00000000000..9adcc274ef1
+--- /dev/null
++++ b/dlls/winewayland.drv/xdg-activation-v1.xml
+@@ -0,0 +1,200 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<protocol name="xdg_activation_v1">
++
++  <copyright>
++    Copyright © 2020 Aleix Pol Gonzalez &lt;aleixpol@kde.org&gt;
++    Copyright © 2020 Carlos Garnacho &lt;carlosg@gnome.org&gt;
++
++    Permission is hereby granted, free of charge, to any person obtaining a
++    copy of this software and associated documentation files (the "Software"),
++    to deal in the Software without restriction, including without limitation
++    the rights to use, copy, modify, merge, publish, distribute, sublicense,
++    and/or sell copies of the Software, and to permit persons to whom the
++    Software is furnished to do so, subject to the following conditions:
++
++    The above copyright notice and this permission notice (including the next
++    paragraph) shall be included in all copies or substantial portions of the
++    Software.
++
++    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++    DEALINGS IN THE SOFTWARE.
++  </copyright>
++
++  <description summary="Protocol for requesting activation of surfaces">
++    The way for a client to pass focus to another toplevel is as follows.
++
++    The client that intends to activate another toplevel uses the
++    xdg_activation_v1.get_activation_token request to get an activation token.
++    This token is then forwarded to the client, which is supposed to activate
++    one of its surfaces, through a separate band of communication.
++
++    One established way of doing this is through the XDG_ACTIVATION_TOKEN
++    environment variable of a newly launched child process. The child process
++    should unset the environment variable again right after reading it out in
++    order to avoid propagating it to other child processes.
++
++    Another established way exists for Applications implementing the D-Bus
++    interface org.freedesktop.Application, which should get their token under
++    activation-token on their platform_data.
++
++    In general activation tokens may be transferred across clients through
++    means not described in this protocol.
++
++    The client to be activated will then pass the token
++    it received to the xdg_activation_v1.activate request. The compositor can
++    then use this token to decide how to react to the activation request.
++
++    The token the activating client gets may be ineffective either already at
++    the time it receives it, for example if it was not focused, for focus
++    stealing prevention. The activating client will have no way to discover
++    the validity of the token, and may still forward it to the to be activated
++    client.
++
++    The created activation token may optionally get information attached to it
++    that can be used by the compositor to identify the application that we
++    intend to activate. This can for example be used to display a visual hint
++    about what application is being started.
++
++    Warning! The protocol described in this file is currently in the testing
++    phase. Backward compatible changes may be added together with the
++    corresponding interface version bump. Backward incompatible changes can
++    only be done by creating a new major version of the extension.
++  </description>
++
++  <interface name="xdg_activation_v1" version="1">
++    <description summary="interface for activating surfaces">
++      A global interface used for informing the compositor about applications
++      being activated or started, or for applications to request to be
++      activated.
++    </description>
++
++    <request name="destroy" type="destructor">
++      <description summary="destroy the xdg_activation object">
++        Notify the compositor that the xdg_activation object will no longer be
++        used.
++
++        The child objects created via this interface are unaffected and should
++        be destroyed separately.
++      </description>
++    </request>
++
++    <request name="get_activation_token">
++      <description summary="requests a token">
++        Creates an xdg_activation_token_v1 object that will provide
++        the initiating client with a unique token for this activation. This
++        token should be offered to the clients to be activated.
++      </description>
++
++      <arg name="id" type="new_id" interface="xdg_activation_token_v1"/>
++    </request>
++
++    <request name="activate">
++      <description summary="notify new interaction being available">
++        Requests surface activation. It's up to the compositor to display
++        this information as desired, for example by placing the surface above
++        the rest.
++
++        The compositor may know who requested this by checking the activation
++        token and might decide not to follow through with the activation if it's
++        considered unwanted.
++
++        Compositors can ignore unknown activation tokens when an invalid
++        token is passed.
++      </description>
++      <arg name="token" type="string" summary="the activation token of the initiating client"/>
++      <arg name="surface" type="object" interface="wl_surface"
++	   summary="the wl_surface to activate"/>
++    </request>
++  </interface>
++
++  <interface name="xdg_activation_token_v1" version="1">
++    <description summary="an exported activation handle">
++      An object for setting up a token and receiving a token handle that can
++      be passed as an activation token to another client.
++
++      The object is created using the xdg_activation_v1.get_activation_token
++      request. This object should then be populated with the app_id, surface
++      and serial information and committed. The compositor shall then issue a
++      done event with the token. In case the request's parameters are invalid,
++      the compositor will provide an invalid token.
++    </description>
++
++    <enum name="error">
++      <entry name="already_used" value="0"
++             summary="The token has already been used previously"/>
++    </enum>
++
++    <request name="set_serial">
++      <description summary="specifies the seat and serial of the activating event">
++        Provides information about the seat and serial event that requested the
++        token.
++
++        The serial can come from an input or focus event. For instance, if a
++        click triggers the launch of a third-party client, the launcher client
++        should send a set_serial request with the serial and seat from the
++        wl_pointer.button event.
++
++        Some compositors might refuse to activate toplevels when the token
++        doesn't have a valid and recent enough event serial.
++
++        Must be sent before commit. This information is optional.
++      </description>
++      <arg name="serial" type="uint"
++           summary="the serial of the event that triggered the activation"/>
++      <arg name="seat" type="object" interface="wl_seat"
++           summary="the wl_seat of the event"/>
++    </request>
++
++    <request name="set_app_id">
++      <description summary="specifies the application being activated">
++        The requesting client can specify an app_id to associate the token
++        being created with it.
++
++        Must be sent before commit. This information is optional.
++      </description>
++      <arg name="app_id" type="string"
++           summary="the application id of the client being activated."/>
++    </request>
++
++    <request name="set_surface">
++      <description summary="specifies the surface requesting activation">
++        This request sets the surface requesting the activation. Note, this is
++        different from the surface that will be activated.
++
++        Some compositors might refuse to activate toplevels when the token
++        doesn't have a requesting surface.
++
++        Must be sent before commit. This information is optional.
++      </description>
++      <arg name="surface" type="object" interface="wl_surface"
++	   summary="the requesting surface"/>
++    </request>
++
++    <request name="commit">
++      <description summary="issues the token request">
++        Requests an activation token based on the different parameters that
++        have been offered through set_serial, set_surface and set_app_id.
++      </description>
++    </request>
++
++    <event name="done">
++      <description summary="the exported activation token">
++        The 'done' event contains the unique token of this activation request
++        and notifies that the provider is done.
++      </description>
++      <arg name="token" type="string" summary="the exported activation token"/>
++    </event>
++
++    <request name="destroy" type="destructor">
++      <description summary="destroy the xdg_activation_token_v1 object">
++        Notify the compositor that the xdg_activation_token_v1 object will no
++        longer be used. The received token stays valid.
++      </description>
++    </request>
++  </interface>
++</protocol>
+diff --git a/dlls/winewayland.drv/xdg-foreign-unstable-v2.xml b/dlls/winewayland.drv/xdg-foreign-unstable-v2.xml
+new file mode 100644
+index 00000000000..cc3271dca4d
+--- /dev/null
++++ b/dlls/winewayland.drv/xdg-foreign-unstable-v2.xml
+@@ -0,0 +1,200 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<protocol name="xdg_foreign_unstable_v2">
++
++  <copyright>
++    Copyright © 2015-2016 Red Hat Inc.
++
++    Permission is hereby granted, free of charge, to any person obtaining a
++    copy of this software and associated documentation files (the "Software"),
++    to deal in the Software without restriction, including without limitation
++    the rights to use, copy, modify, merge, publish, distribute, sublicense,
++    and/or sell copies of the Software, and to permit persons to whom the
++    Software is furnished to do so, subject to the following conditions:
++
++    The above copyright notice and this permission notice (including the next
++    paragraph) shall be included in all copies or substantial portions of the
++    Software.
++
++    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++    DEALINGS IN THE SOFTWARE.
++  </copyright>
++
++  <description summary="Protocol for exporting xdg surface handles">
++    This protocol specifies a way for making it possible to reference a surface
++    of a different client. With such a reference, a client can, by using the
++    interfaces provided by this protocol, manipulate the relationship between
++    its own surfaces and the surface of some other client. For example, stack
++    some of its own surface above the other clients surface.
++
++    In order for a client A to get a reference of a surface of client B, client
++    B must first export its surface using xdg_exporter.export_toplevel. Upon
++    doing this, client B will receive a handle (a unique string) that it may
++    share with client A in some way (for example D-Bus). After client A has
++    received the handle from client B, it may use xdg_importer.import_toplevel
++    to create a reference to the surface client B just exported. See the
++    corresponding requests for details.
++
++    A possible use case for this is out-of-process dialogs. For example when a
++    sandboxed client without file system access needs the user to select a file
++    on the file system, given sandbox environment support, it can export its
++    surface, passing the exported surface handle to an unsandboxed process that
++    can show a file browser dialog and stack it above the sandboxed client's
++    surface.
++
++    Warning! The protocol described in this file is experimental and backward
++    incompatible changes may be made. Backward compatible changes may be added
++    together with the corresponding interface version bump. Backward
++    incompatible changes are done by bumping the version number in the protocol
++    and interface names and resetting the interface version. Once the protocol
++    is to be declared stable, the 'z' prefix and the version number in the
++    protocol and interface names are removed and the interface version number is
++    reset.
++  </description>
++
++  <interface name="zxdg_exporter_v2" version="1">
++    <description summary="interface for exporting surfaces">
++      A global interface used for exporting surfaces that can later be imported
++      using xdg_importer.
++    </description>
++
++    <request name="destroy" type="destructor">
++      <description summary="destroy the xdg_exporter object">
++	Notify the compositor that the xdg_exporter object will no longer be
++	used.
++      </description>
++    </request>
++
++    <enum name="error">
++      <description summary="error values">
++        These errors can be emitted in response to invalid xdg_exporter
++        requests.
++      </description>
++      <entry name="invalid_surface" value="0" summary="surface is not an xdg_toplevel"/>
++    </enum>
++
++    <request name="export_toplevel">
++      <description summary="export a toplevel surface">
++	The export_toplevel request exports the passed surface so that it can later be
++	imported via xdg_importer. When called, a new xdg_exported object will
++	be created and xdg_exported.handle will be sent immediately. See the
++	corresponding interface and event for details.
++
++	A surface may be exported multiple times, and each exported handle may
++	be used to create an xdg_imported multiple times. Only xdg_toplevel
++        equivalent surfaces may be exported, otherwise an invalid_surface
++        protocol error is sent.
++      </description>
++      <arg name="id" type="new_id" interface="zxdg_exported_v2"
++	   summary="the new xdg_exported object"/>
++      <arg name="surface" type="object" interface="wl_surface"
++	   summary="the surface to export"/>
++    </request>
++  </interface>
++
++  <interface name="zxdg_importer_v2" version="1">
++    <description summary="interface for importing surfaces">
++      A global interface used for importing surfaces exported by xdg_exporter.
++      With this interface, a client can create a reference to a surface of
++      another client.
++    </description>
++
++    <request name="destroy" type="destructor">
++      <description summary="destroy the xdg_importer object">
++	Notify the compositor that the xdg_importer object will no longer be
++	used.
++      </description>
++    </request>
++
++    <request name="import_toplevel">
++      <description summary="import a toplevel surface">
++	The import_toplevel request imports a surface from any client given a handle
++	retrieved by exporting said surface using xdg_exporter.export_toplevel.
++	When called, a new xdg_imported object will be created. This new object
++	represents the imported surface, and the importing client can
++	manipulate its relationship using it. See xdg_imported for details.
++      </description>
++      <arg name="id" type="new_id" interface="zxdg_imported_v2"
++	   summary="the new xdg_imported object"/>
++      <arg name="handle" type="string"
++	   summary="the exported surface handle"/>
++    </request>
++  </interface>
++
++  <interface name="zxdg_exported_v2" version="1">
++    <description summary="an exported surface handle">
++      An xdg_exported object represents an exported reference to a surface. The
++      exported surface may be referenced as long as the xdg_exported object not
++      destroyed. Destroying the xdg_exported invalidates any relationship the
++      importer may have established using xdg_imported.
++    </description>
++
++    <request name="destroy" type="destructor">
++      <description summary="unexport the exported surface">
++	Revoke the previously exported surface. This invalidates any
++	relationship the importer may have set up using the xdg_imported created
++	given the handle sent via xdg_exported.handle.
++      </description>
++    </request>
++
++    <event name="handle">
++      <description summary="the exported surface handle">
++	The handle event contains the unique handle of this exported surface
++	reference. It may be shared with any client, which then can use it to
++	import the surface by calling xdg_importer.import_toplevel. A handle
++	may be used to import the surface multiple times.
++      </description>
++      <arg name="handle" type="string" summary="the exported surface handle"/>
++    </event>
++  </interface>
++
++  <interface name="zxdg_imported_v2" version="1">
++    <description summary="an imported surface handle">
++      An xdg_imported object represents an imported reference to surface exported
++      by some client. A client can use this interface to manipulate
++      relationships between its own surfaces and the imported surface.
++    </description>
++
++    <enum name="error">
++      <description summary="error values">
++        These errors can be emitted in response to invalid xdg_imported
++        requests.
++      </description>
++      <entry name="invalid_surface" value="0" summary="surface is not an xdg_toplevel"/>
++    </enum>
++
++    <request name="destroy" type="destructor">
++      <description summary="destroy the xdg_imported object">
++	Notify the compositor that it will no longer use the xdg_imported
++	object. Any relationship that may have been set up will at this point
++	be invalidated.
++      </description>
++    </request>
++
++    <request name="set_parent_of">
++      <description summary="set as the parent of some surface">
++        Set the imported surface as the parent of some surface of the client.
++        The passed surface must be an xdg_toplevel equivalent, otherwise an
++        invalid_surface protocol error is sent. Calling this function sets up
++        a surface to surface relation with the same stacking and positioning
++        semantics as xdg_toplevel.set_parent.
++      </description>
++      <arg name="surface" type="object" interface="wl_surface"
++	   summary="the child surface"/>
++    </request>
++
++    <event name="destroyed">
++      <description summary="the imported surface handle has been destroyed">
++	The imported surface handle has been destroyed and any relationship set
++	up has been invalidated. This may happen for various reasons, for
++	example if the exported surface or the exported surface handle has been
++	destroyed, if the handle used for importing was invalid.
++      </description>
++    </event>
++  </interface>
++
++</protocol>

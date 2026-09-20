@@ -1,0 +1,44 @@
+diff --git a/dlls/virtdisk/tests/virtdisk.c b/dlls/virtdisk/tests/virtdisk.c
+index 13c7dd7e69..e193a80596 100644
+--- a/dlls/virtdisk/tests/virtdisk.c
++++ b/dlls/virtdisk/tests/virtdisk.c
+@@ -27,7 +27,7 @@ static DWORD (WINAPI *pOpenVirtualDisk)(PVIRTUAL_STORAGE_TYPE,PCWSTR,VIRTUAL_DIS
+
+ static void test_GetStorageDependencyInformation(void)
+ {
+-    DWORD ret;
++    DWORD ret, used;
+     HANDLE handle;
+     STORAGE_DEPENDENCY_INFO *info;
+     ULONG size;
+@@ -44,6 +44,15 @@ static void test_GetStorageDependencyInformation(void)
+     ret = pGetStorageDependencyInformation(handle, GET_STORAGE_DEPENDENCY_FLAG_DISK_HANDLE, size, NULL, 0);
+     ok(ret == ERROR_INVALID_PARAMETER, "Expected ERROR_INVALID_PARAMETER, got %ld\n", ret);
+
++    memset(info, 0, size);
++    info->Version = STORAGE_DEPENDENCY_INFO_VERSION_2;
++    used = 0xdeadbeef;
++    ret = pGetStorageDependencyInformation(handle, GET_STORAGE_DEPENDENCY_FLAG_DISK_HANDLE,
++                                            size, info, &used);
++    ok(ret == ERROR_VIRTDISK_NOT_VIRTUAL_DISK,
++       "Expected ERROR_VIRTDISK_NOT_VIRTUAL_DISK, got %ld\n", ret);
++    ok(used == sizeof(*info), "Expected size %Iu, got %lu\n", sizeof(*info), used);
++
+     free(info);
+     CloseHandle(handle);
+ }
+diff --git a/dlls/virtdisk/virtdisk_main.c b/dlls/virtdisk/virtdisk_main.c
+index bad01a31f4..25eda8eca8 100644
+--- a/dlls/virtdisk/virtdisk_main.c
++++ b/dlls/virtdisk/virtdisk_main.c
+@@ -40,9 +40,7 @@ DWORD WINAPI GetStorageDependencyInformation(HANDLE obj, GET_STORAGE_DEPENDENCY_
+     if (size < temp_size)
+         return ERROR_INSUFFICIENT_BUFFER;
+
+-    info->NumberEntries = 0;
+-
+-    return ERROR_SUCCESS;
++    return ERROR_VIRTDISK_NOT_VIRTUAL_DISK;
+ }
+
+ DWORD WINAPI OpenVirtualDisk(VIRTUAL_STORAGE_TYPE *type, const WCHAR *path, VIRTUAL_DISK_ACCESS_MASK mask, OPEN_VIRTUAL_DISK_FLAG flags,

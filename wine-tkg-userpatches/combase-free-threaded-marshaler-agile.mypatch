@@ -1,0 +1,39 @@
+combase: Expose IAgileObject from the free-threaded marshaler.
+
+diff --git a/dlls/combase/marshal.c b/dlls/combase/marshal.c
+index f638604f5a3..a25320e2ffd 100644
+--- a/dlls/combase/marshal.c
++++ b/dlls/combase/marshal.c
+@@ -185,7 +185,7 @@ static HRESULT WINAPI ftmarshaler_inner_QueryInterface(IUnknown *iface, REFIID r
+
+     *obj = NULL;
+
+-    if (IsEqualIID(&IID_IUnknown, riid))
++    if (IsEqualIID(&IID_IUnknown, riid) || IsEqualIID(&IID_IAgileObject, riid))
+         *obj = &marshaler->IUnknown_inner;
+     else if (IsEqualIID(&IID_IMarshal, riid))
+         *obj = &marshaler->IMarshal_iface;
+diff --git a/dlls/ole32/tests/marshal.c b/dlls/ole32/tests/marshal.c
+index 0e13c9d55b5..19ed728cd69 100644
+--- a/dlls/ole32/tests/marshal.c
++++ b/dlls/ole32/tests/marshal.c
+@@ -3526,6 +3526,7 @@ static void test_freethreadedmarshaler(void)
+     DWORD size, expected_size;
+     HRESULT hr;
+     IUnknown *pFTUnknown;
++    IAgileObject *agile_object;
+     IMarshal *pFTMarshal;
+     IStream *pStream;
+     IUnknown *pProxy;
+@@ -3535,6 +3536,11 @@ static void test_freethreadedmarshaler(void)
+     cLocks = 0;
+     hr = CoCreateFreeThreadedMarshaler(NULL, &pFTUnknown);
+     ok_ole_success(hr, CoCreateFreeThreadedMarshaler);
++
++    hr = IUnknown_QueryInterface(pFTUnknown, &IID_IAgileObject, (void **)&agile_object);
++    ok_ole_success(hr, IUnknown_QueryInterface);
++    if (SUCCEEDED(hr)) IAgileObject_Release(agile_object);
++
+     hr = IUnknown_QueryInterface(pFTUnknown, &IID_IMarshal, (void **)&pFTMarshal);
+     ok_ole_success(hr, IUnknown_QueryInterface);
+     IUnknown_Release(pFTUnknown);

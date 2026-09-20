@@ -1,0 +1,758 @@
+DirectComposition device objects.
+
+diff --git a/dlls/dcomp/Makefile.in b/dlls/dcomp/Makefile.in
+index d48b901..8b62b49 100644
+--- a/dlls/dcomp/Makefile.in
++++ b/dlls/dcomp/Makefile.in
+@@ -1,4 +1,5 @@
+ MODULE    = dcomp.dll
++IMPORTS   = user32
+
+ EXTRADLLFLAGS = -Wb,--prefer-native
+
+diff --git a/dlls/dcomp/device.c b/dlls/dcomp/device.c
+index d0eb920..7cb87a2 100644
+--- a/dlls/dcomp/device.c
++++ b/dlls/dcomp/device.c
+@@ -15,6 +15,8 @@
+  * License along with this library; if not, write to the Free Software
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
++#define COBJMACROS
++
+ #include <stdarg.h>
+
+ #include "windef.h"
+@@ -25,11 +27,716 @@
+
+ WINE_DEFAULT_DEBUG_CHANNEL(dcomp);
+
++struct dcomp_device;
++
++struct dcomp_partner
++{
++    const void **lpVtbl;
++    struct dcomp_device *device;
++};
++
++struct dcomp_device
++{
++    const void **lpVtbl;
++    LONG refcount;
++    struct dcomp_partner partner;
++};
++
++struct dcomp_target
++{
++    const void **lpVtbl;
++    LONG refcount;
++    HWND window;
++};
++
++struct dcomp_visual
++{
++    const void **lpVtbl;
++    LONG refcount;
++    IUnknown *content;
++};
++
++struct dcomp_scale_transform
++{
++    const void **lpVtbl;
++    LONG refcount;
++};
++
++struct dcomp_hwnd_surface
++{
++    const void **lpVtbl;
++    LONG refcount;
++    HWND window;
++};
++
++static const GUID IID_IDCompositionDevice = {0xc37ea93a, 0xe7aa, 0x450d,
++        {0xb1, 0x6f, 0x97, 0x46, 0xcb, 0x04, 0x07, 0xf3}};
++static const GUID IID_IDCompositionDevice2 = {0x75f6468d, 0x1b8e, 0x447c,
++        {0x9b, 0xc6, 0x75, 0xfe, 0xa8, 0x0b, 0x5b, 0x25}};
++static const GUID IID_IDCompositionDevice3 = {0x0987cb06, 0xf916, 0x48bf,
++        {0x8d, 0x35, 0xce, 0x76, 0x41, 0x78, 0x1b, 0xd9}};
++static const GUID IID_IDCompositionDesktopDevice = {0x5f4633fe, 0x1e08, 0x4cb8,
++        {0x8c, 0x75, 0xce, 0x24, 0x33, 0x3f, 0x56, 0x02}};
++static const GUID IID_IDCompositionDesktopDevicePartner = {0xd14b6158, 0xc3fa, 0x4bce,
++        {0x9c, 0x1f, 0xb6, 0x1d, 0x86, 0x65, 0xea, 0xb0}};
++static const GUID IID_IUnknown_local = {0x00000000, 0x0000, 0x0000,
++        {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
++static const GUID IID_IDCompositionTarget = {0xeacdd04c, 0x117e, 0x4e17,
++        {0x88, 0xf4, 0xd1, 0xb1, 0x2b, 0x0e, 0x3d, 0x89}};
++static const GUID IID_IDCompositionVisual = {0x4d93059d, 0x097b, 0x4651,
++        {0x9a, 0x60, 0xf0, 0xf2, 0x51, 0x16, 0xe2, 0xf3}};
++static const GUID IID_IDCompositionTransform = {0xfd55faa7, 0x37e0, 0x4c20,
++        {0x95, 0xd2, 0x9b, 0xe4, 0x5b, 0xc3, 0x3f, 0x55}};
++static const GUID IID_IDCompositionScaleTransform = {0x71fde914, 0x40ef, 0x45ef,
++        {0xbd, 0x51, 0x68, 0xb0, 0x37, 0xc3, 0x39, 0xf9}};
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_query_interface(struct dcomp_device *device,
++        REFIID iid, void **out);
++static ULONG STDMETHODCALLTYPE dcomp_device_addref(struct dcomp_device *device);
++static ULONG STDMETHODCALLTYPE dcomp_device_release(struct dcomp_device *device);
++static HRESULT STDMETHODCALLTYPE dcomp_device_commit(struct dcomp_device *device);
++static HRESULT STDMETHODCALLTYPE dcomp_device_wait(struct dcomp_device *device);
++#define DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(index) \
++    static HRESULT STDMETHODCALLTYPE dcomp_device_not_implemented_##index(struct dcomp_device *device) \
++    { \
++        FIXME("device %p, method %u.\n", device, index); \
++        return E_NOTIMPL; \
++    }
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(5)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(8)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(9)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(10)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(12)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(14)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(15)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(16)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(17)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(18)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(19)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(20)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(21)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(22)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(23)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(24)
++DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED(25)
++#undef DEFINE_DCOMP_DEVICE_NOT_IMPLEMENTED
++static HRESULT STDMETHODCALLTYPE dcomp_device_create_target(struct dcomp_device *device,
++        HWND window, BOOL topmost, struct dcomp_target **out);
++static HRESULT STDMETHODCALLTYPE dcomp_device_create_visual(struct dcomp_device *device,
++        struct dcomp_visual **out);
++static HRESULT STDMETHODCALLTYPE dcomp_device_create_scale_transform(struct dcomp_device *device,
++        struct dcomp_scale_transform **out);
++static HRESULT STDMETHODCALLTYPE dcomp_device_create_surface_from_hwnd(struct dcomp_device *device,
++        HWND window, struct dcomp_hwnd_surface **out);
++static HRESULT STDMETHODCALLTYPE dcomp_device_check_state(struct dcomp_device *device, BOOL *valid);
++static HRESULT STDMETHODCALLTYPE dcomp_partner_query_interface(struct dcomp_partner *partner,
++        REFIID iid, void **out);
++static ULONG STDMETHODCALLTYPE dcomp_partner_addref(struct dcomp_partner *partner);
++static ULONG STDMETHODCALLTYPE dcomp_partner_release(struct dcomp_partner *partner);
++static HRESULT STDMETHODCALLTYPE dcomp_partner_commit(struct dcomp_partner *partner);
++static HRESULT STDMETHODCALLTYPE dcomp_partner_wait(struct dcomp_partner *partner);
++static HRESULT STDMETHODCALLTYPE dcomp_partner_not_implemented(struct dcomp_partner *partner);
++static HRESULT STDMETHODCALLTYPE dcomp_partner_create_visual(struct dcomp_partner *partner,
++        struct dcomp_visual **out);
++static HRESULT STDMETHODCALLTYPE dcomp_partner_create_target(struct dcomp_partner *partner,
++        HWND window, BOOL topmost, struct dcomp_target **out);
++static HRESULT STDMETHODCALLTYPE dcomp_partner_create_shared_resource(struct dcomp_partner *partner,
++        REFIID iid, void **out);
++static HRESULT STDMETHODCALLTYPE dcomp_partner_open_shared_resource_handle(struct dcomp_partner *partner,
++        IUnknown *object, HANDLE *handle);
++static HRESULT STDMETHODCALLTYPE dcomp_partner_create_from_shared_visual_handle(
++        struct dcomp_partner *partner, HANDLE handle, REFIID iid, void **out);
++static HRESULT STDMETHODCALLTYPE dcomp_target_query_interface(struct dcomp_target *target,
++        REFIID iid, void **out);
++static ULONG STDMETHODCALLTYPE dcomp_target_addref(struct dcomp_target *target);
++static ULONG STDMETHODCALLTYPE dcomp_target_release(struct dcomp_target *target);
++static HRESULT STDMETHODCALLTYPE dcomp_target_set_root(struct dcomp_target *target,
++        struct dcomp_visual *visual);
++static HRESULT STDMETHODCALLTYPE dcomp_visual_query_interface(struct dcomp_visual *visual,
++        REFIID iid, void **out);
++static ULONG STDMETHODCALLTYPE dcomp_visual_addref(struct dcomp_visual *visual);
++static ULONG STDMETHODCALLTYPE dcomp_visual_release(struct dcomp_visual *visual);
++static HRESULT STDMETHODCALLTYPE dcomp_visual_set_object(struct dcomp_visual *visual, void *object);
++static HRESULT STDMETHODCALLTYPE dcomp_visual_set_float(struct dcomp_visual *visual, float value);
++static HRESULT STDMETHODCALLTYPE dcomp_visual_set_matrix(struct dcomp_visual *visual, const void *matrix);
++static HRESULT STDMETHODCALLTYPE dcomp_visual_set_mode(struct dcomp_visual *visual, UINT mode);
++static HRESULT STDMETHODCALLTYPE dcomp_visual_set_rect(struct dcomp_visual *visual, const void *rect);
++static HRESULT STDMETHODCALLTYPE dcomp_visual_set_content(struct dcomp_visual *visual, IUnknown *content);
++static HRESULT STDMETHODCALLTYPE dcomp_visual_add_visual(struct dcomp_visual *visual,
++        struct dcomp_visual *child, BOOL insert_above, struct dcomp_visual *reference);
++static HRESULT STDMETHODCALLTYPE dcomp_visual_remove_visual(struct dcomp_visual *visual,
++        struct dcomp_visual *child);
++static HRESULT STDMETHODCALLTYPE dcomp_visual_remove_all(struct dcomp_visual *visual);
++static HRESULT STDMETHODCALLTYPE dcomp_scale_transform_query_interface(
++        struct dcomp_scale_transform *transform, REFIID iid, void **out);
++static ULONG STDMETHODCALLTYPE dcomp_scale_transform_addref(struct dcomp_scale_transform *transform);
++static ULONG STDMETHODCALLTYPE dcomp_scale_transform_release(struct dcomp_scale_transform *transform);
++static HRESULT STDMETHODCALLTYPE dcomp_scale_transform_set_float(
++        struct dcomp_scale_transform *transform, float value);
++static HRESULT STDMETHODCALLTYPE dcomp_scale_transform_set_object(
++        struct dcomp_scale_transform *transform, void *object);
++static HRESULT STDMETHODCALLTYPE dcomp_hwnd_surface_query_interface(
++        struct dcomp_hwnd_surface *surface, REFIID iid, void **out);
++static ULONG STDMETHODCALLTYPE dcomp_hwnd_surface_addref(struct dcomp_hwnd_surface *surface);
++static ULONG STDMETHODCALLTYPE dcomp_hwnd_surface_release(struct dcomp_hwnd_surface *surface);
++
++static const void *dcomp_device_vtable[] =
++{
++    dcomp_device_query_interface,
++    dcomp_device_addref,
++    dcomp_device_release,
++    dcomp_device_commit,
++    dcomp_device_wait,
++    dcomp_device_not_implemented_5,
++    dcomp_device_create_target,
++    dcomp_device_create_visual,
++    dcomp_device_not_implemented_8,
++    dcomp_device_not_implemented_9,
++    dcomp_device_not_implemented_10,
++    dcomp_device_create_surface_from_hwnd,
++    dcomp_device_not_implemented_12,
++    dcomp_device_create_scale_transform,
++    dcomp_device_not_implemented_14,
++    dcomp_device_not_implemented_15,
++    dcomp_device_not_implemented_16,
++    dcomp_device_not_implemented_17,
++    dcomp_device_not_implemented_18,
++    dcomp_device_not_implemented_19,
++    dcomp_device_not_implemented_20,
++    dcomp_device_not_implemented_21,
++    dcomp_device_not_implemented_22,
++    dcomp_device_not_implemented_23,
++    dcomp_device_not_implemented_24,
++    dcomp_device_not_implemented_25,
++    dcomp_device_check_state,
++};
++
++static const void *dcomp_target_vtable[] =
++{
++    dcomp_target_query_interface,
++    dcomp_target_addref,
++    dcomp_target_release,
++    dcomp_target_set_root,
++};
++
++static const void *dcomp_partner_vtable[] =
++{
++    dcomp_partner_query_interface,
++    dcomp_partner_addref,
++    dcomp_partner_release,
++    dcomp_partner_commit,
++    dcomp_partner_wait,
++    dcomp_partner_not_implemented,
++    dcomp_partner_create_visual,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_create_target,
++    dcomp_partner_not_implemented,
++    dcomp_partner_not_implemented,
++    dcomp_partner_create_shared_resource,
++    dcomp_partner_open_shared_resource_handle,
++    dcomp_partner_create_from_shared_visual_handle,
++};
++
++static const void *dcomp_visual_vtable[] =
++{
++    dcomp_visual_query_interface,
++    dcomp_visual_addref,
++    dcomp_visual_release,
++    dcomp_visual_set_object,
++    dcomp_visual_set_float,
++    dcomp_visual_set_object,
++    dcomp_visual_set_float,
++    dcomp_visual_set_object,
++    dcomp_visual_set_matrix,
++    dcomp_visual_set_object,
++    dcomp_visual_set_object,
++    dcomp_visual_set_mode,
++    dcomp_visual_set_mode,
++    dcomp_visual_set_object,
++    dcomp_visual_set_rect,
++    dcomp_visual_set_content,
++    dcomp_visual_add_visual,
++    dcomp_visual_remove_visual,
++    dcomp_visual_remove_all,
++    dcomp_visual_set_mode,
++};
++
++static const void *dcomp_scale_transform_vtable[] =
++{
++    dcomp_scale_transform_query_interface,
++    dcomp_scale_transform_addref,
++    dcomp_scale_transform_release,
++    dcomp_scale_transform_set_object,
++    dcomp_scale_transform_set_float,
++    dcomp_scale_transform_set_object,
++    dcomp_scale_transform_set_float,
++    dcomp_scale_transform_set_object,
++    dcomp_scale_transform_set_float,
++    dcomp_scale_transform_set_object,
++    dcomp_scale_transform_set_float,
++};
++
++static const void *dcomp_hwnd_surface_vtable[] =
++{
++    dcomp_hwnd_surface_query_interface,
++    dcomp_hwnd_surface_addref,
++    dcomp_hwnd_surface_release,
++};
++
++static void enable_window_redirection(HWND window)
++{
++    LONG_PTR style, adjusted;
++
++    if (!window) return;
++    style = GetWindowLongPtrW(window, GWL_EXSTYLE);
++    adjusted = style & ~(WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED);
++    if (adjusted == style) return;
++    SetWindowLongPtrW(window, GWL_EXSTYLE, adjusted);
++    SetWindowPos(window, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
++            | SWP_NOACTIVATE | SWP_FRAMECHANGED);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_query_interface(struct dcomp_device *device,
++        REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown_local) || IsEqualGUID(iid, &IID_IDCompositionDevice))
++        *out = device;
++    else if (IsEqualGUID(iid, &IID_IDCompositionDevice2)
++            || IsEqualGUID(iid, &IID_IDCompositionDevice3)
++            || IsEqualGUID(iid, &IID_IDCompositionDesktopDevice)
++            || IsEqualGUID(iid, &IID_IDCompositionDesktopDevicePartner))
++        *out = &device->partner;
++    else
++    {
++        FIXME("Unsupported interface %s.\n", debugstr_guid(iid));
++        return E_NOINTERFACE;
++    }
++
++    dcomp_device_addref(device);
++    return S_OK;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_device_addref(struct dcomp_device *device)
++{
++    return InterlockedIncrement(&device->refcount);
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_device_release(struct dcomp_device *device)
++{
++    ULONG refcount = InterlockedDecrement(&device->refcount);
++
++    if (!refcount) free(device);
++    return refcount;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_commit(struct dcomp_device *device)
++{
++    TRACE("device %p.\n", device);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_wait(struct dcomp_device *device)
++{
++    TRACE("device %p.\n", device);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_create_target(struct dcomp_device *device,
++        HWND window, BOOL topmost, struct dcomp_target **out)
++{
++    struct dcomp_target *target;
++    WCHAR class_name[64];
++    RECT rect;
++
++    class_name[0] = 0;
++    GetClassNameW(window, class_name, ARRAY_SIZE(class_name));
++    GetWindowRect(window, &rect);
++    TRACE("device %p, window %p class %s parent %p rect %s topmost %d, out %p.\n",
++            device, window, debugstr_w(class_name), GetParent(window), wine_dbgstr_rect(&rect), topmost, out);
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(target = calloc(1, sizeof(*target)))) return E_OUTOFMEMORY;
++    target->lpVtbl = dcomp_target_vtable;
++    target->refcount = 1;
++    target->window = window;
++    enable_window_redirection(window);
++    *out = target;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_create_visual(struct dcomp_device *device,
++        struct dcomp_visual **out)
++{
++    struct dcomp_visual *visual;
++
++    TRACE("device %p, out %p.\n", device, out);
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(visual = calloc(1, sizeof(*visual)))) return E_OUTOFMEMORY;
++    visual->lpVtbl = dcomp_visual_vtable;
++    visual->refcount = 1;
++    *out = visual;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_create_scale_transform(struct dcomp_device *device,
++        struct dcomp_scale_transform **out)
++{
++    struct dcomp_scale_transform *transform;
++
++    TRACE("device %p, out %p.\n", device, out);
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(transform = calloc(1, sizeof(*transform)))) return E_OUTOFMEMORY;
++    transform->lpVtbl = dcomp_scale_transform_vtable;
++    transform->refcount = 1;
++    *out = transform;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_create_surface_from_hwnd(struct dcomp_device *device,
++        HWND window, struct dcomp_hwnd_surface **out)
++{
++    struct dcomp_hwnd_surface *surface;
++    WCHAR class_name[64];
++    RECT rect;
++
++    class_name[0] = 0;
++    GetClassNameW(window, class_name, ARRAY_SIZE(class_name));
++    GetWindowRect(window, &rect);
++    TRACE("device %p, window %p class %s parent %p rect %s, out %p.\n",
++            device, window, debugstr_w(class_name), GetParent(window), wine_dbgstr_rect(&rect), out);
++    if (!window || !out) return E_INVALIDARG;
++    *out = NULL;
++    if (!(surface = calloc(1, sizeof(*surface)))) return E_OUTOFMEMORY;
++    surface->lpVtbl = dcomp_hwnd_surface_vtable;
++    surface->refcount = 1;
++    surface->window = window;
++    enable_window_redirection(window);
++    *out = surface;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_device_check_state(struct dcomp_device *device, BOOL *valid)
++{
++    TRACE("device %p, valid %p.\n", device, valid);
++    if (!valid) return E_POINTER;
++    *valid = TRUE;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_partner_query_interface(struct dcomp_partner *partner,
++        REFIID iid, void **out)
++{
++    return dcomp_device_query_interface(partner->device, iid, out);
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_partner_addref(struct dcomp_partner *partner)
++{
++    return dcomp_device_addref(partner->device);
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_partner_release(struct dcomp_partner *partner)
++{
++    return dcomp_device_release(partner->device);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_partner_commit(struct dcomp_partner *partner)
++{
++    return dcomp_device_commit(partner->device);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_partner_wait(struct dcomp_partner *partner)
++{
++    return dcomp_device_wait(partner->device);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_partner_not_implemented(struct dcomp_partner *partner)
++{
++    FIXME("partner %p, caller %p.\n", partner, __builtin_return_address(0));
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_partner_create_visual(struct dcomp_partner *partner,
++        struct dcomp_visual **out)
++{
++    return dcomp_device_create_visual(partner->device, out);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_partner_create_target(struct dcomp_partner *partner,
++        HWND window, BOOL topmost, struct dcomp_target **out)
++{
++    return dcomp_device_create_target(partner->device, window, topmost, out);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_partner_create_shared_resource(struct dcomp_partner *partner,
++        REFIID iid, void **out)
++{
++    TRACE("partner %p, iid %s, out %p.\n", partner, debugstr_guid(iid), out);
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!IsEqualGUID(iid, &IID_IDCompositionVisual)) return E_NOINTERFACE;
++    return dcomp_device_create_visual(partner->device, (struct dcomp_visual **)out);
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_partner_open_shared_resource_handle(struct dcomp_partner *partner,
++        IUnknown *object, HANDLE *handle)
++{
++    TRACE("partner %p, object %p, handle %p.\n", partner, object, handle);
++    if (!object || !handle) return E_INVALIDARG;
++    if (!(*handle = CreateEventW(NULL, TRUE, FALSE, NULL))) return HRESULT_FROM_WIN32(GetLastError());
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_partner_create_from_shared_visual_handle(
++        struct dcomp_partner *partner, HANDLE handle, REFIID iid, void **out)
++{
++    struct dcomp_target *target;
++
++    TRACE("partner %p, handle %p, iid %s, out %p.\n",
++            partner, handle, debugstr_guid(iid), out);
++    if (!handle || !out) return E_INVALIDARG;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IDCompositionVisual))
++        return dcomp_device_create_visual(partner->device, (struct dcomp_visual **)out);
++    if (!IsEqualGUID(iid, &IID_IDCompositionTarget)) return E_NOINTERFACE;
++    if (!(target = calloc(1, sizeof(*target)))) return E_OUTOFMEMORY;
++    target->lpVtbl = dcomp_target_vtable;
++    target->refcount = 1;
++    *out = target;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_target_query_interface(struct dcomp_target *target,
++        REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!IsEqualGUID(iid, &IID_IUnknown_local) && !IsEqualGUID(iid, &IID_IDCompositionTarget))
++        return E_NOINTERFACE;
++    *out = target;
++    dcomp_target_addref(target);
++    return S_OK;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_target_addref(struct dcomp_target *target)
++{
++    return InterlockedIncrement(&target->refcount);
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_target_release(struct dcomp_target *target)
++{
++    ULONG refcount = InterlockedDecrement(&target->refcount);
++
++    if (!refcount) free(target);
++    return refcount;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_target_set_root(struct dcomp_target *target,
++        struct dcomp_visual *visual)
++{
++    TRACE("target %p, visual %p.\n", target, visual);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_query_interface(struct dcomp_visual *visual,
++        REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!IsEqualGUID(iid, &IID_IUnknown_local) && !IsEqualGUID(iid, &IID_IDCompositionVisual))
++        return E_NOINTERFACE;
++    *out = visual;
++    dcomp_visual_addref(visual);
++    return S_OK;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_visual_addref(struct dcomp_visual *visual)
++{
++    return InterlockedIncrement(&visual->refcount);
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_visual_release(struct dcomp_visual *visual)
++{
++    ULONG refcount = InterlockedDecrement(&visual->refcount);
++
++    if (!refcount)
++    {
++        if (visual->content) IUnknown_Release(visual->content);
++        free(visual);
++    }
++    return refcount;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_set_object(struct dcomp_visual *visual, void *object)
++{
++    TRACE("visual %p, object %p.\n", visual, object);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_set_float(struct dcomp_visual *visual, float value)
++{
++    TRACE("visual %p, value %.8e.\n", visual, value);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_set_matrix(struct dcomp_visual *visual, const void *matrix)
++{
++    TRACE("visual %p, matrix %p.\n", visual, matrix);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_set_mode(struct dcomp_visual *visual, UINT mode)
++{
++    TRACE("visual %p, mode %u.\n", visual, mode);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_set_rect(struct dcomp_visual *visual, const void *rect)
++{
++    TRACE("visual %p, rect %p.\n", visual, rect);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_set_content(struct dcomp_visual *visual, IUnknown *content)
++{
++    TRACE("visual %p, content %p.\n", visual, content);
++    if (content) IUnknown_AddRef(content);
++    if (visual->content) IUnknown_Release(visual->content);
++    visual->content = content;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_add_visual(struct dcomp_visual *visual,
++        struct dcomp_visual *child, BOOL insert_above, struct dcomp_visual *reference)
++{
++    TRACE("visual %p, child %p, insert_above %d, reference %p.\n",
++            visual, child, insert_above, reference);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_remove_visual(struct dcomp_visual *visual,
++        struct dcomp_visual *child)
++{
++    TRACE("visual %p, child %p.\n", visual, child);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_visual_remove_all(struct dcomp_visual *visual)
++{
++    TRACE("visual %p.\n", visual);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_scale_transform_query_interface(
++        struct dcomp_scale_transform *transform, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!IsEqualGUID(iid, &IID_IUnknown_local)
++            && !IsEqualGUID(iid, &IID_IDCompositionTransform)
++            && !IsEqualGUID(iid, &IID_IDCompositionScaleTransform))
++        return E_NOINTERFACE;
++    *out = transform;
++    dcomp_scale_transform_addref(transform);
++    return S_OK;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_scale_transform_addref(struct dcomp_scale_transform *transform)
++{
++    return InterlockedIncrement(&transform->refcount);
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_scale_transform_release(struct dcomp_scale_transform *transform)
++{
++    ULONG refcount = InterlockedDecrement(&transform->refcount);
++
++    if (!refcount) free(transform);
++    return refcount;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_scale_transform_set_float(
++        struct dcomp_scale_transform *transform, float value)
++{
++    TRACE("transform %p, value %.8e.\n", transform, value);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_scale_transform_set_object(
++        struct dcomp_scale_transform *transform, void *object)
++{
++    TRACE("transform %p, object %p.\n", transform, object);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE dcomp_hwnd_surface_query_interface(
++        struct dcomp_hwnd_surface *surface, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!IsEqualGUID(iid, &IID_IUnknown_local))
++    {
++        FIXME("surface %p, unsupported interface %s.\n", surface, debugstr_guid(iid));
++        return E_NOINTERFACE;
++    }
++    *out = surface;
++    dcomp_hwnd_surface_addref(surface);
++    return S_OK;
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_hwnd_surface_addref(struct dcomp_hwnd_surface *surface)
++{
++    return InterlockedIncrement(&surface->refcount);
++}
++
++static ULONG STDMETHODCALLTYPE dcomp_hwnd_surface_release(struct dcomp_hwnd_surface *surface)
++{
++    ULONG refcount = InterlockedDecrement(&surface->refcount);
++
++    if (!refcount) free(surface);
++    return refcount;
++}
++
++static HRESULT dcomp_create_device(REFIID iid, void **out)
++{
++    struct dcomp_device *device;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(device = calloc(1, sizeof(*device)))) return E_OUTOFMEMORY;
++    device->lpVtbl = dcomp_device_vtable;
++    device->refcount = 1;
++    device->partner.lpVtbl = dcomp_partner_vtable;
++    device->partner.device = device;
++    hr = dcomp_device_query_interface(device, iid, out);
++    dcomp_device_release(device);
++    return hr;
++}
++
+ HRESULT WINAPI DCompositionCreateDevice(IDXGIDevice *dxgi_device, REFIID iid, void **device)
+ {
+     FIXME("%p, %s, %p.\n", dxgi_device, debugstr_guid(iid), device);
+
+-    return E_NOTIMPL;
++    return dcomp_create_device(iid, device);
+ }
+
+ HRESULT WINAPI DCompositionCreateDevice2(IUnknown *rendering_device, REFIID iid, void **device)
+@@ -39,12 +746,12 @@ HRESULT WINAPI DCompositionCreateDevice2(IUnknown *rendering_device, REFIID iid,
+     /* Try to workaround Chromium race fixed by Chromium commit 1c13c9105b40e83f87ebcad104fab57fcef43eb9. */
+     Sleep(50);
+
+-    return E_NOTIMPL;
++    return dcomp_create_device(iid, device);
+ }
+
+ HRESULT WINAPI DCompositionCreateDevice3(IUnknown *rendering_device, REFIID iid, void **device)
+ {
+     FIXME("%p, %s, %p.\n", rendering_device, debugstr_guid(iid), device);
+
+-    return E_NOTIMPL;
++    return dcomp_create_device(iid, device);
+ }

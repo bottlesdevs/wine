@@ -1,0 +1,189 @@
+kernel32 and kernelbase: package families, short names, version checks.
+
+diff --git a/dlls/kernel32/file.c b/dlls/kernel32/file.c
+index fab9148..bb07b44 100644
+--- a/dlls/kernel32/file.c
++++ b/dlls/kernel32/file.c
+@@ -264,6 +264,17 @@ BOOL WINAPI SetFileCompletionNotificationModes( HANDLE file, UCHAR flags )
+ }
+
+
++/**************************************************************************
++ *           SetFileShortNameW   (KERNEL32.@)
++ */
++BOOL WINAPI SetFileShortNameW( HANDLE file, const WCHAR *name )
++{
++    FIXME("%p %s: stub\n", file, debugstr_w(name));
++    SetLastError(ERROR_NOT_SUPPORTED);
++    return FALSE;
++}
++
++
+ /*************************************************************************
+  *           SetHandleCount   (KERNEL32.@)
+  */
+diff --git a/dlls/kernel32/kernel32.spec b/dlls/kernel32/kernel32.spec
+index 1a3f557..f7f62d3 100644
+--- a/dlls/kernel32/kernel32.spec
++++ b/dlls/kernel32/kernel32.spec
+@@ -514,6 +514,7 @@
+ @ stdcall -import FindNextVolumeW(long ptr long)
+ @ stdcall -import FindNLSString(long long wstr long wstr long ptr)
+ @ stdcall -import FindNLSStringEx(wstr long wstr long wstr long ptr ptr ptr long)
++@ stdcall -import FindPackagesByPackageFamily(wstr long ptr ptr ptr ptr ptr)
+ @ stdcall FindResourceA(long str str)
+ @ stdcall FindResourceExA(long str str long)
+ @ stdcall -import FindResourceExW(long wstr wstr long)
+@@ -1446,7 +1447,7 @@
+ @ stdcall -import SetFilePointer(long long ptr long)
+ @ stdcall -import SetFilePointerEx(long int64 ptr long)
+ # @ stub SetFileShortNameA
+-# @ stub SetFileShortNameW
++@ stdcall SetFileShortNameW(long wstr)
+ @ stdcall -import SetFileTime(long ptr ptr ptr)
+ @ stdcall -import SetFileValidData(ptr int64)
+ @ stdcall SetFirmwareEnvironmentVariableA(str str ptr long)
+diff --git a/dlls/kernel32/tests/version.c b/dlls/kernel32/tests/version.c
+index 49dae0f..3a7be29 100644
+--- a/dlls/kernel32/tests/version.c
++++ b/dlls/kernel32/tests/version.c
+@@ -27,6 +27,8 @@
+
+ static LONG (WINAPI * pGetPackagePath)(const PACKAGE_ID *, const UINT32, UINT32 *, WCHAR *);
+ static LONG (WINAPI * pGetPackagesByPackageFamily)(const WCHAR *, UINT32 *, WCHAR **, UINT32 *, WCHAR *);
++static LONG (WINAPI * pFindPackagesByPackageFamily)(const WCHAR *, UINT32, UINT32 *, WCHAR **,
++        UINT32 *, WCHAR *, UINT32 *);
+ static BOOL (WINAPI * pGetProductInfo)(DWORD, DWORD, DWORD, DWORD, DWORD *);
+ static UINT (WINAPI * pEnumSystemFirmwareTables)(DWORD, void *, DWORD);
+ static UINT (WINAPI * pGetSystemFirmwareTable)(DWORD, DWORD, void *, DWORD);
+@@ -51,6 +53,7 @@ static void init_function_pointers(void)
+
+     GET_PROC(GetPackagePath);
+     GET_PROC(GetPackagesByPackageFamily);
++    GET_PROC(FindPackagesByPackageFamily);
+     GET_PROC(GetProductInfo);
+     GET_PROC(EnumSystemFirmwareTables);
+     GET_PROC(GetSystemFirmwareTable);
+@@ -596,6 +599,7 @@ static void test_VerifyVersionInfo(void)
+     };
+
+     OSVERSIONINFOEXA info;
++    ULONGLONG mask;
+     DWORD servicepack;
+     unsigned int i;
+     BOOL ret;
+@@ -609,6 +613,27 @@ static void test_VerifyVersionInfo(void)
+     if (servicepack == 0)
+         skip("There is no ServicePack on this system. Some tests will be skipped.\n");
+
++    if (info.wProductType == VER_NT_WORKSTATION)
++    {
++        info.dwMajorVersion = 5;
++        info.dwMinorVersion = 1;
++        info.wServicePackMajor = 2;
++        info.wServicePackMinor = 0;
++        info.wProductType = VER_NT_SERVER;
++
++        mask = VerSetConditionMask(0, VER_MINORVERSION, VER_GREATER_EQUAL);
++        mask = VerSetConditionMask(mask, VER_MAJORVERSION, VER_GREATER_EQUAL);
++        mask = VerSetConditionMask(mask, VER_SERVICEPACKMAJOR, VER_GREATER_EQUAL);
++        mask = VerSetConditionMask(mask, VER_SERVICEPACKMINOR, VER_GREATER_EQUAL);
++        mask = VerSetConditionMask(mask, VER_PRODUCT_TYPE, VER_EQUAL);
++
++        SetLastError(0xdeadbeef);
++        ret = VerifyVersionInfoA(&info, VER_MAJORVERSION | VER_MINORVERSION |
++                VER_SERVICEPACKMAJOR | VER_SERVICEPACKMINOR, mask);
++        ok(!ret, "Expected product type mismatch.\n");
++        ok(GetLastError() == ERROR_OLD_WIN_VERSION, "Got unexpected error %ld.\n", GetLastError());
++    }
++
+     /* Win8.1+ returns Win8 version in GetVersionEx when there's no app manifest targeting 8.1 */
+     if (info.dwMajorVersion == 6 && info.dwMinorVersion == 2)
+     {
+@@ -627,7 +652,6 @@ static void test_VerifyVersionInfo(void)
+     {
+         struct verify_version_test *test = &verify_version_tests[i];
+         DWORD srcinfo = test->srcinfo;
+-        ULONGLONG mask;
+
+         if (servicepack == 0 && srcinfo & SRCVERSION_REQUIRES_SP)
+             continue;
+@@ -1146,6 +1170,17 @@ static void test_package_info(void)
+         return;
+     }
+
++    if (pFindPackagesByPackageFamily)
++    {
++        count = 0;
++        length = 0;
++        ret = pFindPackagesByPackageFamily(L"Unknown_8wekyb3d8bbwe", PACKAGE_FILTER_HEAD | PACKAGE_FILTER_DIRECT,
++                &count, NULL, &length, NULL, NULL);
++        ok(ret == ERROR_SUCCESS, "Got unexpected ret %u.\n", ret);
++        ok(!count, "Got unexpected count %u.\n", count);
++        ok(!length, "Got unexpected length %u.\n", length);
++    }
++
+     GetSystemInfo(&si);
+     arch = si.wProcessorArchitecture;
+
+diff --git a/dlls/kernel32/version.c b/dlls/kernel32/version.c
+index f64a393..b798acd 100644
+--- a/dlls/kernel32/version.c
++++ b/dlls/kernel32/version.c
+@@ -135,7 +135,8 @@ BOOL WINAPI VerifyVersionInfoW( LPOSVERSIONINFOEXW info, DWORD dwTypeMask,
+         return FALSE;
+     }
+
+-    if (dwTypeMask & VER_PRODUCT_TYPE)
++    /* Windows also evaluates a product type condition omitted from the type mask. */
++    if ((dwTypeMask & VER_PRODUCT_TYPE) || (dwlConditionMask >> 7 * 3 & 0x07))
+     {
+         if (!version_compare_values(ver.wProductType, info->wProductType, dwlConditionMask >> 7*3 & 0x07))
+             goto mismatch;
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index 2f924ee..8c593b9 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -380,7 +380,7 @@
+ @ stdcall FindNextFileW(long ptr)
+ @ stdcall FindNextStreamW(long ptr)
+ @ stdcall FindNextVolumeW(long ptr long)
+-# @ stub FindPackagesByPackageFamily
++@ stdcall FindPackagesByPackageFamily(wstr long ptr ptr ptr ptr ptr)
+ @ stdcall FindResourceExW(long wstr wstr long)
+ @ stdcall FindResourceW(long wstr wstr)
+ @ stdcall FindStringOrdinal(long wstr long wstr long long)
+diff --git a/dlls/kernelbase/version.c b/dlls/kernelbase/version.c
+index 2690ac6..34ed882 100644
+--- a/dlls/kernelbase/version.c
++++ b/dlls/kernelbase/version.c
+@@ -1934,6 +1934,29 @@ LONG WINAPI GetPackagesByPackageFamily(const WCHAR *family_name, UINT32 *count,
+ }
+
+
++/***********************************************************************
++ *         FindPackagesByPackageFamily   (kernelbase.@)
++ */
++LONG WINAPI FindPackagesByPackageFamily(const WCHAR *family_name, UINT32 filters, UINT32 *count,
++        WCHAR **full_names, UINT32 *buffer_length, WCHAR *buffer, UINT32 *properties)
++{
++    UINT32 capacity, i;
++    LONG ret;
++
++    TRACE("family_name %s, filters %#x, count %p, full_names %p, buffer_length %p, buffer %p, properties %p.\n",
++            debugstr_w(family_name), filters, count, full_names, buffer_length, buffer, properties);
++
++    if (!count || !buffer_length) return ERROR_INVALID_PARAMETER;
++
++    capacity = *count;
++    ret = GetPackagesByPackageFamily(family_name, count, full_names, buffer_length, buffer);
++    if (properties && full_names && buffer && (ret == ERROR_SUCCESS || ret == ERROR_INSUFFICIENT_BUFFER))
++        for (i = 0; i < min(capacity, *count); ++i) properties[i] = 0;
++
++    return ret;
++}
++
++
+ /***********************************************************************
+  *         GetPackagePath   (kernelbase.@)
+  */

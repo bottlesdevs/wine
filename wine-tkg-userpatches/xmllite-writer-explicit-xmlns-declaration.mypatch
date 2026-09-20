@@ -1,0 +1,50 @@
+diff --git a/dlls/xmllite/tests/writer.c b/dlls/xmllite/tests/writer.c
+index c441e02692..c960988b16 100644
+--- a/dlls/xmllite/tests/writer.c
++++ b/dlls/xmllite/tests/writer.c
+@@ -1881,6 +1881,32 @@ static void test_WriteAttributeString(void)
+
+     IStream_Release(stream);
+
++    /* Explicit declaration of the element prefix. */
++    stream = writer_set_output(writer);
++
++    hr = IXmlWriter_WriteStartDocument(writer, XmlStandalone_Omit);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++
++    hr = IXmlWriter_WriteStartElement(writer, L"s", L"Envelope", L"uri");
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++
++    hr = IXmlWriter_WriteAttributeString(writer, L"xmlns", L"s", NULL, L"uri");
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++
++    hr = IXmlWriter_WriteStartElement(writer, L"s", L"Body", L"uri");
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++
++    hr = IXmlWriter_WriteEndDocument(writer);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++
++    hr = IXmlWriter_Flush(writer);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++
++    CHECK_OUTPUT(stream,
++        "<s:Envelope xmlns:s=\"uri\"><s:Body /></s:Envelope>");
++
++    IStream_Release(stream);
++
+     IXmlWriter_Release(writer);
+ }
+
+diff --git a/dlls/xmllite/writer.c b/dlls/xmllite/writer.c
+index c96b8ee374..a8c743ea3b 100644
+--- a/dlls/xmllite/writer.c
++++ b/dlls/xmllite/writer.c
+@@ -1095,7 +1095,7 @@ static HRESULT WINAPI xmlwriter_WriteAttributeString(IXmlWriter *iface, LPCWSTR
+             return WR_E_XMLNSPREFIXDECLARATION;
+
+         /* Look for exact match defined in current element, and write it out. */
+-        if (!(ns = writer_find_ns_current(writer, prefix, value)))
++        if (!(ns = writer_find_ns_current(writer, local, value)))
+             ns = writer_push_ns(writer, local, local_len, value);
+         ns->emitted = TRUE;
+

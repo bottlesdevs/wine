@@ -1,0 +1,70 @@
+widl: compute the winmd image size from the section.
+
+diff --git a/tools/widl/metadata.c b/tools/widl/metadata.c
+index 04b4f08..51436c9 100644
+--- a/tools/widl/metadata.c
++++ b/tools/widl/metadata.c
+@@ -133,7 +133,7 @@ streams[] =
+     { 0, 0, "#Blob", 16 }
+ };
+
+-static void write_headers( UINT image_size )
++static void write_headers( void )
+ {
+     static const BYTE pad[8];
+     UINT i, streams_size = 0;
+@@ -141,11 +141,6 @@ static void write_headers( UINT image_size )
+
+     put_data( &dos_header, sizeof(dos_header) );
+
+-    image_size += nt_header.OptionalHeader.SizeOfHeaders + sizeof(section_header);
+-    nt_header.OptionalHeader.SizeOfImage = (image_size + 0x1fff) & ~0x1fff;
+-
+-    put_data( &nt_header, sizeof(nt_header) );
+-
+     for (i = 0; i < WINMD_STREAM_MAX; i++)
+     {
+         if (!streams[i].data_size) continue;
+@@ -157,6 +152,10 @@ static void write_headers( UINT image_size )
+     section_header.VirtualAddress = SECTION_ALIGNMENT;
+     section_header.Misc.VirtualSize = sizeof(cor_header) + sizeof(metadata_header) + streams_size + 8;
+     section_header.SizeOfRawData = (section_header.Misc.VirtualSize + FILE_ALIGNMENT - 1) & ~(FILE_ALIGNMENT - 1);
++    nt_header.OptionalHeader.SizeOfImage = (section_header.VirtualAddress + section_header.Misc.VirtualSize
++                                            + SECTION_ALIGNMENT - 1) & ~(SECTION_ALIGNMENT - 1);
++
++    put_data( &nt_header, sizeof(nt_header) );
+
+     put_data( &section_header, sizeof(section_header) );
+
+@@ -1183,7 +1182,7 @@ static void serialize_methodimpl_table( void )
+
+     for (i = 0; i < tables[TABLE_METHODIMPL].count; i++)
+     {
+-        serialize_table_idx( row->class, row->class );
++        serialize_table_idx( row->class, TABLE_TYPEDEF );
+         serialize_table_idx( row->body, methoddef_or_ref_to_table(row->body) );
+         serialize_table_idx( row->declaration, methoddef_or_ref_to_table(row->declaration) );
+         row++;
+@@ -2811,7 +2810,12 @@ static void add_method_contract_attrs( const type_t *class, const type_t *iface,
+ {
+     UINT parent, attr_type, value_size;
+     BYTE value[MAX_NAME + sizeof(UINT) + 5];
+-    const attr_t *attr = get_attr( iface->attrs, ATTR_CONTRACT );
++    const attr_t *attr;
++
++    iface = type_get_real_type( type_parameterized_type_get_real_type( iface ) );
++    if (!(attr = get_attr( iface->attrs, ATTR_CONTRACT )))
++        attr = get_attr( class->attrs, ATTR_CONTRACT );
++    if (!attr) return;
+
+     parent = has_customattribute( TABLE_METHODDEF, method->md.def );
+     attr_type = customattribute_type( TABLE_MEMBERREF, attr->md_member );
+@@ -3681,7 +3685,7 @@ void write_metadata( const statement_list_t *stmts )
+
+     init_output_buffer();
+
+-    write_headers( image_size );
++    write_headers();
+     write_streams( );
+
+     file_size = (image_size + FILE_ALIGNMENT - 1) & ~(FILE_ALIGNMENT - 1);

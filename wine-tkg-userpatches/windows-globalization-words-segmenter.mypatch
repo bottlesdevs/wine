@@ -1,0 +1,1842 @@
+diff --git a/dlls/windows.globalization/Makefile.in b/dlls/windows.globalization/Makefile.in
+index 14100766128..9e69f9861d6 100644
+--- a/dlls/windows.globalization/Makefile.in
++++ b/dlls/windows.globalization/Makefile.in
+@@ -1,7 +1,9 @@
+ MODULE = windows.globalization.dll
+-IMPORTS = combase uuid
++IMPORTS = combase uuid user32
+
+ SOURCES = \
+ 	classes.idl \
+ 	geographic_region.c \
+-	main.c
++	main.c \
++	vector.c \
++	words_segmenter.c
+diff --git a/dlls/windows.globalization/classes.idl b/dlls/windows.globalization/classes.idl
+index 1a295feaf45..599c3fb04a1 100644
+--- a/dlls/windows.globalization/classes.idl
++++ b/dlls/windows.globalization/classes.idl
+@@ -27,9 +27,13 @@ import "eventtoken.idl";
+ import "windowscontracts.idl";
+ import "windows.foundation.idl";
+ import "windows.system.idl";
++import "windows.data.text.idl";
+ import "windows.globalization.idl";
+ import "windows.system.userprofile.idl";
+
++namespace Windows.Data.Text {
++    runtimeclass WordsSegmenter;
++}
+ namespace Windows.System.UserProfile {
+     runtimeclass GlobalizationPreferences;
+ }
+diff --git a/dlls/windows.globalization/main.c b/dlls/windows.globalization/main.c
+index 5902b8fd15f..78f77a11ba4 100644
+--- a/dlls/windows.globalization/main.c
++++ b/dlls/windows.globalization/main.c
+@@ -406,6 +406,7 @@ struct language_factory
+ {
+     IActivationFactory IActivationFactory_iface;
+     ILanguageFactory ILanguageFactory_iface;
++    ILanguageStatics ILanguageStatics_iface;
+     LONG ref;
+ };
+
+@@ -442,6 +443,11 @@ static inline struct language_factory *impl_from_ILanguageFactory(ILanguageFacto
+     return CONTAINING_RECORD(iface, struct language_factory, ILanguageFactory_iface);
+ }
+
++static inline struct language_factory *impl_from_ILanguageStatics(ILanguageStatics *iface)
++{
++    return CONTAINING_RECORD(iface, struct language_factory, ILanguageStatics_iface);
++}
++
+ static inline struct language *impl_from_ILanguage(ILanguage *iface)
+ {
+     return CONTAINING_RECORD(iface, struct language, ILanguage_iface);
+@@ -837,6 +843,13 @@ static HRESULT STDMETHODCALLTYPE windows_globalization_language_factory_QueryInt
+         return S_OK;
+     }
+
++    if (IsEqualGUID(iid, &IID_ILanguageStatics))
++    {
++        IUnknown_AddRef(iface);
++        *out = &factory->ILanguageStatics_iface;
++        return S_OK;
++    }
++
+     FIXME("%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid(iid));
+     *out = NULL;
+     return E_NOINTERFACE;
+@@ -947,10 +960,93 @@ static const struct ILanguageFactoryVtbl language_factory_vtbl =
+     language_factory_CreateLanguage,
+ };
+
++static HRESULT STDMETHODCALLTYPE language_statics_QueryInterface(
++        ILanguageStatics *iface, REFIID iid, void **object)
++{
++    struct language_factory *factory = impl_from_ILanguageStatics(iface);
++    return IActivationFactory_QueryInterface(&factory->IActivationFactory_iface, iid, object);
++}
++
++static ULONG STDMETHODCALLTYPE language_statics_AddRef(ILanguageStatics *iface)
++{
++    struct language_factory *factory = impl_from_ILanguageStatics(iface);
++    return IActivationFactory_AddRef(&factory->IActivationFactory_iface);
++}
++
++static ULONG STDMETHODCALLTYPE language_statics_Release(ILanguageStatics *iface)
++{
++    struct language_factory *factory = impl_from_ILanguageStatics(iface);
++    return IActivationFactory_Release(&factory->IActivationFactory_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE language_statics_GetIids(
++        ILanguageStatics *iface, ULONG *iid_count, IID **iids)
++{
++    FIXME("iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE language_statics_GetRuntimeClassName(
++        ILanguageStatics *iface, HSTRING *class_name)
++{
++    FIXME("iface %p, class_name %p stub!\n", iface, class_name);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE language_statics_GetTrustLevel(
++        ILanguageStatics *iface, TrustLevel *trust_level)
++{
++    FIXME("iface %p, trust_level %p stub!\n", iface, trust_level);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE language_statics_IsWellFormed(
++        ILanguageStatics *iface, HSTRING tag, boolean *result)
++{
++    const WCHAR *name = WindowsGetStringRawBuffer(tag, NULL);
++    WCHAR buffer[LOCALE_NAME_MAX_LENGTH];
++
++    TRACE("iface %p, tag %s, result %p.\n", iface, debugstr_w(name), result);
++
++    if (!result) return E_POINTER;
++    *result = name && *name && GetLocaleInfoEx(name, LOCALE_SNAME, buffer, ARRAY_SIZE(buffer));
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE language_statics_get_CurrentInputMethodLanguageTag(
++        ILanguageStatics *iface, HSTRING *value)
++{
++    WCHAR buffer[LOCALE_NAME_MAX_LENGTH];
++    LANGID language = LOWORD((ULONG_PTR)GetKeyboardLayout(0));
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    if (!value) return E_POINTER;
++    if (!LCIDToLocaleName(MAKELCID(language, SORT_DEFAULT), buffer, ARRAY_SIZE(buffer), 0) &&
++        !GetUserDefaultLocaleName(buffer, ARRAY_SIZE(buffer)))
++        return HRESULT_FROM_WIN32(GetLastError());
++    return WindowsCreateString(buffer, wcslen(buffer), value);
++}
++
++static const struct ILanguageStaticsVtbl language_statics_vtbl =
++{
++    language_statics_QueryInterface,
++    language_statics_AddRef,
++    language_statics_Release,
++    /* IInspectable methods */
++    language_statics_GetIids,
++    language_statics_GetRuntimeClassName,
++    language_statics_GetTrustLevel,
++    /* ILanguageStatics methods */
++    language_statics_IsWellFormed,
++    language_statics_get_CurrentInputMethodLanguageTag,
++};
++
+ static struct language_factory language_factory =
+ {
+     {&activation_factory_language_vtbl},
+     {&language_factory_vtbl},
++    {&language_statics_vtbl},
+     0
+ };
+
+@@ -1139,6 +1235,11 @@ HRESULT WINAPI DllGetActivationFactory(HSTRING classid, IActivationFactory **fac
+         *factory = &application_languages.IActivationFactory_iface;
+         IUnknown_AddRef(*factory);
+     }
++    else if (!wcscmp(name, RuntimeClass_Windows_Data_Text_WordsSegmenter))
++    {
++        *factory = words_segmenter_factory;
++        IUnknown_AddRef(*factory);
++    }
+
+     if (*factory) return S_OK;
+     return CLASS_E_CLASSNOTAVAILABLE;
+diff --git a/dlls/windows.globalization/private.h b/dlls/windows.globalization/private.h
+index 5d8e4e90045..b76da386eb5 100644
+--- a/dlls/windows.globalization/private.h
++++ b/dlls/windows.globalization/private.h
+@@ -32,12 +32,24 @@
+ #define WIDL_using_Windows_Foundation_Numerics
+ #include "windows.foundation.h"
+
++#define WIDL_using_Windows_Data_Text
+ #define WIDL_using_Windows_Globalization
+ #define WIDL_using_Windows_System_UserProfile
++#include "windows.data.text.h"
+ #include "windows.globalization.h"
+ #include "windows.system.userprofile.h"
+
+ extern IActivationFactory *geographic_region_factory;
++extern IActivationFactory *words_segmenter_factory;
++
++struct vector_iids
++{
++    const GUID *vector;
++    const GUID *view;
++    const GUID *iterable;
++    const GUID *iterator;
++};
++extern HRESULT vector_create( const struct vector_iids *iids, void **out );
+
+ #include "wine/debug.h"
+ #include "wine/list.h"
+diff --git a/dlls/windows.globalization/tests/globalization.c b/dlls/windows.globalization/tests/globalization.c
+index dd9b7027f7c..dfd7ad57532 100644
+--- a/dlls/windows.globalization/tests/globalization.c
++++ b/dlls/windows.globalization/tests/globalization.c
+@@ -29,6 +29,8 @@
+ #define WIDL_using_Windows_Foundation
+ #define WIDL_using_Windows_Foundation_Collections
+ #include "windows.foundation.h"
++#define WIDL_using_Windows_Data_Text
++#include "windows.data.text.h"
+ #define WIDL_using_Windows_Globalization
+ #include "windows.globalization.h"
+ #define WIDL_using_Windows_System_UserProfile
+@@ -251,11 +253,13 @@ static void test_Language(void)
+     enum LanguageLayoutDirection direction;
+     WCHAR buffer[LOCALE_NAME_MAX_LENGTH];
+     ILanguageFactory *language_factory;
++    ILanguageStatics *language_statics;
+     IActivationFactory *factory;
+     ILanguage2 *language2;
+     ILanguage *language;
+     HSTRING tag, str;
+     const WCHAR *buf;
++    boolean result;
+     unsigned int i;
+     HRESULT hr;
+
+@@ -280,6 +284,34 @@ static void test_Language(void)
+     hr = IActivationFactory_QueryInterface(factory, &IID_ILanguageFactory, (void **)&language_factory);
+     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
++    hr = IActivationFactory_QueryInterface(factory, &IID_ILanguageStatics, (void **)&language_statics);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++
++    hr = WindowsCreateString(L"en-US", 5, &str);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++    result = FALSE;
++    hr = ILanguageStatics_IsWellFormed(language_statics, str, &result);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++    ok(result, "Expected a well-formed language tag.\n");
++    WindowsDeleteString(str);
++
++    hr = WindowsCreateString(L"test-tag", 8, &str);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++    result = TRUE;
++    hr = ILanguageStatics_IsWellFormed(language_statics, str, &result);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++    ok(!result, "Expected an invalid language tag.\n");
++    WindowsDeleteString(str);
++
++    hr = ILanguageStatics_get_CurrentInputMethodLanguageTag(language_statics, &tag);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++    if (SUCCEEDED(hr))
++    {
++        buf = WindowsGetStringRawBuffer(tag, NULL);
++        ok(buf && *buf, "Expected a language tag.\n");
++        WindowsDeleteString(tag);
++    }
++
+     hr = ILanguageFactory_QueryInterface(language_factory, &IID_IInspectable, (void **)&tmp_inspectable);
+     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+     ok(tmp_inspectable == inspectable, "Unexpected interface pointer %p, expected %p.\n", tmp_inspectable, inspectable);
+@@ -347,6 +379,7 @@ static void test_Language(void)
+     }
+
+     ILanguageFactory_Release(language_factory);
++    ILanguageStatics_Release(language_statics);
+
+     IAgileObject_Release(agile_object);
+     IInspectable_Release(inspectable);
+@@ -493,6 +526,108 @@ done:
+     ok( ref == 1, "got ref %ld.\n", ref );
+ }
+
++static void test_WordsSegmenter(void)
++{
++    static const WCHAR *class_name = L"Windows.Data.Text.WordsSegmenter";
++    static const WCHAR text[] = L"Hello big world";
++    static const struct
++    {
++        const WCHAR *text;
++        UINT32 start;
++        UINT32 length;
++    }
++    expect[] =
++    {
++        {L"Hello", 0, 5},
++        {L"big", 6, 3},
++        {L"world", 10, 5},
++    };
++    IWordsSegmenterFactory *segmenter_factory;
++    IVectorView_WordSegment *tokens;
++    IActivationFactory *factory;
++    IWordsSegmenter *segmenter;
++    IWordSegment *segment;
++    TextSegment source;
++    HSTRING str, value;
++    UINT32 i, size;
++    HRESULT hr;
++
++    hr = WindowsCreateString(class_name, wcslen(class_name), &str);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++
++    hr = RoGetActivationFactory(str, &IID_IActivationFactory, (void **)&factory);
++    ok(hr == S_OK || broken(hr == REGDB_E_CLASSNOTREG), "Unexpected hr %#lx.\n", hr);
++    WindowsDeleteString(str);
++    if (hr == REGDB_E_CLASSNOTREG)
++    {
++        win_skip("%s runtimeclass not registered, skipping tests.\n", wine_dbgstr_w(class_name));
++        return;
++    }
++
++    check_interface(factory, &IID_IAgileObject);
++
++    hr = IActivationFactory_QueryInterface(factory, &IID_IWordsSegmenterFactory, (void **)&segmenter_factory);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++
++    hr = WindowsCreateString(L"en-US", 5, &str);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++    hr = IWordsSegmenterFactory_CreateWithLanguage(segmenter_factory, str, &segmenter);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++    WindowsDeleteString(str);
++
++    hr = IWordsSegmenter_get_ResolvedLanguage(segmenter, &value);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++    ok(!wcscmp(WindowsGetStringRawBuffer(value, NULL), L"en-US"), "Unexpected language %s.\n",
++       wine_dbgstr_w(WindowsGetStringRawBuffer(value, NULL)));
++    WindowsDeleteString(value);
++
++    hr = WindowsCreateString(text, wcslen(text), &str);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++
++    hr = IWordsSegmenter_GetTokens(segmenter, str, &tokens);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++    hr = IVectorView_WordSegment_get_Size(tokens, &size);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++    ok(size == ARRAY_SIZE(expect), "Unexpected size %u.\n", size);
++
++    for (i = 0; i < size && i < ARRAY_SIZE(expect); i++)
++    {
++        winetest_push_context("%u", i);
++
++        hr = IVectorView_WordSegment_GetAt(tokens, i, &segment);
++        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++
++        hr = IWordSegment_get_Text(segment, &value);
++        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++        ok(!wcscmp(WindowsGetStringRawBuffer(value, NULL), expect[i].text), "Unexpected text %s.\n",
++           wine_dbgstr_w(WindowsGetStringRawBuffer(value, NULL)));
++        WindowsDeleteString(value);
++
++        hr = IWordSegment_get_SourceTextSegment(segment, &source);
++        ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++        ok(source.StartPosition == expect[i].start, "Unexpected start %u.\n", source.StartPosition);
++        ok(source.Length == expect[i].length, "Unexpected length %u.\n", source.Length);
++
++        IWordSegment_Release(segment);
++        winetest_pop_context();
++    }
++    IVectorView_WordSegment_Release(tokens);
++
++    hr = IWordsSegmenter_GetTokenAt(segmenter, str, 7, &segment);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++    hr = IWordSegment_get_Text(segment, &value);
++    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
++    ok(!wcscmp(WindowsGetStringRawBuffer(value, NULL), L"big"), "Unexpected text %s.\n",
++       wine_dbgstr_w(WindowsGetStringRawBuffer(value, NULL)));
++    WindowsDeleteString(value);
++    IWordSegment_Release(segment);
++
++    WindowsDeleteString(str);
++    IWordsSegmenter_Release(segmenter);
++    IWordsSegmenterFactory_Release(segmenter_factory);
++    IActivationFactory_Release(factory);
++}
++
+ START_TEST(globalization)
+ {
+     HMODULE kernel32;
+@@ -508,6 +643,7 @@ START_TEST(globalization)
+     test_Language();
+     test_GeographicRegion();
+     test_ApplicationLanguages();
++    test_WordsSegmenter();
+
+     RoUninitialize();
+ }
+diff --git a/include/Makefile.in b/include/Makefile.in
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -876,6 +876,7 @@
+ 	windows.applicationmodel.datatransfer.idl \
+ 	windows.applicationmodel.idl \
+ 	windows.data.json.idl \
++	windows.data.text.idl \
+ 	windows.data.xml.dom.idl \
+ 	windows.devices.bluetooth.advertisement.idl \
+ 	windows.devices.bluetooth.genericattributeprofile.idl \
+diff --git a/include/windows.data.text.idl b/include/windows.data.text.idl
+new file mode 100644
+index 00000000000..eaa3ae2545e
+--- /dev/null
++++ b/include/windows.data.text.idl
+@@ -0,0 +1,158 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifdef __WIDL__
++#pragma winrt ns_prefix
++#endif
++
++import "inspectable.idl";
++import "asyncinfo.idl";
++import "eventtoken.idl";
++import "windowscontracts.idl";
++import "windows.foundation.idl";
++
++namespace Windows.Data.Text {
++    typedef enum AlternateNormalizationFormat AlternateNormalizationFormat;
++    typedef struct TextSegment TextSegment;
++
++    interface IAlternateWordForm;
++    interface IWordSegment;
++    interface IWordsSegmenter;
++    interface IWordsSegmenterFactory;
++
++    runtimeclass AlternateWordForm;
++    runtimeclass WordSegment;
++    runtimeclass WordsSegmenter;
++
++    declare {
++        interface Windows.Foundation.Collections.IIterable<Windows.Data.Text.AlternateWordForm *>;
++        interface Windows.Foundation.Collections.IIterable<Windows.Data.Text.WordSegment *>;
++        interface Windows.Foundation.Collections.IIterator<Windows.Data.Text.AlternateWordForm *>;
++        interface Windows.Foundation.Collections.IIterator<Windows.Data.Text.WordSegment *>;
++        interface Windows.Foundation.Collections.IVectorView<Windows.Data.Text.AlternateWordForm *>;
++        interface Windows.Foundation.Collections.IVectorView<Windows.Data.Text.WordSegment *>;
++        interface Windows.Foundation.Collections.IVector<Windows.Data.Text.AlternateWordForm *>;
++        interface Windows.Foundation.Collections.IVector<Windows.Data.Text.WordSegment *>;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0)
++    ]
++    enum AlternateNormalizationFormat
++    {
++        NotNormalized = 0,
++        Number        = 1,
++        Currency      = 3,
++        Date          = 4,
++        Time          = 5,
++    };
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0)
++    ]
++    struct TextSegment
++    {
++        UINT32 StartPosition;
++        UINT32 Length;
++    };
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        uuid(a5dd6357-bf2a-4c4f-a31f-29e71c6f8b35)
++    ]
++    delegate HRESULT WordSegmentsTokenizingHandler([in] Windows.Foundation.Collections.IIterable<Windows.Data.Text.WordSegment *> *precedingWords,
++                                                   [in] Windows.Foundation.Collections.IIterable<Windows.Data.Text.WordSegment *> *words);
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Data.Text.AlternateWordForm),
++        uuid(47396c1e-51b9-4207-9146-248e636a1d1d)
++    ]
++    interface IAlternateWordForm : IInspectable
++    {
++        [propget] HRESULT SourceTextSegment([out, retval] Windows.Data.Text.TextSegment *value);
++        [propget] HRESULT AlternateText([out, retval] HSTRING *value);
++        [propget] HRESULT NormalizationFormat([out, retval] Windows.Data.Text.AlternateNormalizationFormat *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Data.Text.WordSegment),
++        uuid(d2d4ba6d-987c-4cc0-b6bd-d49a11b38f9a)
++    ]
++    interface IWordSegment : IInspectable
++    {
++        [propget] HRESULT Text([out, retval] HSTRING *value);
++        [propget] HRESULT SourceTextSegment([out, retval] Windows.Data.Text.TextSegment *value);
++        [propget] HRESULT AlternateForms([out, retval] Windows.Foundation.Collections.IVectorView<Windows.Data.Text.AlternateWordForm *> **value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Data.Text.WordsSegmenter),
++        uuid(86b4d4d1-b2fe-4e34-a81d-66640300454f)
++    ]
++    interface IWordsSegmenter : IInspectable
++    {
++        [propget] HRESULT ResolvedLanguage([out, retval] HSTRING *value);
++        HRESULT GetTokenAt([in] HSTRING text, [in] UINT32 startIndex, [out, retval] Windows.Data.Text.WordSegment **result);
++        HRESULT GetTokens([in] HSTRING text, [out, retval] Windows.Foundation.Collections.IVectorView<Windows.Data.Text.WordSegment *> **result);
++        HRESULT Tokenize([in] HSTRING text, [in] UINT32 startIndex, [in] Windows.Data.Text.WordSegmentsTokenizingHandler *handler);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        exclusiveto(Windows.Data.Text.WordsSegmenter),
++        uuid(e6977274-fc35-455c-8bfb-6d7f4653ca97)
++    ]
++    interface IWordsSegmenterFactory : IInspectable
++    {
++        HRESULT CreateWithLanguage([in] HSTRING language, [out, retval] Windows.Data.Text.WordsSegmenter **result);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass AlternateWordForm
++    {
++        [default] interface Windows.Data.Text.IAlternateWordForm;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass WordSegment
++    {
++        [default] interface Windows.Data.Text.IWordSegment;
++    }
++
++    [
++        activatable(Windows.Data.Text.IWordsSegmenterFactory, Windows.Foundation.UniversalApiContract, 1.0),
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass WordsSegmenter
++    {
++        [default] interface Windows.Data.Text.IWordsSegmenter;
++    }
++}
+diff --git a/dlls/windows.globalization/vector.c b/dlls/windows.globalization/vector.c
+new file mode 100644
+index 00000000000..954d7df3552
+--- /dev/null
++++ b/dlls/windows.globalization/vector.c
+@@ -0,0 +1,675 @@
++/* WinRT Windows.Gaming.Input implementation
++ *
++ * Copyright 2021 Rémi Bernon for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(combase);
++
++struct iterator
++{
++    IIterator_IInspectable IIterator_IInspectable_iface;
++    const GUID *iid;
++    LONG ref;
++
++    IVectorView_IInspectable *view;
++    UINT32 index;
++    UINT32 size;
++};
++
++static inline struct iterator *impl_from_IIterator_IInspectable( IIterator_IInspectable *iface )
++{
++    return CONTAINING_RECORD( iface, struct iterator, IIterator_IInspectable_iface );
++}
++
++static HRESULT WINAPI iterator_QueryInterface( IIterator_IInspectable *iface, REFIID iid, void **out )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) ||
++        IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) ||
++        IsEqualGUID( iid, impl->iid ))
++    {
++        IInspectable_AddRef( (*out = &impl->IIterator_IInspectable_iface) );
++        return S_OK;
++    }
++
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI iterator_AddRef( IIterator_IInspectable *iface )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++    ULONG ref = InterlockedIncrement( &impl->ref );
++    TRACE( "iface %p increasing refcount to %lu.\n", iface, ref );
++    return ref;
++}
++
++static ULONG WINAPI iterator_Release( IIterator_IInspectable *iface )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    TRACE( "iface %p decreasing refcount to %lu.\n", iface, ref );
++
++    if (!ref)
++    {
++        IVectorView_IInspectable_Release( impl->view );
++        free( impl );
++    }
++
++    return ref;
++}
++
++static HRESULT WINAPI iterator_GetIids( IIterator_IInspectable *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI iterator_GetRuntimeClassName( IIterator_IInspectable *iface, HSTRING *class_name )
++{
++    FIXME( "iface %p, class_name %p stub!\n", iface, class_name );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI iterator_GetTrustLevel( IIterator_IInspectable *iface, TrustLevel *trust_level )
++{
++    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI iterator_get_Current( IIterator_IInspectable *iface, IInspectable **value )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++    TRACE( "iface %p, value %p.\n", iface, value );
++    return IVectorView_IInspectable_GetAt( impl->view, impl->index, value );
++}
++
++static HRESULT WINAPI iterator_get_HasCurrent( IIterator_IInspectable *iface, boolean *value )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    *value = impl->index < impl->size;
++    return S_OK;
++}
++
++static HRESULT WINAPI iterator_MoveNext( IIterator_IInspectable *iface, boolean *value )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (impl->index < impl->size) impl->index++;
++    return IIterator_IInspectable_get_HasCurrent( iface, value );
++}
++
++static HRESULT WINAPI iterator_GetMany( IIterator_IInspectable *iface, UINT32 items_size,
++                                        IInspectable **items, UINT *count )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++    TRACE( "iface %p, items_size %u, items %p, count %p.\n", iface, items_size, items, count );
++    return IVectorView_IInspectable_GetMany( impl->view, impl->index, items_size, items, count );
++}
++
++static const IIterator_IInspectableVtbl iterator_vtbl =
++{
++    iterator_QueryInterface,
++    iterator_AddRef,
++    iterator_Release,
++    /* IInspectable methods */
++    iterator_GetIids,
++    iterator_GetRuntimeClassName,
++    iterator_GetTrustLevel,
++    /* IIterator<IInspectable*> methods */
++    iterator_get_Current,
++    iterator_get_HasCurrent,
++    iterator_MoveNext,
++    iterator_GetMany,
++};
++
++struct vector_view
++{
++    IVectorView_IInspectable IVectorView_IInspectable_iface;
++    IIterable_IInspectable IIterable_IInspectable_iface;
++    struct vector_iids iids;
++    LONG ref;
++
++    UINT32 size;
++    IInspectable *elements[1];
++};
++
++static inline struct vector_view *impl_from_IVectorView_IInspectable( IVectorView_IInspectable *iface )
++{
++    return CONTAINING_RECORD( iface, struct vector_view, IVectorView_IInspectable_iface );
++}
++
++static HRESULT WINAPI vector_view_QueryInterface( IVectorView_IInspectable *iface, REFIID iid, void **out )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) ||
++        IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) ||
++        IsEqualGUID( iid, impl->iids.view ))
++    {
++        IInspectable_AddRef( (*out = &impl->IVectorView_IInspectable_iface) );
++        return S_OK;
++    }
++
++    if (IsEqualGUID( iid, impl->iids.iterable ))
++    {
++        IInspectable_AddRef( (*out = &impl->IIterable_IInspectable_iface) );
++        return S_OK;
++    }
++
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI vector_view_AddRef( IVectorView_IInspectable *iface )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++    ULONG ref = InterlockedIncrement( &impl->ref );
++    TRACE( "iface %p increasing refcount to %lu.\n", iface, ref );
++    return ref;
++}
++
++static ULONG WINAPI vector_view_Release( IVectorView_IInspectable *iface )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++    ULONG i, ref = InterlockedDecrement( &impl->ref );
++
++    TRACE( "iface %p decreasing refcount to %lu.\n", iface, ref );
++
++    if (!ref)
++    {
++        for (i = 0; i < impl->size; ++i) IInspectable_Release( impl->elements[i] );
++        free( impl );
++    }
++
++    return ref;
++}
++
++static HRESULT WINAPI vector_view_GetIids( IVectorView_IInspectable *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_view_GetRuntimeClassName( IVectorView_IInspectable *iface, HSTRING *class_name )
++{
++    FIXME( "iface %p, class_name %p stub!\n", iface, class_name );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_view_GetTrustLevel( IVectorView_IInspectable *iface, TrustLevel *trust_level )
++{
++    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_view_GetAt( IVectorView_IInspectable *iface, UINT32 index, IInspectable **value )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++
++    TRACE( "iface %p, index %u, value %p.\n", iface, index, value );
++
++    *value = NULL;
++    if (index >= impl->size) return E_BOUNDS;
++
++    IInspectable_AddRef( (*value = impl->elements[index]) );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_view_get_Size( IVectorView_IInspectable *iface, UINT32 *value )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    *value = impl->size;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_view_IndexOf( IVectorView_IInspectable *iface, IInspectable *element,
++                                           UINT32 *index, BOOLEAN *found )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++    ULONG i;
++
++    TRACE( "iface %p, element %p, index %p, found %p.\n", iface, element, index, found );
++
++    for (i = 0; i < impl->size; ++i) if (impl->elements[i] == element) break;
++    if ((*found = (i < impl->size))) *index = i;
++    else *index = 0;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_view_GetMany( IVectorView_IInspectable *iface, UINT32 start_index,
++                                           UINT32 items_size, IInspectable **items, UINT *count )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++    UINT32 i;
++
++    TRACE( "iface %p, start_index %u, items_size %u, items %p, count %p.\n",
++           iface, start_index, items_size, items, count );
++
++    if (start_index >= impl->size) return E_BOUNDS;
++
++    for (i = start_index; i < impl->size; ++i)
++    {
++        if (i - start_index >= items_size) break;
++        IInspectable_AddRef( (items[i - start_index] = impl->elements[i]) );
++    }
++    *count = i - start_index;
++
++    return S_OK;
++}
++
++static const struct IVectorView_IInspectableVtbl vector_view_vtbl =
++{
++    vector_view_QueryInterface,
++    vector_view_AddRef,
++    vector_view_Release,
++    /* IInspectable methods */
++    vector_view_GetIids,
++    vector_view_GetRuntimeClassName,
++    vector_view_GetTrustLevel,
++    /* IVectorView<IInspectable*> methods */
++    vector_view_GetAt,
++    vector_view_get_Size,
++    vector_view_IndexOf,
++    vector_view_GetMany,
++};
++
++DEFINE_IINSPECTABLE_( iterable_view, IIterable_IInspectable, struct vector_view, view_impl_from_IIterable_IInspectable,
++                      IIterable_IInspectable_iface, &impl->IVectorView_IInspectable_iface )
++
++static HRESULT WINAPI iterable_view_First( IIterable_IInspectable *iface, IIterator_IInspectable **value )
++{
++    struct vector_view *impl = view_impl_from_IIterable_IInspectable( iface );
++    struct iterator *iter;
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (!(iter = calloc( 1, sizeof(struct iterator) ))) return E_OUTOFMEMORY;
++    iter->IIterator_IInspectable_iface.lpVtbl = &iterator_vtbl;
++    iter->iid = impl->iids.iterator;
++    iter->ref = 1;
++
++    IVectorView_IInspectable_AddRef( (iter->view = &impl->IVectorView_IInspectable_iface) );
++    iter->size = impl->size;
++
++    *value = &iter->IIterator_IInspectable_iface;
++    return S_OK;
++}
++
++static const struct IIterable_IInspectableVtbl iterable_view_vtbl =
++{
++    iterable_view_QueryInterface,
++    iterable_view_AddRef,
++    iterable_view_Release,
++    /* IInspectable methods */
++    iterable_view_GetIids,
++    iterable_view_GetRuntimeClassName,
++    iterable_view_GetTrustLevel,
++    /* IIterable<T> methods */
++    iterable_view_First,
++};
++
++struct vector
++{
++    IVector_IInspectable IVector_IInspectable_iface;
++    IIterable_IInspectable IIterable_IInspectable_iface;
++    struct vector_iids iids;
++    LONG ref;
++
++    UINT32 size;
++    UINT32 capacity;
++    IInspectable **elements;
++};
++
++static inline struct vector *impl_from_IVector_IInspectable( IVector_IInspectable *iface )
++{
++    return CONTAINING_RECORD( iface, struct vector, IVector_IInspectable_iface );
++}
++
++static HRESULT WINAPI vector_QueryInterface( IVector_IInspectable *iface, REFIID iid, void **out )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) ||
++        IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) ||
++        IsEqualGUID( iid, impl->iids.vector ))
++    {
++        IInspectable_AddRef( (*out = &impl->IVector_IInspectable_iface) );
++        return S_OK;
++    }
++
++    if (IsEqualGUID( iid, impl->iids.iterable ))
++    {
++        IInspectable_AddRef( (*out = &impl->IIterable_IInspectable_iface) );
++        return S_OK;
++    }
++
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI vector_AddRef( IVector_IInspectable *iface )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    ULONG ref = InterlockedIncrement( &impl->ref );
++    TRACE( "iface %p increasing refcount to %lu.\n", iface, ref );
++    return ref;
++}
++
++static ULONG WINAPI vector_Release( IVector_IInspectable *iface )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    TRACE( "iface %p decreasing refcount to %lu.\n", iface, ref );
++
++    if (!ref)
++    {
++        IVector_IInspectable_Clear( iface );
++        free( impl );
++    }
++
++    return ref;
++}
++
++static HRESULT WINAPI vector_GetIids( IVector_IInspectable *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_GetRuntimeClassName( IVector_IInspectable *iface, HSTRING *class_name )
++{
++    FIXME( "iface %p, class_name %p stub!\n", iface, class_name );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_GetTrustLevel( IVector_IInspectable *iface, TrustLevel *trust_level )
++{
++    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_GetAt( IVector_IInspectable *iface, UINT32 index, IInspectable **value )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p, index %u, value %p.\n", iface, index, value );
++
++    *value = NULL;
++    if (index >= impl->size) return E_BOUNDS;
++
++    IInspectable_AddRef( (*value = impl->elements[index]) );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_get_Size( IVector_IInspectable *iface, UINT32 *value )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    TRACE( "iface %p, value %p.\n", iface, value );
++    *value = impl->size;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_GetView( IVector_IInspectable *iface, IVectorView_IInspectable **value )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    struct vector_view *view;
++    ULONG i;
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (!(view = calloc( 1, offsetof( struct vector_view, elements[impl->size] ) ))) return E_OUTOFMEMORY;
++    view->IVectorView_IInspectable_iface.lpVtbl = &vector_view_vtbl;
++    view->IIterable_IInspectable_iface.lpVtbl = &iterable_view_vtbl;
++    view->iids = impl->iids;
++    view->ref = 1;
++
++    for (i = 0; i < impl->size; ++i) IInspectable_AddRef( (view->elements[view->size++] = impl->elements[i]) );
++
++    *value = &view->IVectorView_IInspectable_iface;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_IndexOf( IVector_IInspectable *iface, IInspectable *element, UINT32 *index, BOOLEAN *found )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    ULONG i;
++
++    TRACE( "iface %p, element %p, index %p, found %p.\n", iface, element, index, found );
++
++    for (i = 0; i < impl->size; ++i) if (impl->elements[i] == element) break;
++    if ((*found = (i < impl->size))) *index = i;
++    else *index = 0;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_SetAt( IVector_IInspectable *iface, UINT32 index, IInspectable *value )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p, index %u, value %p.\n", iface, index, value );
++
++    if (index >= impl->size) return E_BOUNDS;
++    IInspectable_Release( impl->elements[index] );
++    IInspectable_AddRef( (impl->elements[index] = value) );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_InsertAt( IVector_IInspectable *iface, UINT32 index, IInspectable *value )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    IInspectable **tmp = impl->elements;
++
++    TRACE( "iface %p, index %u, value %p.\n", iface, index, value );
++
++    if (impl->size == impl->capacity)
++    {
++        impl->capacity = max( 32, impl->capacity * 3 / 2 );
++        if (!(impl->elements = realloc( impl->elements, impl->capacity * sizeof(*impl->elements) )))
++        {
++            impl->elements = tmp;
++            return E_OUTOFMEMORY;
++        }
++    }
++
++    memmove( impl->elements + index + 1, impl->elements + index, (impl->size++ - index) * sizeof(*impl->elements) );
++    IInspectable_AddRef( (impl->elements[index] = value) );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_RemoveAt( IVector_IInspectable *iface, UINT32 index )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p, index %u.\n", iface, index );
++
++    if (index >= impl->size) return E_BOUNDS;
++    IInspectable_Release( impl->elements[index] );
++    memmove( impl->elements + index, impl->elements + index + 1, (--impl->size - index) * sizeof(*impl->elements) );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_Append( IVector_IInspectable *iface, IInspectable *value )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    return IVector_IInspectable_InsertAt( iface, impl->size, value );
++}
++
++static HRESULT WINAPI vector_RemoveAtEnd( IVector_IInspectable *iface )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p.\n", iface );
++
++    if (impl->size) IInspectable_Release( impl->elements[--impl->size] );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_Clear( IVector_IInspectable *iface )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p.\n", iface );
++
++    while (impl->size) IVector_IInspectable_RemoveAtEnd( iface );
++    free( impl->elements );
++    impl->capacity = 0;
++    impl->elements = NULL;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_GetMany( IVector_IInspectable *iface, UINT32 start_index,
++                                      UINT32 items_size, IInspectable **items, UINT *count )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    UINT32 i;
++
++    TRACE( "iface %p, start_index %u, items_size %u, items %p, count %p.\n",
++           iface, start_index, items_size, items, count );
++
++    if (start_index >= impl->size) return E_BOUNDS;
++
++    for (i = start_index; i < impl->size; ++i)
++    {
++        if (i - start_index >= items_size) break;
++        IInspectable_AddRef( (items[i - start_index] = impl->elements[i]) );
++    }
++    *count = i - start_index;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_ReplaceAll( IVector_IInspectable *iface, UINT32 count, IInspectable **items )
++{
++    HRESULT hr;
++    ULONG i;
++
++    TRACE( "iface %p, count %u, items %p.\n", iface, count, items );
++
++    hr = IVector_IInspectable_Clear( iface );
++    for (i = 0; i < count && SUCCEEDED(hr); ++i) hr = IVector_IInspectable_Append( iface, items[i] );
++    return hr;
++}
++
++static const struct IVector_IInspectableVtbl vector_vtbl =
++{
++    vector_QueryInterface,
++    vector_AddRef,
++    vector_Release,
++    /* IInspectable methods */
++    vector_GetIids,
++    vector_GetRuntimeClassName,
++    vector_GetTrustLevel,
++    /* IVector<IInspectable*> methods */
++    vector_GetAt,
++    vector_get_Size,
++    vector_GetView,
++    vector_IndexOf,
++    vector_SetAt,
++    vector_InsertAt,
++    vector_RemoveAt,
++    vector_Append,
++    vector_RemoveAtEnd,
++    vector_Clear,
++    vector_GetMany,
++    vector_ReplaceAll,
++};
++
++DEFINE_IINSPECTABLE( iterable, IIterable_IInspectable, struct vector, IVector_IInspectable_iface )
++
++static HRESULT WINAPI iterable_First( IIterable_IInspectable *iface, IIterator_IInspectable **value )
++{
++    struct vector *impl = impl_from_IIterable_IInspectable( iface );
++    IIterable_IInspectable *iterable;
++    IVectorView_IInspectable *view;
++    HRESULT hr;
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (FAILED(hr = IVector_IInspectable_GetView( &impl->IVector_IInspectable_iface, &view ))) return hr;
++
++    hr = IVectorView_IInspectable_QueryInterface( view, impl->iids.iterable, (void **)&iterable );
++    IVectorView_IInspectable_Release( view );
++    if (FAILED(hr)) return hr;
++
++    hr = IIterable_IInspectable_First( iterable, value );
++    IIterable_IInspectable_Release( iterable );
++    return hr;
++}
++
++static const struct IIterable_IInspectableVtbl iterable_vtbl =
++{
++    iterable_QueryInterface,
++    iterable_AddRef,
++    iterable_Release,
++    /* IInspectable methods */
++    iterable_GetIids,
++    iterable_GetRuntimeClassName,
++    iterable_GetTrustLevel,
++    /* IIterable<T> methods */
++    iterable_First,
++};
++
++HRESULT vector_create( const struct vector_iids *iids, void **out )
++{
++    struct vector *impl;
++
++    TRACE( "iid %s, out %p.\n", debugstr_guid( iids->vector ), out );
++
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->IVector_IInspectable_iface.lpVtbl = &vector_vtbl;
++    impl->IIterable_IInspectable_iface.lpVtbl = &iterable_vtbl;
++    impl->iids = *iids;
++    impl->ref = 1;
++
++    *out = &impl->IVector_IInspectable_iface;
++    TRACE( "created %p\n", *out );
++    return S_OK;
++}
+diff --git a/dlls/windows.globalization/words_segmenter.c b/dlls/windows.globalization/words_segmenter.c
+new file mode 100644
+index 00000000000..cdb7d52ab2f
+--- /dev/null
++++ b/dlls/windows.globalization/words_segmenter.c
+@@ -0,0 +1,586 @@
++/* WinRT Windows.Data.Text.WordsSegmenter implementation
++ *
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++#include "winnls.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(locale);
++
++static const struct vector_iids word_segment_iids =
++{
++    .vector = &IID_IVector_WordSegment,
++    .view = &IID_IVectorView_WordSegment,
++    .iterable = &IID_IIterable_WordSegment,
++    .iterator = &IID_IIterator_WordSegment,
++};
++
++static const struct vector_iids alternate_word_form_iids =
++{
++    .vector = &IID_IVector_AlternateWordForm,
++    .view = &IID_IVectorView_AlternateWordForm,
++    .iterable = &IID_IIterable_AlternateWordForm,
++    .iterator = &IID_IIterator_AlternateWordForm,
++};
++
++struct token
++{
++    UINT32 start;
++    UINT32 length;
++};
++
++static BOOL is_letter_or_digit( WCHAR ch )
++{
++    WORD type;
++
++    if (IS_HIGH_SURROGATE( ch ) || IS_LOW_SURROGATE( ch )) return TRUE;
++    if (!GetStringTypeW( CT_CTYPE1, &ch, 1, &type )) return FALSE;
++    return !!(type & (C1_ALPHA | C1_DIGIT));
++}
++
++/* Combining marks belong to the word they follow, and an apostrophe between
++ * two letters keeps a contraction such as "don't" in a single word. */
++static BOOL is_word_char( const WCHAR *text, UINT32 length, UINT32 i )
++{
++    WORD type;
++
++    if (is_letter_or_digit( text[i] )) return TRUE;
++    if (GetStringTypeW( CT_CTYPE3, text + i, 1, &type ) && (type & C3_NONSPACING)) return i > 0;
++    if (text[i] != '\'' && text[i] != 0x2019) return FALSE;
++    return i > 0 && i + 1 < length && is_letter_or_digit( text[i - 1] ) && is_letter_or_digit( text[i + 1] );
++}
++
++static HRESULT split_words( const WCHAR *text, UINT32 length, struct token **tokens, UINT32 *count )
++{
++    struct token *list = NULL, *tmp;
++    UINT32 i = 0, capacity = 0;
++
++    *count = 0;
++    while (i < length)
++    {
++        UINT32 start;
++
++        while (i < length && !is_word_char( text, length, i )) i++;
++        if (i == length) break;
++        for (start = i; i < length && is_word_char( text, length, i ); i++);
++
++        if (*count == capacity)
++        {
++            capacity = capacity ? capacity * 2 : 8;
++            if (!(tmp = realloc( list, capacity * sizeof(*list) )))
++            {
++                free( list );
++                return E_OUTOFMEMORY;
++            }
++            list = tmp;
++        }
++        list[*count].start = start;
++        list[*count].length = i - start;
++        (*count)++;
++    }
++
++    *tokens = list;
++    return S_OK;
++}
++
++struct word_segment
++{
++    IWordSegment IWordSegment_iface;
++    LONG ref;
++
++    HSTRING text;
++    TextSegment segment;
++};
++
++static inline struct word_segment *impl_from_IWordSegment( IWordSegment *iface )
++{
++    return CONTAINING_RECORD( iface, struct word_segment, IWordSegment_iface );
++}
++
++static HRESULT WINAPI word_segment_QueryInterface( IWordSegment *iface, REFIID iid, void **out )
++{
++    struct word_segment *impl = impl_from_IWordSegment( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) ||
++        IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) ||
++        IsEqualGUID( iid, &IID_IWordSegment ))
++    {
++        IInspectable_AddRef( (*out = &impl->IWordSegment_iface) );
++        return S_OK;
++    }
++
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI word_segment_AddRef( IWordSegment *iface )
++{
++    struct word_segment *impl = impl_from_IWordSegment( iface );
++    ULONG ref = InterlockedIncrement( &impl->ref );
++    TRACE( "iface %p, ref %lu.\n", iface, ref );
++    return ref;
++}
++
++static ULONG WINAPI word_segment_Release( IWordSegment *iface )
++{
++    struct word_segment *impl = impl_from_IWordSegment( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    TRACE( "iface %p, ref %lu.\n", iface, ref );
++
++    if (!ref)
++    {
++        WindowsDeleteString( impl->text );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI word_segment_GetIids( IWordSegment *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI word_segment_GetRuntimeClassName( IWordSegment *iface, HSTRING *class_name )
++{
++    TRACE( "iface %p, class_name %p.\n", iface, class_name );
++    return WindowsCreateString( RuntimeClass_Windows_Data_Text_WordSegment,
++                                wcslen( RuntimeClass_Windows_Data_Text_WordSegment ), class_name );
++}
++
++static HRESULT WINAPI word_segment_GetTrustLevel( IWordSegment *iface, TrustLevel *trust_level )
++{
++    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI word_segment_get_Text( IWordSegment *iface, HSTRING *value )
++{
++    struct word_segment *impl = impl_from_IWordSegment( iface );
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    return WindowsDuplicateString( impl->text, value );
++}
++
++static HRESULT WINAPI word_segment_get_SourceTextSegment( IWordSegment *iface, TextSegment *value )
++{
++    struct word_segment *impl = impl_from_IWordSegment( iface );
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    *value = impl->segment;
++    return S_OK;
++}
++
++static HRESULT WINAPI word_segment_get_AlternateForms( IWordSegment *iface, IVectorView_AlternateWordForm **value )
++{
++    IVector_IInspectable *vector;
++    HRESULT hr;
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (FAILED(hr = vector_create( &alternate_word_form_iids, (void **)&vector ))) return hr;
++    hr = IVector_IInspectable_GetView( vector, (IVectorView_IInspectable **)value );
++    IVector_IInspectable_Release( vector );
++    return hr;
++}
++
++static const struct IWordSegmentVtbl word_segment_vtbl =
++{
++    word_segment_QueryInterface,
++    word_segment_AddRef,
++    word_segment_Release,
++    /* IInspectable methods */
++    word_segment_GetIids,
++    word_segment_GetRuntimeClassName,
++    word_segment_GetTrustLevel,
++    /* IWordSegment methods */
++    word_segment_get_Text,
++    word_segment_get_SourceTextSegment,
++    word_segment_get_AlternateForms,
++};
++
++static HRESULT word_segment_create( const WCHAR *text, const struct token *token, IWordSegment **out )
++{
++    struct word_segment *impl;
++    HRESULT hr;
++
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->IWordSegment_iface.lpVtbl = &word_segment_vtbl;
++    impl->ref = 1;
++    impl->segment.StartPosition = token->start;
++    impl->segment.Length = token->length;
++
++    if (FAILED(hr = WindowsCreateString( text + token->start, token->length, &impl->text )))
++    {
++        free( impl );
++        return hr;
++    }
++
++    *out = &impl->IWordSegment_iface;
++    return S_OK;
++}
++
++static HRESULT segment_vector_create( const WCHAR *text, const struct token *tokens, UINT32 count,
++                                      IVectorView_IInspectable **out )
++{
++    IVector_IInspectable *vector;
++    IWordSegment *segment;
++    HRESULT hr;
++    UINT32 i;
++
++    if (FAILED(hr = vector_create( &word_segment_iids, (void **)&vector ))) return hr;
++
++    for (i = 0; SUCCEEDED(hr) && i < count; i++)
++    {
++        if (FAILED(hr = word_segment_create( text, tokens + i, &segment ))) break;
++        hr = IVector_IInspectable_Append( vector, (IInspectable *)segment );
++        IWordSegment_Release( segment );
++    }
++
++    if (SUCCEEDED(hr)) hr = IVector_IInspectable_GetView( vector, out );
++    IVector_IInspectable_Release( vector );
++    return hr;
++}
++
++struct words_segmenter
++{
++    IWordsSegmenter IWordsSegmenter_iface;
++    LONG ref;
++
++    HSTRING language;
++};
++
++static inline struct words_segmenter *impl_from_IWordsSegmenter( IWordsSegmenter *iface )
++{
++    return CONTAINING_RECORD( iface, struct words_segmenter, IWordsSegmenter_iface );
++}
++
++static HRESULT WINAPI words_segmenter_QueryInterface( IWordsSegmenter *iface, REFIID iid, void **out )
++{
++    struct words_segmenter *impl = impl_from_IWordsSegmenter( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) ||
++        IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) ||
++        IsEqualGUID( iid, &IID_IWordsSegmenter ))
++    {
++        IInspectable_AddRef( (*out = &impl->IWordsSegmenter_iface) );
++        return S_OK;
++    }
++
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI words_segmenter_AddRef( IWordsSegmenter *iface )
++{
++    struct words_segmenter *impl = impl_from_IWordsSegmenter( iface );
++    ULONG ref = InterlockedIncrement( &impl->ref );
++    TRACE( "iface %p, ref %lu.\n", iface, ref );
++    return ref;
++}
++
++static ULONG WINAPI words_segmenter_Release( IWordsSegmenter *iface )
++{
++    struct words_segmenter *impl = impl_from_IWordsSegmenter( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    TRACE( "iface %p, ref %lu.\n", iface, ref );
++
++    if (!ref)
++    {
++        WindowsDeleteString( impl->language );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI words_segmenter_GetIids( IWordsSegmenter *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI words_segmenter_GetRuntimeClassName( IWordsSegmenter *iface, HSTRING *class_name )
++{
++    TRACE( "iface %p, class_name %p.\n", iface, class_name );
++    return WindowsCreateString( RuntimeClass_Windows_Data_Text_WordsSegmenter,
++                                wcslen( RuntimeClass_Windows_Data_Text_WordsSegmenter ), class_name );
++}
++
++static HRESULT WINAPI words_segmenter_GetTrustLevel( IWordsSegmenter *iface, TrustLevel *trust_level )
++{
++    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI words_segmenter_get_ResolvedLanguage( IWordsSegmenter *iface, HSTRING *value )
++{
++    struct words_segmenter *impl = impl_from_IWordsSegmenter( iface );
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    return WindowsDuplicateString( impl->language, value );
++}
++
++static HRESULT WINAPI words_segmenter_GetTokenAt( IWordsSegmenter *iface, HSTRING text, UINT32 index, IWordSegment **result )
++{
++    const WCHAR *buffer;
++    struct token *tokens;
++    UINT32 i, length, count;
++    HRESULT hr;
++
++    TRACE( "iface %p, text %s, index %u, result %p.\n", iface, debugstr_hstring( text ), index, result );
++
++    *result = NULL;
++    buffer = WindowsGetStringRawBuffer( text, &length );
++    if (index >= length) return E_BOUNDS;
++    if (FAILED(hr = split_words( buffer, length, &tokens, &count ))) return hr;
++
++    for (i = 0; i < count; i++)
++    {
++        if (tokens[i].start + tokens[i].length <= index) continue;
++        hr = word_segment_create( buffer, tokens + i, result );
++        break;
++    }
++
++    free( tokens );
++    return hr;
++}
++
++static HRESULT WINAPI words_segmenter_GetTokens( IWordsSegmenter *iface, HSTRING text, IVectorView_WordSegment **result )
++{
++    const WCHAR *buffer;
++    struct token *tokens;
++    UINT32 length, count;
++    HRESULT hr;
++
++    TRACE( "iface %p, text %s, result %p.\n", iface, debugstr_hstring( text ), result );
++
++    buffer = WindowsGetStringRawBuffer( text, &length );
++    if (FAILED(hr = split_words( buffer, length, &tokens, &count ))) return hr;
++    hr = segment_vector_create( buffer, tokens, count, (IVectorView_IInspectable **)result );
++    free( tokens );
++    return hr;
++}
++
++static HRESULT WINAPI words_segmenter_Tokenize( IWordsSegmenter *iface, HSTRING text, UINT32 index,
++                                                IWordSegmentsTokenizingHandler *handler )
++{
++    IIterable_WordSegment *preceding = NULL, *words = NULL;
++    IVectorView_IInspectable *view;
++    const WCHAR *buffer;
++    struct token *tokens;
++    UINT32 split, length, count;
++    HRESULT hr;
++
++    TRACE( "iface %p, text %s, index %u, handler %p.\n", iface, debugstr_hstring( text ), index, handler );
++
++    if (!handler) return E_POINTER;
++    buffer = WindowsGetStringRawBuffer( text, &length );
++    if (FAILED(hr = split_words( buffer, length, &tokens, &count ))) return hr;
++    for (split = 0; split < count && tokens[split].start + tokens[split].length <= index; split++);
++
++    if (SUCCEEDED(hr = segment_vector_create( buffer, tokens, split, &view )))
++    {
++        hr = IVectorView_IInspectable_QueryInterface( view, &IID_IIterable_WordSegment, (void **)&preceding );
++        IVectorView_IInspectable_Release( view );
++    }
++    if (SUCCEEDED(hr) && SUCCEEDED(hr = segment_vector_create( buffer, tokens + split, count - split, &view )))
++    {
++        hr = IVectorView_IInspectable_QueryInterface( view, &IID_IIterable_WordSegment, (void **)&words );
++        IVectorView_IInspectable_Release( view );
++    }
++    if (SUCCEEDED(hr)) hr = IWordSegmentsTokenizingHandler_Invoke( handler, preceding, words );
++
++    if (words) IIterable_WordSegment_Release( words );
++    if (preceding) IIterable_WordSegment_Release( preceding );
++    free( tokens );
++    return hr;
++}
++
++static const struct IWordsSegmenterVtbl words_segmenter_vtbl =
++{
++    words_segmenter_QueryInterface,
++    words_segmenter_AddRef,
++    words_segmenter_Release,
++    /* IInspectable methods */
++    words_segmenter_GetIids,
++    words_segmenter_GetRuntimeClassName,
++    words_segmenter_GetTrustLevel,
++    /* IWordsSegmenter methods */
++    words_segmenter_get_ResolvedLanguage,
++    words_segmenter_GetTokenAt,
++    words_segmenter_GetTokens,
++    words_segmenter_Tokenize,
++};
++
++struct words_segmenter_factory
++{
++    IActivationFactory IActivationFactory_iface;
++    IWordsSegmenterFactory IWordsSegmenterFactory_iface;
++    LONG ref;
++};
++
++static inline struct words_segmenter_factory *impl_from_IActivationFactory( IActivationFactory *iface )
++{
++    return CONTAINING_RECORD( iface, struct words_segmenter_factory, IActivationFactory_iface );
++}
++
++static HRESULT WINAPI activation_factory_QueryInterface( IActivationFactory *iface, REFIID iid, void **out )
++{
++    struct words_segmenter_factory *factory = impl_from_IActivationFactory( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) ||
++        IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) ||
++        IsEqualGUID( iid, &IID_IActivationFactory ))
++    {
++        IActivationFactory_AddRef( (*out = &factory->IActivationFactory_iface) );
++        return S_OK;
++    }
++
++    if (IsEqualGUID( iid, &IID_IWordsSegmenterFactory ))
++    {
++        IWordsSegmenterFactory_AddRef( (*out = &factory->IWordsSegmenterFactory_iface) );
++        return S_OK;
++    }
++
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI activation_factory_AddRef( IActivationFactory *iface )
++{
++    struct words_segmenter_factory *impl = impl_from_IActivationFactory( iface );
++    ULONG ref = InterlockedIncrement( &impl->ref );
++    TRACE( "iface %p, ref %lu.\n", iface, ref );
++    return ref;
++}
++
++static ULONG WINAPI activation_factory_Release( IActivationFactory *iface )
++{
++    struct words_segmenter_factory *impl = impl_from_IActivationFactory( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++    TRACE( "iface %p, ref %lu.\n", iface, ref );
++    return ref;
++}
++
++static HRESULT WINAPI activation_factory_GetIids( IActivationFactory *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI activation_factory_GetRuntimeClassName( IActivationFactory *iface, HSTRING *class_name )
++{
++    FIXME( "iface %p, class_name %p stub!\n", iface, class_name );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI activation_factory_GetTrustLevel( IActivationFactory *iface, TrustLevel *trust_level )
++{
++    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI activation_factory_ActivateInstance( IActivationFactory *iface, IInspectable **out )
++{
++    TRACE( "iface %p, out %p.\n", iface, out );
++
++    /* WordsSegmenter is only constructed with a language. */
++    *out = NULL;
++    return E_NOTIMPL;
++}
++
++static const struct IActivationFactoryVtbl activation_factory_vtbl =
++{
++    activation_factory_QueryInterface,
++    activation_factory_AddRef,
++    activation_factory_Release,
++    /* IInspectable methods */
++    activation_factory_GetIids,
++    activation_factory_GetRuntimeClassName,
++    activation_factory_GetTrustLevel,
++    /* IActivationFactory methods */
++    activation_factory_ActivateInstance,
++};
++
++DEFINE_IINSPECTABLE( words_segmenter_factory, IWordsSegmenterFactory, struct words_segmenter_factory, IActivationFactory_iface )
++
++static HRESULT WINAPI words_segmenter_factory_CreateWithLanguage( IWordsSegmenterFactory *iface, HSTRING language,
++                                                                 IWordsSegmenter **result )
++{
++    WCHAR buffer[LOCALE_NAME_MAX_LENGTH];
++    struct words_segmenter *impl;
++    HRESULT hr;
++
++    TRACE( "iface %p, language %s, result %p.\n", iface, debugstr_hstring( language ), result );
++
++    /* Languages without a known locale fall back to the undetermined tag. */
++    if (!ResolveLocaleName( WindowsGetStringRawBuffer( language, NULL ), buffer, ARRAY_SIZE(buffer) ) || !buffer[0])
++        wcscpy( buffer, L"und" );
++
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->IWordsSegmenter_iface.lpVtbl = &words_segmenter_vtbl;
++    impl->ref = 1;
++
++    if (FAILED(hr = WindowsCreateString( buffer, wcslen( buffer ), &impl->language )))
++    {
++        free( impl );
++        return hr;
++    }
++
++    *result = &impl->IWordsSegmenter_iface;
++    return S_OK;
++}
++
++static const struct IWordsSegmenterFactoryVtbl words_segmenter_factory_vtbl =
++{
++    words_segmenter_factory_QueryInterface,
++    words_segmenter_factory_AddRef,
++    words_segmenter_factory_Release,
++    /* IInspectable methods */
++    words_segmenter_factory_GetIids,
++    words_segmenter_factory_GetRuntimeClassName,
++    words_segmenter_factory_GetTrustLevel,
++    /* IWordsSegmenterFactory methods */
++    words_segmenter_factory_CreateWithLanguage,
++};
++
++static struct words_segmenter_factory factory =
++{
++    {&activation_factory_vtbl},
++    {&words_segmenter_factory_vtbl},
++    1,
++};
++
++IActivationFactory *words_segmenter_factory = &factory.IActivationFactory_iface;

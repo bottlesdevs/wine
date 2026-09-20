@@ -1,0 +1,697 @@
+diff --git a/dlls/comdlg32/itemdlg.c b/dlls/comdlg32/itemdlg.c
+index 830d88bb66..2e8610f32e 100644
+--- a/dlls/comdlg32/itemdlg.c
++++ b/dlls/comdlg32/itemdlg.c
+@@ -599,6 +599,27 @@ static BOOL shell_item_exists(IShellItem* shellitem)
+     return result;
+ }
+
++static HRESULT parse_url(FileDialogImpl *This, const WCHAR *url, LPITEMIDLIST *pidl)
++{
++    BIND_OPTS opts = { sizeof(opts) };
++    IBindCtx *bind_ctx;
++    HRESULT hr;
++
++    /* An item being saved does not have to exist yet. */
++    if(This->dlg_type != ITEMDLG_TYPE_SAVE)
++        return SHParseDisplayName(url, NULL, pidl, 0, NULL);
++
++    hr = CreateBindCtx(0, &bind_ctx);
++    if(FAILED(hr))
++        return hr;
++
++    opts.grfMode = STGM_CREATE;
++    IBindCtx_SetBindOptions(bind_ctx, &opts);
++    hr = SHParseDisplayName(url, bind_ctx, pidl, 0, NULL);
++    IBindCtx_Release(bind_ctx);
++    return hr;
++}
++
+ static HRESULT on_default_action(FileDialogImpl *This)
+ {
+     IShellFolder *psf_parent, *psf_desktop;
+@@ -606,6 +627,7 @@ static HRESULT on_default_action(FileDialogImpl *This)
+     LPITEMIDLIST current_folder;
+     LPWSTR fn_iter, files = NULL, tmp_files, filter = NULL;
+     UINT file_count = 0, len, i;
++    BOOL new_url_items = FALSE;
+     int open_action;
+     HRESULT hr, ret = E_FAIL;
+
+@@ -635,20 +657,31 @@ static HRESULT on_default_action(FileDialogImpl *This)
+     for(i = 0; i < file_count && open_action == ONOPEN_OPEN; i++)
+     {
+         WCHAR canon_filename[MAX_PATH];
++        BOOL is_url;
+         psf_parent = NULL;
+
+-        COMDLG32_GetCanonicalPath(current_folder, fn_iter, canon_filename);
+-
+-        if( (This->options & FOS_NOVALIDATE) &&
+-            !(This->options & FOS_FILEMUSTEXIST) )
++        /* Internet URLs are not relative to the current folder. */
++        is_url = PathIsURLW(fn_iter) && !UrlIsFileUrlW(fn_iter);
++        if(is_url)
++        {
++            lstrcpynW(canon_filename, fn_iter, MAX_PATH);
+             open_action = ONOPEN_OPEN;
++        }
+         else
+-            open_action = ONOPEN_BROWSE;
++        {
++            COMDLG32_GetCanonicalPath(current_folder, fn_iter, canon_filename);
+
+-        open_action = FILEDLG95_ValidatePathAction(canon_filename, &psf_parent, This->dlg_hwnd,
+-                                                   This->options & ~FOS_FILEMUSTEXIST,
+-                                                   (This->dlg_type == ITEMDLG_TYPE_SAVE),
+-                                                   open_action);
++            if( (This->options & FOS_NOVALIDATE) &&
++                !(This->options & FOS_FILEMUSTEXIST) )
++                open_action = ONOPEN_OPEN;
++            else
++                open_action = ONOPEN_BROWSE;
++
++            open_action = FILEDLG95_ValidatePathAction(canon_filename, &psf_parent, This->dlg_hwnd,
++                                                       This->options & ~FOS_FILEMUSTEXIST,
++                                                       (This->dlg_type == ITEMDLG_TYPE_SAVE),
++                                                       open_action);
++        }
+
+         /* Add the proper extension */
+         if(open_action == ONOPEN_OPEN)
+@@ -667,7 +700,7 @@ static HRESULT on_default_action(FileDialogImpl *This)
+                 newext = extbuf;
+             }
+
+-            if(This->dlg_type == ITEMDLG_TYPE_SAVE)
++            if(This->dlg_type == ITEMDLG_TYPE_SAVE && !(This->options & FOS_PICKFOLDERS))
+             {
+                 if(newext)
+                 {
+@@ -678,7 +711,7 @@ static HRESULT on_default_action(FileDialogImpl *This)
+             }
+             else
+             {
+-                if( !(This->options & FOS_NOVALIDATE) && (This->options & FOS_FILEMUSTEXIST) &&
++                if( !is_url && !(This->options & FOS_NOVALIDATE) && (This->options & FOS_FILEMUSTEXIST) &&
+                     !PathFileExistsW(canon_filename))
+                 {
+                     if(newext)
+@@ -702,7 +735,10 @@ static HRESULT on_default_action(FileDialogImpl *This)
+             filter = fn_iter;
+         }
+
+-        pidla[i] = SHSimpleIDListFromPath(canon_filename);
++        if(is_url && SUCCEEDED(parse_url(This, canon_filename, &pidla[i])))
++            new_url_items |= (This->dlg_type == ITEMDLG_TYPE_SAVE);
++        else
++            pidla[i] = SHSimpleIDListFromPath(canon_filename);
+
+         if(psf_parent && !(open_action == ONOPEN_BROWSE))
+             IShellFolder_Release(psf_parent);
+@@ -746,7 +782,8 @@ static HRESULT on_default_action(FileDialogImpl *This)
+             if(FAILED(hr))
+                 break;
+
+-            if(This->options & FOS_PICKFOLDERS)
++            /* Items created from a typed URL do not exist yet, so they cannot report being a folder. */
++            if((This->options & FOS_PICKFOLDERS) && !new_url_items)
+             {
+                 SFGAOF attributes;
+                 hr = IShellItemArray_GetAttributes(This->psia_results, SIATTRIBFLAGS_AND, SFGAO_FOLDER, &attributes);
+diff --git a/dlls/ieframe/Makefile.in b/dlls/ieframe/Makefile.in
+index 5515e3ed88..1bbc77192b 100644
+--- a/dlls/ieframe/Makefile.in
++++ b/dlls/ieframe/Makefile.in
+@@ -15,6 +15,7 @@ SOURCES = \
+ 	iehtmlwnd.c \
+ 	ietoolbar.svg \
+ 	iexplore.c \
++	internet.c \
+ 	intshcut.c \
+ 	navigate.c \
+ 	oleobject.c \
+diff --git a/dlls/ieframe/ieframe.h b/dlls/ieframe/ieframe.h
+index 602bb1c5d3..b3830fd781 100644
+--- a/dlls/ieframe/ieframe.h
++++ b/dlls/ieframe/ieframe.h
+@@ -322,6 +322,7 @@ HRESULT get_typeinfo(tid_t,ITypeInfo**);
+
+ HRESULT WINAPI CUrlHistory_Create(IClassFactory*,IUnknown*,REFIID,void**);
+ HRESULT WINAPI InternetExplorer_Create(IClassFactory*,IUnknown*,REFIID,void**);
++HRESULT WINAPI InternetFolder_Create(IClassFactory*,IUnknown*,REFIID,void**);
+ HRESULT WINAPI InternetShortcut_Create(IClassFactory*,IUnknown*,REFIID,void**);
+ HRESULT WINAPI WebBrowser_Create(IClassFactory*,IUnknown*,REFIID,void**);
+ HRESULT WINAPI WebBrowserV1_Create(IClassFactory*,IUnknown*,REFIID,void**);
+diff --git a/dlls/ieframe/ieframe_main.c b/dlls/ieframe/ieframe_main.c
+index 8775e244d1..80d2646fff 100644
+--- a/dlls/ieframe/ieframe_main.c
++++ b/dlls/ieframe/ieframe_main.c
+@@ -178,6 +178,16 @@ static const IClassFactoryVtbl CUrlHistoryFactoryVtbl = {
+
+ static IClassFactory CUrlHistoryFactory = { &CUrlHistoryFactoryVtbl };
+
++static const IClassFactoryVtbl InternetFolderFactoryVtbl = {
++    ClassFactory_QueryInterface,
++    ClassFactory_AddRef,
++    ClassFactory_Release,
++    InternetFolder_Create,
++    ClassFactory_LockServer
++};
++
++static IClassFactory InternetFolderFactory = { &InternetFolderFactoryVtbl };
++
+ /******************************************************************
+  *              DllMain (ieframe.@)
+  */
+@@ -226,6 +236,11 @@ HRESULT WINAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID *ppv)
+         return IClassFactory_QueryInterface(&CUrlHistoryFactory, riid, ppv);
+     }
+
++    if(IsEqualGUID(&CLSID_Internet, rclsid)) {
++        TRACE("(CLSID_Internet %s %p)\n", debugstr_guid(riid), ppv);
++        return IClassFactory_QueryInterface(&InternetFolderFactory, riid, ppv);
++    }
++
+     FIXME("%s %s %p\n", debugstr_guid(rclsid), debugstr_guid(riid), ppv);
+     return CLASS_E_CLASSNOTAVAILABLE;
+ }
+diff --git a/dlls/shdocvw/Makefile.in b/dlls/shdocvw/Makefile.in
+index d38782eaf2..bea902a735 100644
+--- a/dlls/shdocvw/Makefile.in
++++ b/dlls/shdocvw/Makefile.in
+@@ -1,7 +1,7 @@
+ MODULE    = shdocvw.dll
+ IMPORTLIB = shdocvw
+ IMPORTS   = uuid shlwapi advapi32
+-DELAYIMPORTS = version ole32 oleaut32 ieframe
++DELAYIMPORTS = version ole32 oleaut32 ieframe shell32
+
+ SOURCES = \
+ 	shdocvw.rc \
+diff --git a/dlls/shdocvw/shdocvw_main.c b/dlls/shdocvw/shdocvw_main.c
+index 9ddbfdd084..8b5e9beb2b 100644
+--- a/dlls/shdocvw/shdocvw_main.c
++++ b/dlls/shdocvw/shdocvw_main.c
+@@ -30,6 +30,8 @@
+ #include "winreg.h"
+ #include "wininet.h"
+ #include "isguids.h"
++#include "shlobj.h"
++#include "shlguid.h"
+
+ #include "initguid.h"
+
+@@ -296,9 +298,40 @@ DWORD WINAPI StopWatchWFORWARD(DWORD dwClass, LPCWSTR lpszStr, DWORD dwUnknown,
+  */
+ HRESULT WINAPI IEParseDisplayNameWithBCW(DWORD codepage, LPCWSTR lpszDisplayName, LPBC pbc, LPITEMIDLIST *ppidl)
+ {
+-    /* Guessing at parameter 3 based on IShellFolder's  ParseDisplayName */
+-    FIXME("stub: 0x%lx %s %p %p\n",codepage,debugstr_w(lpszDisplayName),pbc,ppidl);
+-    return E_FAIL;
++    LPITEMIDLIST internet, child;
++    IClassFactory *factory;
++    IShellFolder *folder;
++    HRESULT hr;
++
++    TRACE("(0x%lx %s %p %p)\n", codepage, debugstr_w(lpszDisplayName), pbc, ppidl);
++
++    if(!ppidl)
++        return E_INVALIDARG;
++    *ppidl = NULL;
++
++    hr = get_ieframe_object(&CLSID_Internet, &IID_IClassFactory, (void**)&factory);
++    if(FAILED(hr))
++        return E_FAIL;
++
++    hr = IClassFactory_CreateInstance(factory, NULL, &IID_IShellFolder, (void**)&folder);
++    IClassFactory_Release(factory);
++    if(FAILED(hr))
++        return E_FAIL;
++
++    hr = IShellFolder_ParseDisplayName(folder, NULL, pbc, (LPWSTR)lpszDisplayName, NULL, &child, NULL);
++    IShellFolder_Release(folder);
++    if(FAILED(hr))
++        return E_FAIL;
++
++    hr = SHGetFolderLocation(NULL, CSIDL_INTERNET, NULL, 0, &internet);
++    if(SUCCEEDED(hr)) {
++        *ppidl = ILCombine(internet, child);
++        if(!*ppidl)
++            hr = E_OUTOFMEMORY;
++        ILFree(internet);
++    }
++    ILFree(child);
++    return hr;
+ }
+
+ /******************************************************************
+diff --git a/dlls/shell32/tests/shlfolder.c b/dlls/shell32/tests/shlfolder.c
+index 08c8c73dd4..58237237d6 100644
+--- a/dlls/shell32/tests/shlfolder.c
++++ b/dlls/shell32/tests/shlfolder.c
+@@ -213,10 +213,10 @@ static struct
+     {L"test\\", 0x80070002},
+     {L"sub\\dir", 0x80070002},
+     {L"sub/dir", E_INVALIDARG, 1},
+-    {L"http:", S_OK, 1},
+-    {L"http:test", S_OK, 1},
+-    {L"http:\\test", S_OK, 1},
+-    {L"xx:", S_OK, 1},
++    {L"http:", S_OK},
++    {L"http:test", S_OK},
++    {L"http:\\test", S_OK},
++    {L"xx:", S_OK},
+ };
+
+ static void test_ParseDisplayName(void)
+@@ -4578,6 +4578,29 @@ if (0)
+         ILFree(pidl2);
+     }
+
++    /* internet URL */
++    {
++        static const WCHAR urlW[] = L"https://www.winehq.org/about";
++        WCHAR *name;
++
++        hr = SHParseDisplayName(urlW, NULL, &pidl1, 0, NULL);
++        ok(hr == S_OK, "failed %08lx\n", hr);
++        if (hr == S_OK)
++        {
++            hr = SHGetNameFromIDList(pidl1, SIGDN_DESKTOPABSOLUTEPARSING, &name);
++            ok(hr == S_OK, "failed %08lx\n", hr);
++            if (hr == S_OK)
++            {
++                ok(!lstrcmpW(name, urlW), "got %s\n", wine_dbgstr_w(name));
++                CoTaskMemFree(name);
++            }
++
++            hr = SHGetNameFromIDList(pidl1, SIGDN_FILESYSPATH, &name);
++            ok(FAILED(hr), "got %08lx\n", hr);
++            ILFree(pidl1);
++        }
++    }
++
+     IShellFolder_Release(desktop);
+ }
+
+diff --git a/dlls/ieframe/internet.c b/dlls/ieframe/internet.c
+new file mode 100644
+index 0000000000..2e2dbb9ed6
+--- /dev/null
++++ b/dlls/ieframe/internet.c
+@@ -0,0 +1,394 @@
++/*
++ * Internet shell folder
++ *
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stddef.h>
++
++#include "ieframe.h"
++
++#include "shlobj.h"
++#include "shlwapi.h"
++#include "shlguid.h"
++
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(ieframe);
++
++typedef struct {
++    IShellFolder IShellFolder_iface;
++    IPersistFolder2 IPersistFolder2_iface;
++
++    LONG ref;
++
++    LPITEMIDLIST pidl;
++} InternetFolder;
++
++/* Child items hold the URL they were parsed from. */
++#include "pshpack1.h"
++typedef struct {
++    WORD cb;
++    BYTE type;
++    BYTE reserved;
++    WCHAR url[1];
++} url_item;
++#include "poppack.h"
++
++#define URL_ITEM_TYPE 0x61
++
++static inline InternetFolder *impl_from_IShellFolder(IShellFolder *iface)
++{
++    return CONTAINING_RECORD(iface, InternetFolder, IShellFolder_iface);
++}
++
++static inline InternetFolder *impl_from_IPersistFolder2(IPersistFolder2 *iface)
++{
++    return CONTAINING_RECORD(iface, InternetFolder, IPersistFolder2_iface);
++}
++
++static BOOL is_internet_url(const WCHAR *name)
++{
++    PARSEDURLW url = { sizeof(url) };
++
++    if(FAILED(ParseURLW(name, &url)))
++        return FALSE;
++
++    /* File URLs name file system items, everything else belongs here. */
++    return url.nScheme != URL_SCHEME_FILE;
++}
++
++static const WCHAR *url_from_pidl(LPCITEMIDLIST pidl)
++{
++    const url_item *item = (const url_item*)pidl;
++    DWORD len;
++
++    if(!pidl || item->cb < offsetof(url_item, url) + sizeof(WCHAR) || item->type != URL_ITEM_TYPE)
++        return NULL;
++
++    len = (item->cb - offsetof(url_item, url)) / sizeof(WCHAR);
++    if(item->url[len - 1])
++        return NULL;
++
++    /* Only single level child items belong to this folder. */
++    if(((const SHITEMID*)((const BYTE*)pidl + item->cb))->cb)
++        return NULL;
++
++    return item->url;
++}
++
++static LPITEMIDLIST create_url_pidl(const WCHAR *url)
++{
++    DWORD size = offsetof(url_item, url) + (lstrlenW(url) + 1) * sizeof(WCHAR);
++    url_item *item;
++
++    if(size > 0xfff0)
++        return NULL;
++
++    item = CoTaskMemAlloc(size + sizeof(WORD));
++    if(!item)
++        return NULL;
++
++    item->cb = size;
++    item->type = URL_ITEM_TYPE;
++    item->reserved = 0;
++    lstrcpyW(item->url, url);
++    *(WORD*)((BYTE*)item + size) = 0;
++    return (LPITEMIDLIST)item;
++}
++
++static HRESULT WINAPI InternetFolder_QueryInterface(IShellFolder *iface, REFIID riid, void **ppv)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++
++    if(IsEqualGUID(&IID_IUnknown, riid) || IsEqualGUID(&IID_IShellFolder, riid)) {
++        TRACE("(%p)->(%s %p)\n", This, debugstr_guid(riid), ppv);
++        *ppv = &This->IShellFolder_iface;
++    }else if(IsEqualGUID(&IID_IPersist, riid) || IsEqualGUID(&IID_IPersistFolder, riid)
++            || IsEqualGUID(&IID_IPersistFolder2, riid)) {
++        TRACE("(%p)->(%s %p)\n", This, debugstr_guid(riid), ppv);
++        *ppv = &This->IPersistFolder2_iface;
++    }else {
++        WARN("(%p)->(%s %p) interface not supported\n", This, debugstr_guid(riid), ppv);
++        *ppv = NULL;
++        return E_NOINTERFACE;
++    }
++
++    IUnknown_AddRef((IUnknown*)*ppv);
++    return S_OK;
++}
++
++static ULONG WINAPI InternetFolder_AddRef(IShellFolder *iface)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++    LONG ref = InterlockedIncrement(&This->ref);
++
++    TRACE("(%p) ref=%ld\n", This, ref);
++
++    return ref;
++}
++
++static ULONG WINAPI InternetFolder_Release(IShellFolder *iface)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++    LONG ref = InterlockedDecrement(&This->ref);
++
++    TRACE("(%p) ref=%ld\n", This, ref);
++
++    if(!ref) {
++        ILFree(This->pidl);
++        free(This);
++        unlock_module();
++    }
++
++    return ref;
++}
++
++static HRESULT WINAPI InternetFolder_ParseDisplayName(IShellFolder *iface, HWND hwnd, IBindCtx *pbc,
++        LPOLESTR display_name, ULONG *eaten, LPITEMIDLIST *pidl, ULONG *attributes)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++
++    TRACE("(%p)->(%p %p %s %p %p %p)\n", This, hwnd, pbc, debugstr_w(display_name), eaten, pidl, attributes);
++
++    if(!display_name || !pidl)
++        return E_INVALIDARG;
++
++    *pidl = NULL;
++
++    if(!is_internet_url(display_name))
++        return E_INVALIDARG;
++
++    *pidl = create_url_pidl(display_name);
++    if(!*pidl)
++        return E_OUTOFMEMORY;
++
++    if(eaten)
++        *eaten = lstrlenW(display_name);
++    if(attributes)
++        *attributes &= SFGAO_CANLINK;
++    return S_OK;
++}
++
++static HRESULT WINAPI InternetFolder_EnumObjects(IShellFolder *iface, HWND hwnd, SHCONTF flags,
++        IEnumIDList **list)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++    FIXME("(%p)->(%p %lx %p)\n", This, hwnd, flags, list);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InternetFolder_BindToObject(IShellFolder *iface, LPCITEMIDLIST pidl, IBindCtx *pbc,
++        REFIID riid, void **ppv)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++    FIXME("(%p)->(%p %p %s %p)\n", This, pidl, pbc, debugstr_guid(riid), ppv);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InternetFolder_BindToStorage(IShellFolder *iface, LPCITEMIDLIST pidl, IBindCtx *pbc,
++        REFIID riid, void **ppv)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++    FIXME("(%p)->(%p %p %s %p)\n", This, pidl, pbc, debugstr_guid(riid), ppv);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InternetFolder_CompareIDs(IShellFolder *iface, LPARAM lparam,
++        LPCITEMIDLIST pidl1, LPCITEMIDLIST pidl2)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++    const WCHAR *url1 = url_from_pidl(pidl1), *url2 = url_from_pidl(pidl2);
++    int ret;
++
++    TRACE("(%p)->(%Ix %p %p)\n", This, lparam, pidl1, pidl2);
++
++    if(!url1 || !url2)
++        return E_INVALIDARG;
++
++    ret = CompareStringOrdinal(url1, -1, url2, -1, TRUE) - CSTR_EQUAL;
++    return MAKE_HRESULT(SEVERITY_SUCCESS, 0, (USHORT)ret);
++}
++
++static HRESULT WINAPI InternetFolder_CreateViewObject(IShellFolder *iface, HWND hwnd, REFIID riid, void **ppv)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++    FIXME("(%p)->(%p %s %p)\n", This, hwnd, debugstr_guid(riid), ppv);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InternetFolder_GetAttributesOf(IShellFolder *iface, UINT cidl, LPCITEMIDLIST *apidl,
++        SFGAOF *attributes)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++    UINT i;
++
++    TRACE("(%p)->(%u %p %p)\n", This, cidl, apidl, attributes);
++
++    if(!attributes || (cidl && !apidl))
++        return E_INVALIDARG;
++
++    for(i = 0; i < cidl; i++) {
++        if(!url_from_pidl(apidl[i]))
++            return E_INVALIDARG;
++    }
++
++    *attributes &= SFGAO_CANLINK;
++    return S_OK;
++}
++
++static HRESULT WINAPI InternetFolder_GetUIObjectOf(IShellFolder *iface, HWND hwnd, UINT cidl,
++        LPCITEMIDLIST *apidl, REFIID riid, UINT *reserved, void **ppv)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++    FIXME("(%p)->(%p %u %p %s %p %p)\n", This, hwnd, cidl, apidl, debugstr_guid(riid), reserved, ppv);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI InternetFolder_GetDisplayNameOf(IShellFolder *iface, LPCITEMIDLIST pidl,
++        SHGDNF flags, STRRET *name)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++    const WCHAR *url = url_from_pidl(pidl);
++
++    TRACE("(%p)->(%p %lx %p)\n", This, pidl, flags, name);
++
++    if(!name || !url)
++        return E_INVALIDARG;
++
++    name->pOleStr = CoTaskMemAlloc((lstrlenW(url) + 1) * sizeof(WCHAR));
++    if(!name->pOleStr)
++        return E_OUTOFMEMORY;
++
++    lstrcpyW(name->pOleStr, url);
++    name->uType = STRRET_WSTR;
++    return S_OK;
++}
++
++static HRESULT WINAPI InternetFolder_SetNameOf(IShellFolder *iface, HWND hwnd, LPCITEMIDLIST pidl,
++        LPCOLESTR name, SHGDNF flags, LPITEMIDLIST *out)
++{
++    InternetFolder *This = impl_from_IShellFolder(iface);
++    FIXME("(%p)->(%p %p %s %lx %p)\n", This, hwnd, pidl, debugstr_w(name), flags, out);
++    return E_NOTIMPL;
++}
++
++static const IShellFolderVtbl InternetFolderVtbl = {
++    InternetFolder_QueryInterface,
++    InternetFolder_AddRef,
++    InternetFolder_Release,
++    InternetFolder_ParseDisplayName,
++    InternetFolder_EnumObjects,
++    InternetFolder_BindToObject,
++    InternetFolder_BindToStorage,
++    InternetFolder_CompareIDs,
++    InternetFolder_CreateViewObject,
++    InternetFolder_GetAttributesOf,
++    InternetFolder_GetUIObjectOf,
++    InternetFolder_GetDisplayNameOf,
++    InternetFolder_SetNameOf
++};
++
++static HRESULT WINAPI PersistFolder_QueryInterface(IPersistFolder2 *iface, REFIID riid, void **ppv)
++{
++    InternetFolder *This = impl_from_IPersistFolder2(iface);
++    return IShellFolder_QueryInterface(&This->IShellFolder_iface, riid, ppv);
++}
++
++static ULONG WINAPI PersistFolder_AddRef(IPersistFolder2 *iface)
++{
++    InternetFolder *This = impl_from_IPersistFolder2(iface);
++    return IShellFolder_AddRef(&This->IShellFolder_iface);
++}
++
++static ULONG WINAPI PersistFolder_Release(IPersistFolder2 *iface)
++{
++    InternetFolder *This = impl_from_IPersistFolder2(iface);
++    return IShellFolder_Release(&This->IShellFolder_iface);
++}
++
++static HRESULT WINAPI PersistFolder_GetClassID(IPersistFolder2 *iface, CLSID *clsid)
++{
++    InternetFolder *This = impl_from_IPersistFolder2(iface);
++
++    TRACE("(%p)->(%p)\n", This, clsid);
++
++    if(!clsid)
++        return E_INVALIDARG;
++
++    *clsid = CLSID_Internet;
++    return S_OK;
++}
++
++static HRESULT WINAPI PersistFolder_Initialize(IPersistFolder2 *iface, LPCITEMIDLIST pidl)
++{
++    InternetFolder *This = impl_from_IPersistFolder2(iface);
++
++    TRACE("(%p)->(%p)\n", This, pidl);
++
++    ILFree(This->pidl);
++    This->pidl = ILClone(pidl);
++    return pidl && !This->pidl ? E_OUTOFMEMORY : S_OK;
++}
++
++static HRESULT WINAPI PersistFolder_GetCurFolder(IPersistFolder2 *iface, LPITEMIDLIST *pidl)
++{
++    InternetFolder *This = impl_from_IPersistFolder2(iface);
++
++    TRACE("(%p)->(%p)\n", This, pidl);
++
++    if(!pidl)
++        return E_POINTER;
++
++    *pidl = ILClone(This->pidl);
++    return *pidl ? S_OK : S_FALSE;
++}
++
++static const IPersistFolder2Vtbl PersistFolder2Vtbl = {
++    PersistFolder_QueryInterface,
++    PersistFolder_AddRef,
++    PersistFolder_Release,
++    PersistFolder_GetClassID,
++    PersistFolder_Initialize,
++    PersistFolder_GetCurFolder
++};
++
++HRESULT WINAPI InternetFolder_Create(IClassFactory *iface, IUnknown *outer, REFIID riid, void **ppv)
++{
++    InternetFolder *This;
++    HRESULT hres;
++
++    TRACE("(%p, %s, %p)\n", outer, debugstr_guid(riid), ppv);
++
++    *ppv = NULL;
++
++    if(outer)
++        return CLASS_E_NOAGGREGATION;
++
++    This = calloc(1, sizeof(*This));
++    if(!This)
++        return E_OUTOFMEMORY;
++
++    This->IShellFolder_iface.lpVtbl = &InternetFolderVtbl;
++    This->IPersistFolder2_iface.lpVtbl = &PersistFolder2Vtbl;
++    This->ref = 1;
++    lock_module();
++
++    hres = IShellFolder_QueryInterface(&This->IShellFolder_iface, riid, ppv);
++    IShellFolder_Release(&This->IShellFolder_iface);
++    return hres;
++}

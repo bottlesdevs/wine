@@ -1,0 +1,12 @@
+diff --git a/dlls/winhttp/request.c b/dlls/winhttp/request.c
+index 731e1b2aab2..eb582c9de9d 100644
+--- a/dlls/winhttp/request.c
++++ b/dlls/winhttp/request.c
+@@ -1737,6 +1737,7 @@ static DWORD open_connection( struct request *request )
+
+     if (netconn->secure && !(request->server_cert = netconn_get_certificate( netconn )))
+     {
++        request->netconn = NULL;
+         free( addressW );
+         netconn_release( netconn );
+         return ERROR_WINHTTP_SECURE_FAILURE;

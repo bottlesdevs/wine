@@ -1,0 +1,22 @@
+diff --git a/dlls/winhttp/request.c b/dlls/winhttp/request.c
+index 731e1b2aab..1c77eecd02 100644
+--- a/dlls/winhttp/request.c
++++ b/dlls/winhttp/request.c
+@@ -1901,7 +1901,7 @@ static DWORD start_next_chunk( struct request *request, BOOL notify )
+             {
+                 TRACE( "reading %lu byte chunk\n", chunk_size );
+
+-                if (request->content_length == ~0u) request->content_length = chunk_size;
++                if (request->content_length == ~0ull) request->content_length = chunk_size;
+                 else request->content_length += chunk_size;
+
+                 request->read_chunked_size = chunk_size;
+@@ -1936,7 +1936,7 @@ static DWORD refill_buffer( struct request *request, BOOL notify )
+         }
+         len = min( len, request->read_chunked_size );
+     }
+-    else if (request->content_length != ~0u)
++    else if (request->content_length != ~0ull)
+     {
+         len = min( len, request->content_length - request->content_read );
+     }

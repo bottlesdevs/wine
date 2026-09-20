@@ -1,0 +1,55 @@
+--- a/dlls/dwrite/main.c
++++ b/dlls/dwrite/main.c
+@@ -1551,6 +1551,38 @@
+     return hkey;
+ }
+
++/* A font registered without a path lives in the Windows fonts directory, or for
++ * the fonts shipped with Wine in its data directory, the same order gdi32 uses. */
++static WCHAR *get_system_font_path(const WCHAR *filename)
++{
++    const WCHAR *data_dir;
++    WCHAR *path;
++
++    if (!(path = malloc((MAX_PATH + wcslen(filename)) * sizeof(WCHAR))))
++        return NULL;
++
++    GetWindowsDirectoryW(path, MAX_PATH);
++    wcscat(path, L"\\fonts\\");
++    wcscat(path, filename);
++
++    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES && (data_dir = _wgetenv(L"WINEDATADIR")) &&
++            wcslen(data_dir) < MAX_PATH - 8)
++    {
++        wcscpy(path, data_dir);
++        path[1] = '\\';  /* change \??\ to \\?\ */
++        wcscat(path, L"\\fonts\\");
++        wcscat(path, filename);
++        if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES)
++        {
++            GetWindowsDirectoryW(path, MAX_PATH);
++            wcscat(path, L"\\fonts\\");
++            wcscat(path, filename);
++        }
++    }
++
++    return path;
++}
++
+ static HRESULT create_system_path_list(WCHAR ***ret, unsigned int *ret_count)
+ {
+     unsigned int index = 0, value_size, max_name_count;
+@@ -1611,12 +1643,7 @@
+             {
+                 if (!wcschr(value, '\\'))
+                 {
+-                    WCHAR *ptrW;
+-
+-                    ptrW = malloc((MAX_PATH + wcslen(value)) * sizeof(WCHAR));
+-                    GetWindowsDirectoryW(ptrW, MAX_PATH);
+-                    wcscat(ptrW, L"\\fonts\\");
+-                    wcscat(ptrW, value);
++                    WCHAR *ptrW = get_system_font_path(value);
+
+                     free(value);
+                     value = ptrW;

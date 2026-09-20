@@ -1,0 +1,134 @@
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -70,6 +70,7 @@
+     WM_WAYLAND_CONFIGURE,
+     WM_WAYLAND_SET_FOREGROUND,
+     WM_WAYLAND_ACTIVATE_FOREIGN,
++    WM_WAYLAND_FOREIGN_PARENT_CHANGED,
+ };
+
+ enum wayland_surface_config_state
+@@ -327,6 +328,7 @@
+ void wayland_surface_make_toplevel(struct wayland_surface *surface);
+ void wayland_surface_update_foreign_parent(struct wayland_surface *surface);
+ void wayland_activate_foreign_child(HWND hwnd, uint32_t serial);
++void wayland_forget_foreign_child(HWND hwnd);
+ void wayland_surface_activate_from_token(HWND hwnd);
+ void wayland_surface_make_subsurface(struct wayland_surface *surface,
+                                      struct wayland_surface *parent);
+--- a/dlls/winewayland.drv/wayland_surface.c
++++ b/dlls/winewayland.drv/wayland_surface.c
+@@ -216,6 +216,7 @@
+     WCHAR handleW[MAX_ATOM_LEN + 1];
+     RTL_ATOM atom, old_atom;
+     size_t i, len = strlen(handle);
++    HWND child;
+
+     if (surface->zxdg_exported_v2 != exported || len > MAX_ATOM_LEN) return;
+
+@@ -234,6 +235,14 @@
+     if (old_atom) NtDeleteAtom(old_atom);
+     surface->exported_handle_atom = atom;
+     TRACE("exported hwnd=%p handle=%s\n", surface->hwnd, handle);
++    /* a child window of another process waits for this parent to be shown
++     * again; driver messages cannot be posted to another process, so the
++     * parent's thread tells the child */
++    if ((child = NtUserGetProp(surface->hwnd, xdg_foreign_child_prop)))
++    {
++        TRACE("foreign child %p\n", child);
++        NtUserPostMessage(surface->hwnd, WM_WAYLAND_FOREIGN_PARENT_CHANGED, (WPARAM)child, 0);
++    }
+ }
+
+ static const struct zxdg_exported_v2_listener xdg_exported_v2_listener =
+@@ -247,14 +256,13 @@
+     struct wayland_surface *surface = private;
+
+     if (surface->zxdg_imported_v2 != imported) return;
+-    if (surface->foreign_parent_hwnd &&
+-        NtUserGetProp(surface->foreign_parent_hwnd, xdg_foreign_child_prop) == surface->hwnd)
+-        NtUserRemoveProp(surface->foreign_parent_hwnd, xdg_foreign_child_prop);
+     zxdg_imported_v2_destroy(imported);
+     surface->zxdg_imported_v2 = NULL;
+     surface->imported_handle_atom = 0;
+     surface->foreign_parent_hwnd = 0;
+     surface->foreign_activation_pending = FALSE;
++    /* the parent has been hidden or destroyed, which hides this window too */
++    NtUserPostMessage(surface->hwnd, WM_WAYLAND_FOREIGN_PARENT_CHANGED, 0, 0);
+ }
+
+ static const struct zxdg_imported_v2_listener xdg_imported_v2_listener =
+@@ -299,6 +307,16 @@
+           parent, surface->hwnd, handle);
+ }
+
++/* The parent keeps its child of another process while the child surface comes
++ * and goes with the parent's visibility, until the child window is destroyed. */
++void wayland_forget_foreign_child(HWND hwnd)
++{
++    HWND root = NtUserGetAncestor(hwnd, GA_ROOT);
++
++    if (root && root != hwnd && NtUserGetProp(root, xdg_foreign_child_prop) == hwnd)
++        NtUserRemoveProp(root, xdg_foreign_child_prop);
++}
++
+ static void xdg_surface_handle_configure(void *private, struct xdg_surface *xdg_surface,
+                                          uint32_t serial)
+ {
+@@ -618,9 +636,6 @@
+
+     if (surface->zxdg_imported_v2)
+     {
+-        if (surface->foreign_parent_hwnd &&
+-            NtUserGetProp(surface->foreign_parent_hwnd, xdg_foreign_child_prop) == surface->hwnd)
+-            NtUserRemoveProp(surface->foreign_parent_hwnd, xdg_foreign_child_prop);
+         zxdg_imported_v2_destroy(surface->zxdg_imported_v2);
+         surface->zxdg_imported_v2 = NULL;
+         surface->imported_handle_atom = 0;
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -440,6 +440,7 @@
+
+     TRACE("%p\n", hwnd);
+
++    wayland_forget_foreign_child(hwnd);
+     if (!(data = wayland_win_data_get(hwnd))) return;
+     wayland_win_data_destroy(data);
+
+@@ -668,10 +669,36 @@
+ /**********************************************************************
+  *           WAYLAND_WindowMessage
+  */
++/* The parent of a child of another process has been hidden, destroyed or shown
++ * again, which the process of the child only sees through a new window
++ * position; a shown parent is then imported again. Called in the process of
++ * the child with no other window, or in the process of the parent with the
++ * child, whose own thread then gets the new position. */
++static void wayland_refresh_foreign_child(HWND hwnd, HWND child)
++{
++    struct wayland_win_data *data;
++    UINT flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE |
++                 SWP_NOOWNERZORDER | SWP_FRAMECHANGED;
++
++    TRACE("hwnd %p child %p\n", hwnd, child);
++    if (child)
++    {
++        NtUserSetWindowPos(child, 0, 0, 0, 0, 0, flags | SWP_ASYNCWINDOWPOS);
++        return;
++    }
++    NtUserSetWindowPos(hwnd, 0, 0, 0, 0, 0, flags);
++    if (!(data = wayland_win_data_get(hwnd))) return;
++    if (data->wayland_surface) wayland_surface_update_foreign_parent(data->wayland_surface);
++    wayland_win_data_release(data);
++}
++
+ LRESULT WAYLAND_WindowMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+ {
+     switch (msg)
+     {
++    case WM_WAYLAND_FOREIGN_PARENT_CHANGED:
++        wayland_refresh_foreign_child(hwnd, (HWND)wp);
++        return 0;
+     case WM_WAYLAND_INIT_DISPLAY_DEVICES:
+         NtUserCallNoParam(NtUserCallNoParam_DisplayModeChanged);
+         return 0;

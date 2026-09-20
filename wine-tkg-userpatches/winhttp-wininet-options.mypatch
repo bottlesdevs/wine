@@ -1,0 +1,119 @@
+WinHTTP IPv6 fast fallback and autologon policy, WinINet listen timeout.
+
+diff --git a/dlls/winhttp/session.c b/dlls/winhttp/session.c
+index 22f209f..bb11eda 100644
+--- a/dlls/winhttp/session.c
++++ b/dlls/winhttp/session.c
+@@ -247,6 +247,16 @@ static BOOL session_set_option( struct object_header *hdr, DWORD option, void *b
+         FIXME( "WINHTTP_OPTION_MAX_CONNS_PER_1_0_SERVER: %lu\n", *(DWORD *)buffer );
+         return TRUE;
+
++    case WINHTTP_OPTION_IPV6_FAST_FALLBACK:
++        if (buflen != sizeof(BOOL))
++        {
++            SetLastError( ERROR_INSUFFICIENT_BUFFER );
++            return FALSE;
++        }
++
++        TRACE( "%u\n", *(BOOL *)buffer );
++        return TRUE;
++
+     case WINHTTP_OPTION_WEB_SOCKET_RECEIVE_BUFFER_SIZE:
+     {
+         DWORD buffer_size;
+@@ -918,6 +928,13 @@ static BOOL request_query_option( struct object_header *hdr, DWORD option, void
+         *buflen = sizeof(DWORD);
+         return TRUE;
+
++    case WINHTTP_OPTION_AUTOLOGON_POLICY:
++        if (!validate_buffer( buffer, buflen, sizeof(DWORD) )) return FALSE;
++
++        *(DWORD *)buffer = hdr->logon_policy;
++        *buflen = sizeof(DWORD);
++        return TRUE;
++
+     case WINHTTP_OPTION_USERNAME:
+         return return_string_option( buffer, request->connect->username, buflen );
+
+diff --git a/dlls/winhttp/tests/winhttp.c b/dlls/winhttp/tests/winhttp.c
+index 8c28d89..85babcf 100644
+--- a/dlls/winhttp/tests/winhttp.c
++++ b/dlls/winhttp/tests/winhttp.c
+@@ -154,6 +154,17 @@ static void test_WinHttpQueryOption(void)
+     ok(GetLastError() == ERROR_WINHTTP_INCORRECT_HANDLE_TYPE,
+        "expected ERROR_WINHTTP_INCORRECT_HANDLE_TYPE, got %lu\n", GetLastError());
+
++    feature = TRUE;
++    SetLastError(0xdeadbeef);
++    ret = WinHttpSetOption(session, WINHTTP_OPTION_IPV6_FAST_FALLBACK, &feature, sizeof(feature) - 1);
++    ok(!ret, "should fail to set IPv6 fast fallback with an invalid buffer size\n");
++    ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER,
++       "expected ERROR_INSUFFICIENT_BUFFER, got %lu\n", GetLastError());
++
++    SetLastError(0xdeadbeef);
++    ret = WinHttpSetOption(session, WINHTTP_OPTION_IPV6_FAST_FALLBACK, &feature, sizeof(feature));
++    ok(ret, "failed to set IPv6 fast fallback %lu\n", GetLastError());
++
+     SetLastError(0xdeadbeef);
+     connection = WinHttpConnect(session, L"test.winehq.org", INTERNET_DEFAULT_HTTP_PORT, 0);
+     ok(connection != NULL, "WinHttpConnect failed to open a connection, error: %lu\n", GetLastError());
+@@ -185,6 +196,29 @@ static void test_WinHttpQueryOption(void)
+         goto done;
+     }
+
++    feature = 0xdeadbeef;
++    size = sizeof(feature);
++    SetLastError(0xdeadbeef);
++    ret = WinHttpQueryOption(request, WINHTTP_OPTION_AUTOLOGON_POLICY, &feature, &size);
++    ok(ret, "failed to query autologon policy %lu\n", GetLastError());
++    ok(size == sizeof(feature), "expected size %Iu, got %lu\n", sizeof(feature), size);
++    ok(feature == WINHTTP_AUTOLOGON_SECURITY_LEVEL_MEDIUM,
++       "expected WINHTTP_AUTOLOGON_SECURITY_LEVEL_MEDIUM, got %#lx\n", feature);
++
++    feature = WINHTTP_AUTOLOGON_SECURITY_LEVEL_LOW;
++    SetLastError(0xdeadbeef);
++    ret = WinHttpSetOption(request, WINHTTP_OPTION_AUTOLOGON_POLICY, &feature, sizeof(feature));
++    ok(ret, "failed to set autologon policy %lu\n", GetLastError());
++
++    feature = 0xdeadbeef;
++    size = sizeof(feature);
++    SetLastError(0xdeadbeef);
++    ret = WinHttpQueryOption(request, WINHTTP_OPTION_AUTOLOGON_POLICY, &feature, &size);
++    ok(ret, "failed to query autologon policy %lu\n", GetLastError());
++    ok(size == sizeof(feature), "expected size %Iu, got %lu\n", sizeof(feature), size);
++    ok(feature == WINHTTP_AUTOLOGON_SECURITY_LEVEL_LOW,
++       "expected WINHTTP_AUTOLOGON_SECURITY_LEVEL_LOW, got %#lx\n", feature);
++
+     feature = 0xdeadbeef;
+     size = sizeof(feature);
+     SetLastError(0xdeadbeef);
+diff --git a/dlls/wininet/internet.c b/dlls/wininet/internet.c
+index e787499..62c38dc 100644
+--- a/dlls/wininet/internet.c
++++ b/dlls/wininet/internet.c
+@@ -3631,6 +3631,9 @@ BOOL WINAPI InternetSetOptionW(HINTERNET hInternet, DWORD dwOption,
+         SetLastError(ERROR_INVALID_PARAMETER);
+         ret = FALSE;
+         break;
++    case INTERNET_OPTION_LISTEN_TIMEOUT:
++        ret = TRUE;
++        break;
+     case INTERNET_OPTION_PER_CONNECTION_OPTION: {
+         INTERNET_PER_CONN_OPTION_LISTW *con = lpBuffer;
+         LONG res;
+diff --git a/dlls/wininet/tests/internet.c b/dlls/wininet/tests/internet.c
+index a5325c0..15bc412 100644
+--- a/dlls/wininet/tests/internet.c
++++ b/dlls/wininet/tests/internet.c
+@@ -1404,6 +1404,11 @@ static void test_InternetSetOption(void)
+     ret = InternetSetOptionA(con, INTERNET_OPTION_SETTINGS_CHANGED, NULL, 0);
+     ok(ret == TRUE, "InternetSetOption should've succeeded\n");
+
++    SetLastError(0xdeadbeef);
++    ulArg = 30000;
++    ret = InternetSetOptionA(con, INTERNET_OPTION_LISTEN_TIMEOUT, &ulArg, sizeof(ulArg));
++    ok(ret == TRUE, "InternetSetOption should've succeeded\n");
++
+     ret = InternetSetOptionA(ses, INTERNET_OPTION_SETTINGS_CHANGED, NULL, 0);
+     ok(ret == TRUE, "InternetSetOption should've succeeded\n");
+

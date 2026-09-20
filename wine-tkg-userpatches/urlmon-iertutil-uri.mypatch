@@ -1,0 +1,376 @@
+urlmon: File and HTTP protocol fixes with iertutil URI support.
+
+diff --git a/dlls/iertutil/Makefile.in b/dlls/iertutil/Makefile.in
+index ba633d5ee72..4382fe866eb 100644
+--- a/dlls/iertutil/Makefile.in
++++ b/dlls/iertutil/Makefile.in
+@@ -1,3 +1,3 @@
+ MODULE = iertutil.dll
+-IMPORTS = combase
++IMPORTS = combase oleaut32 urlmon
+
+diff --git a/dlls/iertutil/main.c b/dlls/iertutil/main.c
+index 70f8d4dcb99..077aa70d76c 100644
+--- a/dlls/iertutil/main.c
++++ b/dlls/iertutil/main.c
+@@ -1,3 +1,3 @@
+ /*
+- * Copyright 2024 Zhiyi Zhang for CodeWeavers
++ * Copyright 2024-2026 Zhiyi Zhang for CodeWeavers
+  *
+@@ -25,3 +25,3 @@ struct uri
+     IUriRuntimeClass IUriRuntimeClass_iface;
+-    HSTRING raw_uri;
++    IUri *uri;
+     LONG ref;
+@@ -69,3 +69,3 @@ static ULONG STDMETHODCALLTYPE uri_Release(IUriRuntimeClass *iface)
+     {
+-        WindowsDeleteString(impl->raw_uri);
++        IUri_Release(impl->uri);
+         free(impl);
+@@ -96,8 +96,33 @@ static HRESULT STDMETHODCALLTYPE uri_GetTrustLevel(IUriRuntimeClass *iface, Trus
+
++static HRESULT uri_prop_to_hstring(IUri *uri, Uri_PROPERTY prop, HSTRING *out)
++{
++    BSTR bstr = NULL;
++    HRESULT hr;
++
++    hr = IUri_GetPropertyBSTR(uri, prop, &bstr, 0);
++    if (FAILED(hr))
++    {
++        *out = NULL;
++        return hr;
++    }
++
++    if (hr == S_FALSE || !SysStringLen(bstr))
++    {
++        SysFreeString(bstr);
++        *out = NULL;
++        return S_OK;
++    }
++
++    hr = WindowsCreateString(bstr, SysStringLen(bstr), out);
++    SysFreeString(bstr);
++    return hr;
++}
++
+ static HRESULT STDMETHODCALLTYPE uri_AbsoluteUri(IUriRuntimeClass *iface, HSTRING *value)
+ {
+-    FIXME("iface %p, value %p semi-stub!\n", iface, value);
++    struct uri *impl = impl_from_IUriRuntimeClass(iface);
+
+-    /* TODO: Parse the raw URI and reconstruct it from parts according to RFC 3986 or RFC 3987 */
+-    return IUriRuntimeClass_get_RawUri(iface, value);
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return uri_prop_to_hstring(impl->uri, Uri_PROPERTY_ABSOLUTE_URI, value);
+ }
+@@ -106,4 +131,7 @@ static HRESULT STDMETHODCALLTYPE uri_DisplayUri(IUriRuntimeClass *iface, HSTRING
+ {
+-    FIXME("iface %p, value %p stub!\n", iface, value);
+-    return E_NOTIMPL;
++    struct uri *impl = impl_from_IUriRuntimeClass(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return uri_prop_to_hstring(impl->uri, Uri_PROPERTY_DISPLAY_URI, value);
+ }
+@@ -112,4 +140,7 @@ static HRESULT STDMETHODCALLTYPE uri_Domain(IUriRuntimeClass *iface, HSTRING *va
+ {
+-    FIXME("iface %p, value %p stub!\n", iface, value);
+-    return E_NOTIMPL;
++    struct uri *impl = impl_from_IUriRuntimeClass(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return uri_prop_to_hstring(impl->uri, Uri_PROPERTY_DOMAIN, value);
+ }
+@@ -118,4 +149,7 @@ static HRESULT STDMETHODCALLTYPE uri_Extension(IUriRuntimeClass *iface, HSTRING
+ {
+-    FIXME("iface %p, value %p stub!\n", iface, value);
+-    return E_NOTIMPL;
++    struct uri *impl = impl_from_IUriRuntimeClass(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return uri_prop_to_hstring(impl->uri, Uri_PROPERTY_EXTENSION, value);
+ }
+@@ -124,4 +158,7 @@ static HRESULT STDMETHODCALLTYPE uri_Fragment(IUriRuntimeClass *iface, HSTRING *
+ {
+-    FIXME("iface %p, value %p stub!\n", iface, value);
+-    return E_NOTIMPL;
++    struct uri *impl = impl_from_IUriRuntimeClass(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return uri_prop_to_hstring(impl->uri, Uri_PROPERTY_FRAGMENT, value);
+ }
+@@ -130,4 +167,7 @@ static HRESULT STDMETHODCALLTYPE uri_Host(IUriRuntimeClass *iface, HSTRING *valu
+ {
+-    FIXME("iface %p, value %p stub!\n", iface, value);
+-    return E_NOTIMPL;
++    struct uri *impl = impl_from_IUriRuntimeClass(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return uri_prop_to_hstring(impl->uri, Uri_PROPERTY_HOST, value);
+ }
+@@ -136,4 +176,7 @@ static HRESULT STDMETHODCALLTYPE uri_Password(IUriRuntimeClass *iface, HSTRING *
+ {
+-    FIXME("iface %p, value %p stub!\n", iface, value);
+-    return E_NOTIMPL;
++    struct uri *impl = impl_from_IUriRuntimeClass(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return uri_prop_to_hstring(impl->uri, Uri_PROPERTY_PASSWORD, value);
+ }
+@@ -142,4 +185,7 @@ static HRESULT STDMETHODCALLTYPE uri_Path(IUriRuntimeClass *iface, HSTRING *valu
+ {
+-    FIXME("iface %p, value %p stub!\n", iface, value);
+-    return E_NOTIMPL;
++    struct uri *impl = impl_from_IUriRuntimeClass(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return uri_prop_to_hstring(impl->uri, Uri_PROPERTY_PATH, value);
+ }
+@@ -148,4 +194,7 @@ static HRESULT STDMETHODCALLTYPE uri_Query(IUriRuntimeClass *iface, HSTRING *val
+ {
+-    FIXME("iface %p, value %p stub!\n", iface, value);
+-    return E_NOTIMPL;
++    struct uri *impl = impl_from_IUriRuntimeClass(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return uri_prop_to_hstring(impl->uri, Uri_PROPERTY_QUERY, value);
+ }
+@@ -165,3 +214,3 @@ static HRESULT STDMETHODCALLTYPE uri_RawUri(IUriRuntimeClass *iface, HSTRING *va
+
+-    return WindowsDuplicateString(impl->raw_uri, value);
++    return uri_prop_to_hstring(impl->uri, Uri_PROPERTY_RAW_URI, value);
+ }
+@@ -170,4 +219,7 @@ static HRESULT STDMETHODCALLTYPE uri_SchemeName(IUriRuntimeClass *iface, HSTRING
+ {
+-    FIXME("iface %p, value %p stub!\n", iface, value);
+-    return E_NOTIMPL;
++    struct uri *impl = impl_from_IUriRuntimeClass(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return uri_prop_to_hstring(impl->uri, Uri_PROPERTY_SCHEME_NAME, value);
+ }
+@@ -176,4 +228,7 @@ static HRESULT STDMETHODCALLTYPE uri_UserName(IUriRuntimeClass *iface, HSTRING *
+ {
+-    FIXME("iface %p, value %p stub!\n", iface, value);
+-    return E_NOTIMPL;
++    struct uri *impl = impl_from_IUriRuntimeClass(iface);
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    return uri_prop_to_hstring(impl->uri, Uri_PROPERTY_USER_NAME, value);
+ }
+@@ -182,4 +237,16 @@ static HRESULT STDMETHODCALLTYPE uri_Port(IUriRuntimeClass *iface, INT32 *value)
+ {
+-    FIXME("iface %p, value %p stub!\n", iface, value);
+-    return E_NOTIMPL;
++    struct uri *impl = impl_from_IUriRuntimeClass(iface);
++    DWORD port;
++    HRESULT hr;
++
++    TRACE("iface %p, value %p.\n", iface, value);
++
++    hr = IUri_GetPropertyDWORD(impl->uri, Uri_PROPERTY_PORT, &port, 0);
++    if (hr == S_OK)
++    {
++        *value = port;
++        return S_OK;
++    }
++
++    return S_FALSE;
+ }
+@@ -334,3 +401,4 @@ DEFINE_IINSPECTABLE(uri_factory, IUriRuntimeClassFactory, struct iertutil, IActi
+
+-static HRESULT STDMETHODCALLTYPE uri_factory_CreateUri(IUriRuntimeClassFactory *iface, HSTRING uri,
++static HRESULT STDMETHODCALLTYPE uri_factory_CreateUri(IUriRuntimeClassFactory *iface,
++                                                       HSTRING uri_string,
+                                                        IUriRuntimeClass **instance)
+@@ -339,20 +407,29 @@ static HRESULT STDMETHODCALLTYPE uri_factory_CreateUri(IUriRuntimeClassFactory *
+     struct uri *uri_impl;
++    HRESULT hr;
++    IUri *uri;
+
+-    FIXME("iface %p, uri %s, instance %p semi-stub!\n", iface, debugstr_hstring(uri), instance);
++    TRACE("iface %p, uri_string %s, instance %p.\n", iface, debugstr_hstring(uri_string), instance);
+
+-    if (!uri)
++    if (!uri_string)
+         return E_POINTER;
+
++    raw_buffer = WindowsGetStringRawBuffer(uri_string, NULL);
++    hr = CreateUri(raw_buffer, Uri_CREATE_ALLOW_IMPLICIT_FILE_SCHEME | Uri_CREATE_NO_DECODE_EXTRA_INFO, 0, &uri);
++    if (FAILED(hr))
++    {
++        *instance = NULL;
++        return E_INVALIDARG;
++    }
++
+     uri_impl = calloc(1, sizeof(*uri_impl));
+     if (!uri_impl)
++    {
++        IUri_Release(uri);
+         return E_OUTOFMEMORY;
++    }
+
+     uri_impl->IUriRuntimeClass_iface.lpVtbl = &uri_vtbl;
++    uri_impl->uri = uri;
+     uri_impl->ref = 1;
+
+-    raw_buffer = WindowsGetStringRawBuffer(uri, NULL);
+-    WindowsCreateString(raw_buffer, wcslen(raw_buffer), &uri_impl->raw_uri);
+-
+-    /* TODO: Parse the URI according to RFC 3986 and RFC 3987 */
+-
+     *instance = &uri_impl->IUriRuntimeClass_iface;
+diff --git a/dlls/iertutil/private.h b/dlls/iertutil/private.h
+index 80b36886a7a..74cf2c55be2 100644
+--- a/dlls/iertutil/private.h
++++ b/dlls/iertutil/private.h
+@@ -28,2 +28,3 @@
+ #include "winstring.h"
++#include "urlmon.h"
+ #include "wine/debug.h"
+diff --git a/dlls/urlmon/file.c b/dlls/urlmon/file.c
+index d0778c5c69e..97e65b987b8 100644
+--- a/dlls/urlmon/file.c
++++ b/dlls/urlmon/file.c
+@@ -35,2 +35,3 @@ typedef struct {
+     ULONG size;
++    BOOL eof;
+     LONG priority;
+@@ -211,3 +212,3 @@ static HRESULT WINAPI FileProtocol_Read(IInternetProtocolEx *iface, void *pv,
+     if(This->file == INVALID_HANDLE_VALUE)
+-        return INET_E_DATA_NOT_AVAILABLE;
++        return This->eof ? S_FALSE : INET_E_DATA_NOT_AVAILABLE;
+
+@@ -216,2 +217,8 @@ static HRESULT WINAPI FileProtocol_Read(IInternetProtocolEx *iface, void *pv,
+
++    if (!read) {
++        CloseHandle(This->file);
++        This->file = INVALID_HANDLE_VALUE;
++        This->eof = TRUE;
++    }
++
+     if(pcbRead)
+@@ -295,3 +302,3 @@ static HRESULT WINAPI FileProtocol_StartEx(IInternetProtocolEx *iface, IUri *pUr
+
+-    if(This->file != INVALID_HANDLE_VALUE) {
++    if(This->file != INVALID_HANDLE_VALUE || This->eof) {
+         IInternetProtocolSink_ReportData(pOIProtSink,
+@@ -431,2 +438,3 @@ HRESULT FileProtocol_Construct(IUnknown *outer, LPVOID *ppobj)
+     ret->file = INVALID_HANDLE_VALUE;
++    ret->eof = FALSE;
+     ret->priority = 0;
+diff --git a/dlls/urlmon/http.c b/dlls/urlmon/http.c
+index e592f697485..521a8b7b704 100644
+--- a/dlls/urlmon/http.c
++++ b/dlls/urlmon/http.c
+@@ -503,2 +503,10 @@ static BOOL is_redirect_response(DWORD status_code)
+
++static BOOL is_non_http_absolute_url(const WCHAR *url)
++{
++    const WCHAR *separator;
++
++    if (!url || !(separator = wcschr(url, ':')) || separator == url) return FALSE;
++    return wcsnicmp(url, L"http:", 5) && wcsnicmp(url, L"https:", 6);
++}
++
+ static HRESULT HttpProtocol_start_downloading(Protocol *prot)
+@@ -522,12 +530,16 @@ static HRESULT HttpProtocol_start_downloading(Protocol *prot)
+
+-        if((This->base.bind_info.dwOptions & BINDINFO_OPTIONS_DISABLEAUTOREDIRECTS) && is_redirect_response(status_code)) {
++        if(is_redirect_response(status_code)) {
+             WCHAR *location;
+
+-            TRACE("Got redirect with disabled auto redirects\n");
+-
+             location = query_http_info(This, HTTP_QUERY_LOCATION);
+-            This->base.flags |= FLAG_RESULT_REPORTED | FLAG_LAST_DATA_REPORTED;
+-            IInternetProtocolSink_ReportResult(This->base.protocol_sink, INET_E_REDIRECT_FAILED, 0, location);
++            if((This->base.bind_info.dwOptions & BINDINFO_OPTIONS_DISABLEAUTOREDIRECTS) ||
++               is_non_http_absolute_url(location)) {
++                TRACE("Reporting redirect to %s\n", debugstr_w(location));
++                This->base.flags |= FLAG_RESULT_REPORTED | FLAG_LAST_DATA_REPORTED;
++                IInternetProtocolSink_ReportResult(This->base.protocol_sink,
++                        INET_E_REDIRECT_FAILED, 0, location);
++                free(location);
++                return INET_E_REDIRECT_FAILED;
++            }
+             free(location);
+-            return INET_E_REDIRECT_FAILED;
+         }
+diff --git a/dlls/urlmon/tests/protocol.c b/dlls/urlmon/tests/protocol.c
+index a7692319c35..9c093d1ef32 100644
+--- a/dlls/urlmon/tests/protocol.c
++++ b/dlls/urlmon/tests/protocol.c
+@@ -2996,2 +2996,54 @@ static void test_file_protocol_url(LPCWSTR url)
+
++static void test_file_protocol_delete(void)
++{
++    static const char html_doc[] = "<HTML></HTML>";
++    IInternetProtocol *protocol;
++    BYTE buf[sizeof(html_doc) - 1];
++    DWORD size;
++    ULONG read;
++    HANDLE file;
++    HRESULT hres;
++    BOOL ret;
++
++    file = CreateFileW(L"delete.html", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
++            FILE_ATTRIBUTE_NORMAL, NULL);
++    ok(file != INVALID_HANDLE_VALUE, "CreateFile failed: %lu\n", GetLastError());
++    if(file == INVALID_HANDLE_VALUE)
++        return;
++
++    ret = WriteFile(file, html_doc, sizeof(html_doc) - 1, &size, NULL);
++    ok(ret, "WriteFile failed: %lu\n", GetLastError());
++    CloseHandle(file);
++
++    file_name = L"delete.html";
++    bindf = 0;
++    hres = CoCreateInstance(&CLSID_FileProtocol, NULL, CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER,
++            &IID_IInternetProtocol, (void **)&protocol);
++    ok(hres == S_OK, "CoCreateInstance failed: %08lx\n", hres);
++    if(SUCCEEDED(hres)) {
++        if(file_protocol_start(protocol, L"file:delete.html", NULL, NULL, TRUE)) {
++            hres = IInternetProtocol_Read(protocol, buf, sizeof(buf), &read);
++            ok(hres == S_OK, "Read failed: %08lx\n", hres);
++            ok(read == sizeof(buf), "read %lu bytes\n", read);
++
++            hres = IInternetProtocol_Read(protocol, buf, sizeof(buf), &read);
++            ok(hres == S_FALSE, "Read failed: %08lx\n", hres);
++            ok(!read, "read %lu bytes\n", read);
++
++            SetLastError(0xdeadbeef);
++            ret = DeleteFileW(L"delete.html");
++            ok(ret, "DeleteFile failed: %lu\n", GetLastError());
++
++            file = CreateFileW(L"delete.html", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
++                    FILE_ATTRIBUTE_NORMAL, NULL);
++            ok(file != INVALID_HANDLE_VALUE, "CreateFile failed: %lu\n", GetLastError());
++            if(file != INVALID_HANDLE_VALUE)
++                CloseHandle(file);
++        }
++        IInternetProtocol_Release(protocol);
++    }
++
++    DeleteFileW(L"delete.html");
++}
++
+ static void test_file_protocol_fail(void)
+@@ -3168,2 +3220,5 @@ static void test_file_protocol(void) {
+
++    init_test(FILE_TEST, 0);
++    test_file_protocol_delete();
++
+     DeleteFileW(L"index.html#frag#abc");

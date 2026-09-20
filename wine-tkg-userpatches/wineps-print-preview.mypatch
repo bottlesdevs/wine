@@ -1,0 +1,57 @@
+wineps.drv fixes for Office print preview.
+
+diff --git a/dlls/wineps.drv/driver.c b/dlls/wineps.drv/driver.c
+index 1170e16..5d9ed4a 100644
+--- a/dlls/wineps.drv/driver.c
++++ b/dlls/wineps.drv/driver.c
+@@ -125,7 +125,8 @@ void PSDRV_MergeDevmodes( PSDRV_DEVMODE *dm1, const DEVMODEW *dm2, PRINTERINFO *
+ 	    dm1->dmPublic.dmPaperSize = dm2->dmPaperSize;
+ 	    dm1->dmPublic.dmPaperWidth  = paper_size_from_points( page->PaperDimension->x );
+ 	    dm1->dmPublic.dmPaperLength = paper_size_from_points( page->PaperDimension->y );
+-	    dm1->dmPublic.dmFields |= DM_PAPERSIZE | DM_PAPERWIDTH | DM_PAPERLENGTH;
++	    dm1->dmPublic.dmFields &= ~(DM_PAPERWIDTH | DM_PAPERLENGTH);
++	    dm1->dmPublic.dmFields |= DM_PAPERSIZE;
+ 	    TRACE("Changing page to %s %d x %d\n", debugstr_w(page->FullName),
+ 		  dm1->dmPublic.dmPaperWidth,
+ 		  dm1->dmPublic.dmPaperLength );
+@@ -369,12 +370,11 @@ static INT_PTR CALLBACK PSDRV_PaperDlgProc(HWND hwnd, UINT msg,
+         TRACE("Setting pagesize to item %d, WinPage %d (%s), PaperSize %.2fx%.2f\n", Cursel,
+               ps->WinPage, debugstr_w(ps->FullName), ps->PaperDimension->x, ps->PaperDimension->y);
+         di->dlgdm->dmPublic.dmPaperSize = ps->WinPage;
++        di->dlgdm->dmPublic.dmFields &= ~(DM_PAPERLENGTH | DM_PAPERWIDTH);
+         di->dlgdm->dmPublic.dmFields |= DM_PAPERSIZE;
+
+         di->dlgdm->dmPublic.dmPaperWidth  = paper_size_from_points(ps->PaperDimension->x);
+         di->dlgdm->dmPublic.dmPaperLength = paper_size_from_points(ps->PaperDimension->y);
+-        di->dlgdm->dmPublic.dmFields |= DM_PAPERLENGTH | DM_PAPERWIDTH;
+-
+         if (di->dlgdm->dmPublic.dmSize >= FIELD_OFFSET(DEVMODEW, dmFormName) + CCHFORMNAME * sizeof(WCHAR))
+         {
+             lstrcpynW(di->dlgdm->dmPublic.dmFormName, ps->FullName, CCHFORMNAME);
+diff --git a/dlls/wineps.drv/init.c b/dlls/wineps.drv/init.c
+index 9c306da..9807c52 100644
+--- a/dlls/wineps.drv/init.c
++++ b/dlls/wineps.drv/init.c
+@@ -45,7 +45,7 @@ static const PSDRV_DEVMODE DefaultDevmode =
+ /* dmDriverVersion */	0x001,
+ /* dmSize */		sizeof(DEVMODEW),
+ /* dmDriverExtra */	sizeof(PSDRV_DEVMODE)-sizeof(DEVMODEW),
+-/* dmFields */		DM_ORIENTATION | DM_PAPERSIZE | DM_PAPERLENGTH | DM_PAPERWIDTH |
++/* dmFields */		DM_ORIENTATION | DM_PAPERSIZE |
+ 			DM_SCALE | DM_COPIES | DM_DEFAULTSOURCE | DM_PRINTQUALITY |
+ 			DM_COLOR | DM_DUPLEX | DM_YRESOLUTION | DM_TTOPTION |
+ 			DM_COLLATE | DM_FORMNAME,
+diff --git a/dlls/wineps.drv/unixlib.c b/dlls/wineps.drv/unixlib.c
+index 1a8355e..30b0fa9 100644
+--- a/dlls/wineps.drv/unixlib.c
++++ b/dlls/wineps.drv/unixlib.c
+@@ -364,7 +364,8 @@ static void merge_devmodes(PSDRV_DEVMODE *dm1, const DEVMODEW *dm2,
+             dm1->dmPublic.dmPaperSize = dm2->dmPaperSize;
+             dm1->dmPublic.dmPaperWidth  = paper_size_from_points(page->paper_dimension.x);
+             dm1->dmPublic.dmPaperLength = paper_size_from_points(page->paper_dimension.y);
+-            dm1->dmPublic.dmFields |= DM_PAPERSIZE | DM_PAPERWIDTH | DM_PAPERLENGTH;
++            dm1->dmPublic.dmFields &= ~(DM_PAPERWIDTH | DM_PAPERLENGTH);
++            dm1->dmPublic.dmFields |= DM_PAPERSIZE;
+             TRACE("Changing page to %s %d x %d\n", debugstr_w(page->name),
+                     dm1->dmPublic.dmPaperWidth,
+                     dm1->dmPublic.dmPaperLength);

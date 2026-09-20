@@ -1,0 +1,54 @@
+--- a/dlls/winewayland.drv/wayland_pointer.c
++++ b/dlls/winewayland.drv/wayland_pointer.c
+@@ -121,6 +121,15 @@
+     return hwnd;
+ }
+
++/* Hit testing skips disabled child windows, so their input belongs to the
++ * window beneath them: let the server find it from the position. */
++static HWND get_input_hwnd(HWND hwnd)
++{
++    if ((NtUserGetWindowLongW(hwnd, GWL_STYLE) & (WS_CHILD | WS_DISABLED)) == (WS_CHILD | WS_DISABLED))
++        return 0;
++    return hwnd;
++}
++
+ static void pointer_handle_motion_internal(wl_fixed_t sx, wl_fixed_t sy)
+ {
+     INPUT input = {0};
+@@ -164,7 +173,7 @@
+           hwnd, wl_fixed_to_double(sx), wl_fixed_to_double(sy),
+           screen.x, screen.y);
+
+-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
++    NtUserSendHardwareInput(get_input_hwnd(hwnd), 0, &input, 0);
+ }
+
+ static void pointer_handle_motion(void *data, struct wl_pointer *wl_pointer,
+@@ -274,7 +283,7 @@
+     if (state == WL_POINTER_BUTTON_STATE_PRESSED)
+         wayland_activate_foreign_child(hwnd, serial);
+
+-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
++    NtUserSendHardwareInput(get_input_hwnd(hwnd), 0, &input, 0);
+ }
+
+ static void pointer_handle_axis(void *data, struct wl_pointer *wl_pointer,
+@@ -321,7 +330,7 @@
+
+     TRACE("hwnd=%p axis=%u discrete=%d\n", hwnd, axis, discrete);
+
+-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
++    NtUserSendHardwareInput(get_input_hwnd(hwnd), 0, &input, 0);
+ }
+
+ static const struct wl_pointer_listener pointer_listener =
+@@ -390,7 +399,7 @@
+           hwnd, wl_fixed_to_double(dx), wl_fixed_to_double(dy),
+           input.mi.dx, input.mi.dy);
+
+-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
++    NtUserSendHardwareInput(get_input_hwnd(hwnd), 0, &input, 0);
+ }
+
+ static const struct zwp_relative_pointer_v1_listener relative_pointer_v1_listener =

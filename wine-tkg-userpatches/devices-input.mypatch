@@ -1,0 +1,401 @@
+Windows.Devices.Input for Office pointer handling.
+
+diff --git a/dlls/windows.devices.input/Makefile.in b/dlls/windows.devices.input/Makefile.in
+new file mode 100644
+index 0000000..a53a75a
+--- /dev/null
++++ b/dlls/windows.devices.input/Makefile.in
+@@ -0,0 +1,6 @@
++MODULE  = windows.devices.input.dll
++IMPORTS = combase
++
++SOURCES = \
++	classes.idl \
++	main.c
+diff --git a/dlls/windows.devices.input/classes.idl b/dlls/windows.devices.input/classes.idl
+new file mode 100644
+index 0000000..d32d695
+--- /dev/null
++++ b/dlls/windows.devices.input/classes.idl
+@@ -0,0 +1,28 @@
++/*
++ * Runtime Classes for windows.devices.input.dll
++ *
++ * Copyright (C) 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#pragma makedep register
++#pragma winrt ns_prefix
++
++import "windows.devices.input.idl";
++
++namespace Windows.Devices.Input {
++    runtimeclass PenDevice;
++}
+diff --git a/dlls/windows.devices.input/main.c b/dlls/windows.devices.input/main.c
+new file mode 100644
+index 0000000..57de094
+--- /dev/null
++++ b/dlls/windows.devices.input/main.c
+@@ -0,0 +1,182 @@
++/* WinRT Windows.Devices.Input implementation
++ *
++ * Copyright (C) 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "initguid.h"
++#include <stdarg.h>
++
++#define COBJMACROS
++#include "windef.h"
++#include "winbase.h"
++#include "winstring.h"
++
++#include "activation.h"
++#include "roapi.h"
++
++#define WIDL_using_Windows_Devices_Input
++#include "windows.devices.input.h"
++
++struct pen_device_statics
++{
++    IActivationFactory IActivationFactory_iface;
++    IPenDeviceStatics IPenDeviceStatics_iface;
++    LONG ref;
++};
++
++static inline struct pen_device_statics *impl_from_IActivationFactory( IActivationFactory *iface )
++{
++    return CONTAINING_RECORD( iface, struct pen_device_statics, IActivationFactory_iface );
++}
++
++static inline struct pen_device_statics *impl_from_IPenDeviceStatics( IPenDeviceStatics *iface )
++{
++    return CONTAINING_RECORD( iface, struct pen_device_statics, IPenDeviceStatics_iface );
++}
++
++static HRESULT WINAPI factory_QueryInterface( IActivationFactory *iface, REFIID iid, void **out )
++{
++    struct pen_device_statics *impl = impl_from_IActivationFactory( iface );
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IActivationFactory ))
++        *out = &impl->IActivationFactory_iface;
++    else if (IsEqualGUID( iid, &IID_IPenDeviceStatics ))
++        *out = &impl->IPenDeviceStatics_iface;
++    if (!*out) return E_NOINTERFACE;
++    IInspectable_AddRef( *out );
++    return S_OK;
++}
++
++static ULONG WINAPI factory_AddRef( IActivationFactory *iface )
++{
++    return InterlockedIncrement( &impl_from_IActivationFactory( iface )->ref );
++}
++
++static ULONG WINAPI factory_Release( IActivationFactory *iface )
++{
++    return InterlockedDecrement( &impl_from_IActivationFactory( iface )->ref );
++}
++
++static HRESULT WINAPI factory_GetIids( IActivationFactory *iface, ULONG *count, IID **iids )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI factory_GetRuntimeClassName( IActivationFactory *iface, HSTRING *name )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI factory_GetTrustLevel( IActivationFactory *iface, TrustLevel *level )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI factory_ActivateInstance( IActivationFactory *iface, IInspectable **instance )
++{
++    return E_NOTIMPL;
++}
++
++static const IActivationFactoryVtbl factory_vtbl =
++{
++    factory_QueryInterface,
++    factory_AddRef,
++    factory_Release,
++    factory_GetIids,
++    factory_GetRuntimeClassName,
++    factory_GetTrustLevel,
++    factory_ActivateInstance,
++};
++
++static HRESULT WINAPI pen_device_statics_QueryInterface( IPenDeviceStatics *iface, REFIID iid, void **out )
++{
++    struct pen_device_statics *impl = impl_from_IPenDeviceStatics( iface );
++    return IActivationFactory_QueryInterface( &impl->IActivationFactory_iface, iid, out );
++}
++
++static ULONG WINAPI pen_device_statics_AddRef( IPenDeviceStatics *iface )
++{
++    struct pen_device_statics *impl = impl_from_IPenDeviceStatics( iface );
++    return IActivationFactory_AddRef( &impl->IActivationFactory_iface );
++}
++
++static ULONG WINAPI pen_device_statics_Release( IPenDeviceStatics *iface )
++{
++    struct pen_device_statics *impl = impl_from_IPenDeviceStatics( iface );
++    return IActivationFactory_Release( &impl->IActivationFactory_iface );
++}
++
++static HRESULT WINAPI pen_device_statics_GetIids( IPenDeviceStatics *iface, ULONG *count, IID **iids )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI pen_device_statics_GetRuntimeClassName( IPenDeviceStatics *iface, HSTRING *name )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI pen_device_statics_GetTrustLevel( IPenDeviceStatics *iface, TrustLevel *level )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI pen_device_statics_GetFromPointerId( IPenDeviceStatics *iface, UINT32 pointer_id,
++        IPenDevice **result )
++{
++    if (!result) return E_POINTER;
++    *result = NULL;
++    return S_OK;
++}
++
++static const IPenDeviceStaticsVtbl pen_device_statics_vtbl =
++{
++    pen_device_statics_QueryInterface,
++    pen_device_statics_AddRef,
++    pen_device_statics_Release,
++    pen_device_statics_GetIids,
++    pen_device_statics_GetRuntimeClassName,
++    pen_device_statics_GetTrustLevel,
++    pen_device_statics_GetFromPointerId,
++};
++
++static struct pen_device_statics pen_device_statics =
++{
++    {&factory_vtbl},
++    {&pen_device_statics_vtbl},
++    1,
++};
++
++HRESULT WINAPI DllGetClassObject( REFCLSID clsid, REFIID iid, void **out )
++{
++    return CLASS_E_CLASSNOTAVAILABLE;
++}
++
++HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **factory )
++{
++    const WCHAR *name = WindowsGetStringRawBuffer( classid, NULL );
++
++    if (!factory) return E_POINTER;
++    *factory = NULL;
++    if (!wcscmp( name, RuntimeClass_Windows_Devices_Input_PenDevice ))
++        return IActivationFactory_QueryInterface( &pen_device_statics.IActivationFactory_iface,
++                &IID_IActivationFactory, (void **)factory );
++    return CLASS_E_CLASSNOTAVAILABLE;
++}
+diff --git a/dlls/windows.devices.input/tests/Makefile.in b/dlls/windows.devices.input/tests/Makefile.in
+new file mode 100644
+index 0000000..630084a
+--- /dev/null
++++ b/dlls/windows.devices.input/tests/Makefile.in
+@@ -0,0 +1,5 @@
++TESTDLL = windows.devices.input.dll
++IMPORTS = combase
++
++SOURCES = \
++	input.c
+diff --git a/dlls/windows.devices.input/tests/input.c b/dlls/windows.devices.input/tests/input.c
+new file mode 100644
+index 0000000..7a29030
+--- /dev/null
++++ b/dlls/windows.devices.input/tests/input.c
+@@ -0,0 +1,68 @@
++/*
++ * Copyright (C) 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ */
++
++#define COBJMACROS
++#include "initguid.h"
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "winstring.h"
++
++#include "roapi.h"
++
++#define WIDL_using_Windows_Devices_Input
++#include "windows.devices.input.h"
++
++#include "wine/test.h"
++
++static void test_pen_device(void)
++{
++    static const WCHAR class_name[] = L"Windows.Devices.Input.PenDevice";
++    IPenDeviceStatics *statics = NULL;
++    IActivationFactory *factory = NULL;
++    IPenDevice *device = (void *)0xdeadbeef;
++    HSTRING str;
++    HRESULT hr;
++
++    hr = WindowsCreateString( class_name, ARRAY_SIZE(class_name) - 1, &str );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    hr = RoGetActivationFactory( str, &IID_IActivationFactory, (void **)&factory );
++    WindowsDeleteString( str );
++    ok( hr == S_OK || broken(hr == REGDB_E_CLASSNOTREG), "got hr %#lx.\n", hr );
++    if (hr == REGDB_E_CLASSNOTREG)
++    {
++        win_skip( "PenDevice runtimeclass not registered.\n" );
++        return;
++    }
++
++    hr = IActivationFactory_QueryInterface( factory, &IID_IPenDeviceStatics, (void **)&statics );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++
++    hr = IPenDeviceStatics_GetFromPointerId( statics, 0, NULL );
++    ok( hr == E_POINTER, "got hr %#lx.\n", hr );
++    hr = IPenDeviceStatics_GetFromPointerId( statics, 0, &device );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    ok( device == NULL, "got device %p.\n", device );
++
++    IPenDeviceStatics_Release( statics );
++    IActivationFactory_Release( factory );
++}
++
++START_TEST(input)
++{
++    RoInitialize( RO_INIT_MULTITHREADED );
++    test_pen_device();
++    RoUninitialize();
++}
+diff --git a/dlls/windows.devices.input/windows.devices.input.spec b/dlls/windows.devices.input/windows.devices.input.spec
+new file mode 100644
+index 0000000..31a5eaf
+--- /dev/null
++++ b/dlls/windows.devices.input/windows.devices.input.spec
+@@ -0,0 +1,3 @@
++@ stdcall -private DllGetActivationFactory(ptr ptr)
++@ stdcall -private DllCanUnloadNow()
++@ stdcall -private DllGetClassObject(ptr ptr ptr)
+diff --git a/include/windows.devices.input.idl b/include/windows.devices.input.idl
+index db390e5..b6d10e7 100644
+--- a/include/windows.devices.input.idl
++++ b/include/windows.devices.input.idl
+@@ -24,6 +24,7 @@ import "inspectable.idl";
+ import "asyncinfo.idl";
+ import "eventtoken.idl";
+ import "windowscontracts.idl";
++import "windows.devices.haptics.idl";
+ import "windows.foundation.idl";
+
+ namespace Windows.Devices.Input {
+@@ -33,7 +34,11 @@ namespace Windows.Devices.Input {
+     interface IPointerDevice;
+     interface IPointerDevice2;
+     interface IPointerDeviceStatics;
++    interface IPenDevice;
++    interface IPenDevice2;
++    interface IPenDeviceStatics;
+
++    runtimeclass PenDevice;
+     runtimeclass PointerDevice;
+
+     declare {
+@@ -112,4 +117,46 @@ namespace Windows.Devices.Input {
+         [default] interface Windows.Devices.Input.IPointerDevice;
+         [contract(Windows.Foundation.UniversalApiContract, 1.0)] interface Windows.Devices.Input.IPointerDevice2;
+     }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 8.0),
++        exclusiveto(Windows.Devices.Input.PenDevice),
++        uuid(31856eba-a738-5a8c-b8f6-f97ef68d18ef)
++    ]
++    interface IPenDevice : IInspectable
++    {
++        [propget] HRESULT PenId([out, retval] GUID *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 14.0),
++        exclusiveto(Windows.Devices.Input.PenDevice),
++        uuid(0207d327-7fb8-5566-8c34-f8342037b7f9)
++    ]
++    interface IPenDevice2 : IInspectable
++    {
++        [propget] HRESULT SimpleHapticsController([out, retval] Windows.Devices.Haptics.SimpleHapticsController **value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 8.0),
++        exclusiveto(Windows.Devices.Input.PenDevice),
++        uuid(9dfbbe01-0966-5180-bcb4-b85060e39479)
++    ]
++    interface IPenDeviceStatics : IInspectable
++    {
++        HRESULT GetFromPointerId([in] UINT32 pointer_id, [out, retval] Windows.Devices.Input.PenDevice **result);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 8.0),
++        marshaling_behavior(agile),
++        threading(both),
++        static(Windows.Devices.Input.IPenDeviceStatics, Windows.Foundation.UniversalApiContract, 8.0)
++    ]
++    runtimeclass PenDevice
++    {
++        [default] interface Windows.Devices.Input.IPenDevice;
++        [contract(Windows.Foundation.UniversalApiContract, 14.0)] interface Windows.Devices.Input.IPenDevice2;
++    }
+ }

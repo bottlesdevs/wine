@@ -1,0 +1,434 @@
+From: Mirko Brombin <brombin94@gmail.com>
+Subject: [PATCH] winewayland: Show child windows painted over client surfaces.
+
+---
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -391,11 +391,16 @@
+     BOOL layered_attribs_set;
+     /* the client surfaces and popups of this toplevel need restacking */
+     BOOL restack_pending;
++    /* surfaces showing child windows above the client surfaces of this toplevel */
++    struct wl_list overlays;
+ };
+
+ struct wayland_win_data *wayland_win_data_get(HWND hwnd);
+ struct wayland_win_data *wayland_win_data_get_nolock(HWND hwnd);
+ void wayland_win_data_release(struct wayland_win_data *data);
++void wayland_destroy_overlays(struct wayland_win_data *data);
++void wayland_update_overlays(struct wayland_win_data *data, struct wayland_shm_buffer *contents,
++                             HRGN damage_region);
+
+ struct wayland_client_surface *get_client_surface(HWND hwnd);
+ void set_client_surface(HWND hwnd, struct wayland_client_surface *client);
+--- a/dlls/winewayland.drv/wayland_surface.c
++++ b/dlls/winewayland.drv/wayland_surface.c
+@@ -1493,13 +1493,243 @@
+     return list;
+ }
+
++/* GDI paints child windows into the window surface of their toplevel, below
++ * all the client surfaces, while Windows shows a child above the client
++ * surfaces painted before it. An overlay subsurface shows a copy of the
++ * window surface pixels of such a child at its place in painting order. */
++struct wayland_overlay
++{
++    struct wl_list link;
++    HWND hwnd;
++    RECT rect; /* in window surface coordinates of the toplevel */
++    struct wl_surface *wl_surface;
++    struct wl_subsurface *wl_subsurface;
++    struct wp_viewport *wp_viewport;
++    struct wayland_shm_buffer *buffers[2];
++    BOOL needs_contents;
++    BOOL used;
++};
++
++static void overlay_buffer_release(void *data, struct wl_buffer *buffer)
++{
++    struct wayland_shm_buffer *shm_buffer = data;
++    TRACE("shm_buffer=%p\n", shm_buffer);
++    shm_buffer->busy = FALSE;
++    wayland_shm_buffer_unref(shm_buffer);
++}
++
++static const struct wl_buffer_listener overlay_buffer_listener =
++{
++    overlay_buffer_release
++};
++
++static void wayland_overlay_destroy(struct wayland_overlay *overlay)
++{
++    UINT i;
++
++    TRACE("hwnd=%p\n", overlay->hwnd);
++
++    wl_list_remove(&overlay->link);
++    for (i = 0; i < ARRAY_SIZE(overlay->buffers); i++)
++        if (overlay->buffers[i]) wayland_shm_buffer_unref(overlay->buffers[i]);
++    if (overlay->wp_viewport) wp_viewport_destroy(overlay->wp_viewport);
++    if (overlay->wl_subsurface) wl_subsurface_destroy(overlay->wl_subsurface);
++    if (overlay->wl_surface) wl_surface_destroy(overlay->wl_surface);
++    free(overlay);
++}
++
++static struct wayland_overlay *wayland_overlay_create(struct wayland_win_data *toplevel_data, HWND hwnd)
++{
++    struct wayland_surface *surface = toplevel_data->wayland_surface;
++    struct wayland_overlay *overlay;
++    struct wl_region *empty_region;
++
++    if (!(overlay = calloc(1, sizeof(*overlay)))) return NULL;
++    wl_list_insert(&toplevel_data->overlays, &overlay->link);
++    overlay->hwnd = hwnd;
++
++    if (!(overlay->wl_surface = wl_compositor_create_surface(process_wayland.wl_compositor)))
++        goto err;
++    wl_surface_set_user_data(overlay->wl_surface, hwnd);
++
++    /* Let the toplevel handle all pointer events. */
++    if (!(empty_region = wl_compositor_create_region(process_wayland.wl_compositor)))
++        goto err;
++    wl_surface_set_input_region(overlay->wl_surface, empty_region);
++    wl_region_destroy(empty_region);
++
++    if (!(overlay->wp_viewport = wp_viewporter_get_viewport(process_wayland.wp_viewporter,
++                                                            overlay->wl_surface)))
++        goto err;
++    if (!(overlay->wl_subsurface = wl_subcompositor_get_subsurface(process_wayland.wl_subcompositor,
++                                                                   overlay->wl_surface,
++                                                                   surface->wl_surface)))
++        goto err;
++
++    TRACE("hwnd=%p\n", hwnd);
++    return overlay;
++
++err:
++    ERR("Failed to create overlay for hwnd=%p\n", hwnd);
++    wayland_overlay_destroy(overlay);
++    return NULL;
++}
++
++static void wayland_overlay_set_rect(struct wayland_overlay *overlay, struct wayland_surface *surface,
++                                     const RECT *rect)
++{
++    int x, y, width, height;
++
++    if (!memcmp(&overlay->rect, rect, sizeof(*rect))) return;
++    overlay->rect = *rect;
++    overlay->needs_contents = TRUE;
++
++    wayland_surface_coords_from_window(surface, rect->left, rect->top, &x, &y);
++    wayland_surface_coords_from_window(surface, rect->right - rect->left, rect->bottom - rect->top,
++                                       &width, &height);
++
++    TRACE("hwnd=%p rect=%s subsurface=%d,%d+%dx%d\n", overlay->hwnd, wine_dbgstr_rect(rect),
++          x, y, width, height);
++
++    wl_subsurface_set_position(overlay->wl_subsurface, x, y);
++    wp_viewport_set_destination(overlay->wp_viewport, max(1, width), max(1, height));
++}
++
++static void wayland_overlay_update(struct wayland_overlay *overlay, struct wayland_shm_buffer *contents)
++{
++    static const int bpp = WINEWAYLAND_BYTES_PER_PIXEL;
++    int width = overlay->rect.right - overlay->rect.left;
++    int height = overlay->rect.bottom - overlay->rect.top;
++    RECT contents_rect = {0, 0, contents->width, contents->height}, rect;
++    struct wayland_shm_buffer *buffer = NULL;
++    UINT i;
++    int y;
++
++    for (i = 0; i < ARRAY_SIZE(overlay->buffers); i++)
++    {
++        if (!(buffer = overlay->buffers[i])) continue;
++        if (!buffer->busy && buffer->width == width && buffer->height == height &&
++            buffer->format == contents->format)
++            break;
++    }
++    if (i == ARRAY_SIZE(overlay->buffers))
++    {
++        /* replace a free buffer of the wrong size, or the first one if both
++         * are busy, the compositor keeps a reference until it releases it */
++        for (i = 0; i < ARRAY_SIZE(overlay->buffers); i++)
++            if (!overlay->buffers[i] || !overlay->buffers[i]->busy) break;
++        if (i == ARRAY_SIZE(overlay->buffers)) i = 0;
++        if (overlay->buffers[i]) wayland_shm_buffer_unref(overlay->buffers[i]);
++        if (!(buffer = overlay->buffers[i] = wayland_shm_buffer_create(width, height, contents->format)))
++            return;
++        wl_buffer_add_listener(buffer->wl_buffer, &overlay_buffer_listener, buffer);
++    }
++
++    if (intersect_rect(&rect, &overlay->rect, &contents_rect))
++    {
++        for (y = rect.top; y < rect.bottom; y++)
++        {
++            memcpy((char *)buffer->map_data + ((y - overlay->rect.top) * width + rect.left - overlay->rect.left) * bpp,
++                   (const char *)contents->map_data + (y * contents->width + rect.left) * bpp,
++                   (rect.right - rect.left) * bpp);
++        }
++    }
++
++    buffer->busy = TRUE;
++    wayland_shm_buffer_ref(buffer);
++    wl_surface_attach(overlay->wl_surface, buffer->wl_buffer, 0, 0);
++    wl_surface_damage_buffer(overlay->wl_surface, 0, 0, width, height);
++    wl_surface_commit(overlay->wl_surface);
++    overlay->needs_contents = FALSE;
++}
++
++/**********************************************************************
++ *          wayland_update_overlays
++ *
++ * Copies the new window surface contents of a toplevel into the overlays
++ * that need them. Must be called before committing the toplevel surface.
++ */
++void wayland_update_overlays(struct wayland_win_data *data, struct wayland_shm_buffer *contents,
++                             HRGN damage_region)
++{
++    struct wayland_overlay *overlay;
++
++    wl_list_for_each(overlay, &data->overlays, link)
++    {
++        if (overlay->needs_contents || (damage_region && NtGdiRectInRegion(damage_region, &overlay->rect)))
++            wayland_overlay_update(overlay, contents);
++    }
++}
++
++/**********************************************************************
++ *          wayland_destroy_overlays
++ */
++void wayland_destroy_overlays(struct wayland_win_data *data)
++{
++    struct wayland_overlay *overlay, *next;
++
++    wl_list_for_each_safe(overlay, next, &data->overlays, link)
++        wayland_overlay_destroy(overlay);
++}
++
++static struct wayland_overlay *wayland_find_overlay(struct wayland_win_data *data, HWND hwnd)
++{
++    struct wayland_overlay *overlay;
++
++    wl_list_for_each(overlay, &data->overlays, link)
++        if (overlay->hwnd == hwnd) return overlay;
++    return NULL;
++}
++
++struct restack_rects
++{
++    RECT window; /* visible part of the window, in toplevel client coordinates */
++    RECT client; /* visible part of its client area */
++    BOOL opaque; /* the window is visible and hides what is painted before it */
++};
++
++static void get_restack_rects(HWND hwnd, HWND toplevel, UINT dpi, struct restack_rects *rects)
++{
++    BOOL transparent = FALSE;
++    HWND parent = hwnd;
++    RECT rect;
++
++    memset(rects, 0, sizeof(*rects));
++    if (!NtUserIsWindowVisible(hwnd)) return;
++
++    NtUserGetWindowRect(hwnd, &rects->window, dpi);
++    NtUserMapWindowPoints(0, toplevel, (POINT *)&rects->window, 2, dpi);
++    while (parent != toplevel)
++    {
++        /* a transparent window and its children are not clipped out of
++         * their parent, which paints over them */
++        if (NtUserGetWindowLongW(parent, GWL_EXSTYLE) & WS_EX_TRANSPARENT) transparent = TRUE;
++        if (!(parent = NtUserGetAncestor(parent, GA_PARENT))) break;
++        NtUserGetClientRect(parent, &rect, dpi);
++        NtUserMapWindowPoints(parent, toplevel, (POINT *)&rect, 2, dpi);
++        if (!intersect_rect(&rects->window, &rects->window, &rect)) return;
++    }
++
++    NtUserGetClientRect(hwnd, &rect, dpi);
++    NtUserMapWindowPoints(hwnd, toplevel, (POINT *)&rect, 2, dpi);
++    intersect_rect(&rects->client, &rect, &rects->window);
++    rects->opaque = !transparent;
++}
++
++static BOOL rect_contains(const RECT *outer, const RECT *inner)
++{
++    return inner->left >= outer->left && inner->top >= outer->top &&
++           inner->right <= outer->right && inner->bottom <= outer->bottom;
++}
++
+ /**********************************************************************
+  *          wayland_restack_client_surfaces
+  *
+- * Stacks the client surfaces of a toplevel in painting order, with its owned
+- * popups above them. Walking the window tree takes the win32u user lock,
+- * which may be held while waiting for the win_data lock, so this must be
+- * called without holding the win_data lock.
++ * Stacks the client surfaces of a toplevel in painting order, with overlays
++ * for the child windows painted above them and its owned popups on top.
++ * Walking the window tree takes the win32u user lock, which may be held
++ * while waiting for the win_data lock, so this must be called without
++ * holding the win_data lock.
+  */
+ void wayland_restack_client_surfaces(HWND toplevel)
+ {
+@@ -1507,9 +1737,12 @@
+     struct wayland_client_surface *client;
+     struct wayland_win_data *toplevel_data, *data;
+     struct wayland_surface *surface, *popup;
++    struct wayland_overlay *overlay, *next;
++    struct restack_rects *rects = NULL;
++    RECT *covered = NULL, toplevel_client, bounds, overlaid, rect;
+     struct wl_surface *below;
+     ULONG count, popup_count;
+-    UINT i, depth = 0, done = 0;
++    UINT i, j, depth = 0, done = 0, covered_count = 0, dpi;
+
+     if (!(toplevel_data = wayland_win_data_get(toplevel))) return;
+     if (!toplevel_data->restack_pending)
+@@ -1534,6 +1767,12 @@
+     }
+     while (depth) order[done++] = stack[--depth];
+
++    if (!(rects = malloc((done + 1) * sizeof(*rects)))) goto done;
++    if (!(covered = malloc((done + 1) * sizeof(*covered)))) goto done;
++    dpi = NtUserGetWinMonitorDpi(toplevel, MDT_RAW_DPI);
++    for (i = 0; i < done; i++) get_restack_rects(order[i], toplevel, dpi, &rects[i]);
++    NtUserGetClientRect(toplevel, &toplevel_client, dpi);
++
+     /* top level windows are listed from the top */
+     if (!(popups = build_hwnd_list(0, FALSE, &popup_count))) goto done;
+
+@@ -1541,22 +1780,66 @@
+     toplevel_data->restack_pending = FALSE;
+     if (!(surface = toplevel_data->wayland_surface))
+     {
++        wayland_destroy_overlays(toplevel_data);
+         wayland_win_data_release(toplevel_data);
+         goto done;
+     }
+
++    wl_list_for_each(overlay, &toplevel_data->overlays, link) overlay->used = FALSE;
++    SetRect(&bounds, 0, 0, surface->window.rect.right - surface->window.rect.left,
++            surface->window.rect.bottom - surface->window.rect.top);
++    SetRect(&overlaid, 0, 0, 0, 0);
++
+     below = surface->wl_surface;
+     if ((client = toplevel_data->client_surface) && client->toplevel == toplevel && client->wl_subsurface)
++    {
+         below = client->wl_surface;
++        covered[covered_count++] = toplevel_client;
++    }
+
+     for (i = done; i--;)
+     {
+-        if (!(data = wayland_win_data_get_nolock(order[i])) || !(client = data->client_surface)) continue;
+-        if (client->toplevel != toplevel || !client->wl_subsurface) continue;
+-        wl_subsurface_place_above(client->wl_subsurface, below);
+-        below = client->wl_surface;
++        if (!(data = wayland_win_data_get_nolock(order[i]))) continue;
++        if ((client = data->client_surface))
++        {
++            if (client->toplevel != toplevel || !client->wl_subsurface) continue;
++            wl_subsurface_place_above(client->wl_subsurface, below);
++            below = client->wl_surface;
++            covered[covered_count++] = rects[i].client;
++            SetRect(&overlaid, 0, 0, 0, 0);
++            continue;
++        }
++
++        /* only GDI windows painted over a client surface need an overlay */
++        if (!rects[i].opaque || data->wayland_surface) continue;
++        for (j = 0; j < covered_count; j++)
++            if (intersect_rect(&rect, &rects[i].window, &covered[j])) break;
++        if (j == covered_count) continue;
++        /* the overlay of an enclosing window already shows it */
++        if (rect_contains(&overlaid, &rects[i].window)) continue;
++
++        rect = rects[i].window;
++        rect.left += surface->window.client_rect.left - surface->window.rect.left;
++        rect.right += surface->window.client_rect.left - surface->window.rect.left;
++        rect.top += surface->window.client_rect.top - surface->window.rect.top;
++        rect.bottom += surface->window.client_rect.top - surface->window.rect.top;
++        if (!intersect_rect(&rect, &rect, &bounds)) continue;
++
++        if (!(overlay = wayland_find_overlay(toplevel_data, order[i])) &&
++            !(overlay = wayland_overlay_create(toplevel_data, order[i])))
++            continue;
++        wayland_overlay_set_rect(overlay, surface, &rect);
++        overlay->used = TRUE;
++        wl_subsurface_place_above(overlay->wl_subsurface, below);
++        below = overlay->wl_surface;
++        overlaid = rects[i].window;
+     }
+
++    wl_list_for_each_safe(overlay, next, &toplevel_data->overlays, link)
++        if (!overlay->used) wayland_overlay_destroy(overlay);
++    if (toplevel_data->window_contents)
++        wayland_update_overlays(toplevel_data, toplevel_data->window_contents, NULL);
++
+     /* owned popups are subsurfaces of the toplevel as well and must stay
+      * above all of its client surfaces */
+     for (i = popup_count; i--;)
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -72,6 +72,7 @@
+
+     data->hwnd = hwnd;
+     data->rects = *rects;
++    wl_list_init(&data->overlays);
+
+     pthread_mutex_lock(&win_data_mutex);
+
+@@ -100,6 +101,7 @@
+
+     pthread_mutex_unlock(&win_data_mutex);
+
++    wayland_destroy_overlays(data);
+     if (data->wayland_surface) wayland_surface_destroy(data->wayland_surface);
+     if (data->window_contents) wayland_shm_buffer_unref(data->window_contents);
+     free(data);
+@@ -210,6 +212,7 @@
+     if ((surface = data->wayland_surface) && role && surface->role && surface->role != role)
+     {
+         if (client) wayland_client_surface_attach(client, NULL);
++        wayland_destroy_overlays(data);
+         wayland_surface_destroy(data->wayland_surface);
+         data->wayland_surface = NULL;
+     }
+@@ -431,12 +434,20 @@
+  */
+ void WAYLAND_DestroyWindow(HWND hwnd)
+ {
++    HWND toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
+     struct wayland_win_data *data;
++    BOOL restack;
+
+     TRACE("%p\n", hwnd);
+
+     if (!(data = wayland_win_data_get(hwnd))) return;
+     wayland_win_data_destroy(data);
++
++    /* drop the overlay a destroyed child may have */
++    if (!toplevel || toplevel == hwnd || !(data = wayland_win_data_get(toplevel))) return;
++    if ((restack = !wl_list_empty(&data->overlays))) data->restack_pending = TRUE;
++    wayland_win_data_release(data);
++    if (restack) wayland_restack_client_surfaces(toplevel);
+ }
+
+ /***********************************************************************
+@@ -500,6 +511,7 @@
+
+         if (data->wayland_surface)
+         {
++            wayland_destroy_overlays(data);
+             wayland_surface_destroy(data->wayland_surface);
+             data->wayland_surface = NULL;
+         }
+@@ -860,6 +872,7 @@
+     {
+         if (wayland_surface_reconfigure(wayland_surface))
+         {
++            wayland_update_overlays(data, shm_buffer, damage_region);
+             wayland_surface_attach_shm(wayland_surface, shm_buffer, damage_region);
+             wl_surface_commit(wayland_surface->wl_surface);
+             committed = TRUE;

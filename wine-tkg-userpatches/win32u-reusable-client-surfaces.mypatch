@@ -1,0 +1,210 @@
+Reuse client surfaces across drawable recreation.
+
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index 911db79..7bb7108 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -2524,7 +2524,7 @@ fail:
+ static BOOL surface_get_fshack_dpi( struct surface *surface )
+ {
+     UINT dpi = NtUserGetDpiForWindow( surface->hwnd ), raw = NtUserGetWinMonitorDpi( surface->hwnd, MDT_RAW_DPI );
+-    return fshack_enabled && dpi != raw ? raw : 0;
++    return fshack_enabled && !surface->client->host_scaled && dpi != raw ? raw : 0;
+ }
+
+ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwapchainCreateInfoKHR *create_info,
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 1482f2d..baee75d 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -273,33 +273,50 @@ void *free_user_handle( HANDLE handle, unsigned short type )
+
+ static pthread_mutex_t surfaces_lock = PTHREAD_MUTEX_INITIALIZER;
+ static struct list client_surfaces = LIST_INIT( client_surfaces );
++static struct list unused_client_surfaces = LIST_INIT( unused_client_surfaces );
++
++static void client_surface_detach_locked( struct client_surface *surface )
++{
++    if (!surface->hwnd) return;
++
++    if (!list_empty( &surface->entry )) list_remove( &surface->entry );
++    list_init( &surface->entry );
++    surface->cached = FALSE;
++    surface->funcs->detach( surface );
++    surface->hwnd = NULL;
++}
++
++static void client_surface_destroy_locked( struct client_surface *surface )
++{
++    client_surface_detach_locked( surface );
++    surface->funcs->destroy( surface );
++    free( surface );
++}
++
++static void discard_unused_client_surface_locked( struct client_surface *surface )
++{
++    ULONG ref;
++
++    list_remove( &surface->entry );
++    list_init( &surface->entry );
++    surface->cached = FALSE;
++    ref = InterlockedDecrement( &surface->ref );
++    TRACE( "%s decreasing cache refcount to %u\n", debugstr_client_surface( surface ), ref );
++    if (!ref) client_surface_destroy_locked( surface );
++}
+
+ void detach_client_surfaces( HWND hwnd )
+ {
+-    struct list detached = LIST_INIT( detached );
+     struct client_surface *surface, *next;
+
+     pthread_mutex_lock( &surfaces_lock );
+
+     LIST_FOR_EACH_ENTRY_SAFE( surface, next, &client_surfaces, struct client_surface, entry )
+-    {
+-        if (surface->hwnd != hwnd) continue;
+-
+-        list_remove( &surface->entry );
+-        list_add_tail( &detached, &surface->entry );
+-        client_surface_add_ref( surface );
+-
+-        surface->funcs->detach( surface );
+-        surface->hwnd = NULL;
+-    }
++        if (surface->hwnd == hwnd) client_surface_detach_locked( surface );
++    LIST_FOR_EACH_ENTRY_SAFE( surface, next, &unused_client_surfaces, struct client_surface, entry )
++        if (surface->hwnd == hwnd) discard_unused_client_surface_locked( surface );
+
+     pthread_mutex_unlock( &surfaces_lock );
+-
+-    LIST_FOR_EACH_ENTRY_SAFE( surface, next, &detached, struct client_surface, entry )
+-    {
+-        list_remove( &surface->entry );
+-        client_surface_release( surface );
+-    }
+ }
+
+ static void update_client_surfaces( HWND hwnd )
+@@ -332,6 +349,42 @@ void *client_surface_create( UINT size, const struct client_surface_funcs *funcs
+     return surface;
+ }
+
++void *reusable_client_surface_create( UINT size, const struct client_surface_funcs *funcs,
++                                     HWND hwnd, int format, BOOL raw )
++{
++    struct client_surface *surface = client_surface_create( size, funcs, hwnd );
++
++    if (surface)
++    {
++        surface->reusable = TRUE;
++        surface->format = format;
++        surface->raw = raw;
++    }
++    return surface;
++}
++
++struct client_surface *get_unused_client_surface( HWND hwnd, int format, BOOL raw )
++{
++    struct client_surface *surface;
++
++    pthread_mutex_lock( &surfaces_lock );
++
++    LIST_FOR_EACH_ENTRY( surface, &unused_client_surfaces, struct client_surface, entry )
++    {
++        if (surface->hwnd != hwnd || surface->format != format || surface->raw != raw) continue;
++        list_remove( &surface->entry );
++        list_init( &surface->entry );
++        surface->cached = FALSE;
++        break;
++    }
++    if (&surface->entry == &unused_client_surfaces) surface = NULL;
++
++    pthread_mutex_unlock( &surfaces_lock );
++
++    if (surface) TRACE( "reusing %s\n", debugstr_client_surface( surface ) );
++    return surface;
++}
++
+ void client_surface_add_ref( struct client_surface *surface )
+ {
+     ULONG ref = InterlockedIncrement( &surface->ref );
+@@ -340,22 +393,32 @@ void client_surface_add_ref( struct client_surface *surface )
+
+ void client_surface_release( struct client_surface *surface )
+ {
+-    ULONG ref = InterlockedDecrement( &surface->ref );
++    struct client_surface *cached, *next;
++    ULONG ref;
++
++    pthread_mutex_lock( &surfaces_lock );
++
++    ref = InterlockedDecrement( &surface->ref );
+     TRACE( "%s decreasing refcount to %u\n", debugstr_client_surface( surface ), ref );
+
+     if (!ref)
+     {
+-        pthread_mutex_lock( &surfaces_lock );
+-        if (surface->hwnd)
++        if (surface->reusable && surface->hwnd && !surface->cached && !list_empty( &surface->entry ))
+         {
+-            surface->funcs->detach( surface );
+             list_remove( &surface->entry );
++            LIST_FOR_EACH_ENTRY_SAFE( cached, next, &unused_client_surfaces, struct client_surface, entry )
++            {
++                if (cached->hwnd == surface->hwnd && cached->format == surface->format && cached->raw == surface->raw)
++                    discard_unused_client_surface_locked( cached );
++            }
++            list_add_head( &unused_client_surfaces, &surface->entry );
++            surface->cached = TRUE;
++            surface->ref = 1;
+         }
+-        pthread_mutex_unlock( &surfaces_lock );
+-
+-        surface->funcs->destroy( surface );
+-        free( surface );
++        else client_surface_destroy_locked( surface );
+     }
++
++    pthread_mutex_unlock( &surfaces_lock );
+ }
+
+ void client_surface_present( struct client_surface *surface )
+@@ -385,6 +448,7 @@ void add_window_client_surface( HWND hwnd, struct client_surface *surface )
+     pthread_mutex_lock( &surfaces_lock );
+
+     surface->hwnd = hwnd;
++    surface->cached = FALSE;
+     list_add_tail( &client_surfaces, &surface->entry );
+     surface->funcs->update( surface );
+
+@@ -2438,7 +2502,7 @@ static BOOL expose_window_surface( HWND hwnd, UINT flags, const RECT *rect, UINT
+         add_bounds_rect( &surface->bounds, &exposed_rect );
+     }
+     window_surface_unlock( surface );
+-    if (surface->alpha_mask) window_surface_flush( surface );
++    window_surface_flush( surface );
+     window_surface_release( surface );
+     return TRUE;
+ }
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+index 34075ed..65db097 100644
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -266,9 +266,17 @@ struct client_surface
+     HWND                               hwnd;           /* window the surface was created for */
+     LONG                               updated;        /* has been moved / resized / reparented */
+     LONG                               offscreen;      /* client window is offscreen */
++    BOOL                               host_scaled;    /* host surface applies DPI scaling */
++    BOOL                               reusable;       /* keep the host surface across drawable recreation */
++    BOOL                               cached;         /* surface is owned by the unused cache */
++    int                                format;         /* pixel format of the surface */
++    BOOL                               raw;            /* surface uses raw physical coordinates */
+ };
+
+ W32KAPI void *client_surface_create( UINT size, const struct client_surface_funcs *funcs, HWND hwnd );
++W32KAPI void *reusable_client_surface_create( UINT size, const struct client_surface_funcs *funcs,
++                                             HWND hwnd, int format, BOOL raw );
++W32KAPI struct client_surface *get_unused_client_surface( HWND hwnd, int format, BOOL raw );
+ W32KAPI void client_surface_add_ref( struct client_surface *surface );
+ W32KAPI void client_surface_release( struct client_surface *surface );
+ W32KAPI void client_surface_present( struct client_surface *surface );

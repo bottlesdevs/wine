@@ -1,0 +1,325 @@
+diff --git a/dlls/win32u/dibdrv/graphics.c b/dlls/win32u/dibdrv/graphics.c
+index 92dea91158..12f7ceea07 100644
+--- a/dlls/win32u/dibdrv/graphics.c
++++ b/dlls/win32u/dibdrv/graphics.c
+@@ -45,7 +45,7 @@ enum glyph_type
+ };
+
+ #define GLYPH_CACHE_PAGE_SIZE  0x100
+-#define GLYPH_CACHE_PAGES      (0x10000 / GLYPH_CACHE_PAGE_SIZE)
++#define GLYPH_CACHE_PAGES      (0x110000 / GLYPH_CACHE_PAGE_SIZE)
+
+ struct cached_font
+ {
+@@ -629,6 +629,11 @@ static struct cached_glyph *add_cached_glyph( struct cached_font *font, UINT ind
+     UINT page = index / GLYPH_CACHE_PAGE_SIZE;
+     UINT entry = index % GLYPH_CACHE_PAGE_SIZE;
+
++    if (page >= GLYPH_CACHE_PAGES)
++    {
++        free( glyph );
++        return NULL;
++    }
+     if (!font->glyphs[type][page])
+     {
+         struct cached_glyph **ptr;
+@@ -653,6 +658,7 @@ static struct cached_glyph *get_cached_glyph( struct cached_font *font, UINT ind
+     enum glyph_type type = (flags & ETO_GLYPH_INDEX) ? GLYPH_INDEX : GLYPH_WCHAR;
+     UINT page = index / GLYPH_CACHE_PAGE_SIZE;
+
++    if (page >= GLYPH_CACHE_PAGES) return NULL;
+     if (!font->glyphs[type][page]) return NULL;
+     return font->glyphs[type][page][index % GLYPH_CACHE_PAGE_SIZE];
+ }
+@@ -832,8 +838,11 @@ static void render_string( DC *dc, dib_info *dib, struct cached_font *font, INT
+
+     for (i = 0; i < count; i++)
+     {
+-        if (!(glyph = get_cached_glyph( font, str[i], flags )) &&
+-            !(glyph = cache_glyph_bitmap( dc, font, str[i], flags ))) continue;
++        UINT first = i;
++        UINT codepoint = decode_utf16_codepoint( str, count, &i );
++
++        if (!(glyph = get_cached_glyph( font, codepoint, flags )) &&
++            !(glyph = cache_glyph_bitmap( dc, font, codepoint, flags ))) continue;
+
+         glyph_dib.width       = glyph->metrics.gmBlackBoxX;
+         glyph_dib.height      = glyph->metrics.gmBlackBoxY;
+@@ -848,11 +857,16 @@ static void render_string( DC *dc, dib_info *dib, struct cached_font *font, INT
+         {
+             if (flags & ETO_PDY)
+             {
+-                x += dx[ i * 2 ];
+-                y += dx[ i * 2 + 1];
++                for (; first <= i; first++)
++                {
++                    x += dx[ first * 2 ];
++                    y += dx[ first * 2 + 1];
++                }
+             }
+             else
+-                x += dx[ i ];
++            {
++                for (; first <= i; first++) x += dx[first];
++            }
+         }
+         else
+         {
+diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
+index 836bcbe23e..92097f6e45 100644
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -462,7 +462,7 @@ static const struct nls_update_font_list
+     }
+ };
+
+-static pthread_mutex_t font_lock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_mutex_t font_lock;
+
+ #ifdef WORDS_BIGENDIAN
+ #define GET_BE_WORD(x) (x)
+@@ -1336,6 +1336,7 @@ static void load_face_from_cache( HKEY hkey_family, struct gdi_font_family *fami
+ static void load_font_list_from_cache(void)
+ {
+     WCHAR buffer[4096];
++    WCHAR family_name[LF_FACESIZE];
+     KEY_VALUE_PARTIAL_INFORMATION *info = (void *)buffer;
+     KEY_NODE_INFORMATION *enum_info = (KEY_NODE_INFORMATION *)buffer;
+     DWORD family_index = 0, total_size;
+@@ -1346,14 +1347,18 @@ static void load_font_list_from_cache(void)
+     while (!NtEnumerateKey( wine_fonts_cache_key, family_index++, KeyNodeInformation, enum_info,
+                             sizeof(buffer), &total_size ))
+     {
+-        if (!(hkey_family = reg_open_key( wine_fonts_cache_key, enum_info->Name,
+-                                          enum_info->NameLength )))
++        UINT length = min( enum_info->NameLength / sizeof(WCHAR), ARRAY_SIZE(family_name) - 1 );
++
++        memcpy( family_name, enum_info->Name, length * sizeof(WCHAR) );
++        family_name[length] = 0;
++        if (!(hkey_family = reg_open_key( wine_fonts_cache_key, family_name,
++                                          length * sizeof(WCHAR) )))
+             continue;
+-        TRACE( "opened family key %s\n", debugstr_wn(enum_info->Name, enum_info->NameLength / sizeof(WCHAR)) );
++        TRACE( "opened family key %s\n", debugstr_w(family_name) );
+         if (!query_reg_value( hkey_family, NULL, info, sizeof(buffer) ))
+             second_name[0] = 0;
+
+-        family = create_family( buffer, second_name );
++        family = create_family( family_name, second_name );
+
+         load_face_from_cache( hkey_family, family, buffer, sizeof(buffer), TRUE );
+
+@@ -4271,9 +4276,14 @@ static BOOL font_GetTextExtentExPoint( PHYSDEV dev, const WCHAR *str, INT count,
+     pthread_mutex_lock( &font_lock );
+     for (i = pos = 0; i < count; i++)
+     {
+-        get_glyph_outline( physdev->font, str[i], GGO_METRICS, NULL, &abc, 0, NULL, NULL, physdev->aa_flags );
++        UINT index = i;
++        UINT codepoint = decode_utf16_codepoint( str, count, &index );
++
++        get_glyph_outline( physdev->font, codepoint, GGO_METRICS, NULL, &abc, 0, NULL, NULL,
++                           physdev->aa_flags );
+         pos += abc.abcA + abc.abcB + abc.abcC;
+         dxs[i] = pos;
++        if (index != i) dxs[i = index] = pos;
+     }
+     pthread_mutex_unlock( &font_lock );
+     return TRUE;
+@@ -5549,9 +5559,11 @@ static RECT get_total_extents( HDC hdc, INT x, INT y, UINT flags, UINT aa_flags,
+     reset_bounds( &bounds );
+     for (i = 0; i < count; i++)
+     {
++        UINT first = i;
++        UINT codepoint = decode_utf16_codepoint( str, count, &i );
+         GLYPHMETRICS metrics;
+
+-        if (get_glyph_bitmap( hdc, str[i], flags, aa_flags, &metrics, NULL )) continue;
++        if (get_glyph_bitmap( hdc, codepoint, flags, aa_flags, &metrics, NULL )) continue;
+
+         rect.left   = x + metrics.gmptGlyphOrigin.x;
+         rect.top    = y - metrics.gmptGlyphOrigin.y;
+@@ -5563,10 +5575,16 @@ static RECT get_total_extents( HDC hdc, INT x, INT y, UINT flags, UINT aa_flags,
+         {
+             if (flags & ETO_PDY)
+             {
+-                x += dx[ i * 2 ];
+-                y += dx[ i * 2 + 1];
++                for (; first <= i; first++)
++                {
++                    x += dx[ first * 2 ];
++                    y += dx[ first * 2 + 1];
++                }
++            }
++            else
++            {
++                for (; first <= i; first++) x += dx[first];
+             }
+-            else x += dx[ i ];
+         }
+         else
+         {
+@@ -5740,10 +5758,12 @@ BOOL nulldrv_ExtTextOut( PHYSDEV dev, INT x, INT y, UINT flags, const RECT *rect
+
+     for (i = 0; i < count; i++)
+     {
++        UINT first = i;
++        UINT codepoint = decode_utf16_codepoint( str, count, &i );
+         GLYPHMETRICS metrics;
+         struct gdi_image_bits image;
+
+-        err = get_glyph_bitmap( dev->hdc, str[i], flags, GGO_BITMAP, &metrics, &image );
++        err = get_glyph_bitmap( dev->hdc, codepoint, flags, GGO_BITMAP, &metrics, &image );
+         if (err) continue;
+
+         if (image.ptr) draw_glyph( dc, x, y, &metrics, &image, (flags & ETO_CLIPPED) ? rect : NULL );
+@@ -5753,10 +5773,16 @@ BOOL nulldrv_ExtTextOut( PHYSDEV dev, INT x, INT y, UINT flags, const RECT *rect
+         {
+             if (flags & ETO_PDY)
+             {
+-                x += dx[ i * 2 ];
+-                y += dx[ i * 2 + 1];
++                for (; first <= i; first++)
++                {
++                    x += dx[ first * 2 ];
++                    y += dx[ first * 2 + 1];
++                }
++            }
++            else
++            {
++                for (; first <= i; first++) x += dx[first];
+             }
+-            else x += dx[ i ];
+         }
+         else
+         {
+@@ -6284,7 +6310,7 @@ DWORD WINAPI NtGdiGetGlyphOutline( HDC hdc, UINT ch, UINT format, GLYPHMETRICS *
+     if(!dc) return GDI_ERROR;
+
+     dev = GET_DC_PHYSDEV( dc, pGetGlyphOutline );
+-    ret = dev->funcs->pGetGlyphOutline( dev, ch & 0xffff, format, metrics, size, buffer, mat2 );
++    ret = dev->funcs->pGetGlyphOutline( dev, ch, format, metrics, size, buffer, mat2 );
+     release_dc_ptr( dc );
+     return ret;
+ }
+@@ -6774,6 +6800,7 @@ UINT font_init(void)
+     HANDLE mutex;
+     DWORD disposition;
+     UINT dpi = 0;
++    pthread_mutexattr_t mutex_attr;
+
+     static WCHAR wine_font_mutexW[] =
+         {'\\','B','a','s','e','N','a','m','e','d','O','b','j','e','c','t','s',
+@@ -6782,6 +6809,11 @@ UINT font_init(void)
+         {'S','o','f','t','w','a','r','e','\\','W','i','n','e','\\','F','o','n','t','s'};
+     static const WCHAR cacheW[] = {'C','a','c','h','e'};
+
++    pthread_mutexattr_init( &mutex_attr );
++    pthread_mutexattr_settype( &mutex_attr, PTHREAD_MUTEX_RECURSIVE );
++    pthread_mutex_init( &font_lock, &mutex_attr );
++    pthread_mutexattr_destroy( &mutex_attr );
++
+     if (!(hkcu_key = open_hkcu())) return 0;
+     wine_fonts_key = reg_create_key( hkcu_key, wine_fonts_keyW, sizeof(wine_fonts_keyW), 0, NULL );
+     if (wine_fonts_key) dpi = init_font_options();
+diff --git a/dlls/win32u/freetype.c b/dlls/win32u/freetype.c
+index 1b8fb80fee..e3f91375d4 100644
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -2824,7 +2824,32 @@ static DWORD get_subpixel_glyph_bitmap( FT_GlyphSlot glyph, FT_BBox bbox, UINT f
+         if (matrices)
+             pFT_Outline_Transform( &glyph->outline, &matrices[matrix_vert] );
+
+-        pFT_Render_Glyph( glyph, render_mode );
++        if (pFT_Render_Glyph( glyph, render_mode ))
++        {
++            FT_Bitmap bitmap = {0};
++            DWORD gray_pitch = (width + 3) & ~3;
++            INT row;
++
++            bitmap.width = width;
++            bitmap.rows = height;
++            bitmap.pitch = gray_pitch;
++            bitmap.pixel_mode = FT_PIXEL_MODE_GRAY;
++            bitmap.buffer = buf;
++
++            pFT_Outline_Translate( &glyph->outline, -bbox.xMin, -bbox.yMin );
++            memset( buf, 0, buflen );
++            if (pFT_Outline_Get_Bitmap( library, &glyph->outline, &bitmap )) return GDI_ERROR;
++
++            for (row = height - 1; row >= 0; row--)
++            {
++                BYTE *gray = buf + row * gray_pitch;
++                UINT *color = (UINT *)(buf + row * pitch);
++
++                for (x = width - 1; x >= 0; x--)
++                    color[x] = gray[x] * 0x010101;
++            }
++            return needed;
++        }
+
+         src_pitch = glyph->bitmap.pitch;
+         src_width = glyph->bitmap.width;
+diff --git a/dlls/win32u/ntgdi_private.h b/dlls/win32u/ntgdi_private.h
+index 72b36ec7e9..1f7203f71c 100644
+--- a/dlls/win32u/ntgdi_private.h
++++ b/dlls/win32u/ntgdi_private.h
+@@ -553,6 +553,19 @@ static inline void order_rect( RECT *rect )
+     }
+ }
+
++static inline UINT decode_utf16_codepoint( const WCHAR *str, UINT count, UINT *index )
++{
++    UINT high = str[*index];
++
++    if (*index + 1 < count && high >= 0xd800 && high <= 0xdbff &&
++        str[*index + 1] >= 0xdc00 && str[*index + 1] <= 0xdfff)
++    {
++        UINT low = str[++*index];
++        return 0x10000 + ((high - 0xd800) << 10) + (low - 0xdc00);
++    }
++    return high;
++}
++
+ static inline void get_bounding_rect( RECT *rect, int x, int y, int width, int height )
+ {
+     rect->left   = x;
+diff --git a/dlls/winex11.drv/xrender.c b/dlls/winex11.drv/xrender.c
+index 5adbdc958c..bf9af71710 100644
+--- a/dlls/winex11.drv/xrender.c
++++ b/dlls/winex11.drv/xrender.c
+@@ -1320,6 +1320,19 @@ static BOOL xrenderdrv_ExtTextOut( PHYSDEV dev, INT x, INT y, UINT flags,
+     RECT rect, bounds;
+     enum glyph_type type = (flags & ETO_GLYPH_INDEX) ? GLYPH_INDEX : GLYPH_WCHAR;
+
++    if (!(flags & ETO_GLYPH_INDEX))
++    {
++        for (idx = 0; idx + 1 < count; idx++)
++        {
++            if (wstr[idx] >= 0xd800 && wstr[idx] <= 0xdbff &&
++                wstr[idx + 1] >= 0xdc00 && wstr[idx + 1] <= 0xdfff)
++            {
++                dev = GET_NEXT_PHYSDEV( dev, pExtTextOut );
++                return dev->funcs->pExtTextOut( dev, x, y, flags, lprect, wstr, count, lpDx );
++            }
++        }
++    }
++
+     NtGdiGetDCDword( physdev->dev.hdc, NtGdiGetTextColor, &text_color );
+     get_xrender_color( physdev, text_color, &col );
+     pict = get_xrender_picture( physdev, 0, (flags & ETO_CLIPPED) ? lprect : NULL );
+diff --git a/loader/wine.inf.in b/loader/wine.inf.in
+index 924a77e94f..e8ea63c6db 100644
+--- a/loader/wine.inf.in
++++ b/loader/wine.inf.in
+@@ -560,11 +560,6 @@ HKLM,%FontsNT%,"Tahoma Bold (TrueType)",,"tahomabd.ttf"
+ HKLM,%FontsNT%,"Times New Roman (TrueType)",,"times.ttf"
+ HKLM,%FontsNT%,"Webdings (TrueType)",,"webdings.ttf"
+ HKLM,%FontsNT%,"Wingdings (TrueType)",,"wingdings.ttf"
+-HKCU,Software\Wine\Fonts\Replacements,"Palatino Linotype",,"Times New Roman"
+-HKCU,Software\Wine\Fonts\Replacements,"Verdana",,"Times New Roman"
+-HKCU,Software\Wine\Fonts\Replacements,"Segoe UI Semibold",,"Times New Roman"
+-HKCU,Software\Wine\Fonts\Replacements,"Segoe UI",,"Times New Roman"
+-
+ [MCI]
+ HKLM,%Mci32Str%,"AVIVideo",,"mciavi32.dll"
+ HKLM,%Mci32Str%,"CDAudio",,"mcicda.dll"

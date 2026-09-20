@@ -1,0 +1,16 @@
+From: Mirko Brombin <brombin94@gmail.com>
+Subject: [PATCH] win32u: Keep the window surface of windows with client surfaces when the driver cannot draw on windows.
+
+---
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -2172,6 +2172,9 @@
+     win_rect = win->rects.window;
+     release_win_ptr( win );
+
++    /* a driver that cannot draw on windows directly needs the window surface
++     * to paint the non-client area and the child windows */
++    if (ret && !user_driver->dc_funcs.pCreateDC) return FALSE;
+     if (ret) return !force_present_to_surface( &win_rect );
+
+     return ret;

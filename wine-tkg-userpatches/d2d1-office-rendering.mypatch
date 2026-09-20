@@ -1,0 +1,860 @@
+Direct2D objects needed by Office rendering.
+
+diff --git a/dlls/d2d1/device.c b/dlls/d2d1/device.c
+index c7a9336..7f2304c 100644
+--- a/dlls/d2d1/device.c
++++ b/dlls/d2d1/device.c
+@@ -30,6 +30,647 @@ static const D2D1_MATRIX_3X2_F identity =
+     0.0f, 0.0f,
+ }}};
+
++struct ID2D1SvgDocumentVtbl
++{
++    HRESULT (STDMETHODCALLTYPE *QueryInterface)(ID2D1SvgDocument *iface, REFIID iid, void **out);
++    ULONG (STDMETHODCALLTYPE *AddRef)(ID2D1SvgDocument *iface);
++    ULONG (STDMETHODCALLTYPE *Release)(ID2D1SvgDocument *iface);
++    void (STDMETHODCALLTYPE *GetFactory)(ID2D1SvgDocument *iface, ID2D1Factory **factory);
++    HRESULT (STDMETHODCALLTYPE *SetViewportSize)(ID2D1SvgDocument *iface, D2D1_SIZE_F size);
++    D2D1_SIZE_F *(STDMETHODCALLTYPE *GetViewportSize)(ID2D1SvgDocument *iface, D2D1_SIZE_F *size);
++    HRESULT (STDMETHODCALLTYPE *SetRoot)(ID2D1SvgDocument *iface, IUnknown *root);
++    void (STDMETHODCALLTYPE *GetRoot)(ID2D1SvgDocument *iface, IUnknown **root);
++    HRESULT (STDMETHODCALLTYPE *FindElementById)(ID2D1SvgDocument *iface, const WCHAR *id, IUnknown **element);
++    HRESULT (STDMETHODCALLTYPE *Serialize)(ID2D1SvgDocument *iface, IStream *stream, IUnknown *subtree);
++    HRESULT (STDMETHODCALLTYPE *Deserialize)(ID2D1SvgDocument *iface, IStream *stream, IUnknown **subtree);
++    HRESULT (STDMETHODCALLTYPE *CreatePaint)(ID2D1SvgDocument *iface, UINT32 type,
++            const D2D1_COLOR_F *color, const WCHAR *id, IUnknown **paint);
++    HRESULT (STDMETHODCALLTYPE *CreateStrokeDashArray)(ID2D1SvgDocument *iface, const void *dashes,
++            UINT32 count, IUnknown **array);
++    HRESULT (STDMETHODCALLTYPE *CreatePointCollection)(ID2D1SvgDocument *iface,
++            const D2D1_POINT_2F *points, UINT32 count, IUnknown **collection);
++    HRESULT (STDMETHODCALLTYPE *CreatePathData)(ID2D1SvgDocument *iface, const float *data,
++            UINT32 data_count, const UINT32 *commands, UINT32 command_count, IUnknown **path_data);
++};
++
++struct ID2D1SvgDocument
++{
++    const struct ID2D1SvgDocumentVtbl *lpVtbl;
++};
++
++struct ID2D1SvgElementVtbl
++{
++    HRESULT (STDMETHODCALLTYPE *QueryInterface)(IUnknown *iface, REFIID iid, void **out);
++    ULONG (STDMETHODCALLTYPE *AddRef)(IUnknown *iface);
++    ULONG (STDMETHODCALLTYPE *Release)(IUnknown *iface);
++    void (STDMETHODCALLTYPE *GetFactory)(IUnknown *iface, ID2D1Factory **factory);
++    void (STDMETHODCALLTYPE *GetDocument)(IUnknown *iface, ID2D1SvgDocument **document);
++    HRESULT (STDMETHODCALLTYPE *GetTagName)(IUnknown *iface, WCHAR *name, UINT32 count);
++    UINT32 (STDMETHODCALLTYPE *GetTagNameLength)(IUnknown *iface);
++    BOOL (STDMETHODCALLTYPE *IsTextContent)(IUnknown *iface);
++    void (STDMETHODCALLTYPE *GetParent)(IUnknown *iface, IUnknown **parent);
++    BOOL (STDMETHODCALLTYPE *HasChildren)(IUnknown *iface);
++    void (STDMETHODCALLTYPE *GetFirstChild)(IUnknown *iface, IUnknown **child);
++    void (STDMETHODCALLTYPE *GetLastChild)(IUnknown *iface, IUnknown **child);
++    HRESULT (STDMETHODCALLTYPE *GetPreviousChild)(IUnknown *iface, IUnknown *reference, IUnknown **child);
++    HRESULT (STDMETHODCALLTYPE *GetNextChild)(IUnknown *iface, IUnknown *reference, IUnknown **child);
++    HRESULT (STDMETHODCALLTYPE *InsertChildBefore)(IUnknown *iface, IUnknown *child, IUnknown *reference);
++    HRESULT (STDMETHODCALLTYPE *AppendChild)(IUnknown *iface, IUnknown *child);
++    HRESULT (STDMETHODCALLTYPE *ReplaceChild)(IUnknown *iface, IUnknown *new_child, IUnknown *old_child);
++    HRESULT (STDMETHODCALLTYPE *RemoveChild)(IUnknown *iface, IUnknown *child);
++    HRESULT (STDMETHODCALLTYPE *CreateChild)(IUnknown *iface, const WCHAR *tag, IUnknown **child);
++    BOOL (STDMETHODCALLTYPE *IsAttributeSpecified)(IUnknown *iface, const WCHAR *name, BOOL *inherited);
++    UINT32 (STDMETHODCALLTYPE *GetSpecifiedAttributeCount)(IUnknown *iface);
++    HRESULT (STDMETHODCALLTYPE *GetSpecifiedAttributeName)(IUnknown *iface, UINT32 index,
++            WCHAR *name, UINT32 count, BOOL *inherited);
++    HRESULT (STDMETHODCALLTYPE *GetSpecifiedAttributeNameLength)(IUnknown *iface, UINT32 index,
++            UINT32 *length, BOOL *inherited);
++    HRESULT (STDMETHODCALLTYPE *RemoveAttribute)(IUnknown *iface, const WCHAR *name);
++    HRESULT (STDMETHODCALLTYPE *SetTextValue)(IUnknown *iface, const WCHAR *value, UINT32 count);
++    HRESULT (STDMETHODCALLTYPE *GetTextValue)(IUnknown *iface, WCHAR *value, UINT32 count);
++    UINT32 (STDMETHODCALLTYPE *GetTextValueLength)(IUnknown *iface);
++    HRESULT (STDMETHODCALLTYPE *SetAttributeValue)(IUnknown *iface, const WCHAR *name, IUnknown *value);
++    HRESULT (STDMETHODCALLTYPE *SetAttributeValuePod)(IUnknown *iface, const WCHAR *name,
++            UINT32 type, const void *value, UINT32 size);
++    HRESULT (STDMETHODCALLTYPE *SetAttributeValueString)(IUnknown *iface, const WCHAR *name,
++            UINT32 type, const WCHAR *value);
++    HRESULT (STDMETHODCALLTYPE *GetAttributeValue)(IUnknown *iface, const WCHAR *name,
++            REFIID iid, void **value);
++    HRESULT (STDMETHODCALLTYPE *GetAttributeValuePod)(IUnknown *iface, const WCHAR *name,
++            UINT32 type, void *value, UINT32 size);
++    HRESULT (STDMETHODCALLTYPE *GetAttributeValueString)(IUnknown *iface, const WCHAR *name,
++            UINT32 type, WCHAR *value, UINT32 count);
++    HRESULT (STDMETHODCALLTYPE *GetAttributeValueLength)(IUnknown *iface, const WCHAR *name,
++            UINT32 type, UINT32 *length);
++};
++
++static const GUID IID_ID2D1SvgDocument =
++    {0x86b88e4d, 0xafa4, 0x4d7b, {0x88, 0xe4, 0x68, 0xa5, 0x1c, 0x4a, 0x0a, 0xec}};
++static const GUID IID_ID2D1SvgElement =
++    {0xac7b67a6, 0x183e, 0x49c1, {0xa8, 0x23, 0x0e, 0xbe, 0x40, 0xb0, 0xdb, 0x29}};
++
++struct d2d_svg_element
++{
++    IUnknown IUnknown_iface;
++    LONG refcount;
++    struct d2d_svg_document *document;
++    struct d2d_svg_element *parent;
++    struct d2d_svg_element *first_child;
++    struct d2d_svg_element *last_child;
++    struct d2d_svg_element *next;
++    struct d2d_svg_element *previous;
++    WCHAR *tag;
++    WCHAR *path_data;
++    D2D1_COLOR_F color;
++    float opacity;
++    BOOL has_color;
++};
++
++struct d2d_svg_document
++{
++    ID2D1SvgDocument ID2D1SvgDocument_iface;
++    LONG refcount;
++    ID2D1Factory *factory;
++    D2D1_SIZE_F viewport_size;
++    IUnknown *root;
++};
++
++static inline struct d2d_svg_element *impl_from_ID2D1SvgElement(IUnknown *iface)
++{
++    return CONTAINING_RECORD(iface, struct d2d_svg_element, IUnknown_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_QueryInterface(IUnknown *iface, REFIID iid, void **out)
++{
++    TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
++
++    if (!out) return E_POINTER;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_ID2D1Resource)
++            || IsEqualGUID(iid, &IID_ID2D1SvgElement))
++    {
++        *out = iface;
++        IUnknown_AddRef(iface);
++        return S_OK;
++    }
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG STDMETHODCALLTYPE d2d_svg_element_AddRef(IUnknown *iface)
++{
++    return InterlockedIncrement(&impl_from_ID2D1SvgElement(iface)->refcount);
++}
++
++static ULONG STDMETHODCALLTYPE d2d_svg_element_Release(IUnknown *iface)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(iface);
++    ULONG refcount = InterlockedDecrement(&element->refcount);
++
++    if (!refcount)
++    {
++        struct d2d_svg_element *child, *next;
++
++        for (child = element->first_child; child; child = next)
++        {
++            next = child->next;
++            child->parent = NULL;
++            IUnknown_Release(&child->IUnknown_iface);
++        }
++        free(element->path_data);
++        free(element->tag);
++        free(element);
++    }
++    return refcount;
++}
++
++static void STDMETHODCALLTYPE d2d_svg_element_GetFactory(IUnknown *iface, ID2D1Factory **factory)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(iface);
++
++    *factory = element->document->factory;
++    ID2D1Factory_AddRef(*factory);
++}
++
++static void STDMETHODCALLTYPE d2d_svg_element_GetDocument(IUnknown *iface, ID2D1SvgDocument **document)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(iface);
++
++    TRACE("iface %p, document %p.\n", iface, document);
++    *document = &element->document->ID2D1SvgDocument_iface;
++    (*document)->lpVtbl->AddRef(*document);
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_GetTagName(IUnknown *iface, WCHAR *name, UINT32 count)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(iface);
++    UINT32 length = wcslen(element->tag);
++
++    TRACE("iface %p, name %p, count %u.\n", iface, name, count);
++    if (!name || count <= length) return E_INVALIDARG;
++    memcpy(name, element->tag, (length + 1) * sizeof(*name));
++    return S_OK;
++}
++
++static UINT32 STDMETHODCALLTYPE d2d_svg_element_GetTagNameLength(IUnknown *iface)
++{
++    return wcslen(impl_from_ID2D1SvgElement(iface)->tag);
++}
++
++static BOOL STDMETHODCALLTYPE d2d_svg_element_IsTextContent(IUnknown *iface)
++{
++    return !wcscmp(impl_from_ID2D1SvgElement(iface)->tag, L"");
++}
++
++static void STDMETHODCALLTYPE d2d_svg_element_GetParent(IUnknown *iface, IUnknown **parent)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(iface);
++
++    TRACE("iface %p, parent %p.\n", iface, parent);
++    if ((*parent = element->parent ? &element->parent->IUnknown_iface : NULL)) IUnknown_AddRef(*parent);
++}
++
++static BOOL STDMETHODCALLTYPE d2d_svg_element_HasChildren(IUnknown *iface)
++{
++    TRACE("iface %p.\n", iface);
++    return !!impl_from_ID2D1SvgElement(iface)->first_child;
++}
++
++static void STDMETHODCALLTYPE d2d_svg_element_GetFirstChild(IUnknown *iface, IUnknown **child)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(iface);
++
++    TRACE("iface %p, child %p.\n", iface, child);
++    if ((*child = element->first_child ? &element->first_child->IUnknown_iface : NULL)) IUnknown_AddRef(*child);
++}
++
++static void STDMETHODCALLTYPE d2d_svg_element_GetLastChild(IUnknown *iface, IUnknown **child)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(iface);
++
++    TRACE("iface %p, child %p.\n", iface, child);
++    if ((*child = element->last_child ? &element->last_child->IUnknown_iface : NULL)) IUnknown_AddRef(*child);
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_GetPreviousChild(IUnknown *iface,
++        IUnknown *reference, IUnknown **child)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(reference);
++
++    TRACE("iface %p, reference %p, child %p.\n", iface, reference, child);
++    if (!child) return E_POINTER;
++    *child = element->previous ? &element->previous->IUnknown_iface : NULL;
++    if (*child) IUnknown_AddRef(*child);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_GetNextChild(IUnknown *iface,
++        IUnknown *reference, IUnknown **child)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(reference);
++
++    TRACE("iface %p, reference %p, child %p.\n", iface, reference, child);
++    if (!child) return E_POINTER;
++    *child = element->next ? &element->next->IUnknown_iface : NULL;
++    if (*child) IUnknown_AddRef(*child);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_InsertChildBefore(IUnknown *iface,
++        IUnknown *child, IUnknown *reference)
++{
++    TRACE("iface %p, child %p, reference %p.\n", iface, child, reference);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_AppendChild(IUnknown *iface, IUnknown *child)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(iface);
++    struct d2d_svg_element *new_child = impl_from_ID2D1SvgElement(child);
++
++    TRACE("iface %p, child %p.\n", iface, child);
++    if (!child || new_child->document != element->document || new_child->parent) return E_INVALIDARG;
++    new_child->parent = element;
++    new_child->previous = element->last_child;
++    if (element->last_child) element->last_child->next = new_child;
++    else element->first_child = new_child;
++    element->last_child = new_child;
++    IUnknown_AddRef(child);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_ReplaceChild(IUnknown *iface,
++        IUnknown *new_child, IUnknown *old_child)
++{
++    TRACE("iface %p, new_child %p, old_child %p.\n", iface, new_child, old_child);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_RemoveChild(IUnknown *iface, IUnknown *child)
++{
++    TRACE("iface %p, child %p.\n", iface, child);
++    return S_OK;
++}
++
++static HRESULT d2d_svg_element_create(struct d2d_svg_document *document,
++        const WCHAR *tag, IUnknown **element);
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_CreateChild(IUnknown *iface,
++        const WCHAR *tag, IUnknown **child)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(iface);
++    HRESULT hr;
++
++    TRACE("iface %p, tag %s, child %p.\n", iface, debugstr_w(tag), child);
++    if (FAILED(hr = d2d_svg_element_create(element->document, tag, child))) return hr;
++    if (FAILED(hr = d2d_svg_element_AppendChild(iface, *child)))
++    {
++        IUnknown_Release(*child);
++        *child = NULL;
++    }
++    return hr;
++}
++
++static BOOL STDMETHODCALLTYPE d2d_svg_element_IsAttributeSpecified(IUnknown *iface,
++        const WCHAR *name, BOOL *inherited)
++{
++    TRACE("iface %p, name %s, inherited %p.\n", iface, debugstr_w(name), inherited);
++    if (inherited) *inherited = FALSE;
++    return FALSE;
++}
++
++static UINT32 STDMETHODCALLTYPE d2d_svg_element_GetSpecifiedAttributeCount(IUnknown *iface)
++{
++    TRACE("iface %p.\n", iface);
++    return 0;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_GetSpecifiedAttributeName(IUnknown *iface,
++        UINT32 index, WCHAR *name, UINT32 count, BOOL *inherited)
++{
++    TRACE("iface %p, index %u, name %p, count %u, inherited %p.\n",
++            iface, index, name, count, inherited);
++    return E_INVALIDARG;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_GetSpecifiedAttributeNameLength(IUnknown *iface,
++        UINT32 index, UINT32 *length, BOOL *inherited)
++{
++    TRACE("iface %p, index %u, length %p, inherited %p.\n", iface, index, length, inherited);
++    return E_INVALIDARG;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_RemoveAttribute(IUnknown *iface, const WCHAR *name)
++{
++    TRACE("iface %p, name %s.\n", iface, debugstr_w(name));
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_SetTextValue(IUnknown *iface,
++        const WCHAR *value, UINT32 count)
++{
++    TRACE("iface %p, value %s, count %u.\n", iface, debugstr_wn(value, count), count);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_GetTextValue(IUnknown *iface,
++        WCHAR *value, UINT32 count)
++{
++    TRACE("iface %p, value %p, count %u.\n", iface, value, count);
++    if (value && count) *value = 0;
++    return S_OK;
++}
++
++static UINT32 STDMETHODCALLTYPE d2d_svg_element_GetTextValueLength(IUnknown *iface)
++{
++    TRACE("iface %p.\n", iface);
++    return 0;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_SetAttributeValue(IUnknown *iface,
++        const WCHAR *name, IUnknown *value)
++{
++    TRACE("iface %p, name %s, value %p.\n", iface, debugstr_w(name), value);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_SetAttributeValuePod(IUnknown *iface,
++        const WCHAR *name, UINT32 type, const void *value, UINT32 size)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(iface);
++
++    TRACE("iface %p, name %s, type %u, value %p, size %u.\n",
++            iface, debugstr_w(name), type, value, size);
++    if (!wcscmp(name, L"color") && size == sizeof(element->color))
++    {
++        memcpy(&element->color, value, size);
++        element->has_color = TRUE;
++    }
++    else if (!wcscmp(name, L"opacity") && size == sizeof(element->opacity))
++    {
++        memcpy(&element->opacity, value, size);
++    }
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_SetAttributeValueString(IUnknown *iface,
++        const WCHAR *name, UINT32 type, const WCHAR *value)
++{
++    struct d2d_svg_element *element = impl_from_ID2D1SvgElement(iface);
++    WCHAR *copy;
++
++    TRACE("iface %p, name %s, type %u, value %s.\n",
++            iface, debugstr_w(name), type, debugstr_w(value));
++    if (!wcscmp(name, L"d"))
++    {
++        if (!(copy = wcsdup(value))) return E_OUTOFMEMORY;
++        free(element->path_data);
++        element->path_data = copy;
++    }
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_GetAttributeValue(IUnknown *iface,
++        const WCHAR *name, REFIID iid, void **value)
++{
++    TRACE("iface %p, name %s, iid %s, value %p.\n",
++            iface, debugstr_w(name), debugstr_guid(iid), value);
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_GetAttributeValuePod(IUnknown *iface,
++        const WCHAR *name, UINT32 type, void *value, UINT32 size)
++{
++    TRACE("iface %p, name %s, type %u, value %p, size %u.\n",
++            iface, debugstr_w(name), type, value, size);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_GetAttributeValueString(IUnknown *iface,
++        const WCHAR *name, UINT32 type, WCHAR *value, UINT32 count)
++{
++    TRACE("iface %p, name %s, type %u, value %p, count %u.\n",
++            iface, debugstr_w(name), type, value, count);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_element_GetAttributeValueLength(IUnknown *iface,
++        const WCHAR *name, UINT32 type, UINT32 *length)
++{
++    TRACE("iface %p, name %s, type %u, length %p.\n", iface, debugstr_w(name), type, length);
++    return E_NOTIMPL;
++}
++
++static const struct ID2D1SvgElementVtbl d2d_svg_element_vtbl =
++{
++    d2d_svg_element_QueryInterface,
++    d2d_svg_element_AddRef,
++    d2d_svg_element_Release,
++    d2d_svg_element_GetFactory,
++    d2d_svg_element_GetDocument,
++    d2d_svg_element_GetTagName,
++    d2d_svg_element_GetTagNameLength,
++    d2d_svg_element_IsTextContent,
++    d2d_svg_element_GetParent,
++    d2d_svg_element_HasChildren,
++    d2d_svg_element_GetFirstChild,
++    d2d_svg_element_GetLastChild,
++    d2d_svg_element_GetPreviousChild,
++    d2d_svg_element_GetNextChild,
++    d2d_svg_element_InsertChildBefore,
++    d2d_svg_element_AppendChild,
++    d2d_svg_element_ReplaceChild,
++    d2d_svg_element_RemoveChild,
++    d2d_svg_element_CreateChild,
++    d2d_svg_element_IsAttributeSpecified,
++    d2d_svg_element_GetSpecifiedAttributeCount,
++    d2d_svg_element_GetSpecifiedAttributeName,
++    d2d_svg_element_GetSpecifiedAttributeNameLength,
++    d2d_svg_element_RemoveAttribute,
++    d2d_svg_element_SetTextValue,
++    d2d_svg_element_GetTextValue,
++    d2d_svg_element_GetTextValueLength,
++    d2d_svg_element_SetAttributeValue,
++    d2d_svg_element_SetAttributeValuePod,
++    d2d_svg_element_SetAttributeValueString,
++    d2d_svg_element_GetAttributeValue,
++    d2d_svg_element_GetAttributeValuePod,
++    d2d_svg_element_GetAttributeValueString,
++    d2d_svg_element_GetAttributeValueLength,
++};
++
++static HRESULT d2d_svg_element_create(struct d2d_svg_document *document,
++        const WCHAR *tag, IUnknown **element)
++{
++    struct d2d_svg_element *object;
++    size_t size;
++
++    if (!element) return E_POINTER;
++    *element = NULL;
++    if (!tag) return E_INVALIDARG;
++    if (!(object = calloc(1, sizeof(*object)))) return E_OUTOFMEMORY;
++    size = (wcslen(tag) + 1) * sizeof(*tag);
++    if (!(object->tag = malloc(size)))
++    {
++        free(object);
++        return E_OUTOFMEMORY;
++    }
++    memcpy(object->tag, tag, size);
++    object->IUnknown_iface.lpVtbl = (const IUnknownVtbl *)&d2d_svg_element_vtbl;
++    object->refcount = 1;
++    object->document = document;
++    object->color = (D2D1_COLOR_F){0.0f, 0.0f, 0.0f, 1.0f};
++    object->opacity = 1.0f;
++    *element = &object->IUnknown_iface;
++    return S_OK;
++}
++
++static inline struct d2d_svg_document *impl_from_ID2D1SvgDocument(ID2D1SvgDocument *iface)
++{
++    return CONTAINING_RECORD(iface, struct d2d_svg_document, ID2D1SvgDocument_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_document_QueryInterface(ID2D1SvgDocument *iface,
++        REFIID iid, void **out)
++{
++    TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
++
++    if (!out) return E_POINTER;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_ID2D1Resource)
++            || IsEqualGUID(iid, &IID_ID2D1SvgDocument))
++    {
++        *out = iface;
++        InterlockedIncrement(&impl_from_ID2D1SvgDocument(iface)->refcount);
++        return S_OK;
++    }
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG STDMETHODCALLTYPE d2d_svg_document_AddRef(ID2D1SvgDocument *iface)
++{
++    return InterlockedIncrement(&impl_from_ID2D1SvgDocument(iface)->refcount);
++}
++
++static ULONG STDMETHODCALLTYPE d2d_svg_document_Release(ID2D1SvgDocument *iface)
++{
++    struct d2d_svg_document *document = impl_from_ID2D1SvgDocument(iface);
++    ULONG refcount = InterlockedDecrement(&document->refcount);
++
++    if (!refcount)
++    {
++        if (document->root) IUnknown_Release(document->root);
++        ID2D1Factory_Release(document->factory);
++        free(document);
++    }
++    return refcount;
++}
++
++static void STDMETHODCALLTYPE d2d_svg_document_GetFactory(ID2D1SvgDocument *iface, ID2D1Factory **factory)
++{
++    struct d2d_svg_document *document = impl_from_ID2D1SvgDocument(iface);
++
++    *factory = document->factory;
++    ID2D1Factory_AddRef(*factory);
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_document_SetViewportSize(ID2D1SvgDocument *iface, D2D1_SIZE_F size)
++{
++    impl_from_ID2D1SvgDocument(iface)->viewport_size = size;
++    return S_OK;
++}
++
++static D2D1_SIZE_F *STDMETHODCALLTYPE d2d_svg_document_GetViewportSize(ID2D1SvgDocument *iface,
++        D2D1_SIZE_F *size)
++{
++    *size = impl_from_ID2D1SvgDocument(iface)->viewport_size;
++    return size;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_document_SetRoot(ID2D1SvgDocument *iface, IUnknown *root)
++{
++    struct d2d_svg_document *document = impl_from_ID2D1SvgDocument(iface);
++
++    TRACE("iface %p, root %p.\n", iface, root);
++
++    if (root) IUnknown_AddRef(root);
++    if (document->root) IUnknown_Release(document->root);
++    document->root = root;
++    return S_OK;
++}
++
++static void STDMETHODCALLTYPE d2d_svg_document_GetRoot(ID2D1SvgDocument *iface, IUnknown **root)
++{
++    struct d2d_svg_document *document = impl_from_ID2D1SvgDocument(iface);
++
++    TRACE("iface %p, root %p.\n", iface, root);
++
++    *root = document->root;
++    if (*root) IUnknown_AddRef(*root);
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_document_FindElementById(ID2D1SvgDocument *iface,
++        const WCHAR *id, IUnknown **element)
++{
++    FIXME("iface %p, id %s, element %p stub!\n", iface, debugstr_w(id), element);
++    if (!element) return E_POINTER;
++    *element = NULL;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_document_Serialize(ID2D1SvgDocument *iface,
++        IStream *stream, IUnknown *subtree)
++{
++    FIXME("iface %p, stream %p, subtree %p stub!\n", iface, stream, subtree);
++    return E_NOTIMPL;
++}
++
++static HRESULT STDMETHODCALLTYPE d2d_svg_document_Deserialize(ID2D1SvgDocument *iface,
++        IStream *stream, IUnknown **subtree)
++{
++    FIXME("iface %p, stream %p, subtree %p stub!\n", iface, stream, subtree);
++    if (subtree) *subtree = NULL;
++    return E_NOTIMPL;
++}
++
++#define D2D_SVG_DOCUMENT_CREATE_STUB(name, args, out) \
++    static HRESULT STDMETHODCALLTYPE d2d_svg_document_##name args \
++    { \
++        FIXME("iface %p, output %p stub!\n", iface, out); \
++        if (out) *out = NULL; \
++        return E_NOTIMPL; \
++    }
++
++D2D_SVG_DOCUMENT_CREATE_STUB(CreatePaint,
++        (ID2D1SvgDocument *iface, UINT32 type, const D2D1_COLOR_F *color, const WCHAR *id, IUnknown **paint), paint)
++D2D_SVG_DOCUMENT_CREATE_STUB(CreateStrokeDashArray,
++        (ID2D1SvgDocument *iface, const void *dashes, UINT32 count, IUnknown **array), array)
++D2D_SVG_DOCUMENT_CREATE_STUB(CreatePointCollection,
++        (ID2D1SvgDocument *iface, const D2D1_POINT_2F *points, UINT32 count, IUnknown **collection), collection)
++D2D_SVG_DOCUMENT_CREATE_STUB(CreatePathData,
++        (ID2D1SvgDocument *iface, const float *data, UINT32 data_count, const UINT32 *commands,
++         UINT32 command_count, IUnknown **path_data), path_data)
++
++static const struct ID2D1SvgDocumentVtbl d2d_svg_document_vtbl =
++{
++    d2d_svg_document_QueryInterface,
++    d2d_svg_document_AddRef,
++    d2d_svg_document_Release,
++    d2d_svg_document_GetFactory,
++    d2d_svg_document_SetViewportSize,
++    d2d_svg_document_GetViewportSize,
++    d2d_svg_document_SetRoot,
++    d2d_svg_document_GetRoot,
++    d2d_svg_document_FindElementById,
++    d2d_svg_document_Serialize,
++    d2d_svg_document_Deserialize,
++    d2d_svg_document_CreatePaint,
++    d2d_svg_document_CreateStrokeDashArray,
++    d2d_svg_document_CreatePointCollection,
++    d2d_svg_document_CreatePathData,
++};
++
+ struct d2d_draw_text_layout_ctx
+ {
+     ID2D1Brush *brush;
+@@ -3057,16 +3698,201 @@ static HRESULT STDMETHODCALLTYPE d2d_device_context_GetSvgGlyphImage(ID2D1Device
+ static HRESULT STDMETHODCALLTYPE d2d_device_context_CreateSvgDocument(ID2D1DeviceContext6 *iface,
+         IStream *input_xml_stream, D2D1_SIZE_F viewport_size, ID2D1SvgDocument **svg_document)
+ {
+-    FIXME("iface %p, input_xml_stream %p, svg_document %p stub!\n", iface, input_xml_stream,
+-            svg_document);
++    struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
++    struct d2d_svg_document *document;
++    HRESULT hr;
+
+-    return E_NOTIMPL;
++    TRACE("iface %p, input_xml_stream %p, viewport_size {%f, %f}, svg_document %p.\n",
++            iface, input_xml_stream, viewport_size.width, viewport_size.height, svg_document);
++
++    if (!svg_document) return E_POINTER;
++    *svg_document = NULL;
++    if (input_xml_stream)
++    {
++        FIXME("SVG stream parsing is not implemented.\n");
++        return E_NOTIMPL;
++    }
++    if (!(document = calloc(1, sizeof(*document)))) return E_OUTOFMEMORY;
++    document->ID2D1SvgDocument_iface.lpVtbl = &d2d_svg_document_vtbl;
++    document->refcount = 1;
++    document->factory = context->factory;
++    ID2D1Factory_AddRef(document->factory);
++    document->viewport_size = viewport_size;
++    if (FAILED(hr = d2d_svg_element_create(document, L"svg", &document->root)))
++    {
++        ID2D1Factory_Release(document->factory);
++        free(document);
++        return hr;
++    }
++    *svg_document = &document->ID2D1SvgDocument_iface;
++    return S_OK;
++}
++
++static void svg_skip_separators(const WCHAR **p)
++{
++    while (**p == ' ' || **p == '\t' || **p == '\r' || **p == '\n' || **p == ',') ++*p;
++}
++
++static BOOL svg_read_float(const WCHAR **p, float *value)
++{
++    WCHAR *end;
++
++    svg_skip_separators(p);
++    *value = wcstof(*p, &end);
++    if (end == *p) return FALSE;
++    *p = end;
++    return TRUE;
++}
++
++static D2D1_POINT_2F svg_absolute_point(D2D1_POINT_2F point, D2D1_POINT_2F current, BOOL relative)
++{
++    if (relative)
++    {
++        point.x += current.x;
++        point.y += current.y;
++    }
++    return point;
++}
++
++static HRESULT d2d_svg_path_create_geometry(ID2D1Factory *factory, const WCHAR *path,
++        ID2D1PathGeometry **geometry)
++{
++    D2D1_POINT_2F current = {0.0f, 0.0f}, start = {0.0f, 0.0f}, point;
++    D2D1_BEZIER_SEGMENT bezier;
++    ID2D1GeometrySink *sink;
++    WCHAR command = 0;
++    BOOL figure_open = FALSE, relative;
++    HRESULT hr;
++
++    if (FAILED(hr = ID2D1Factory_CreatePathGeometry(factory, geometry))) return hr;
++    if (FAILED(hr = ID2D1PathGeometry_Open(*geometry, &sink)))
++    {
++        ID2D1PathGeometry_Release(*geometry);
++        *geometry = NULL;
++        return hr;
++    }
++
++    while (*path)
++    {
++        svg_skip_separators(&path);
++        if (!*path) break;
++        if ((*path >= 'A' && *path <= 'Z') || (*path >= 'a' && *path <= 'z')) command = *path++;
++        if (!command) { hr = E_INVALIDARG; goto done; }
++        relative = command >= 'a' && command <= 'z';
++
++        switch (command)
++        {
++            case 'M': case 'm':
++                if (!svg_read_float(&path, &point.x) || !svg_read_float(&path, &point.y))
++                {
++                    hr = E_INVALIDARG;
++                    goto done;
++                }
++                point = svg_absolute_point(point, current, relative);
++                if (figure_open) ID2D1GeometrySink_EndFigure(sink, D2D1_FIGURE_END_CLOSED);
++                ID2D1GeometrySink_BeginFigure(sink, point, D2D1_FIGURE_BEGIN_FILLED);
++                current = start = point;
++                figure_open = TRUE;
++                command = relative ? 'l' : 'L';
++                break;
++
++            case 'L': case 'l':
++                if (!svg_read_float(&path, &point.x) || !svg_read_float(&path, &point.y))
++                {
++                    hr = E_INVALIDARG;
++                    goto done;
++                }
++                current = svg_absolute_point(point, current, relative);
++                ID2D1GeometrySink_AddLine(sink, current);
++                break;
++
++            case 'H': case 'h':
++                if (!svg_read_float(&path, &point.x)) { hr = E_INVALIDARG; goto done; }
++                current.x = relative ? current.x + point.x : point.x;
++                ID2D1GeometrySink_AddLine(sink, current);
++                break;
++
++            case 'V': case 'v':
++                if (!svg_read_float(&path, &point.y)) { hr = E_INVALIDARG; goto done; }
++                current.y = relative ? current.y + point.y : point.y;
++                ID2D1GeometrySink_AddLine(sink, current);
++                break;
++
++            case 'C': case 'c':
++                if (!svg_read_float(&path, &bezier.point1.x) || !svg_read_float(&path, &bezier.point1.y)
++                        || !svg_read_float(&path, &bezier.point2.x) || !svg_read_float(&path, &bezier.point2.y)
++                        || !svg_read_float(&path, &bezier.point3.x) || !svg_read_float(&path, &bezier.point3.y))
++                {
++                    hr = E_INVALIDARG;
++                    goto done;
++                }
++                bezier.point1 = svg_absolute_point(bezier.point1, current, relative);
++                bezier.point2 = svg_absolute_point(bezier.point2, current, relative);
++                bezier.point3 = svg_absolute_point(bezier.point3, current, relative);
++                current = bezier.point3;
++                ID2D1GeometrySink_AddBezier(sink, &bezier);
++                break;
++
++            case 'Z': case 'z':
++                if (figure_open) ID2D1GeometrySink_EndFigure(sink, D2D1_FIGURE_END_CLOSED);
++                current = start;
++                figure_open = FALSE;
++                command = 0;
++                break;
++
++            default:
++                FIXME("SVG path command %lc is not implemented.\n", command);
++                hr = E_NOTIMPL;
++                goto done;
++        }
++    }
++
++    hr = S_OK;
++done:
++    if (figure_open) ID2D1GeometrySink_EndFigure(sink, D2D1_FIGURE_END_CLOSED);
++    if (SUCCEEDED(hr)) hr = ID2D1GeometrySink_Close(sink);
++    ID2D1GeometrySink_Release(sink);
++    if (FAILED(hr))
++    {
++        ID2D1PathGeometry_Release(*geometry);
++        *geometry = NULL;
++    }
++    return hr;
+ }
+
+ static void STDMETHODCALLTYPE d2d_device_context_DrawSvgDocument(ID2D1DeviceContext6 *iface,
+         ID2D1SvgDocument *svg_document)
+ {
+-    FIXME("iface %p, svg_document %p stub!\n", iface, svg_document);
++    struct d2d_svg_document *document = impl_from_ID2D1SvgDocument(svg_document);
++    struct d2d_svg_element *root, *element;
++    ID2D1SolidColorBrush *brush;
++    ID2D1PathGeometry *geometry;
++    D2D1_COLOR_F color;
++    HRESULT hr;
++
++    TRACE("iface %p, svg_document %p.\n", iface, svg_document);
++    if (!document || !document->root) return;
++    root = impl_from_ID2D1SvgElement(document->root);
++    color = root->has_color ? root->color : (D2D1_COLOR_F){0.0f, 0.0f, 0.0f, 1.0f};
++    color.a *= root->opacity;
++    if (FAILED(hr = ID2D1DeviceContext6_CreateSolidColorBrush(iface, &color, NULL, &brush)))
++    {
++        WARN("Failed to create SVG fill brush, hr %#lx.\n", hr);
++        return;
++    }
++
++    for (element = root->first_child; element; element = element->next)
++    {
++        if (wcscmp(element->tag, L"path") || !element->path_data) continue;
++        if (FAILED(hr = d2d_svg_path_create_geometry(document->factory, element->path_data, &geometry)))
++        {
++            WARN("Failed to create SVG path geometry, hr %#lx.\n", hr);
++            continue;
++        }
++        ID2D1DeviceContext6_FillGeometry(iface, (ID2D1Geometry *)geometry, (ID2D1Brush *)brush, NULL);
++        ID2D1PathGeometry_Release(geometry);
++    }
++    ID2D1SolidColorBrush_Release(brush);
+ }
+
+ static HRESULT STDMETHODCALLTYPE d2d_device_context_CreateColorContextFromDxgiColorSpace(

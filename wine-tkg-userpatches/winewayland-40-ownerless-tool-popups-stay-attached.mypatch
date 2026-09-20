@@ -1,0 +1,20 @@
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -409,11 +409,14 @@
+     /* child windows are not managed */
+     style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+     if ((style & (WS_CHILD|WS_POPUP)) == WS_CHILD) return FALSE;
+-    /* owned tool popups (menus, flyouts) stay attached to their owner, even
+-     * when active, since a Wayland toplevel cannot be positioned */
++    /* tool popups (tooltips, menus, flyouts) stay attached to the window they
++     * belong to, even when active, since a Wayland toplevel cannot be
++     * positioned. They do not always have an owner, tooltips of an application
++     * that makes its own often have none, and without this they would show up
++     * as separate windows. */
+     ex_style = NtUserGetWindowLongW(hwnd, GWL_EXSTYLE);
+     if ((style & WS_POPUP) && !(style & (WS_CAPTION|WS_THICKFRAME)) &&
+-        (ex_style & WS_EX_TOOLWINDOW) && NtUserGetWindowRelative(hwnd, GW_OWNER))
++        (ex_style & WS_EX_TOOLWINDOW))
+         return FALSE;
+     /* activated windows are managed */
+     if (!(swp_flags & (SWP_NOACTIVATE|SWP_HIDEWINDOW))) return TRUE;
