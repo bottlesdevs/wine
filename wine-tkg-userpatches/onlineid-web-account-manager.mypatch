@@ -2966,7 +2966,7 @@ index b781be2595f..3c1d4014d28 100644
 +    if (!scopes || !*scopes || !client_id || !*client_id ||
 +        !canonical_projection_scope( scopes, canonical_scopes )) return FALSE;
 +
-+    /* Must match scope_projection_name() in wine4officeauth. */
++    /* Must match scope_projection_name() in wineofficeauth. */
 +    if (!(account_id = load_wam_token_file( L"C:\\wam-account-id.txt" ))) return FALSE;
 +    length = WideCharToMultiByte( CP_UTF8, 0, account_id, -1, utf8, sizeof(utf8), NULL, NULL );
 +    free( account_id );
@@ -3283,18 +3283,18 @@ index b781be2595f..3c1d4014d28 100644
 +
 +        if (resource && hint_path[0])
 +            swprintf( command, ARRAY_SIZE(command),
-+                      L"\"C:\\windows\\system32\\wine4officeauth.exe\" --owner 0x%Ix --resource-scope \"%s\" --resource-client-id \"%s\" --resource-redirect-uri \"%s\" --login-hint-file \"%s\"",
++                      L"\"C:\\windows\\system32\\wineofficeauth.exe\" --owner 0x%Ix --resource-scope \"%s\" --resource-client-id \"%s\" --resource-redirect-uri \"%s\" --login-hint-file \"%s\"",
 +                      (ULONG_PTR)owner, scope, client_id, redirect_uri, hint_path );
 +        else if (resource)
 +            swprintf( command, ARRAY_SIZE(command),
-+                      L"\"C:\\windows\\system32\\wine4officeauth.exe\" --owner 0x%Ix --resource-scope \"%s\" --resource-client-id \"%s\" --resource-redirect-uri \"%s\"",
++                      L"\"C:\\windows\\system32\\wineofficeauth.exe\" --owner 0x%Ix --resource-scope \"%s\" --resource-client-id \"%s\" --resource-redirect-uri \"%s\"",
 +                      (ULONG_PTR)owner, scope, client_id, redirect_uri );
 +        else if (hint_path[0])
 +            swprintf( command, ARRAY_SIZE(command),
-+                      L"\"C:\\windows\\system32\\wine4officeauth.exe\" --owner 0x%Ix --login-hint-file \"%s\"",
++                      L"\"C:\\windows\\system32\\wineofficeauth.exe\" --owner 0x%Ix --login-hint-file \"%s\"",
 +                      (ULONG_PTR)owner, hint_path );
 +        else
-+            swprintf( command, ARRAY_SIZE(command), L"\"C:\\windows\\system32\\wine4officeauth.exe\" --owner 0x%Ix", (ULONG_PTR)owner );
++            swprintf( command, ARRAY_SIZE(command), L"\"C:\\windows\\system32\\wineofficeauth.exe\" --owner 0x%Ix", (ULONG_PTR)owner );
 +
 +        /* The requesting app identity decides which endpoint can serve it: a
 +         * consumer Microsoft account uses the Live ID app, which the AAD
@@ -3318,7 +3318,7 @@ index b781be2595f..3c1d4014d28 100644
 +                          L" --scope \"%s\"", request_scope );
 +        }
 +    }
-+    else lstrcpyW( command, L"\"C:\\windows\\system32\\wine4officeauth.exe\" --refresh" );
++    else lstrcpyW( command, L"\"C:\\windows\\system32\\wineofficeauth.exe\" --refresh" );
 +
 +    ret = CreateProcessW( NULL, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process );
 +    if (!ret)
@@ -3352,7 +3352,7 @@ index b781be2595f..3c1d4014d28 100644
 +    /* Nested app requests also pass the child redirect, the helper then asks
 +     * for the token with Office acting as the broker. */
 +    if (swprintf( command, ARRAY_SIZE(command),
-+                  L"\"C:\\windows\\system32\\wine4officeauth.exe\" --refresh-resource \"%s\" \"%s\"%s%s%s",
++                  L"\"C:\\windows\\system32\\wineofficeauth.exe\" --refresh-resource \"%s\" \"%s\"%s%s%s",
 +                  scope, client_id, nested ? L" \"" : L"", nested ? redirect_uri : L"",
 +                  nested ? L"\"" : L"" ) < 0) return HELPER_FAILED;
 +    if (!CreateProcessW( NULL, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process )) return HELPER_FAILED;
@@ -5912,24 +5912,24 @@ index 00000000000..787423f5083
 +    {
 +    }
 +}
-diff --git a/programs/wine4officeauth/Makefile.in b/programs/wine4officeauth/Makefile.in
+diff --git a/programs/wineofficeauth/Makefile.in b/programs/wineofficeauth/Makefile.in
 new file mode 100644
 index 00000000000..a6953ef15b3
 --- /dev/null
-+++ b/programs/wine4officeauth/Makefile.in
++++ b/programs/wineofficeauth/Makefile.in
 @@ -0,0 +1,7 @@
-+MODULE    = wine4officeauth.exe
++MODULE    = wineofficeauth.exe
 +IMPORTS   = $(CXX_PE_LIBS) uuid urlmon winhttp wininet crypt32 bcrypt shell32 oleaut32 ole32 user32
 +
 +EXTRADLLFLAGS = -mwindows -municode
 +
 +SOURCES = \
-+	wine4officeauth.cpp
-diff --git a/programs/wine4officeauth/wine4officeauth.cpp b/programs/wine4officeauth/wine4officeauth.cpp
++	wineofficeauth.cpp
+diff --git a/programs/wineofficeauth/wineofficeauth.cpp b/programs/wineofficeauth/wineofficeauth.cpp
 new file mode 100644
 index 00000000000..5e56ec1febe
 --- /dev/null
-+++ b/programs/wine4officeauth/wine4officeauth.cpp
++++ b/programs/wineofficeauth/wineofficeauth.cpp
 @@ -0,0 +1,2767 @@
 +/*
 + * Wine4Office organizational OAuth helper.

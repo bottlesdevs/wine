@@ -27,7 +27,7 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '11-experimental'
+  REVISION: '12-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -45,11 +45,12 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-11 Experimental, codenamed Windows Escape, adds the first public Office compatibility patch set. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-12 Experimental, codenamed Windows Escape, updates the Office authentication broker. It remains a prerelease and does not replace the current stable Soda build.
 
     - Added experimental Microsoft Office 365 support for Click-to-Run installation, activation, Word, Excel, PowerPoint, OneNote, and classic Outlook.
     - Added the WinRT APIs used by Office for accounts, application data, package queries, system identity, globalization, networking, HTTP, JSON, media, and input.
-    - Added an Office authentication broker for Microsoft sign-in and account recovery flows.
+    - Fixed resource-scoped Office tokens used after Microsoft sign-in.
+    - Renamed the Office authentication broker so older injected copies cannot shadow the runner implementation.
     - Fixed Direct2D and DirectComposition paths used by Office, WebView2, and composition swap chains.
     - Fixed Wayland child surfaces, tool popups, focus input, disabled overlays, monitor placement, and cross-process WebView2 windows.
     - Fixed X11 popup presentation and Office font rendering.
@@ -708,6 +709,8 @@ jobs:
           test -f "$runner_dir/lib/wine/i386-unix/winscard.so"
           test -f "$runner_dir/lib/wine/x86_64-windows/winscard.dll"
           test -f "$runner_dir/lib/wine/i386-windows/winscard.dll"
+          test -f "$runner_dir/lib/wine/x86_64-windows/wineofficeauth.exe"
+          test -f "$runner_dir/lib/wine/i386-windows/wineofficeauth.exe"
           test -x "$runner_dir/bin/wine"
           file "$runner_dir/bin/wine" | grep -F 'x86-64'
           file "$runner_dir/lib/wine/x86_64-windows/ntdll.dll" | grep -F 'x86-64'
@@ -849,6 +852,9 @@ jobs:
             lib/wine/aarch64-unix/libwow64fex.so
             lib/wine/aarch64-windows/wineopenxr.dll
             lib/wine/x86_64-windows/wineopenxr.dll
+            lib/wine/i386-windows/wineofficeauth.exe
+            lib/wine/x86_64-windows/wineofficeauth.exe
+            lib/wine/aarch64-windows/wineofficeauth.exe
           )
           for required_file in "${required_files[@]}"; do
             if ! test -f "$runner_dir/$required_file"; then
