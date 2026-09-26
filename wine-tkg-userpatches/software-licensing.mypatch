@@ -658,14 +658,19 @@ diff --git a/include/slerror.h b/include/slerror.h
 index 4980a96..e313485 100644
 --- a/include/slerror.h
 +++ b/include/slerror.h
-@@ -20,8 +20,11 @@
+@@ -20,8 +20,16 @@
  #define __WINE_SLERROR_H
 
  #define SL_E_RIGHT_NOT_CONSUMED       0xC004F002
++#define SL_I_OOB_GRACE_PERIOD         0x4004F00C
 +#define SL_E_LICENSE_FILE_NOT_INSTALLED 0xC004F011
  #define SL_E_VALUE_NOT_FOUND          0xC004F012
  #define SL_E_RIGHT_NOT_GRANTED        0xC004F013
 +#define SL_E_NOT_SUPPORTED            0xC004F016
++#define SL_E_APPLICATION_POLICIES_MISSING 0xC004F072
++#define SL_E_AUTHN_MISMATCHED_KEY      0xC004F078
++#define SL_E_AUTHN_CHALLENGE_NOT_SET   0xC004F079
++#define SL_E_AUTHN_CANT_VERIFY         0xC004F07A
  #define SL_E_DATATYPE_MISMATCHED      0xC004F01E
 +#define SL_E_INVALID_LICENSE          0xC004F01F
 

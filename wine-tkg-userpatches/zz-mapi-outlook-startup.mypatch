@@ -1,0 +1,69 @@
+MAPI forwarding used by Outlook.
+
+--- a/dlls/mapi32/mapi32.spec
++++ b/dlls/mapi32/mapi32.spec
+@@ -14,8 +14,8 @@
+  22 stdcall MAPIUninitialize()
+  23 stdcall MAPIUninitialize@0() MAPIUninitialize
+  24 stub PRProviderInit
+- 25 stub LAUNCHWIZARD
+- 26 stub LaunchWizard@20
++ 25 stdcall LAUNCHWIZARD(ptr long ptr long ptr) LaunchWizard
++ 26 stdcall LaunchWizard@20(ptr long ptr long ptr) LaunchWizard
+  27 stdcall -private DllGetClassObject(ptr ptr ptr)
+  28 stdcall -private DllCanUnloadNow()
+  29 stub MAPIOpenFormMgr
+--- a/dlls/mapi32/mapi32_main.c
++++ b/dlls/mapi32/mapi32_main.c
+@@ -211,6 +211,17 @@
+     return E_FAIL;
+ }
+ 
++HRESULT WINAPI LaunchWizard(HWND parent, ULONG flags, LPCSTR *service_names,
++        ULONG buffer_size, LPSTR profile_name)
++{
++    TRACE("(%p, %#lx, %p, %lu, %p)\n", parent, flags, service_names, buffer_size, profile_name);
++
++    if (mapiFunctions.LaunchWizard)
++        return mapiFunctions.LaunchWizard(parent, flags, service_names, buffer_size, profile_name);
++
++    return MAPI_E_NOT_SUPPORTED;
++}
++
+ ULONG WINAPI MAPIAddress(LHANDLE session, ULONG_PTR uiparam, LPSTR caption,
+     ULONG editfields, LPSTR labels, ULONG nRecips, lpMapiRecipDesc lpRecips,
+     FLAGS flags, ULONG reserved, LPULONG newRecips, lpMapiRecipDesc * lppNewRecips)
+--- a/dlls/mapi32/util.c
++++ b/dlls/mapi32/util.c
+@@ -1102,6 +1102,7 @@
+         mapiFunctions.FGetComponentPath = (void*) GetProcAddress(mapi_ex_provider, "FGetComponentPath");
+         mapiFunctions.HrThisThreadAdviseSink = (void*) GetProcAddress(mapi_ex_provider, "HrThisThreadAdviseSink@8");
+         mapiFunctions.HrQueryAllRows = (void*) GetProcAddress(mapi_ex_provider, "HrQueryAllRows@24");
++        mapiFunctions.LaunchWizard = (void *)GetProcAddress(mapi_ex_provider, "LaunchWizard");
+         mapiFunctions.MAPIAdminProfiles = (void*) GetProcAddress(mapi_ex_provider, "MAPIAdminProfiles");
+         mapiFunctions.MAPIAllocateBuffer = (void*) GetProcAddress(mapi_ex_provider, "MAPIAllocateBuffer");
+         mapiFunctions.MAPIAllocateMore = (void*) GetProcAddress(mapi_ex_provider, "MAPIAllocateMore");
+--- a/dlls/mapi32/util.h
++++ b/dlls/mapi32/util.h
+@@ -57,6 +57,7 @@
+     HRESULT  (WINAPI *MAPIOpenLocalFormContainer) (LPVOID *);
+     HRESULT  (WINAPI *HrThisThreadAdviseSink)     (LPMAPIADVISESINK, LPMAPIADVISESINK*);
+     HRESULT  (WINAPI *HrQueryAllRows)             (LPMAPITABLE, LPSPropTagArray, LPSRestriction, LPSSortOrderSet, LONG, LPSRowSet *);
++    HRESULT  (WINAPI *LaunchWizard)               (HWND, ULONG, LPCSTR *, ULONG, LPSTR);
+     HRESULT  (WINAPI *OpenStreamOnFile)           (LPALLOCATEBUFFER, LPFREEBUFFER, ULONG, LPWSTR, LPWSTR, LPSTREAM *);
+     SCODE    (WINAPI *ScInitMapiUtil)             (ULONG ulReserved);
+     HRESULT  (WINAPI *WrapCompressedRTFStream)    (LPSTREAM, ULONG, LPSTREAM *);
+--- a/dlls/mapistub/mapistub.spec
++++ b/dlls/mapistub/mapistub.spec
+@@ -14,8 +14,8 @@
+  22 stdcall MAPIUninitialize() mapi32.MAPIUninitialize
+  23 stdcall MAPIUninitialize@0() mapi32.MAPIUninitialize
+  24 stub PRProviderInit
+- 25 stub LAUNCHWIZARD
+- 26 stub LaunchWizard@20
++ 25 stdcall LAUNCHWIZARD(ptr long ptr long ptr) mapi32.LaunchWizard
++ 26 stdcall LaunchWizard@20(ptr long ptr long ptr) mapi32.LaunchWizard
+  27 stub DllGetClassObject
+  28 stdcall -private DllCanUnloadNow()
+  29 stub MAPIOpenFormMgr
+

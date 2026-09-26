@@ -1,11 +1,12 @@
 DirectComposition device objects.
 
 diff --git a/dlls/dcomp/Makefile.in b/dlls/dcomp/Makefile.in
-index d48b901..8b62b49 100644
+index d48b901..2c8b239 100644
 --- a/dlls/dcomp/Makefile.in
 +++ b/dlls/dcomp/Makefile.in
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,6 @@
  MODULE    = dcomp.dll
++IMPORTLIB = dcomp
 +IMPORTS   = user32
 
  EXTRADLLFLAGS = -Wb,--prefer-native

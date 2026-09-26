@@ -1,0 +1,14 @@
+Expose the current thread dispatcher queue.
+
+--- a/dlls/coremessaging/coremessaging.spec
++++ b/dlls/coremessaging/coremessaging.spec
+@@ -20,7 +20,7 @@
+ @ stdcall -private DllCanUnloadNow()
+ @ stdcall -private DllGetActivationFactory(ptr ptr)
+ @ stub DllGetClassObject
+-@ stub GetDispatcherQueueForCurrentThread
++@ stdcall GetDispatcherQueueForCurrentThread(ptr)
+ @ stub MsgBlobCreateShared
+ @ stub MsgBlobCreateStack
+ @ stub MsgBufferShare
+

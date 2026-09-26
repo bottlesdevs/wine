@@ -1,0 +1,905 @@
+Office application licensing policy queries.
+
+--- a/dlls/sppc/Makefile.in
++++ b/dlls/sppc/Makefile.in
+@@ -1,5 +1,6 @@
+ EXTRADEFS = -D_SLC_
+ MODULE    = sppc.dll
++IMPORTS   = advapi32
+ 
+ EXTRADLLFLAGS = -Wb,--prefer-native
+ 
+--- a/dlls/sppc/sppc.c
++++ b/dlls/sppc/sppc.c
+@@ -27,7 +27,9 @@
+ #define WIN32_NO_STATUS
+ #include "windef.h"
+ #include "winbase.h"
++#include "wincrypt.h"
+ #include "winnls.h"
++#include "winreg.h"
+ #include "winternl.h"
+ #include "wine/debug.h"
+ 
+@@ -36,6 +38,198 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(slc);
+ 
++#define SLC_CONTEXT_MAGIC 0x534c4343
++#define AUTH_MARKER       0x00010000
++#define AUTH_RESULT_VER   2
++#define AUTH_HMAC_LEN     20
++#define AUTH_MAX_KEY_LEN  64
++
++struct slc_context
++{
++    DWORD magic;
++    UINT auth_size;
++    BYTE *auth_data;
++    BYTE session_key[AUTH_MAX_KEY_LEN];
++    DWORD session_key_len;
++    WCHAR *last_name;
++    SLDATATYPE last_type;
++    BYTE *last_value;
++    UINT last_size;
++    BOOL rights_consumed;
++    SLID app;
++    SLID product;
++    DWORD grace_minutes;
++    DWORD grace_days;
++};
++
++static BYTE pending_session_key[AUTH_MAX_KEY_LEN];
++static DWORD pending_session_key_len;
++static BYTE pending_expected_hmac[AUTH_HMAC_LEN];
++static DWORD pending_expected_hmac_len;
++static CRITICAL_SECTION pending_auth_cs;
++static CRITICAL_SECTION_DEBUG pending_auth_cs_debug =
++{
++    0, 0, &pending_auth_cs,
++    { &pending_auth_cs_debug.ProcessLocksList, &pending_auth_cs_debug.ProcessLocksList },
++    0, 0, { (DWORD_PTR)(__FILE__ ": pending_auth_cs") }
++};
++static CRITICAL_SECTION pending_auth_cs = { &pending_auth_cs_debug, -1, 0, 0, 0, 0 };
++
++void CDECL __wine_sppc_set_auth_session_key(const BYTE *key, DWORD length)
++{
++    if (!key || !length || length > AUTH_MAX_KEY_LEN) return;
++
++    EnterCriticalSection(&pending_auth_cs);
++    memcpy(pending_session_key, key, length);
++    pending_session_key_len = length;
++    LeaveCriticalSection(&pending_auth_cs);
++}
++
++void CDECL __wine_sppc_set_expected_hmac(const BYTE *hmac, DWORD length)
++{
++    if (!hmac || length != AUTH_HMAC_LEN) return;
++
++    EnterCriticalSection(&pending_auth_cs);
++    memcpy(pending_expected_hmac, hmac, AUTH_HMAC_LEN);
++    pending_expected_hmac_len = AUTH_HMAC_LEN;
++    LeaveCriticalSection(&pending_auth_cs);
++}
++
++static struct slc_context *get_slc_context(HSLC handle)
++{
++    struct slc_context *context = handle;
++
++    if (!context || context->magic != SLC_CONTEXT_MAGIC) return NULL;
++    return context;
++}
++
++static void clear_last_policy(struct slc_context *context)
++{
++    LocalFree(context->last_name);
++    LocalFree(context->last_value);
++    context->last_name = NULL;
++    context->last_value = NULL;
++    context->last_size = 0;
++    context->last_type = SL_DATA_NONE;
++}
++
++static void remember_policy(struct slc_context *context, const WCHAR *name, SLDATATYPE type,
++                            const BYTE *value, UINT size)
++{
++    WCHAR *name_copy;
++    BYTE *value_copy;
++    SIZE_T name_size;
++
++    if (!context || !name || !value || !size) return;
++    name_size = (wcslen(name) + 1) * sizeof(*name);
++    if (!(name_copy = LocalAlloc(LMEM_FIXED, name_size))) return;
++    if (!(value_copy = LocalAlloc(LMEM_FIXED, size)))
++    {
++        LocalFree(name_copy);
++        return;
++    }
++
++    memcpy(name_copy, name, name_size);
++    memcpy(value_copy, value, size);
++    clear_last_policy(context);
++    context->last_name = name_copy;
++    context->last_type = type;
++    context->last_value = value_copy;
++    context->last_size = size;
++}
++
++static BOOL hmac_sha1(const BYTE *key, DWORD key_len, const BYTE *data, DWORD data_len, BYTE *digest)
++{
++    struct
++    {
++        BLOBHEADER header;
++        DWORD key_len;
++        BYTE key[AUTH_MAX_KEY_LEN];
++    } blob;
++    HCRYPTPROV provider = 0;
++    HCRYPTKEY hkey = 0;
++    HCRYPTHASH hash = 0;
++    HMAC_INFO info;
++    DWORD digest_len = AUTH_HMAC_LEN;
++    BOOL ret = FALSE;
++
++    if (!key || !key_len || key_len > AUTH_MAX_KEY_LEN) return FALSE;
++    if (!CryptAcquireContextW(&provider, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) return FALSE;
++
++    blob.header.bType = PLAINTEXTKEYBLOB;
++    blob.header.bVersion = CUR_BLOB_VERSION;
++    blob.header.reserved = 0;
++    blob.header.aiKeyAlg = key_len == 32 ? CALG_AES_256 : CALG_RC2;
++    blob.key_len = key_len;
++    memcpy(blob.key, key, key_len);
++    if (!CryptImportKey(provider, (BYTE *)&blob, sizeof(blob.header) + sizeof(blob.key_len) + key_len,
++                        0, 0, &hkey)) goto done;
++    if (!CryptCreateHash(provider, CALG_HMAC, hkey, 0, &hash)) goto done;
++
++    memset(&info, 0, sizeof(info));
++    info.HashAlgid = CALG_SHA1;
++    if (!CryptSetHashParam(hash, HP_HMAC_INFO, (BYTE *)&info, 0)) goto done;
++    if (!CryptHashData(hash, data, data_len, 0)) goto done;
++    if (!CryptGetHashParam(hash, HP_HASHVAL, digest, &digest_len, 0)) goto done;
++    ret = digest_len == AUTH_HMAC_LEN;
++
++done:
++    if (hash) CryptDestroyHash(hash);
++    if (hkey) CryptDestroyKey(hkey);
++    if (provider) CryptReleaseContext(provider, 0);
++    return ret;
++}
++
++static HRESULT build_authentication_result(struct slc_context *context, UINT *size, BYTE **value)
++{
++    BYTE digest[AUTH_HMAC_LEN], *message = NULL, *result, *cursor;
++    DWORD marker = AUTH_MARKER, type, name_size, message_size;
++    BOOL have_digest = FALSE;
++    UINT result_size;
++
++    EnterCriticalSection(&pending_auth_cs);
++    if (pending_expected_hmac_len == AUTH_HMAC_LEN)
++    {
++        memcpy(digest, pending_expected_hmac, AUTH_HMAC_LEN);
++        pending_expected_hmac_len = 0;
++        have_digest = TRUE;
++    }
++    LeaveCriticalSection(&pending_auth_cs);
++
++    if (!have_digest && context->session_key_len && context->last_name && context->last_value)
++    {
++        type = context->last_type;
++        name_size = wcslen(context->last_name) * sizeof(*context->last_name);
++        if (context->last_size > UINT_MAX - sizeof(marker) - sizeof(type) - name_size)
++            return HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW);
++        message_size = sizeof(marker) + sizeof(type) + context->last_size + name_size;
++        if (!(message = LocalAlloc(LMEM_FIXED, message_size))) return E_OUTOFMEMORY;
++
++        cursor = message;
++        memcpy(cursor, &marker, sizeof(marker));
++        cursor += sizeof(marker);
++        memcpy(cursor, &type, sizeof(type));
++        cursor += sizeof(type);
++        memcpy(cursor, context->last_value, context->last_size);
++        cursor += context->last_size;
++        memcpy(cursor, context->last_name, name_size);
++        have_digest = hmac_sha1(context->session_key, context->session_key_len, message,
++                                message_size, digest);
++        LocalFree(message);
++    }
++    if (!have_digest) return SL_E_AUTHN_CANT_VERIFY;
++
++    result_size = 3 * sizeof(DWORD) + AUTH_HMAC_LEN;
++    if (!(result = LocalAlloc(LMEM_FIXED, result_size))) return E_OUTOFMEMORY;
++    ((DWORD *)result)[0] = result_size;
++    ((DWORD *)result)[1] = AUTH_RESULT_VER;
++    ((DWORD *)result)[2] = AUTH_HMAC_LEN;
++    memcpy(result + 3 * sizeof(DWORD), digest, AUTH_HMAC_LEN);
++    *size = result_size;
++    *value = result;
++    return S_OK;
++}
++
+ static HRESULT find_license_id(UINT size, const BYTE *blob, UINT *offset, SLID *id)
+ {
+     static const char attribute[] = "licenseId";
+@@ -192,6 +386,393 @@
+     return S_OK;
+ }
+ 
++struct grace_license
++{
++    SLID app;
++    SLID product;
++    DWORD minutes;
++    DWORD days;
++    WCHAR path[MAX_PATH];
++};
++
++static HRESULT find_xml_value(const BYTE *start, const BYTE *end, const char *name,
++                              const BYTE **value, UINT *value_size)
++{
++    char attribute[64];
++    const BYTE *close;
++
++    if (snprintf(attribute, sizeof(attribute), "name=\"%s\"", name) >= sizeof(attribute))
++        return E_INVALIDARG;
++    if (!(start = find_bytes(start, end, attribute))) return SL_E_VALUE_NOT_FOUND;
++    if (!(start = find_bytes(start, end, ">"))) return SL_E_INVALID_LICENSE;
++    start++;
++    if (!(close = find_bytes(start, end, "<"))) return SL_E_INVALID_LICENSE;
++    *value = start;
++    *value_size = close - start;
++    return S_OK;
++}
++
++static HRESULT parse_ascii_guid(const BYTE *value, UINT value_size, SLID *id)
++{
++    WCHAR string[39];
++    UNICODE_STRING stringW;
++    UINT i, offset;
++
++    if (value_size == 38 && value[0] == '{' && value[37] == '}') offset = 0;
++    else if (value_size == 36) offset = 1;
++    else return SL_E_INVALID_LICENSE;
++
++    if (offset) string[0] = '{';
++    for (i = 0; i < value_size; i++) string[i + offset] = value[i];
++    if (offset) string[37] = '}';
++    string[38] = 0;
++    RtlInitUnicodeString(&stringW, string);
++    return RtlGUIDFromString(&stringW, id) ? SL_E_INVALID_LICENSE : S_OK;
++}
++
++static HRESULT parse_xml_guid(const BYTE *start, const BYTE *end, const char *name, SLID *id)
++{
++    const BYTE *value;
++    UINT value_size;
++    HRESULT hr;
++
++    if (FAILED(hr = find_xml_value(start, end, name, &value, &value_size))) return hr;
++    return parse_ascii_guid(value, value_size, id);
++}
++
++static BOOL parse_grace_duration(const BYTE *start, const BYTE *end, DWORD *days, DWORD *minutes)
++{
++    const BYTE *duration;
++    DWORD value = 0;
++
++    if (!(duration = find_bytes(start, end, "<sl:duration>P"))) return FALSE;
++    duration += strlen("<sl:duration>P");
++    if (duration == end || *duration < '0' || *duration > '9') return FALSE;
++    while (duration < end && *duration >= '0' && *duration <= '9')
++    {
++        if (value > (UINT_MAX - (*duration - '0')) / 10) return FALSE;
++        value = value * 10 + (*duration++ - '0');
++    }
++    if (duration == end || *duration != 'D' || value > UINT_MAX / (24 * 60)) return FALSE;
++    *days = value;
++    *minutes = value * 24 * 60;
++    return TRUE;
++}
++
++static HRESULT find_configured_grace_product(SLID *product)
++{
++    static const WCHAR config_key[] = L"Software\\Microsoft\\Office\\ClickToRun\\Configuration";
++    WCHAR product_ids[512], installation[MAX_PATH], map_path[MAX_PATH];
++    const BYTE *section, *section_end, *license, *tag_end, *sku, *sku_end, *acid, *acid_end;
++    char product_id[256], product_tag[320];
++    BYTE *blob;
++    DWORD reg_size;
++    UINT blob_size, i, length;
++    HRESULT hr;
++
++    reg_size = sizeof(product_ids);
++    if (RegGetValueW(HKEY_LOCAL_MACHINE, config_key, L"ProductReleaseIds", RRF_RT_REG_SZ,
++                     NULL, product_ids, &reg_size)) return SL_E_VALUE_NOT_FOUND;
++    reg_size = sizeof(installation);
++    if (RegGetValueW(HKEY_LOCAL_MACHINE, config_key, L"InstallationPath", RRF_RT_REG_SZ,
++                     NULL, installation, &reg_size)) return SL_E_VALUE_NOT_FOUND;
++
++    length = wcslen(installation);
++    while (length && (installation[length - 1] == '\\' || installation[length - 1] == '/'))
++        installation[--length] = 0;
++    if (length + ARRAY_SIZE(L"\\root\\Licenses16\\c2rpridslicensefiles_auto.xml") >= ARRAY_SIZE(map_path))
++        return HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE);
++    wcscpy(map_path, installation);
++    wcscat(map_path, L"\\root\\Licenses16\\c2rpridslicensefiles_auto.xml");
++    if (FAILED(hr = read_license_file(map_path, &blob, &blob_size))) return hr;
++
++    for (i = 0; product_ids[i]; i += length)
++    {
++        while (product_ids[i] == ',' || product_ids[i] == ';' || product_ids[i] == ' ') i++;
++        length = 0;
++        while (product_ids[i + length] && product_ids[i + length] != ',' &&
++               product_ids[i + length] != ';' && product_ids[i + length] != ' ') length++;
++        if (!length) break;
++        if (length >= ARRAY_SIZE(product_id)) continue;
++        if (WideCharToMultiByte(CP_UTF8, 0, product_ids + i, length, product_id,
++                                ARRAY_SIZE(product_id) - 1, NULL, NULL) != length) continue;
++        product_id[length] = 0;
++        if (snprintf(product_tag, sizeof(product_tag), "<ProductReleaseId id=\"%s\">", product_id) >=
++            sizeof(product_tag)) continue;
++
++        if (!(section = find_bytes(blob, blob + blob_size, product_tag)) ||
++            !(section_end = find_bytes(section, blob + blob_size, "</ProductReleaseId>"))) continue;
++        license = section;
++        while ((license = find_bytes(license, section_end, "<License Sku=\"")))
++        {
++            sku = license + strlen("<License Sku=\"");
++            if (!(sku_end = find_bytes(sku, section_end, "\"")) ||
++                !(tag_end = find_bytes(sku_end, section_end, ">"))) break;
++            if (!find_bytes_i(sku, sku_end, "Grace"))
++            {
++                license = tag_end + 1;
++                continue;
++            }
++            if (!(acid = find_bytes(sku_end, tag_end, "Acid=\"")))
++            {
++                license = tag_end + 1;
++                continue;
++            }
++            acid += strlen("Acid=\"");
++            if (!(acid_end = find_bytes(acid, tag_end, "\""))) break;
++            hr = parse_ascii_guid(acid, acid_end - acid, product);
++            HeapFree(GetProcessHeap(), 0, blob);
++            return hr;
++        }
++    }
++
++    HeapFree(GetProcessHeap(), 0, blob);
++    return SL_E_VALUE_NOT_FOUND;
++}
++
++static HRESULT find_grace_license(const SLID *app, const SLID *product, struct grace_license *license)
++{
++    WIN32_FIND_DATAW data;
++    WCHAR search[MAX_PATH], *name;
++    HANDLE find;
++    UINT length;
++    SLID configured_product;
++
++    if (!product && SUCCEEDED(find_configured_grace_product(&configured_product))) product = &configured_product;
++
++    length = GetSystemDirectoryW(search, ARRAY_SIZE(search));
++    if (!length) return HRESULT_FROM_WIN32(GetLastError());
++    if (length >= ARRAY_SIZE(search) - ARRAY_SIZE(L"\\spp\\store\\2.0\\licenses\\*.xrm-ms"))
++        return HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE);
++    wcscat(search, L"\\spp\\store\\2.0\\licenses\\*.xrm-ms");
++    if ((find = FindFirstFileW(search, &data)) == INVALID_HANDLE_VALUE) return SL_E_VALUE_NOT_FOUND;
++    name = wcsrchr(search, L'\\') + 1;
++
++    do
++    {
++        const BYTE *start, *end, *limit;
++        BYTE *blob;
++        UINT size;
++
++        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
++        if (name - search + wcslen(data.cFileName) >= ARRAY_SIZE(search)) continue;
++        wcscpy(name, data.cFileName);
++        if (FAILED(read_license_file(search, &blob, &size))) continue;
++
++        limit = blob + size;
++        start = blob;
++        while ((start = find_bytes(start, limit, "<r:license")))
++        {
++            SLID candidate_app, candidate_product;
++            const BYTE *tag_end;
++            DWORD days, minutes;
++
++            if (!(tag_end = find_bytes(start, limit, ">")) ||
++                !(end = find_bytes(tag_end + 1, limit, "</r:license>"))) break;
++            start = tag_end + 1;
++            if (find_bytes(start, end, "msft:sl/grace-period") &&
++                SUCCEEDED(parse_xml_guid(start, end, "applicationId", &candidate_app)) &&
++                IsEqualGUID(app, &candidate_app) &&
++                SUCCEEDED(parse_xml_guid(start, end, "productSkuId", &candidate_product)) &&
++                (!product || IsEqualGUID(product, &candidate_product)) &&
++                parse_grace_duration(start, end, &days, &minutes))
++            {
++                license->app = candidate_app;
++                license->product = candidate_product;
++                license->days = days;
++                license->minutes = minutes;
++                wcscpy(license->path, search);
++                HeapFree(GetProcessHeap(), 0, blob);
++                FindClose(find);
++                return S_OK;
++            }
++            start = end + strlen("</r:license>");
++        }
++        HeapFree(GetProcessHeap(), 0, blob);
++    } while (FindNextFileW(find, &data));
++
++    FindClose(find);
++    return SL_E_VALUE_NOT_FOUND;
++}
++
++static HRESULT get_grace_license_value(const SLID *app, const SLID *product, const char *name,
++                                       SLDATATYPE *type, UINT *size, PBYTE *value)
++{
++    struct grace_license license;
++    const BYTE *start, *end, *limit, *data;
++    BYTE *blob;
++    WCHAR *string;
++    UINT blob_size, data_size;
++    HRESULT hr;
++    int length;
++
++    if (FAILED(hr = find_grace_license(app, product, &license))) return hr;
++    if (FAILED(hr = read_license_file(license.path, &blob, &blob_size))) return hr;
++
++    limit = blob + blob_size;
++    start = blob;
++    hr = SL_E_VALUE_NOT_FOUND;
++    while ((start = find_bytes(start, limit, "<r:license")))
++    {
++        SLID candidate_app, candidate_product;
++        const BYTE *tag_end;
++
++        if (!(tag_end = find_bytes(start, limit, ">")) ||
++            !(end = find_bytes(tag_end + 1, limit, "</r:license>"))) break;
++        start = tag_end + 1;
++        if (find_bytes(start, end, "msft:sl/grace-period") &&
++            SUCCEEDED(parse_xml_guid(start, end, "applicationId", &candidate_app)) &&
++            IsEqualGUID(app, &candidate_app) &&
++            SUCCEEDED(parse_xml_guid(start, end, "productSkuId", &candidate_product)) &&
++            IsEqualGUID(product, &candidate_product))
++        {
++            hr = find_xml_value(start, end, name, &data, &data_size);
++            break;
++        }
++        start = end + strlen("</r:license>");
++    }
++    if (FAILED(hr))
++    {
++        HeapFree(GetProcessHeap(), 0, blob);
++        return hr;
++    }
++    if (data_size > INT_MAX)
++    {
++        HeapFree(GetProcessHeap(), 0, blob);
++        return SL_E_INVALID_LICENSE;
++    }
++    length = data_size ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char *)data,
++                                              data_size, NULL, 0) : 0;
++    if (data_size && !length)
++    {
++        hr = HRESULT_FROM_WIN32(GetLastError());
++        HeapFree(GetProcessHeap(), 0, blob);
++        return hr;
++    }
++    if (!(string = LocalAlloc(LMEM_FIXED, (length + 1) * sizeof(*string))))
++    {
++        HeapFree(GetProcessHeap(), 0, blob);
++        return E_OUTOFMEMORY;
++    }
++    if (length) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char *)data, data_size, string, length);
++    string[length] = 0;
++    HeapFree(GetProcessHeap(), 0, blob);
++
++    if (type) *type = SL_DATA_SZ;
++    *size = (length + 1) * sizeof(*string);
++    *value = (BYTE *)string;
++    return S_OK;
++}
++
++static HRESULT get_product_policy(const struct slc_context *context, PCWSTR name, SLDATATYPE *type,
++                                  UINT *size, PBYTE *value)
++{
++    WIN32_FIND_DATAW data;
++    WCHAR search[MAX_PATH], *filename;
++    char nameA[192], pattern[256], guid[39];
++    HANDLE find;
++    UINT length;
++
++    if ((length = WideCharToMultiByte(CP_UTF8, 0, name, -1, nameA, ARRAY_SIZE(nameA), NULL, NULL)) <= 1)
++        return SL_E_VALUE_NOT_FOUND;
++    format_license_idA(&context->product, guid);
++
++    length = GetSystemDirectoryW(search, ARRAY_SIZE(search));
++    if (!length) return HRESULT_FROM_WIN32(GetLastError());
++    if (length >= ARRAY_SIZE(search) - ARRAY_SIZE(L"\\spp\\store\\2.0\\licenses\\*.xrm-ms"))
++        return HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE);
++    wcscat(search, L"\\spp\\store\\2.0\\licenses\\*.xrm-ms");
++    if ((find = FindFirstFileW(search, &data)) == INVALID_HANDLE_VALUE) return SL_E_VALUE_NOT_FOUND;
++    filename = wcsrchr(search, L'\\') + 1;
++
++    do
++    {
++        const BYTE *start, *end, *limit;
++        SLID app;
++        BYTE *blob;
++        UINT blob_size;
++
++        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
++        if (filename - search + wcslen(data.cFileName) >= ARRAY_SIZE(search)) continue;
++        wcscpy(filename, data.cFileName);
++        if (FAILED(read_license_file(search, &blob, &blob_size))) continue;
++        limit = blob + blob_size;
++        if (!find_bytes_i(blob, limit, "msft:sl/PPD") || !find_bytes_i(blob, limit, guid + 1) ||
++            FAILED(parse_xml_guid(blob, limit, "applicationId", &app)) || !IsEqualGUID(&app, &context->app))
++        {
++            HeapFree(GetProcessHeap(), 0, blob);
++            continue;
++        }
++
++        if (snprintf(pattern, sizeof(pattern), "<sl:policyInt name=\"%s\"", nameA) < sizeof(pattern) &&
++            (start = find_bytes(blob, limit, pattern)) && (start = find_bytes(start, limit, ">")) &&
++            (end = find_bytes(++start, limit, "<")))
++        {
++            DWORD number = 0, *copy;
++
++            if (start == end) goto invalid_policy;
++            while (start < end && *start >= '0' && *start <= '9')
++            {
++                if (number > (UINT_MAX - (*start - '0')) / 10) goto invalid_policy;
++                number = number * 10 + (*start++ - '0');
++            }
++            if (start != end) goto invalid_policy;
++            if (!(copy = LocalAlloc(LMEM_FIXED, sizeof(*copy))))
++            {
++                HeapFree(GetProcessHeap(), 0, blob);
++                FindClose(find);
++                return E_OUTOFMEMORY;
++            }
++            *copy = number;
++            if (type) *type = SL_DATA_DWORD;
++            *size = sizeof(*copy);
++            *value = (BYTE *)copy;
++            HeapFree(GetProcessHeap(), 0, blob);
++            FindClose(find);
++            return S_OK;
++        }
++
++        if (snprintf(pattern, sizeof(pattern), "<sl:policyStr name=\"%s\"", nameA) < sizeof(pattern) &&
++            (start = find_bytes(blob, limit, pattern)) && (start = find_bytes(start, limit, ">")) &&
++            (end = find_bytes(++start, limit, "<")))
++        {
++            WCHAR *copy;
++            int chars;
++
++            chars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char *)start,
++                                        end - start, NULL, 0);
++            if (!chars && start != end) goto invalid_policy;
++            if (!(copy = LocalAlloc(LMEM_FIXED, (chars + 1) * sizeof(*copy))))
++            {
++                HeapFree(GetProcessHeap(), 0, blob);
++                FindClose(find);
++                return E_OUTOFMEMORY;
++            }
++            if (chars) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char *)start,
++                                           end - start, copy, chars);
++            copy[chars] = 0;
++            if (type) *type = SL_DATA_SZ;
++            *size = (chars + 1) * sizeof(*copy);
++            *value = (BYTE *)copy;
++            HeapFree(GetProcessHeap(), 0, blob);
++            FindClose(find);
++            return S_OK;
++        }
++
++        HeapFree(GetProcessHeap(), 0, blob);
++        FindClose(find);
++        return SL_E_VALUE_NOT_FOUND;
++
++invalid_policy:
++        HeapFree(GetProcessHeap(), 0, blob);
++        FindClose(find);
++        return SL_E_INVALID_LICENSE;
++    } while (FindNextFileW(find, &data));
++
++    FindClose(find);
++    return SL_E_VALUE_NOT_FOUND;
++}
++
+ static HRESULT get_license_path(const SLID *id, WCHAR *filename);
+ 
+ static HRESULT load_license_blob(const SLID *id, BYTE **blob, UINT *size)
+@@ -325,9 +906,112 @@
+ HRESULT WINAPI SLGetLicensingStatusInformation(HSLC handle, const SLID *app, const SLID *product,
+                                                LPCWSTR name, UINT *count, SL_LICENSING_STATUS **status)
+ {
+-    FIXME("(%p %p %p %s %p %p) stub\n", handle, app, product, debugstr_w(name), count, status );
++    struct slc_context *context = get_slc_context(handle);
++    struct grace_license license;
++    SL_LICENSING_STATUS *entry;
++    HRESULT hr;
++
++    TRACE("(%p %s %s %s %p %p)\n", handle, wine_dbgstr_guid(app), wine_dbgstr_guid(product),
++          debugstr_w(name), count, status);
++
++    if (!context || !count || !status) return E_INVALIDARG;
++    *count = 0;
++    *status = NULL;
+ 
+-    return SL_E_RIGHT_NOT_CONSUMED;
++    if (context->rights_consumed)
++    {
++        license.app = context->app;
++        license.product = context->product;
++        license.minutes = context->grace_minutes;
++        license.days = context->grace_days;
++    }
++    else
++    {
++        if (!app) return SL_E_RIGHT_NOT_CONSUMED;
++        if (FAILED(hr = find_grace_license(app, product, &license))) return hr;
++    }
++
++    if ((app && !IsEqualGUID(app, &license.app)) ||
++        (product && !IsEqualGUID(product, &license.product))) return SL_E_VALUE_NOT_FOUND;
++    if (!(entry = LocalAlloc(LMEM_FIXED | LMEM_ZEROINIT, sizeof(*entry)))) return E_OUTOFMEMORY;
++
++    entry->SkuId = license.product;
++    entry->eStatus = SL_LICENSING_STATUS_IN_GRACE_PERIOD;
++    entry->dwGraceTime = license.minutes;
++    entry->dwTotalGraceDays = license.days;
++    entry->hrReason = SL_I_OOB_GRACE_PERIOD;
++    *count = 1;
++    *status = entry;
++    return S_OK;
++}
++
++HRESULT WINAPI SLGetProductSkuInformation(HSLC handle, const SLID *product, PCWSTR name,
++                                          SLDATATYPE *type, UINT *size, PBYTE *value)
++{
++    struct slc_context *context = get_slc_context(handle);
++    const char *field;
++
++    TRACE("(%p %s %s %p %p %p)\n", handle, wine_dbgstr_guid(product), debugstr_w(name),
++          type, size, value);
++
++    if (!context || !product || !name || !size || !value) return E_INVALIDARG;
++    if (type) *type = SL_DATA_NONE;
++    *size = 0;
++    *value = NULL;
++    if (!context->rights_consumed || !IsEqualGUID(product, &context->product)) return SL_E_VALUE_NOT_FOUND;
++
++    if (!wcsicmp(name, L"Name")) field = "productName";
++    else if (!wcsicmp(name, L"Description")) field = "productDescription";
++    else if (!wcsicmp(name, L"Author")) field = "productAuthor";
++    else if (!wcsicmp(name, L"ApplicationBitmap")) field = "ApplicationBitmap";
++    else if (!wcsicmp(name, L"UXDifferentiator")) field = "UXDifferentiator";
++    else return SL_E_VALUE_NOT_FOUND;
++
++    return get_grace_license_value(&context->app, product, field, type, size, value);
++}
++
++HRESULT WINAPI SLGetPolicyInformation(HSLC handle, PCWSTR name, SLDATATYPE *type,
++                                      UINT *size, PBYTE *value)
++{
++    struct slc_context *context = get_slc_context(handle);
++    DWORD *policy;
++    HRESULT hr;
++
++    TRACE("(%p %s %p %p %p)\n", handle, debugstr_w(name), type, size, value);
++
++    if (!context || !name || !size || !value) return E_INVALIDARG;
++    if (type) *type = SL_DATA_NONE;
++    *size = 0;
++    *value = NULL;
++    if (wcscmp(name, L"*"))
++    {
++        if (!wcsicmp(name, L"office-ParentCode")) return SL_E_VALUE_NOT_FOUND;
++        if (!context->rights_consumed) return SL_E_RIGHT_NOT_GRANTED;
++        hr = get_product_policy(context, name, type, size, value);
++        if (SUCCEEDED(hr)) remember_policy(context, name, type ? *type : SL_DATA_NONE, *value, *size);
++        return hr;
++    }
++    if (!context->rights_consumed) return SL_E_RIGHT_NOT_GRANTED;
++    if (!(policy = LocalAlloc(LMEM_FIXED, sizeof(*policy)))) return E_OUTOFMEMORY;
++
++    *policy = 1;
++    if (type) *type = SL_DATA_DWORD;
++    *size = sizeof(*policy);
++    *value = (BYTE *)policy;
++    remember_policy(context, name, SL_DATA_DWORD, *value, *size);
++    return S_OK;
++}
++
++HRESULT WINAPI SLGetServiceInformation(HSLC handle, PCWSTR name, SLDATATYPE *type,
++                                       UINT *size, PBYTE *value)
++{
++    TRACE("(%p %s %p %p %p)\n", handle, debugstr_w(name), type, size, value);
++
++    if (!get_slc_context(handle) || !name || !size || !value) return E_INVALIDARG;
++    if (type) *type = SL_DATA_NONE;
++    *size = 0;
++    *value = NULL;
++    return SL_E_VALUE_NOT_FOUND;
+ }
+ 
+ HRESULT WINAPI SLGetLicenseInformation(HSLC handle, const SLID *id, PCWSTR name, SLDATATYPE *type,
+@@ -466,20 +1150,30 @@
+ 
+ HRESULT WINAPI SLOpen(HSLC *handle)
+ {
+-    FIXME("(%p) stub\n", handle );
++    struct slc_context *context;
+ 
+-    if (!handle)
+-        return E_INVALIDARG;
++    TRACE("(%p)\n", handle);
+ 
+-    *handle = (HSLC)0xdeadbeef;
++    if (!handle) return E_INVALIDARG;
++    if (!(context = LocalAlloc(LMEM_FIXED | LMEM_ZEROINIT, sizeof(*context)))) return E_OUTOFMEMORY;
+ 
++    context->magic = SLC_CONTEXT_MAGIC;
++    *handle = context;
+     return S_OK;
+ }
+ 
+ HRESULT WINAPI SLClose(HSLC handle)
+ {
+-    FIXME("(%p) stub\n", handle );
++    struct slc_context *context = get_slc_context(handle);
+ 
++    TRACE("(%p)\n", handle);
++
++    if (!context) return E_INVALIDARG;
++    context->magic = 0;
++    clear_last_policy(context);
++    if (context->session_key_len) SecureZeroMemory(context->session_key, context->session_key_len);
++    LocalFree(context->auth_data);
++    LocalFree(context);
+     return S_OK;
+ }
+ 
+@@ -509,3 +1203,84 @@
+ 
+     return S_OK;
+ }
++
++HRESULT WINAPI SLLoadApplicationPolicies(const SLID *app, const SLID *product, DWORD flags, void **policy)
++{
++    TRACE("(%s,%s,%lx,%p)\n", wine_dbgstr_guid(app), wine_dbgstr_guid(product), flags, policy);
++
++    if (!app || !policy) return E_INVALIDARG;
++    *policy = NULL;
++    return SL_E_APPLICATION_POLICIES_MISSING;
++}
++
++HRESULT WINAPI SLSetAuthenticationData(HSLC handle, UINT size, const BYTE *value)
++{
++    struct slc_context *context = get_slc_context(handle);
++    BYTE *copy;
++
++    TRACE("(%p,%u,%p)\n", handle, size, value);
++
++    if (!context || (size && !value)) return E_INVALIDARG;
++    if (size > 1024) return HRESULT_FROM_WIN32(ERROR_BUFFER_OVERFLOW);
++    if (!size)
++    {
++        LocalFree(context->auth_data);
++        context->auth_data = NULL;
++        context->auth_size = 0;
++        if (context->session_key_len) SecureZeroMemory(context->session_key, context->session_key_len);
++        context->session_key_len = 0;
++        clear_last_policy(context);
++        return S_OK;
++    }
++
++    if (!(copy = LocalAlloc(LMEM_FIXED, size))) return E_OUTOFMEMORY;
++    memcpy(copy, value, size);
++    LocalFree(context->auth_data);
++    context->auth_data = copy;
++    context->auth_size = size;
++
++    EnterCriticalSection(&pending_auth_cs);
++    if (pending_session_key_len)
++    {
++        memcpy(context->session_key, pending_session_key, pending_session_key_len);
++        context->session_key_len = pending_session_key_len;
++        SecureZeroMemory(pending_session_key, pending_session_key_len);
++        pending_session_key_len = 0;
++    }
++    LeaveCriticalSection(&pending_auth_cs);
++    return S_OK;
++}
++
++HRESULT WINAPI SLGetAuthenticationResult(HSLC handle, UINT *size, BYTE **value)
++{
++    struct slc_context *context = get_slc_context(handle);
++
++    TRACE("(%p,%p,%p)\n", handle, size, value);
++
++    if (!context || !size || !value) return E_INVALIDARG;
++    *size = 0;
++    *value = NULL;
++    if (!context->auth_data) return SL_E_AUTHN_CHALLENGE_NOT_SET;
++    return build_authentication_result(context, size, value);
++}
++
++HRESULT WINAPI SLConsumeRight(HSLC handle, const SLID *app, const SLID *product, PCWSTR right, void *reserved)
++{
++    struct slc_context *context = get_slc_context(handle);
++    struct grace_license license;
++    HRESULT hr;
++
++    TRACE("(%p,%s,%s,%s,%p)\n", handle, wine_dbgstr_guid(app), wine_dbgstr_guid(product),
++          debugstr_w(right), reserved);
++
++    if (!context || !app || reserved) return E_INVALIDARG;
++    if (FAILED(hr = find_grace_license(app, product, &license))) return hr == SL_E_VALUE_NOT_FOUND ?
++        SL_E_RIGHT_NOT_GRANTED : hr;
++
++    context->app = license.app;
++    context->product = license.product;
++    context->grace_minutes = license.minutes;
++    context->grace_days = license.days;
++    context->rights_consumed = TRUE;
++    return S_OK;
++}
+--- a/dlls/sppc/sppc.spec
++++ b/dlls/sppc/sppc.spec
+@@ -17,8 +17,10 @@
+ @ stub SLpSetActivationInProgress
+ @ stub SLpTriggerServiceWorker
+ @ stub SLpVLActivateProduct
++@ cdecl __wine_sppc_set_auth_session_key(ptr long)
++@ cdecl __wine_sppc_set_expected_hmac(ptr long)
+ @ stdcall SLClose(ptr)
+-@ stub SLConsumeRight
++@ stdcall SLConsumeRight(ptr ptr ptr wstr ptr)
+ @ stub SLDepositMigrationBlob
+ @ stub SLDepositOfflineConfirmationId
+ @ stub SLDepositOfflineConfirmationIdEx
+@@ -31,7 +33,7 @@
+ @ stub SLGetActiveLicenseInfo
+ @ stub SLGetApplicationInformation
+ @ stub SLGetApplicationPolicy
+-@ stub SLGetAuthenticationResult
++@ stdcall SLGetAuthenticationResult(ptr ptr ptr)
+ @ stub SLGetEncryptedPIDEx
+ @ stub SLGetGenuineInformation
+ @ stub SLGetInstalledProductKeyIds
+@@ -41,23 +43,23 @@
+ @ stdcall SLGetLicensingStatusInformation(ptr ptr ptr wstr ptr ptr)
+ @ stub SLGetPKeyId
+ @ stub SLGetPKeyInformation
+-@ stub SLGetPolicyInformation
++@ stdcall SLGetPolicyInformation(ptr wstr ptr ptr ptr)
+ @ stub SLGetPolicyInformationDWORD
+-@ stub SLGetProductSkuInformation
++@ stdcall SLGetProductSkuInformation(ptr ptr wstr ptr ptr ptr)
+ @ stdcall SLGetSLIDList(ptr long ptr long ptr ptr)
+-@ stub SLGetServiceInformation
++@ stdcall SLGetServiceInformation(ptr wstr ptr ptr ptr)
+ @ stdcall SLInstallLicense(ptr long ptr ptr)
+ @ stub SLInstallProofOfPurchase
+ @ stub SLInstallProofOfPurchaseEx
+ @ stub SLIsGenuineLocalEx
+-@ stub SLLoadApplicationPolicies
++@ stdcall SLLoadApplicationPolicies(ptr ptr long ptr)
+ @ stdcall SLOpen(ptr)
+ @ stdcall SLPersistApplicationPolicies(ptr ptr long)
+ @ stub SLPersistRTSPayloadOverride
+ @ stub SLReArm
+ @ stub SLRegisterEvent
+ @ stub SLRegisterPlugin
+-@ stub SLSetAuthenticationData
++@ stdcall SLSetAuthenticationData(ptr long ptr)
+ @ stub SLSetCurrentProductKey
+ @ stub SLSetGenuineInformation
+ @ stub SLUninstallLicense
+
