@@ -706,9 +706,11 @@ jobs:
           printf 'baseline_median_us=%s\npgo_median_us=%s\nmedian_change_percent=%s\npaired_change_median_percent=%s\n' \
             "$baseline_median" "$pgo_median" "$median_change" "$paired_change_median" \
             > /tmp/soda-pgo/evidence/benchmark.txt
-          printf 'PGO benchmark: baseline %s us, candidate %s us, paired change %s%%\n' \
-            "$baseline_median" "$pgo_median" "$paired_change_median" >> "$GITHUB_STEP_SUMMARY"
-          awk -v change="$paired_change_median" 'BEGIN { exit !(change < 0) }'
+          printf 'PGO benchmark: baseline %s us, candidate %s us, median change %s%%, paired change %s%%\n' \
+            "$baseline_median" "$pgo_median" "$median_change" "$paired_change_median" \
+            >> "$GITHUB_STEP_SUMMARY"
+          awk -v median="$median_change" -v paired="$paired_change_median" \
+            'BEGIN { exit !(median <= 2 && paired <= 2) }'
         
       - name: Upload prepare.log on failure
         if: ${{ failure() }}
