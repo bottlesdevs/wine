@@ -5927,16 +5927,17 @@ index 00000000000..a6953ef15b3
 +	wineofficeauth.cpp
 diff --git a/programs/wineofficeauth/wineofficeauth.cpp b/programs/wineofficeauth/wineofficeauth.cpp
 new file mode 100644
-index 00000000000..5e56ec1febe
+index 00000000000..da5ea024723
 --- /dev/null
 +++ b/programs/wineofficeauth/wineofficeauth.cpp
-@@ -0,0 +1,2767 @@
+@@ -0,0 +1,2913 @@
 +/*
 + * Wine4Office organizational OAuth helper.
 + *
 + * Hosts Microsoft authentication in an owner-window MSHTML control inside the
 + * Wine prefix, exchanges the public-client PKCE code, and stores each account's
-+ * versioned WAM bundle with DPAPI.  It never opens the host browser.
++ * versioned WAM bundle with DPAPI.  Device authorization in the host browser is
++ * used when the embedded control cannot complete a work account challenge.
 + */
 +#include <windows.h>
 +extern "C"
@@ -6604,9 +6605,10 @@ index 00000000000..5e56ec1febe
 +static bool cached_account_matches(const std::string &login_hint);
 +
 +static bool http_post(const WCHAR *host, const WCHAR *path, const std::string &body,
-+                      std::string &response)
++                      std::string &response, DWORD *response_status = NULL)
 +{
 +    HINTERNET session = NULL, connection = NULL, request = NULL;
++    const WCHAR *headers;
 +    DWORD status = 0, status_size = sizeof(status), available, read;
 +    bool success = false;
 +    response.clear();
@@ -6620,7 +6622,10 @@ index 00000000000..5e56ec1febe
 +    request = WinHttpOpenRequest(connection, L"POST", path, NULL, WINHTTP_NO_REFERER,
 +                                 WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
 +    if (!request) goto done;
-+    if (!WinHttpAddRequestHeaders(request, L"Content-Type: application/x-www-form-urlencoded\r\n",
++    headers = response_status ?
++        L"Content-Type: application/x-www-form-urlencoded\r\nConnection: close\r\n" :
++        L"Content-Type: application/x-www-form-urlencoded\r\n";
++    if (!WinHttpAddRequestHeaders(request, headers,
 +                                  -1, WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE)) goto done;
 +    if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
 +                            (void *)body.data(), body.size(), body.size(), 0) ||
@@ -6634,12 +6639,14 @@ index 00000000000..5e56ec1febe
 +        if (available)
 +        {
 +            size_t old_size = response.size();
++            if (old_size + available > 1024 * 1024) goto done;
 +            response.resize(old_size + available);
 +            if (!WinHttpReadData(request, &response[old_size], available, &read)) goto done;
 +            response.resize(old_size + read);
 +        }
 +    } while (available);
-+    success = status == 200;
++    if (response_status) *response_status = status;
++    success = response_status ? true : status == 200;
 +done:
 +    if (request) WinHttpCloseHandle(request);
 +    if (connection) WinHttpCloseHandle(connection);
@@ -7611,6 +7618,129 @@ index 00000000000..5e56ec1febe
 +    return success;
 +}
 +
++static bool valid_device_verification_uri(const std::string &uri)
++{
++    static const char *const prefixes[] = {
++        "https://login.microsoft.com/",
++        "https://microsoft.com/",
++        "https://www.microsoft.com/",
++    };
++
++    for (const char *prefix : prefixes)
++        if (!uri.compare(0, strlen(prefix), prefix)) return true;
++    return false;
++}
++
++static bool open_device_verification_uri(const std::wstring &uri)
++{
++    static const WCHAR browser_path[] = L"C:\\windows\\system32\\winebrowser.exe";
++    STARTUPINFOW startup = {sizeof(startup)};
++    PROCESS_INFORMATION process;
++    std::wstring command = L"winebrowser.exe \"" + uri + L"\"";
++    std::vector<WCHAR> buffer(command.begin(), command.end());
++
++    buffer.push_back(0);
++    if (!CreateProcessW(browser_path, buffer.data(), NULL, NULL, FALSE, 0, NULL, NULL,
++                        &startup, &process))
++        return false;
++    CloseHandle(process.hThread);
++    CloseHandle(process.hProcess);
++    return true;
++}
++
++static DWORD WINAPI open_device_verification_thread(void *arg)
++{
++    WCHAR *uri = (WCHAR *)arg;
++
++    open_device_verification_uri(uri);
++    free(uri);
++    return 0;
++}
++
++static void open_device_verification_uri_async(const std::wstring &uri)
++{
++    WCHAR *copy;
++    HANDLE thread;
++
++    if (!(copy = (WCHAR *)malloc((uri.size() + 1) * sizeof(WCHAR)))) return;
++    memcpy(copy, uri.c_str(), (uri.size() + 1) * sizeof(WCHAR));
++    if (!(thread = CreateThread(NULL, 0, open_device_verification_thread, copy, 0, NULL)))
++    {
++        free(copy);
++        return;
++    }
++    CloseHandle(thread);
++}
++
++static bool device_auth_and_save(HWND owner)
++{
++    token_set office, licensing;
++    std::string response, device_code, user_code, verification_uri, error;
++    std::wstring user_code_w, verification_uri_w, message;
++    ULONGLONG expires_in, interval, deadline = 0, next_poll = 0;
++    DWORD status;
++    bool success = false;
++    std::string tenant = oauth_tenant.empty() ? "organizations" : oauth_tenant;
++    std::wstring path = L"/" + utf8_to_wide(tenant) + L"/oauth2/v2.0/devicecode";
++    std::string body = "client_id=" + std::string(client_id) +
++        "&scope=" + url_encode(office_scope);
++
++    if (!http_post(L"login.microsoftonline.com", path.c_str(), body, response, &status) || status != 200 ||
++        !json_string(response, "device_code", device_code) ||
++        !json_string(response, "user_code", user_code) ||
++        !json_string(response, "verification_uri", verification_uri) ||
++        !json_number(response, "expires_in", expires_in) ||
++        !json_number(response, "interval", interval) ||
++        device_code.empty() || user_code.empty() || expires_in > 3600 || !expires_in ||
++        interval > 60 || !interval || !valid_device_verification_uri(verification_uri))
++        goto done;
++    user_code_w = utf8_to_wide(user_code);
++    verification_uri_w = utf8_to_wide(verification_uri);
++    if (user_code_w.empty() || verification_uri_w.empty()) goto done;
++    open_device_verification_uri_async(verification_uri_w);
++    deadline = GetTickCount64() + expires_in * 1000;
++    message = L"Complete Microsoft 365 sign-in in your browser.\n\nCode: " + user_code_w +
++              L"\n\n" + verification_uri_w;
++    message += L"\nSelect Retry after the browser confirms the sign-in.";
++    if (MessageBoxW(owner, message.c_str(), L"Microsoft 365",
++                    MB_RETRYCANCEL | MB_ICONINFORMATION) != IDRETRY)
++    {
++        oauth_cancelled = true;
++        goto done;
++    }
++    for (;;)
++    {
++        ULONGLONG now = GetTickCount64();
++        if (now >= deadline) goto done;
++        if (now < next_poll) Sleep((DWORD)(next_poll - now));
++        response.clear();
++        error.clear();
++        body = "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&client_id=" +
++               std::string(client_id) + "&device_code=" + url_encode(device_code);
++        if (http_post(L"login.microsoftonline.com",
++                      (L"/" + utf8_to_wide(tenant) + L"/oauth2/v2.0/token").c_str(),
++                      body, response, &status) && status == 200 && parse_token_set(response, office))
++            break;
++        json_string(response, "error", error);
++        if (error == "slow_down") interval += 5;
++        else if (error != "authorization_pending") goto done;
++        next_poll = GetTickCount64() + interval * 1000;
++    }
++    success = refresh_scope(office.refresh_token, licensing_scope, licensing, &office);
++    if (success && !licensing.refresh_token.empty()) office.refresh_token = licensing.refresh_token;
++    if (success) success = save_tokens(office, licensing);
++done:
++    secure_clear(body);
++    secure_clear(response);
++    secure_clear(device_code);
++    secure_clear(user_code);
++    secure_clear(error);
++    secure_clear(tenant);
++    secure_clear(office);
++    secure_clear(licensing);
++    return success;
++}
++
 +static bool refresh_and_save(const std::string &login_hint)
 +{
 +    cache_record previous_record;
@@ -8559,7 +8689,7 @@ index 00000000000..5e56ec1febe
 +    std::string verifier, login_hint, resource_scope, resource_client_id, resource_redirect_uri;
 +    std::string interactive_scope;
 +    std::string request_client_id, request_scope;
-+    bool success;
++    bool device_code_only = false, success;
 +    (void)previous; (void)command_line; (void)show;
 +    if (!argv) return 3;
 +    if (argc >= 2 && !wcscmp(argv[1], L"--refresh"))
@@ -8622,6 +8752,8 @@ index 00000000000..5e56ec1febe
 +            request_client_id = wide_to_utf8(argv[++i]);
 +        else if (!wcscmp(argv[i], L"--scope") && i + 1 < argc)
 +            request_scope = wide_to_utf8(argv[++i]);
++        else if (!wcscmp(argv[i], L"--device-code"))
++            device_code_only = true;
 +    }
 +    LocalFree(argv);
 +    if (FAILED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED))) return 3;
@@ -8653,6 +8785,18 @@ index 00000000000..5e56ec1febe
 +         * the personal account with a Live ID RPS request. */
 +        oauth_consumer_scope = consumer_resource_mode ? consumer_licensing_scope : request_scope;
 +    }
++    if (device_code_only)
++    {
++        success = !oauth_consumer && !resource_mode && device_auth_and_save(owner_window);
++        secure_clear(resource_scope);
++        secure_clear(resource_client_id);
++        secure_clear(resource_redirect_uri);
++        secure_clear(request_client_id);
++        secure_clear(request_scope);
++        OleUninitialize();
++        CoUninitialize();
++        return success ? 0 : oauth_cancelled ? 2 : 3;
++    }
 +    if (cached_account_matches(login_hint))
 +    {
 +        if (resource_mode)
@@ -8681,6 +8825,8 @@ index 00000000000..5e56ec1febe
 +                                                              resource_client_id, resource_redirect_uri,
 +                                                              login_hint) :
 +                                  exchange_and_save(oauth_code, verifier, login_hint);
++    if (!success && !oauth_cancelled && !oauth_consumer && !resource_mode)
++        success = device_auth_and_save(owner_window);
 +    if (success && consumer_resource_mode)
 +        success = refresh_resource_and_save(request_scope, request_client_id, login_hint);
 +    SecureZeroMemory((void *)oauth_code.data(), oauth_code.size());
