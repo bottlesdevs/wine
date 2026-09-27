@@ -90,6 +90,8 @@ jobs:
             grep -F "#define $symbol" /tmp/valve-wine/include/slerror.h
           done
           grep -F '@ stdcall GetDispatcherQueueForCurrentThread(ptr)' /tmp/valve-wine/dlls/coremessaging/coremessaging.spec
+          grep -F '@ stdcall CalculatePopupWindowPosition(ptr ptr long ptr ptr)' /tmp/valve-wine/dlls/user32/user32.spec
+          grep -F '@ stdcall -syscall NtUserCalculatePopupWindowPosition(ptr ptr long ptr ptr)' /tmp/valve-wine/dlls/win32u/win32u.spec
 
   build:
     needs: patches
