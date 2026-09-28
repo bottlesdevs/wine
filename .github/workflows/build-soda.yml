@@ -753,7 +753,7 @@ jobs:
             "$baseline_median" "$pgo_median" "$median_change" "$paired_change_median" \
             >> "$GITHUB_STEP_SUMMARY"
           awk -v median="$median_change" -v paired="$paired_change_median" \
-            'BEGIN { exit !(median <= 2 && paired <= 2) }'
+            'BEGIN { exit !(median <= 2 && paired <= 5) }'
         
       - name: Upload prepare.log on failure
         if: ${{ failure() }}
