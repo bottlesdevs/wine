@@ -115,14 +115,32 @@ new file mode 100644
 index 00000000000..3ce5d3f8a4e
 --- /dev/null
 +++ b/dlls/windows.networking/classes.idl
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,28 @@
 +/* Runtime classes for windows.networking.dll */
 +
 +#pragma makedep register
 +#pragma winrt ns_prefix
 +
 +import "windows.networking.sockets.idl";
++import "windows.foundation.idl";
 +
 +namespace Windows.Networking.Sockets {
-+    runtimeclass MessageWebSocket;
++    [
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        uuid(33727d08-34d5-4746-ad7b-8dde5bc2ef88)
++    ]
++    interface IMessageWebSocket : IInspectable
++    {
++    }
++
++    [
++        activatable(Windows.Foundation.UniversalApiContract, 1.0),
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass MessageWebSocket
++    {
++        [default] interface Windows.Networking.Sockets.IMessageWebSocket;
++    }
 +}
