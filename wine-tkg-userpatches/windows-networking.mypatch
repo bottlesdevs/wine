@@ -100,3 +100,29 @@ index 325ea83..d219937 100644
 +
      return CLASS_E_CLASSNOTAVAILABLE;
  }
+diff --git a/dlls/windows.networking/Makefile.in b/dlls/windows.networking/Makefile.in
+index 09a8c649a47..c72353ee032 100644
+--- a/dlls/windows.networking/Makefile.in
++++ b/dlls/windows.networking/Makefile.in
+@@ -2,4 +2,5 @@ MODULE = windows.networking.dll
+ IMPORTS = combase
+ 
+ SOURCES = \
++	classes.idl \
+ 	main.c
+diff --git a/dlls/windows.networking/classes.idl b/dlls/windows.networking/classes.idl
+new file mode 100644
+index 00000000000..3ce5d3f8a4e
+--- /dev/null
++++ b/dlls/windows.networking/classes.idl
+@@ -0,0 +1,10 @@
++/* Runtime classes for windows.networking.dll */
++
++#pragma makedep register
++#pragma winrt ns_prefix
++
++import "windows.networking.sockets.idl";
++
++namespace Windows.Networking.Sockets {
++    runtimeclass MessageWebSocket;
++}

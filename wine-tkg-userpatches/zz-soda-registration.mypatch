@@ -13,6 +13,14 @@ index 7434ef9..2a0aa95 100644
  WINE_CONFIG_MAKEFILE(dlls/windows.devices.usb)
  WINE_CONFIG_MAKEFILE(dlls/windows.devices.usb/tests)
  WINE_CONFIG_MAKEFILE(dlls/windows.gaming.input)
+@@ -3410,6 +3412,7 @@ WINE_CONFIG_MAKEFILE(dlls/windows.security.authentication.onlineid)
+ WINE_CONFIG_MAKEFILE(dlls/windows.security.authentication.onlineid/tests)
+ WINE_CONFIG_MAKEFILE(dlls/windows.security.credentials.ui.userconsentverifier)
+ WINE_CONFIG_MAKEFILE(dlls/windows.security.credentials.ui.userconsentverifier/tests)
++WINE_CONFIG_MAKEFILE(dlls/windows.security.enterprisedata)
+ WINE_CONFIG_MAKEFILE(dlls/windows.storage.applicationdata)
+ WINE_CONFIG_MAKEFILE(dlls/windows.storage.applicationdata/tests)
+ WINE_CONFIG_MAKEFILE(dlls/windows.storage)
 @@ -3715,6 +3717,7 @@ WINE_CONFIG_MAKEFILE(programs/view)
  WINE_CONFIG_MAKEFILE(programs/wevtutil)
  WINE_CONFIG_MAKEFILE(programs/where)
@@ -64,6 +72,16 @@ diff --git a/loader/wine.inf.in b/loader/wine.inf.in
 index 924a77e..0e54cb4 100644
 --- a/loader/wine.inf.in
 +++ b/loader/wine.inf.in
+@@ -761,6 +761,9 @@ HKLM,SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86,"Version",2,"14.42.344
+ 11,,urlmon.dll,1
+ 11,,vidreszr.dll,1
+ 11,,windowscodecs.dll,1
++11,,windows.applicationmodel.dll,1
++11,,windows.networking.dll,1
++11,,windows.security.enterprisedata.dll,1
+ 11,,winegstreamer.dll,1
+ 55,,wineps.drv,1
+ 11,,winevulkan.dll,1
 @@ -1372,8 +1372,10 @@ sortdefault.nls
 
  [WinmdFiles]
