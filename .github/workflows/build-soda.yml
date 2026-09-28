@@ -27,7 +27,7 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '18-experimental'
+  REVISION: '19-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -45,8 +45,11 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-18 Experimental, codenamed Windows Escape, fixes the WinRT activation paths used by current Microsoft 365 builds. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-19 Experimental, codenamed Windows Escape, completes the sparse package and composition paths required by current Microsoft 365 builds. It remains a prerelease and does not replace the current stable Soda build.
 
+    - Implemented sparse MSIX registration and package identity propagation used by Office background components.
+    - Added ICompositor5 and the composition interfaces used by current Office windows.
+    - Added thread-pool timer, package identity, and filesystem compatibility APIs required by Office bootstrap.
     - Registered CoreApplication, MessageWebSocket, and ProtectionPolicyManager for both 32-bit and 64-bit prefixes.
     - Added a build-time runtime check for the Office WinRT classes to prevent incomplete runner releases.
     - Fixed Click-to-Run repair after a prefix moves between environments with different machine IDs.
