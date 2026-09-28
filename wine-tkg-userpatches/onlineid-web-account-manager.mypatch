@@ -5930,7 +5930,7 @@ new file mode 100644
 index 00000000000..da5ea024723
 --- /dev/null
 +++ b/programs/wineofficeauth/wineofficeauth.cpp
-@@ -0,0 +1,2913 @@
+@@ -0,0 +1,2921 @@
 +/*
 + * Wine4Office organizational OAuth helper.
 + *
@@ -7515,7 +7515,7 @@ index 00000000000..da5ea024723
 +static bool cached_account_matches(const std::string &login_hint)
 +{
 +    cache_record record;
-+    bool success = login_hint.empty() || cache_record_load(login_hint, record);
++    bool success = cache_record_load(login_hint, record);
 +    secure_clear(record);
 +    return success;
 +}
@@ -8797,6 +8797,13 @@ index 00000000000..da5ea024723
 +        CoUninitialize();
 +        return success ? 0 : oauth_cancelled ? 2 : 3;
 +    }
++    if (resource_mode && !cached_account_matches(login_hint))
++    {
++        success = device_auth_and_save(owner_window);
++        if (success)
++            success = refresh_resource_and_save(resource_scope, resource_client_id, login_hint);
++        goto done;
++    }
 +    if (cached_account_matches(login_hint))
 +    {
 +        if (resource_mode)
@@ -8829,6 +8836,7 @@ index 00000000000..da5ea024723
 +        success = device_auth_and_save(owner_window);
 +    if (success && consumer_resource_mode)
 +        success = refresh_resource_and_save(request_scope, request_client_id, login_hint);
++done:
 +    SecureZeroMemory((void *)oauth_code.data(), oauth_code.size());
 +    SecureZeroMemory((void *)verifier.data(), verifier.size());
 +    secure_clear(resource_scope);
