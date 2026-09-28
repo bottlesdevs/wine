@@ -1,18 +1,19 @@
 Implement runtime APIs used by Office package bootstrap.
 
 diff --git a/dlls/kernel32/file.c b/dlls/kernel32/file.c
-index fab914898e..53cf621f64 100644
+index bb07b44..53cf621 100644
 --- a/dlls/kernel32/file.c
 +++ b/dlls/kernel32/file.c
-@@ -264,6 +264,50 @@ BOOL WINAPI SetFileCompletionNotificationModes( HANDLE file, UCHAR flags )
- }
- 
- 
-+/**************************************************************************
-+ *           SetFileShortNameW   (KERNEL32.@)
-+ */
+@@ -267,11 +267,44 @@
+ /**************************************************************************
+  *           SetFileShortNameW   (KERNEL32.@)
+  */
+-BOOL WINAPI SetFileShortNameW( HANDLE file, const WCHAR *name )
 +BOOL WINAPI SetFileShortNameW( HANDLE file, const WCHAR *short_name )
-+{
+ {
+-    FIXME("%p %s: stub\n", file, debugstr_w(name));
+-    SetLastError(ERROR_NOT_SUPPORTED);
+-    return FALSE;
 +    FILE_NAME_INFORMATION *info;
 +    IO_STATUS_BLOCK io;
 +    NTSTATUS status;
@@ -49,25 +50,13 @@ index fab914898e..53cf621f64 100644
 +        return TRUE;
 +    }
 +    return set_ntstatus( status );
-+}
-+
-+
- /*************************************************************************
-  *           SetHandleCount   (KERNEL32.@)
-  */
+ }
+ 
+ 
 diff --git a/dlls/kernel32/kernel32.spec b/dlls/kernel32/kernel32.spec
 index 1a3f5576f6..8edc06806d 100644
 --- a/dlls/kernel32/kernel32.spec
 +++ b/dlls/kernel32/kernel32.spec
-@@ -1446,7 +1446,7 @@
- @ stdcall -import SetFilePointer(long long ptr long)
- @ stdcall -import SetFilePointerEx(long int64 ptr long)
- # @ stub SetFileShortNameA
--# @ stub SetFileShortNameW
-+@ stdcall SetFileShortNameW(long wstr)
- @ stdcall -import SetFileTime(long ptr ptr ptr)
- @ stdcall -import SetFileValidData(ptr int64)
- @ stdcall SetFirmwareEnvironmentVariableA(str str ptr long)
 @@ -1510,6 +1510,7 @@
  @ stdcall SetThreadpoolThreadMaximum(ptr long) NTDLL.TpSetPoolMaxThreads
  @ stdcall SetThreadpoolThreadMinimum(ptr long) NTDLL.TpSetPoolMinThreads
