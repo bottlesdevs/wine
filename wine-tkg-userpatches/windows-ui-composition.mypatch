@@ -1,7 +1,7 @@
 Implement WinRT composition interfaces used by Office.
 
 diff --git a/dlls/windows.ui/Makefile.in b/dlls/windows.ui/Makefile.in
-index 5bef78b300e..5d4760dacd0 100644
+index 5bef78b300..5d4760dacd 100644
 --- a/dlls/windows.ui/Makefile.in
 +++ b/dlls/windows.ui/Makefile.in
 @@ -1,10 +1,12 @@
@@ -19,7 +19,7 @@ index 5bef78b300e..5d4760dacd0 100644
  	uisettings.c \
  	uiviewsettings.c \
 diff --git a/dlls/windows.ui/classes.idl b/dlls/windows.ui/classes.idl
-index 1765624bcb5..134dd0980ae 100644
+index 1765624bcb..134dd0980a 100644
 --- a/dlls/windows.ui/classes.idl
 +++ b/dlls/windows.ui/classes.idl
 @@ -31,6 +31,9 @@ import "windows.devices.enumeration.idl";
@@ -52,10 +52,10 @@ index 1765624bcb5..134dd0980ae 100644
 +}
 diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
 new file mode 100644
-index 00000000000..10ea66f53bd
+index 0000000000..a5defc5ee2
 --- /dev/null
 +++ b/dlls/windows.ui/composition.c
-@@ -0,0 +1,7002 @@
+@@ -0,0 +1,7213 @@
 +/* WinRT Windows.UI.Composition implementation
 + *
 + * Copyright (C) 2026 Mirko Brombin
@@ -97,12 +97,14 @@ index 00000000000..10ea66f53bd
 +
 +struct compositor2_iface;
 +struct compositor4_iface;
++struct compositor5_iface;
 +struct compositor6_iface;
 +struct compositor;
 +struct compositor_controller;
 +struct nine_grid_brush_iface;
 +
 +static void compositor_notify_commit_needed( struct compositor *compositor );
++static HRESULT completed_action_create( IAsyncAction **operation );
 +
 +struct compositor2_vtbl
 +{
@@ -155,6 +157,43 @@ index 00000000000..10ea66f53bd
 +    const struct compositor4_vtbl *lpVtbl;
 +};
 +
++struct compositor5_vtbl
++{
++    HRESULT (WINAPI *QueryInterface)( struct compositor5_iface *iface, REFIID iid, void **out );
++    ULONG (WINAPI *AddRef)( struct compositor5_iface *iface );
++    ULONG (WINAPI *Release)( struct compositor5_iface *iface );
++    HRESULT (WINAPI *GetIids)( struct compositor5_iface *iface, ULONG *count, IID **iids );
++    HRESULT (WINAPI *GetRuntimeClassName)( struct compositor5_iface *iface, HSTRING *name );
++    HRESULT (WINAPI *GetTrustLevel)( struct compositor5_iface *iface, TrustLevel *level );
++    HRESULT (WINAPI *get_Comment)( struct compositor5_iface *iface, HSTRING *value );
++    HRESULT (WINAPI *put_Comment)( struct compositor5_iface *iface, HSTRING value );
++    HRESULT (WINAPI *get_GlobalPlaybackRate)( struct compositor5_iface *iface, FLOAT *value );
++    HRESULT (WINAPI *put_GlobalPlaybackRate)( struct compositor5_iface *iface, FLOAT value );
++    HRESULT (WINAPI *CreateBounceScalarAnimation)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateBounceVector2Animation)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateBounceVector3Animation)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateContainerShape)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateEllipseGeometry)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateLineGeometry)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreatePathGeometry)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreatePathGeometryWithPath)( struct compositor5_iface *iface,
++            IInspectable *path, IInspectable **result );
++    HRESULT (WINAPI *CreatePathKeyFrameAnimation)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateRectangleGeometry)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateRoundedRectangleGeometry)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateShapeVisual)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateSpriteShape)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateSpriteShapeWithGeometry)( struct compositor5_iface *iface,
++            IInspectable *geometry, IInspectable **result );
++    HRESULT (WINAPI *CreateViewBox)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *RequestCommitAsync)( struct compositor5_iface *iface, IAsyncAction **operation );
++};
++
++struct compositor5_iface
++{
++    const struct compositor5_vtbl *lpVtbl;
++};
++
 +struct compositor6_vtbl
 +{
 +    HRESULT (WINAPI *QueryInterface)( struct compositor6_iface *iface, REFIID iid, void **out );
@@ -180,6 +219,8 @@ index 00000000000..10ea66f53bd
 +
 +static const GUID compositor6_iid =
 +    {0x7a38b2bd,0xcec8,0x4eeb,{0x83,0x0f,0xd8,0xd0,0x7a,0xed,0xeb,0xc3}};
++static const GUID compositor5_iid =
++    {0x48ea31ad,0x7fcd,0x4076,{0xa7,0x9c,0x90,0xcc,0x4b,0x85,0x2c,0x9b}};
 +
 +struct nine_grid_brush_vtbl
 +{
@@ -535,6 +576,7 @@ index 00000000000..10ea66f53bd
 +    ICompositor ICompositor_iface;
 +    struct compositor2_iface ICompositor2_iface;
 +    struct compositor4_iface ICompositor4_iface;
++    struct compositor5_iface ICompositor5_iface;
 +    struct compositor6_iface ICompositor6_iface;
 +    ICompositorDesktopInterop ICompositorDesktopInterop_iface;
 +    ICompositorInterop ICompositorInterop_iface;
@@ -542,6 +584,8 @@ index 00000000000..10ea66f53bd
 +    IDCompositionDevice *dcomp_device;
 +    struct compositor_controller *controller;
 +    struct list targets;
++    HSTRING comment;
++    FLOAT global_playback_rate;
 +    LONG ref;
 +};
 +
@@ -1763,6 +1807,11 @@ index 00000000000..10ea66f53bd
 +    return CONTAINING_RECORD( iface, struct compositor, ICompositor4_iface );
 +}
 +
++static inline struct compositor *impl_from_compositor5( struct compositor5_iface *iface )
++{
++    return CONTAINING_RECORD( iface, struct compositor, ICompositor5_iface );
++}
++
 +static inline struct compositor *impl_from_compositor6( struct compositor6_iface *iface )
 +{
 +    return CONTAINING_RECORD( iface, struct compositor, ICompositor6_iface );
@@ -1797,6 +1846,8 @@ index 00000000000..10ea66f53bd
 +        *out = &impl->ICompositor2_iface;
 +    else if (IsEqualGUID( iid, &compositor4_iid ))
 +        *out = &impl->ICompositor4_iface;
++    else if (IsEqualGUID( iid, &compositor5_iid ))
++        *out = &impl->ICompositor5_iface;
 +    else if (IsEqualGUID( iid, &compositor6_iid ))
 +        *out = &impl->ICompositor6_iface;
 +    else if (IsEqualGUID( iid, &IID_IClosable ))
@@ -1835,6 +1886,7 @@ index 00000000000..10ea66f53bd
 +            desktop_window_target_release( target );
 +        }
 +        if (impl->dcomp_device) IDCompositionDevice_Release( impl->dcomp_device );
++        WindowsDeleteString( impl->comment );
 +        free( impl );
 +    }
 +    return ref;
@@ -1845,12 +1897,14 @@ index 00000000000..10ea66f53bd
 +    IID *values;
 +
 +    if (!count || !iids) return E_POINTER;
-+    if (!(values = CoTaskMemAlloc( 4 * sizeof(*values) ))) return E_OUTOFMEMORY;
++    if (!(values = CoTaskMemAlloc( 6 * sizeof(*values) ))) return E_OUTOFMEMORY;
 +    values[0] = IID_ICompositor;
 +    values[1] = compositor2_iid;
 +    values[2] = compositor4_iid;
-+    values[3] = IID_IClosable;
-+    *count = 4;
++    values[3] = compositor5_iid;
++    values[4] = compositor6_iid;
++    values[5] = IID_IClosable;
++    *count = 6;
 +    *iids = values;
 +    return S_OK;
 +}
@@ -5389,6 +5443,161 @@ index 00000000000..10ea66f53bd
 +    compositor4_CreateSpringVector3Animation,
 +};
 +
++static HRESULT WINAPI compositor5_QueryInterface( struct compositor5_iface *iface, REFIID iid,
++        void **out )
++{
++    struct compositor *impl = impl_from_compositor5( iface );
++    return ICompositor_QueryInterface( &impl->ICompositor_iface, iid, out );
++}
++
++static ULONG WINAPI compositor5_AddRef( struct compositor5_iface *iface )
++{
++    struct compositor *impl = impl_from_compositor5( iface );
++    return ICompositor_AddRef( &impl->ICompositor_iface );
++}
++
++static ULONG WINAPI compositor5_Release( struct compositor5_iface *iface )
++{
++    struct compositor *impl = impl_from_compositor5( iface );
++    return ICompositor_Release( &impl->ICompositor_iface );
++}
++
++static HRESULT WINAPI compositor5_GetIids( struct compositor5_iface *iface, ULONG *count, IID **iids )
++{
++    struct compositor *impl = impl_from_compositor5( iface );
++    return ICompositor_GetIids( &impl->ICompositor_iface, count, iids );
++}
++
++static HRESULT WINAPI compositor5_GetRuntimeClassName( struct compositor5_iface *iface, HSTRING *name )
++{
++    struct compositor *impl = impl_from_compositor5( iface );
++    return ICompositor_GetRuntimeClassName( &impl->ICompositor_iface, name );
++}
++
++static HRESULT WINAPI compositor5_GetTrustLevel( struct compositor5_iface *iface, TrustLevel *level )
++{
++    struct compositor *impl = impl_from_compositor5( iface );
++    return ICompositor_GetTrustLevel( &impl->ICompositor_iface, level );
++}
++
++static HRESULT WINAPI compositor5_get_Comment( struct compositor5_iface *iface, HSTRING *value )
++{
++    struct compositor *impl = impl_from_compositor5( iface );
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (!impl->comment) return S_OK;
++    return WindowsDuplicateString( impl->comment, value );
++}
++
++static HRESULT WINAPI compositor5_put_Comment( struct compositor5_iface *iface, HSTRING value )
++{
++    struct compositor *impl = impl_from_compositor5( iface );
++    HSTRING copy = NULL;
++    HRESULT hr;
++
++    if (value && FAILED(hr = WindowsDuplicateString( value, &copy ))) return hr;
++    WindowsDeleteString( impl->comment );
++    impl->comment = copy;
++    return S_OK;
++}
++
++static HRESULT WINAPI compositor5_get_GlobalPlaybackRate( struct compositor5_iface *iface, FLOAT *value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_compositor5( iface )->global_playback_rate;
++    return S_OK;
++}
++
++static HRESULT WINAPI compositor5_put_GlobalPlaybackRate( struct compositor5_iface *iface, FLOAT value )
++{
++    impl_from_compositor5( iface )->global_playback_rate = value;
++    return S_OK;
++}
++
++#define DEFINE_COMPOSITOR5_CREATE_METHOD(name) \
++    static HRESULT WINAPI compositor5_##name( struct compositor5_iface *iface, \
++            IInspectable **result ) \
++    { \
++        FIXME( "iface %p, result %p stub!\n", iface, result ); \
++        if (!result) return E_POINTER; \
++        *result = NULL; \
++        return E_NOTIMPL; \
++    }
++
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreateBounceScalarAnimation)
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreateBounceVector2Animation)
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreateBounceVector3Animation)
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreateContainerShape)
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreateEllipseGeometry)
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreateLineGeometry)
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreatePathGeometry)
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreatePathKeyFrameAnimation)
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreateRectangleGeometry)
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreateRoundedRectangleGeometry)
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreateShapeVisual)
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreateSpriteShape)
++DEFINE_COMPOSITOR5_CREATE_METHOD(CreateViewBox)
++
++#undef DEFINE_COMPOSITOR5_CREATE_METHOD
++
++static HRESULT WINAPI compositor5_CreatePathGeometryWithPath( struct compositor5_iface *iface,
++        IInspectable *path, IInspectable **result )
++{
++    FIXME( "iface %p, path %p, result %p stub!\n", iface, path, result );
++    if (!result) return E_POINTER;
++    *result = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI compositor5_CreateSpriteShapeWithGeometry( struct compositor5_iface *iface,
++        IInspectable *geometry, IInspectable **result )
++{
++    FIXME( "iface %p, geometry %p, result %p stub!\n", iface, geometry, result );
++    if (!result) return E_POINTER;
++    *result = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI compositor5_RequestCommitAsync( struct compositor5_iface *iface,
++        IAsyncAction **operation )
++{
++    struct compositor *impl = impl_from_compositor5( iface );
++
++    compositor_notify_commit_needed( impl );
++    return completed_action_create( operation );
++}
++
++static const struct compositor5_vtbl compositor5_vtbl =
++{
++    compositor5_QueryInterface,
++    compositor5_AddRef,
++    compositor5_Release,
++    compositor5_GetIids,
++    compositor5_GetRuntimeClassName,
++    compositor5_GetTrustLevel,
++    compositor5_get_Comment,
++    compositor5_put_Comment,
++    compositor5_get_GlobalPlaybackRate,
++    compositor5_put_GlobalPlaybackRate,
++    compositor5_CreateBounceScalarAnimation,
++    compositor5_CreateBounceVector2Animation,
++    compositor5_CreateBounceVector3Animation,
++    compositor5_CreateContainerShape,
++    compositor5_CreateEllipseGeometry,
++    compositor5_CreateLineGeometry,
++    compositor5_CreatePathGeometry,
++    compositor5_CreatePathGeometryWithPath,
++    compositor5_CreatePathKeyFrameAnimation,
++    compositor5_CreateRectangleGeometry,
++    compositor5_CreateRoundedRectangleGeometry,
++    compositor5_CreateShapeVisual,
++    compositor5_CreateSpriteShape,
++    compositor5_CreateSpriteShapeWithGeometry,
++    compositor5_CreateViewBox,
++    compositor5_RequestCommitAsync,
++};
++
 +static HRESULT WINAPI compositor6_QueryInterface( struct compositor6_iface *iface, REFIID iid,
 +        void **out )
 +{
@@ -6353,11 +6562,13 @@ index 00000000000..10ea66f53bd
 +    impl->ICompositor_iface.lpVtbl = &compositor_vtbl;
 +    impl->ICompositor2_iface.lpVtbl = &compositor2_vtbl;
 +    impl->ICompositor4_iface.lpVtbl = &compositor4_vtbl;
++    impl->ICompositor5_iface.lpVtbl = &compositor5_vtbl;
 +    impl->ICompositor6_iface.lpVtbl = &compositor6_vtbl;
 +    impl->ICompositorDesktopInterop_iface.lpVtbl = &compositor_desktop_vtbl;
 +    impl->ICompositorInterop_iface.lpVtbl = &compositor_interop_vtbl;
 +    impl->IClosable_iface.lpVtbl = &compositor_closable_vtbl;
 +    list_init( &impl->targets );
++    impl->global_playback_rate = 1.0f;
 +    impl->ref = 1;
 +    if (FAILED(hr = DCompositionCreateDevice( NULL, &IID_IDCompositionDevice,
 +            (void **)&impl->dcomp_device )))
@@ -7060,7 +7271,7 @@ index 00000000000..10ea66f53bd
 +IActivationFactory *compositor_controller_factory = &compositor_controller_factory_impl.IActivationFactory_iface;
 diff --git a/dlls/windows.ui/interactions.c b/dlls/windows.ui/interactions.c
 new file mode 100644
-index 00000000000..ba1c423161d
+index 0000000000..ba1c423161
 --- /dev/null
 +++ b/dlls/windows.ui/interactions.c
 @@ -0,0 +1,2277 @@
@@ -9342,7 +9553,7 @@ index 00000000000..ba1c423161d
 +IActivationFactory *visual_interaction_source_factory =
 +    &visual_interaction_source_factory_impl.IActivationFactory_iface;
 diff --git a/dlls/windows.ui/main.c b/dlls/windows.ui/main.c
-index 57f8dfb1c3f..1d69d16f49e 100644
+index 57f8dfb1c3..1d69d16f49 100644
 --- a/dlls/windows.ui/main.c
 +++ b/dlls/windows.ui/main.c
 @@ -50,6 +50,23 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
@@ -9370,7 +9581,7 @@ index 57f8dfb1c3f..1d69d16f49e 100644
      return CLASS_E_CLASSNOTAVAILABLE;
  }
 diff --git a/dlls/windows.ui/private.h b/dlls/windows.ui/private.h
-index 9901bbbc88e..7c299aa1518 100644
+index 9901bbbc88..7c299aa151 100644
 --- a/dlls/windows.ui/private.h
 +++ b/dlls/windows.ui/private.h
 @@ -30,9 +30,26 @@
@@ -9415,7 +9626,7 @@ index 9901bbbc88e..7c299aa1518 100644
  #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
      static inline impl_type *impl_from( iface_type *iface )                                        \
 diff --git a/dlls/windows.ui/tests/Makefile.in b/dlls/windows.ui/tests/Makefile.in
-index 88e5e4d08d9..24b4d61587b 100644
+index 88e5e4d08d..24b4d61587 100644
 --- a/dlls/windows.ui/tests/Makefile.in
 +++ b/dlls/windows.ui/tests/Makefile.in
 @@ -2,4 +2,5 @@ TESTDLL = windows.ui.dll
@@ -9426,10 +9637,10 @@ index 88e5e4d08d9..24b4d61587b 100644
  	uisettings.c
 diff --git a/dlls/windows.ui/tests/composition.c b/dlls/windows.ui/tests/composition.c
 new file mode 100644
-index 00000000000..17e24566f20
+index 0000000000..dce725ca32
 --- /dev/null
 +++ b/dlls/windows.ui/tests/composition.c
-@@ -0,0 +1,473 @@
+@@ -0,0 +1,555 @@
 +/*
 + * Copyright (C) 2026 Mirko Brombin
 + *
@@ -9476,12 +9687,53 @@ index 00000000000..17e24566f20
 +
 +static const GUID compositor4_iid =
 +    {0xae47e78a, 0x7910, 0x4425, {0xa4, 0x82, 0xa0, 0x5b, 0x75, 0x8a, 0xdc, 0xe9}};
++static const GUID compositor5_iid =
++    {0x48ea31ad, 0x7fcd, 0x4076, {0xa7, 0x9c, 0x90, 0xcc, 0x4b, 0x85, 0x2c, 0x9b}};
 +static const GUID compositor_controller_iid =
 +    {0x2d75f35a, 0x70a7, 0x4395, {0xba, 0x2d, 0xce, 0xf0, 0xb1, 0x83, 0x99, 0xf9}};
 +static const GUID interaction_tracker_statics_iid =
 +    {0xbba5d7b7, 0x6590, 0x4498, {0x8d, 0x6c, 0xeb, 0x62, 0xb5, 0x14, 0xc9, 0x2a}};
 +static const GUID interaction_tracker_statics2_iid =
 +    {0x35e53720, 0x46b7, 0x5cb0, {0xb5, 0x05, 0xf3, 0xd6, 0x88, 0x4a, 0x61, 0x63}};
++
++struct compositor5_iface;
++
++struct compositor5_vtbl
++{
++    HRESULT (WINAPI *QueryInterface)( struct compositor5_iface *iface, REFIID iid, void **out );
++    ULONG (WINAPI *AddRef)( struct compositor5_iface *iface );
++    ULONG (WINAPI *Release)( struct compositor5_iface *iface );
++    HRESULT (WINAPI *GetIids)( struct compositor5_iface *iface, ULONG *count, IID **iids );
++    HRESULT (WINAPI *GetRuntimeClassName)( struct compositor5_iface *iface, HSTRING *name );
++    HRESULT (WINAPI *GetTrustLevel)( struct compositor5_iface *iface, TrustLevel *level );
++    HRESULT (WINAPI *get_Comment)( struct compositor5_iface *iface, HSTRING *value );
++    HRESULT (WINAPI *put_Comment)( struct compositor5_iface *iface, HSTRING value );
++    HRESULT (WINAPI *get_GlobalPlaybackRate)( struct compositor5_iface *iface, FLOAT *value );
++    HRESULT (WINAPI *put_GlobalPlaybackRate)( struct compositor5_iface *iface, FLOAT value );
++    HRESULT (WINAPI *CreateBounceScalarAnimation)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateBounceVector2Animation)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateBounceVector3Animation)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateContainerShape)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateEllipseGeometry)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateLineGeometry)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreatePathGeometry)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreatePathGeometryWithPath)( struct compositor5_iface *iface,
++            IInspectable *path, IInspectable **result );
++    HRESULT (WINAPI *CreatePathKeyFrameAnimation)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateRectangleGeometry)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateRoundedRectangleGeometry)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateShapeVisual)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateSpriteShape)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *CreateSpriteShapeWithGeometry)( struct compositor5_iface *iface,
++            IInspectable *geometry, IInspectable **result );
++    HRESULT (WINAPI *CreateViewBox)( struct compositor5_iface *iface, IInspectable **result );
++    HRESULT (WINAPI *RequestCommitAsync)( struct compositor5_iface *iface, IAsyncAction **operation );
++};
++
++struct compositor5_iface
++{
++    const struct compositor5_vtbl *lpVtbl;
++};
 +
 +static ICompositor *create_compositor(void)
 +{
@@ -9507,14 +9759,55 @@ index 00000000000..17e24566f20
 +
 +static void test_compositor_interfaces(void)
 +{
++    struct compositor5_iface *compositor5 = NULL;
++    IAsyncAction *action = NULL;
 +    ICompositor *compositor;
 +    IUnknown *unknown;
++    HSTRING comment = NULL, value = NULL;
++    FLOAT rate = 0.0f;
 +    HRESULT hr;
 +
 +    if (!(compositor = create_compositor())) return;
 +    hr = ICompositor_QueryInterface( compositor, &compositor4_iid, (void **)&unknown );
 +    ok( hr == S_OK, "Got hr %#lx.\n", hr );
 +    if (SUCCEEDED(hr)) IUnknown_Release( unknown );
++
++    hr = ICompositor_QueryInterface( compositor, &compositor5_iid, (void **)&compositor5 );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    if (FAILED(hr)) goto done;
++
++    hr = compositor5->lpVtbl->get_GlobalPlaybackRate( compositor5, &rate );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    ok( rate == 1.0f, "Got rate %f.\n", rate );
++    hr = compositor5->lpVtbl->put_GlobalPlaybackRate( compositor5, 0.5f );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    hr = compositor5->lpVtbl->get_GlobalPlaybackRate( compositor5, &rate );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    ok( rate == 0.5f, "Got rate %f.\n", rate );
++
++    hr = WindowsCreateString( L"Office", 6, &comment );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    hr = compositor5->lpVtbl->put_Comment( compositor5, comment );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    hr = compositor5->lpVtbl->get_Comment( compositor5, &value );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    ok( value && !wcscmp( WindowsGetStringRawBuffer( value, NULL ), L"Office" ),
++        "Got comment %s.\n", wine_dbgstr_w( WindowsGetStringRawBuffer( value, NULL ) ) );
++
++    hr = compositor5->lpVtbl->RequestCommitAsync( compositor5, &action );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    ok( action != NULL, "Got action %p.\n", action );
++    if (action)
++    {
++        hr = IAsyncAction_GetResults( action );
++        ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    }
++
++done:
++    if (action) IAsyncAction_Release( action );
++    WindowsDeleteString( value );
++    WindowsDeleteString( comment );
++    if (compositor5) compositor5->lpVtbl->Release( compositor5 );
 +    ICompositor_Release( compositor );
 +}
 +
@@ -9904,7 +10197,7 @@ index 00000000000..17e24566f20
 +    RoUninitialize();
 +}
 diff --git a/include/Makefile.in b/include/Makefile.in
-index 435158167fc..a806baa3dcd 100644
+index 435158167f..a806baa3dc 100644
 --- a/include/Makefile.in
 +++ b/include/Makefile.in
 @@ -946,6 +946,9 @@ SOURCES = \
@@ -9919,7 +10212,7 @@ index 435158167fc..a806baa3dcd 100644
  	windows.ui.idl \
 diff --git a/include/windows.ui.composition.core.idl b/include/windows.ui.composition.core.idl
 new file mode 100644
-index 00000000000..702eef9d610
+index 0000000000..702eef9d61
 --- /dev/null
 +++ b/include/windows.ui.composition.core.idl
 @@ -0,0 +1,66 @@
@@ -9991,7 +10284,7 @@ index 00000000000..702eef9d610
 +}
 diff --git a/include/windows.ui.composition.desktop.idl b/include/windows.ui.composition.desktop.idl
 new file mode 100644
-index 00000000000..8222eb6174e
+index 0000000000..8222eb6174
 --- /dev/null
 +++ b/include/windows.ui.composition.desktop.idl
 @@ -0,0 +1,51 @@
@@ -10047,7 +10340,7 @@ index 00000000000..8222eb6174e
 +    }
 +}
 diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition.idl
-index 0eb7e4321c0..cb2bc1097de 100644
+index 0eb7e4321c..cb2bc1097d 100644
 --- a/include/windows.ui.composition.idl
 +++ b/include/windows.ui.composition.idl
 @@ -600,6 +600,17 @@ namespace Windows.UI.Composition {
@@ -10092,7 +10385,7 @@ index 0eb7e4321c0..cb2bc1097de 100644
          exclusiveto(Windows.UI.Composition.Visual),
 diff --git a/include/windows.ui.composition.interactions.idl b/include/windows.ui.composition.interactions.idl
 new file mode 100644
-index 00000000000..82f92a4cce4
+index 0000000000..82f92a4cce
 --- /dev/null
 +++ b/include/windows.ui.composition.interactions.idl
 @@ -0,0 +1,408 @@
@@ -10505,7 +10798,7 @@ index 00000000000..82f92a4cce4
 +    }
 +}
 diff --git a/include/windows.ui.composition.interop.idl b/include/windows.ui.composition.interop.idl
-index d3a39d4d50d..d32b91f117c 100644
+index d3a39d4d50..d32b91f117 100644
 --- a/include/windows.ui.composition.interop.idl
 +++ b/include/windows.ui.composition.interop.idl
 @@ -21,10 +21,12 @@
