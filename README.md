@@ -1,11 +1,14 @@
-# Attribution: Wine4Office
+# Soda
 
-Part of Soda's Office support comes from Wine4Office by Elkana Bardugo, an AI-assisted project. It was included in our initial Office import without attribution, and we're correcting that here.
+Soda is the Wine runner maintained for Bottles. It tracks Wine and Valve's experimental work, then adds Bottles-specific fixes for Windows applications and games on Linux. Its scope includes desktop software, game launchers, graphics, input, media, Wayland, X11, and Windows API compatibility.
 
-The shared code is limited to:
+#### Attribution: Wine4Office
 
-- `onlineid-web-account-manager`: Microsoft 365 sign-in, including the OAuth helper. This is largely Wine4Office code.
-- `windows-web-http-json`: under half of the patch is shared.
-- Small fragments (under 200 lines each) in five other patches.
+The only substantial overlap between the initial Soda Office import and Wine4Office by Elkana Bardugo, an AI-assisted project, was in these two patches:
 
-The remaining 47 of 54 Office patches have no overlap with Wine4Office. That includes rendering, DirectComposition, Wayland integration, Click-to-Run installation and WinRT runtime support. We're renaming the Wine4Office-specific identifiers, and we plan to rework the shared code.
+- `onlineid-web-account-manager.mypatch`: Microsoft 365 sign-in and its OAuth helper. This implementation has since been replaced by the independently written Soda Identity Bridge.
+- `windows-web-http-json.mypatch`: less than half of the patch was shared.
+
+Five other patches contained small matching fragments of fewer than 200 lines each. RetailInfo has also been replaced by Soda's declarative WinRT factory. The shared code entered the initial import without attribution, and the remaining overlap stays identified while it is reviewed or replaced.
+
+This acknowledgment remains as a record of those specific contributions to the earlier Soda Office work.
