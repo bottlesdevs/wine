@@ -27,7 +27,7 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '21-experimental'
+  REVISION: '22-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -45,9 +45,9 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-21 Experimental, codenamed Windows Escape, fixes the DirectWrite PGO crash seen after classic Outlook reaches the inbox. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-22 Experimental, codenamed Windows Escape, fixes the DirectWrite crash seen after classic Outlook reaches the inbox. It remains a prerelease and does not replace the current stable Soda build.
 
-    - Fixed classic Outlook closing after reaching the inbox by keeping DirectWrite alpha texture blits within their bitmap rows under PGO.
+    - Fixed classic Outlook closing after reaching the inbox by clipping DirectWrite glyphs to the analysis bitmap bounds.
     - Fixed classic Outlook closing before the inbox appeared by exposing the required composition object interfaces.
     - Implemented sparse MSIX registration and package identity propagation used by Office background components.
     - Added ICompositor5 and the composition interfaces used by current Office windows.
