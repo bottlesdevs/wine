@@ -1,0 +1,21 @@
+--- a/dlls/dwrite/font.c
++++ b/dlls/dwrite/font.c
+@@ -5998,11 +5998,17 @@ static HRESULT glyphrunanalysis_render(struct dwrite_glyphrunanalysis *analysis)
+                 }
+             }
+             else {
++                volatile BYTE *dst_row = dst;
++                const volatile BYTE *src_row = src;
++
++                /* Keep these accesses scalar. PGO can otherwise widen the tail past the bitmap row. */
+                 for (y = 0; y < height; y++) {
+                     for (x = 0; x < width; x++)
+-                        dst[x] |= src[x];
++                        dst_row[x] |= src_row[x];
+                     src += glyph_bitmap.pitch;
+                     dst += analysis->bounds.right - analysis->bounds.left;
++                    src_row = src;
++                    dst_row = dst;
+                 }
+             }
+         }
