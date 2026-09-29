@@ -55,7 +55,7 @@ new file mode 100644
 index 0000000000..a5defc5ee2
 --- /dev/null
 +++ b/dlls/windows.ui/composition.c
-@@ -0,0 +1,7213 @@
+@@ -0,0 +1,7443 @@
 +/* WinRT Windows.UI.Composition implementation
 + *
 + * Copyright (C) 2026 Mirko Brombin
@@ -1000,6 +1000,8 @@ index 0000000000..a5defc5ee2
 +{
 +    IInsetClip IInsetClip_iface;
 +    ICompositionClip ICompositionClip_iface;
++    ICompositionObject ICompositionObject_iface;
++    ICompositor *compositor;
 +    FLOAT bottom, left, right, top;
 +    LONG ref;
 +};
@@ -1014,6 +1016,11 @@ index 0000000000..a5defc5ee2
 +    return CONTAINING_RECORD( iface, struct inset_clip, ICompositionClip_iface );
 +}
 +
++static inline struct inset_clip *inset_clip_from_ICompositionObject( ICompositionObject *iface )
++{
++    return CONTAINING_RECORD( iface, struct inset_clip, ICompositionObject_iface );
++}
++
 +static HRESULT WINAPI inset_clip_QueryInterface( IInsetClip *iface, REFIID iid, void **out )
 +{
 +    struct inset_clip *impl = impl_from_IInsetClip( iface );
@@ -1024,6 +1031,8 @@ index 0000000000..a5defc5ee2
 +        *out = iface;
 +    else if (IsEqualGUID( iid, &IID_ICompositionClip ))
 +        *out = &impl->ICompositionClip_iface;
++    else if (IsEqualGUID( iid, &IID_ICompositionObject ))
++        *out = &impl->ICompositionObject_iface;
 +    else
 +    {
 +        *out = NULL;
@@ -1043,7 +1052,11 @@ index 0000000000..a5defc5ee2
 +    struct inset_clip *impl = impl_from_IInsetClip( iface );
 +    ULONG ref = InterlockedDecrement( &impl->ref );
 +
-+    if (!ref) free( impl );
++    if (!ref)
++    {
++        ICompositor_Release( impl->compositor );
++        free( impl );
++    }
 +    return ref;
 +}
 +
@@ -1052,10 +1065,11 @@ index 0000000000..a5defc5ee2
 +    IID *values;
 +
 +    if (!count || !iids) return E_POINTER;
-+    if (!(values = CoTaskMemAlloc( 2 * sizeof(*values) ))) return E_OUTOFMEMORY;
++    if (!(values = CoTaskMemAlloc( 3 * sizeof(*values) ))) return E_OUTOFMEMORY;
 +    values[0] = IID_IInsetClip;
 +    values[1] = IID_ICompositionClip;
-+    *count = 2;
++    values[2] = IID_ICompositionObject;
++    *count = 3;
 +    *iids = values;
 +    return S_OK;
 +}
@@ -1156,7 +1170,104 @@ index 0000000000..a5defc5ee2
 +    composition_clip_GetTrustLevel,
 +};
 +
-+static HRESULT inset_clip_create( FLOAT left, FLOAT top, FLOAT right, FLOAT bottom, IInsetClip **result )
++static HRESULT WINAPI inset_clip_composition_object_QueryInterface( ICompositionObject *iface,
++        REFIID iid, void **out )
++{
++    struct inset_clip *impl = inset_clip_from_ICompositionObject( iface );
++    return IInsetClip_QueryInterface( &impl->IInsetClip_iface, iid, out );
++}
++
++static ULONG WINAPI inset_clip_composition_object_AddRef( ICompositionObject *iface )
++{
++    struct inset_clip *impl = inset_clip_from_ICompositionObject( iface );
++    return IInsetClip_AddRef( &impl->IInsetClip_iface );
++}
++
++static ULONG WINAPI inset_clip_composition_object_Release( ICompositionObject *iface )
++{
++    struct inset_clip *impl = inset_clip_from_ICompositionObject( iface );
++    return IInsetClip_Release( &impl->IInsetClip_iface );
++}
++
++static HRESULT WINAPI inset_clip_composition_object_GetIids( ICompositionObject *iface,
++        ULONG *count, IID **iids )
++{
++    struct inset_clip *impl = inset_clip_from_ICompositionObject( iface );
++    return IInsetClip_GetIids( &impl->IInsetClip_iface, count, iids );
++}
++
++static HRESULT WINAPI inset_clip_composition_object_GetRuntimeClassName( ICompositionObject *iface,
++        HSTRING *name )
++{
++    struct inset_clip *impl = inset_clip_from_ICompositionObject( iface );
++    return IInsetClip_GetRuntimeClassName( &impl->IInsetClip_iface, name );
++}
++
++static HRESULT WINAPI inset_clip_composition_object_GetTrustLevel( ICompositionObject *iface,
++        TrustLevel *level )
++{
++    struct inset_clip *impl = inset_clip_from_ICompositionObject( iface );
++    return IInsetClip_GetTrustLevel( &impl->IInsetClip_iface, level );
++}
++
++static HRESULT WINAPI inset_clip_composition_object_get_Compositor( ICompositionObject *iface,
++        ICompositor **value )
++{
++    struct inset_clip *impl = inset_clip_from_ICompositionObject( iface );
++
++    if (!value) return E_POINTER;
++    ICompositor_AddRef( impl->compositor );
++    *value = impl->compositor;
++    return S_OK;
++}
++
++static HRESULT WINAPI inset_clip_composition_object_get_Dispatcher( ICompositionObject *iface,
++        ICoreDispatcher **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI inset_clip_composition_object_get_Properties( ICompositionObject *iface,
++        ICompositionPropertySet **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI inset_clip_composition_object_StartAnimation( ICompositionObject *iface,
++        HSTRING name, ICompositionAnimation *animation )
++{
++    TRACE( "iface %p, name %s, animation %p.\n", iface, debugstr_hstring( name ), animation );
++    return S_OK;
++}
++
++static HRESULT WINAPI inset_clip_composition_object_StopAnimation( ICompositionObject *iface,
++        HSTRING name )
++{
++    TRACE( "iface %p, name %s.\n", iface, debugstr_hstring( name ) );
++    return S_OK;
++}
++
++static const ICompositionObjectVtbl inset_clip_composition_object_vtbl =
++{
++    inset_clip_composition_object_QueryInterface,
++    inset_clip_composition_object_AddRef,
++    inset_clip_composition_object_Release,
++    inset_clip_composition_object_GetIids,
++    inset_clip_composition_object_GetRuntimeClassName,
++    inset_clip_composition_object_GetTrustLevel,
++    inset_clip_composition_object_get_Compositor,
++    inset_clip_composition_object_get_Dispatcher,
++    inset_clip_composition_object_get_Properties,
++    inset_clip_composition_object_StartAnimation,
++    inset_clip_composition_object_StopAnimation,
++};
++
++static HRESULT inset_clip_create( ICompositor *compositor, FLOAT left, FLOAT top, FLOAT right,
++        FLOAT bottom, IInsetClip **result )
 +{
 +    struct inset_clip *impl;
 +
@@ -1165,11 +1276,14 @@ index 0000000000..a5defc5ee2
 +    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
 +    impl->IInsetClip_iface.lpVtbl = &inset_clip_vtbl;
 +    impl->ICompositionClip_iface.lpVtbl = &composition_clip_vtbl;
++    impl->ICompositionObject_iface.lpVtbl = &inset_clip_composition_object_vtbl;
++    impl->compositor = compositor;
 +    impl->left = left;
 +    impl->top = top;
 +    impl->right = right;
 +    impl->bottom = bottom;
 +    impl->ref = 1;
++    ICompositor_AddRef( compositor );
 +    *result = &impl->IInsetClip_iface;
 +    return S_OK;
 +}
@@ -3560,6 +3674,8 @@ index 0000000000..a5defc5ee2
 +    struct key_frame_animation_iface IKeyFrameAnimation_iface;
 +    ICompositionAnimation ICompositionAnimation_iface;
 +    ICompositionAnimationBase ICompositionAnimationBase_iface;
++    ICompositionObject ICompositionObject_iface;
++    ICompositor *compositor;
 +    TimeSpan delay_time;
 +    TimeSpan duration;
 +    INT32 iteration_behavior;
@@ -3656,6 +3772,12 @@ index 0000000000..a5defc5ee2
 +    return CONTAINING_RECORD( iface, struct scalar_key_frame_animation, IKeyFrameAnimation_iface );
 +}
 +
++static inline struct scalar_key_frame_animation *scalar_animation_from_ICompositionObject(
++        ICompositionObject *iface )
++{
++    return CONTAINING_RECORD( iface, struct scalar_key_frame_animation, ICompositionObject_iface );
++}
++
 +static HRESULT scalar_key_frame_animation_query_interface( struct scalar_key_frame_animation *impl,
 +        REFIID iid, void **out )
 +{
@@ -3675,6 +3797,8 @@ index 0000000000..a5defc5ee2
 +        *out = &impl->ICompositionAnimation_iface;
 +    else if (IsEqualGUID( iid, &IID_ICompositionAnimationBase ))
 +        *out = &impl->ICompositionAnimationBase_iface;
++    else if (IsEqualGUID( iid, &IID_ICompositionObject ))
++        *out = &impl->ICompositionObject_iface;
 +    else
 +        return E_NOINTERFACE;
 +    InterlockedIncrement( &impl->ref );
@@ -3690,7 +3814,11 @@ index 0000000000..a5defc5ee2
 +{
 +    ULONG ref = InterlockedDecrement( &impl->ref );
 +
-+    if (!ref) free( impl );
++    if (!ref)
++    {
++        ICompositor_Release( impl->compositor );
++        free( impl );
++    }
 +    return ref;
 +}
 +
@@ -3698,13 +3826,14 @@ index 0000000000..a5defc5ee2
 +        ULONG *count, IID **iids )
 +{
 +    if (!count || !iids) return E_POINTER;
-+    if (!(*iids = CoTaskMemAlloc( 4 * sizeof(**iids) ))) return E_OUTOFMEMORY;
++    if (!(*iids = CoTaskMemAlloc( 5 * sizeof(**iids) ))) return E_OUTOFMEMORY;
 +    (*iids)[0] = impl->is_boolean ? boolean_key_frame_animation_iid :
 +                                    IID_IScalarKeyFrameAnimation;
 +    (*iids)[1] = key_frame_animation_iid;
 +    (*iids)[2] = IID_ICompositionAnimation;
 +    (*iids)[3] = IID_ICompositionAnimationBase;
-+    *count = 4;
++    (*iids)[4] = IID_ICompositionObject;
++    *count = 5;
 +    return S_OK;
 +}
 +
@@ -4133,7 +4262,101 @@ index 0000000000..a5defc5ee2
 +    scalar_composition_animation_base_GetTrustLevel,
 +};
 +
-+static HRESULT scalar_key_frame_animation_create( IScalarKeyFrameAnimation **result )
++static HRESULT WINAPI scalar_animation_composition_object_QueryInterface( ICompositionObject *iface,
++        REFIID iid, void **out )
++{
++    return scalar_key_frame_animation_query_interface(
++            scalar_animation_from_ICompositionObject( iface ), iid, out );
++}
++
++static ULONG WINAPI scalar_animation_composition_object_AddRef( ICompositionObject *iface )
++{
++    return scalar_key_frame_animation_add_ref( scalar_animation_from_ICompositionObject( iface ) );
++}
++
++static ULONG WINAPI scalar_animation_composition_object_Release( ICompositionObject *iface )
++{
++    return scalar_key_frame_animation_release( scalar_animation_from_ICompositionObject( iface ) );
++}
++
++static HRESULT WINAPI scalar_animation_composition_object_GetIids( ICompositionObject *iface,
++        ULONG *count, IID **iids )
++{
++    return scalar_key_frame_animation_get_iids( scalar_animation_from_ICompositionObject( iface ),
++            count, iids );
++}
++
++static HRESULT WINAPI scalar_animation_composition_object_GetRuntimeClassName(
++        ICompositionObject *iface, HSTRING *name )
++{
++    return scalar_key_frame_animation_get_class_name(
++            scalar_animation_from_ICompositionObject( iface ), name );
++}
++
++static HRESULT WINAPI scalar_animation_composition_object_GetTrustLevel( ICompositionObject *iface,
++        TrustLevel *level )
++{
++    return scalar_key_frame_animation_get_trust_level( level );
++}
++
++static HRESULT WINAPI scalar_animation_composition_object_get_Compositor( ICompositionObject *iface,
++        ICompositor **value )
++{
++    struct scalar_key_frame_animation *impl = scalar_animation_from_ICompositionObject( iface );
++
++    if (!value) return E_POINTER;
++    ICompositor_AddRef( impl->compositor );
++    *value = impl->compositor;
++    return S_OK;
++}
++
++static HRESULT WINAPI scalar_animation_composition_object_get_Dispatcher( ICompositionObject *iface,
++        ICoreDispatcher **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI scalar_animation_composition_object_get_Properties( ICompositionObject *iface,
++        ICompositionPropertySet **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI scalar_animation_composition_object_StartAnimation( ICompositionObject *iface,
++        HSTRING name, ICompositionAnimation *animation )
++{
++    TRACE( "iface %p, name %s, animation %p.\n", iface, debugstr_hstring( name ), animation );
++    return S_OK;
++}
++
++static HRESULT WINAPI scalar_animation_composition_object_StopAnimation( ICompositionObject *iface,
++        HSTRING name )
++{
++    TRACE( "iface %p, name %s.\n", iface, debugstr_hstring( name ) );
++    return S_OK;
++}
++
++static const ICompositionObjectVtbl scalar_animation_composition_object_vtbl =
++{
++    scalar_animation_composition_object_QueryInterface,
++    scalar_animation_composition_object_AddRef,
++    scalar_animation_composition_object_Release,
++    scalar_animation_composition_object_GetIids,
++    scalar_animation_composition_object_GetRuntimeClassName,
++    scalar_animation_composition_object_GetTrustLevel,
++    scalar_animation_composition_object_get_Compositor,
++    scalar_animation_composition_object_get_Dispatcher,
++    scalar_animation_composition_object_get_Properties,
++    scalar_animation_composition_object_StartAnimation,
++    scalar_animation_composition_object_StopAnimation,
++};
++
++static HRESULT scalar_key_frame_animation_create( ICompositor *compositor,
++        IScalarKeyFrameAnimation **result )
 +{
 +    struct scalar_key_frame_animation *impl;
 +
@@ -4144,14 +4367,17 @@ index 0000000000..a5defc5ee2
 +    impl->IKeyFrameAnimation_iface.lpVtbl = &key_frame_animation_vtbl;
 +    impl->ICompositionAnimation_iface.lpVtbl = &scalar_composition_animation_vtbl;
 +    impl->ICompositionAnimationBase_iface.lpVtbl = &scalar_composition_animation_base_vtbl;
++    impl->ICompositionObject_iface.lpVtbl = &scalar_animation_composition_object_vtbl;
++    impl->compositor = compositor;
 +    impl->duration.Duration = 10000000;
 +    impl->iteration_count = 1;
 +    impl->ref = 1;
++    ICompositor_AddRef( compositor );
 +    *result = &impl->IScalarKeyFrameAnimation_iface;
 +    return S_OK;
 +}
 +
-+static HRESULT boolean_key_frame_animation_create( IInspectable **result )
++static HRESULT boolean_key_frame_animation_create( ICompositor *compositor, IInspectable **result )
 +{
 +    struct scalar_key_frame_animation *impl;
 +
@@ -4162,10 +4388,13 @@ index 0000000000..a5defc5ee2
 +    impl->IKeyFrameAnimation_iface.lpVtbl = &key_frame_animation_vtbl;
 +    impl->ICompositionAnimation_iface.lpVtbl = &scalar_composition_animation_vtbl;
 +    impl->ICompositionAnimationBase_iface.lpVtbl = &scalar_composition_animation_base_vtbl;
++    impl->ICompositionObject_iface.lpVtbl = &scalar_animation_composition_object_vtbl;
++    impl->compositor = compositor;
 +    impl->duration.Duration = 10000000;
 +    impl->iteration_count = 1;
 +    impl->is_boolean = TRUE;
 +    impl->ref = 1;
++    ICompositor_AddRef( compositor );
 +    *result = (IInspectable *)&impl->IBooleanKeyFrameAnimation_iface;
 +    return S_OK;
 +}
@@ -4808,7 +5037,7 @@ index 0000000000..a5defc5ee2
 +        IScalarKeyFrameAnimation **result )
 +{
 +    TRACE( "iface %p, result %p.\n", iface, result );
-+    return scalar_key_frame_animation_create( result );
++    return scalar_key_frame_animation_create( iface, result );
 +}
 +
 +static HRESULT WINAPI compositor_CreateExpressionAnimation( ICompositor *iface,
@@ -4870,13 +5099,13 @@ index 0000000000..a5defc5ee2
 +{
 +    TRACE( "iface %p, insets %f/%f/%f/%f, result %p.\n", iface,
 +           left, top, right, bottom, result );
-+    return inset_clip_create( left, top, right, bottom, result );
++    return inset_clip_create( iface, left, top, right, bottom, result );
 +}
 +
 +static HRESULT WINAPI compositor_CreateInsetClip( ICompositor *iface, IInsetClip **result )
 +{
 +    TRACE( "iface %p, result %p.\n", iface, result );
-+    return inset_clip_create( 0.0f, 0.0f, 0.0f, 0.0f, result );
++    return inset_clip_create( iface, 0.0f, 0.0f, 0.0f, 0.0f, result );
 +}
 +
 +struct composition_scoped_batch_handler
@@ -5654,7 +5883,8 @@ index 0000000000..a5defc5ee2
 +        IInspectable **result )
 +{
 +    TRACE( "iface %p, result %p.\n", iface, result );
-+    return boolean_key_frame_animation_create( result );
++    return boolean_key_frame_animation_create( &impl_from_compositor6( iface )->ICompositor_iface,
++                                               result );
 +}
 +
 +static HRESULT WINAPI compositor6_CreateGeometricClipWithGeometry( struct compositor6_iface *iface,
@@ -9640,7 +9870,7 @@ new file mode 100644
 index 0000000000..dce725ca32
 --- /dev/null
 +++ b/dlls/windows.ui/tests/composition.c
-@@ -0,0 +1,555 @@
+@@ -0,0 +1,578 @@
 +/*
 + * Copyright (C) 2026 Mirko Brombin
 + *
@@ -9937,10 +10167,15 @@ index 0000000000..dce725ca32
 +    ICompositionScopedBatch *batch = NULL;
 +    IScalarKeyFrameAnimation *scalar = NULL;
 +    ICompositionAnimation *animation = NULL;
++    ICompositionObject *animation_object = NULL;
++    ICompositionObject *clip_object = NULL;
 +    ICompositionObject *object = NULL;
++    IInsetClip *clip = NULL;
 +    ISpriteVisual *sprite = NULL;
 +    IVisual *visual = NULL;
 +    ICompositor *compositor;
++    ICompositor *animation_compositor = NULL;
++    ICompositor *clip_compositor = NULL;
 +    struct Vector2 point1 = {0.25f, 0.1f}, point2 = {0.25f, 1.0f};
 +    HSTRING property = NULL;
 +    boolean value;
@@ -9981,8 +10216,21 @@ index 0000000000..dce725ca32
 +    ok( hr == S_OK, "Got hr %#lx.\n", hr );
 +    hr = ISpriteVisual_QueryInterface( sprite, &IID_ICompositionObject, (void **)&object );
 +    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    hr = ICompositor_CreateInsetClip( compositor, &clip );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    hr = IInsetClip_QueryInterface( clip, &IID_ICompositionObject, (void **)&clip_object );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    hr = ICompositionObject_get_Compositor( clip_object, &clip_compositor );
++    ok( hr == S_OK && clip_compositor == compositor,
++        "Got hr %#lx, compositor %p.\n", hr, clip_compositor );
 +    hr = ICompositor_CreateScalarKeyFrameAnimation( compositor, &scalar );
 +    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    hr = IScalarKeyFrameAnimation_QueryInterface( scalar, &IID_ICompositionObject,
++                                                   (void **)&animation_object );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    hr = ICompositionObject_get_Compositor( animation_object, &animation_compositor );
++    ok( hr == S_OK && animation_compositor == compositor,
++        "Got hr %#lx, compositor %p.\n", hr, animation_compositor );
 +    hr = IScalarKeyFrameAnimation_InsertKeyFrame( scalar, 0.0f, 0.75f );
 +    ok( hr == S_OK, "Got hr %#lx.\n", hr );
 +    hr = IScalarKeyFrameAnimation_InsertKeyFrameWithEasingFunction( scalar, 1.0f, 0.25f,
@@ -9999,6 +10247,11 @@ index 0000000000..dce725ca32
 +    ok( hr == S_OK && opacity == 0.25f, "Got hr %#lx, opacity %f.\n", hr, opacity );
 +
 +    WindowsDeleteString( property );
++    if (clip_compositor) ICompositor_Release( clip_compositor );
++    if (clip_object) ICompositionObject_Release( clip_object );
++    if (clip) IInsetClip_Release( clip );
++    if (animation_compositor) ICompositor_Release( animation_compositor );
++    if (animation_object) ICompositionObject_Release( animation_object );
 +    ICompositionAnimation_Release( animation );
 +    IScalarKeyFrameAnimation_Release( scalar );
 +    ICompositionObject_Release( object );
