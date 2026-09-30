@@ -27,7 +27,7 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '22-experimental'
+  REVISION: '23-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -45,8 +45,12 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-22 Experimental, codenamed Windows Escape, fixes the DirectWrite crash seen after classic Outlook reaches the inbox. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-23 Experimental, codenamed Windows Escape, adds system-browser Microsoft sign-in and declarative WinRT activation factories. It remains a prerelease and does not replace the current stable Soda build.
 
+    - Added the Soda Identity Bridge for Microsoft 365 sign-in through the system browser, Authorization Code with PKCE, the desktop credential store, and a native device-code fallback outside Bottles.
+    - Added the WAM interfaces used by current Microsoft 365 builds, including system account provider lookup.
+    - Replaced per-class WinRT activation boilerplate with a declarative factory table and moved RetailInfo onto it.
+    - Added package checks for the identity bridge Unix libraries and runtime checks for WAM and RetailInfo.
     - Fixed classic Outlook closing after reaching the inbox by clipping DirectWrite glyphs to the analysis bitmap bounds.
     - Fixed classic Outlook closing before the inbox appeared by exposing the required composition object interfaces.
     - Implemented sparse MSIX registration and package identity propagation used by Office background components.
@@ -160,6 +164,7 @@ jobs:
             libvulkan-dev:amd64 \
             libvulkan-dev:i386
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcsclite-dev:amd64 libpcsclite-dev:i386
+          sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libsecret-1-dev:amd64 libsecret-1-dev:i386
           sudo apt-get install -y \
             cmake \
             file \
@@ -214,13 +219,20 @@ jobs:
           i686-w64-mingw32-gcc .github/soda-pgo-training.c \
             -O2 -municode -ladvapi32 -lgdi32 -o /tmp/soda-pgo/training32.exe
 
-      - name: build ICU smoke programs
+      - name: build ICU and Office smoke programs
         run: |
           mkdir -p /tmp/soda-icu
           x86_64-w64-mingw32-gcc .github/soda-icu-smoke.c \
             -O2 -Wall -Wextra -Werror -o /tmp/soda-icu/smoke64.exe
           i686-w64-mingw32-gcc .github/soda-icu-smoke.c \
             -O2 -Wall -Wextra -Werror -o /tmp/soda-icu/smoke32.exe
+          mkdir -p /tmp/soda-office-winrt
+          x86_64-w64-mingw32-gcc .github/soda-office-winrt-smoke.c \
+            -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
+            -o /tmp/soda-office-winrt/smoke64.exe
+          i686-w64-mingw32-gcc .github/soda-office-winrt-smoke.c \
+            -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
+            -o /tmp/soda-office-winrt/smoke32.exe
       
       - name: start build
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
@@ -454,6 +466,10 @@ jobs:
             test -f "$runner_dir/lib/wine/$arch-windows/windows.applicationmodel.dll"
             test -f "$runner_dir/lib/wine/$arch-windows/windows.networking.dll"
             test -f "$runner_dir/lib/wine/$arch-windows/windows.security.enterprisedata.dll"
+            test -f "$runner_dir/lib/wine/$arch-windows/windows.security.authentication.onlineid.dll"
+            test -f "$runner_dir/lib/wine/$arch-windows/twinapi.appcore.dll"
+            test -f "$runner_dir/lib/wine/$arch-unix/windows.security.authentication.onlineid.so"
+            grep -aFq 'org.winehq.Soda.Identity' "$runner_dir/lib/wine/$arch-unix/windows.security.authentication.onlineid.so"
           done
 
           x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-office-winrt-smoke.c" \
@@ -476,6 +492,8 @@ jobs:
             grep -Fx 'core_application:00000000' "$log"
             grep -Fx 'message_websocket:00000000' "$log"
             grep -Fx 'protection_policy:00000000' "$log"
+            grep -Fx 'retail_info:00000000' "$log"
+            grep -Fx 'web_authentication_manager:00000000' "$log"
             "$runner_dir/bin/wineserver" -w
           }
 
@@ -506,6 +524,13 @@ jobs:
           xvfb-run -a "$runner_dir/bin/wine" /tmp/soda-icu/smoke32.exe \
             | tr -d '\r' | tee /tmp/soda-icu/runtime32.log
           grep -F 'ICU 72.1 timezone=America/Denver' /tmp/soda-icu/runtime32.log
+          for arch in 64 32; do
+            xvfb-run -a "$runner_dir/bin/wine" "/tmp/soda-office-winrt/smoke$arch.exe" \
+              | tr -d '\r' | tee "/tmp/soda-office-winrt/runtime$arch.log"
+            for factory in core_application message_websocket protection_policy retail_info web_authentication_manager; do
+              grep -Fx "$factory:00000000" "/tmp/soda-office-winrt/runtime$arch.log"
+            done
+          done
           "$runner_dir/bin/wineserver" -w
 
       - name: verify compatibility fixes
@@ -785,8 +810,11 @@ jobs:
           test -f "$runner_dir/lib/wine/i386-unix/winscard.so"
           test -f "$runner_dir/lib/wine/x86_64-windows/winscard.dll"
           test -f "$runner_dir/lib/wine/i386-windows/winscard.dll"
-          test -f "$runner_dir/lib/wine/x86_64-windows/wineofficeauth.exe"
-          test -f "$runner_dir/lib/wine/i386-windows/wineofficeauth.exe"
+          for arch in i386 x86_64; do
+            test -f "$runner_dir/lib/wine/$arch-windows/windows.security.authentication.onlineid.dll"
+            test -f "$runner_dir/lib/wine/$arch-windows/twinapi.appcore.dll"
+            test -f "$runner_dir/lib/wine/$arch-unix/windows.security.authentication.onlineid.so"
+          done
           test -x "$runner_dir/bin/wine"
           file "$runner_dir/bin/wine" | grep -F 'x86-64'
           file "$runner_dir/lib/wine/x86_64-windows/ntdll.dll" | grep -F 'x86-64'
@@ -882,11 +910,16 @@ jobs:
           i686-w64-mingw32-gcc .github/soda-icu-smoke.c \
             -O2 -Wall -Wextra -Werror -o /tmp/soda-icu/smoke32.exe
 
+      - name: prepare identity SDK
+        run: |
+          docker build --file .github/soda-arm64-sdk.Dockerfile --tag soda-arm64-sdk .github
+
       - name: configure
         run: |
           mkdir /tmp/proton-build
           cd /tmp/proton-build
-          /tmp/proton/configure.sh --build-name=soda-arm64 --target-arch=arm64 --container-engine=docker
+          /tmp/proton/configure.sh --build-name=soda-arm64 --target-arch=arm64 \
+            --container-engine=docker --proton-sdk-image=soda-arm64-sdk
 
       - name: build Wine and FEX
         working-directory: /tmp/proton-build
@@ -928,9 +961,13 @@ jobs:
             lib/wine/aarch64-unix/libwow64fex.so
             lib/wine/aarch64-windows/wineopenxr.dll
             lib/wine/x86_64-windows/wineopenxr.dll
-            lib/wine/i386-windows/wineofficeauth.exe
-            lib/wine/x86_64-windows/wineofficeauth.exe
-            lib/wine/aarch64-windows/wineofficeauth.exe
+            lib/wine/i386-windows/windows.security.authentication.onlineid.dll
+            lib/wine/x86_64-windows/windows.security.authentication.onlineid.dll
+            lib/wine/aarch64-windows/windows.security.authentication.onlineid.dll
+            lib/wine/aarch64-unix/windows.security.authentication.onlineid.so
+            lib/wine/i386-windows/twinapi.appcore.dll
+            lib/wine/x86_64-windows/twinapi.appcore.dll
+            lib/wine/aarch64-windows/twinapi.appcore.dll
           )
           for required_file in "${required_files[@]}"; do
             if ! test -f "$runner_dir/$required_file"; then
@@ -938,6 +975,8 @@ jobs:
               exit 1
             fi
           done
+          grep -aFq 'org.winehq.Soda.Identity' \
+            "$runner_dir/lib/wine/aarch64-unix/windows.security.authentication.onlineid.so"
           file "$runner_dir/bin/wine" | grep -F 'ARM aarch64'
           if ldd "$runner_dir/bin/wine" | grep -F 'not found'; then
             exit 1
