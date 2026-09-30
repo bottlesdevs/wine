@@ -164,7 +164,8 @@ jobs:
             libvulkan-dev:amd64 \
             libvulkan-dev:i386
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcsclite-dev:amd64 libpcsclite-dev:i386
-          sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libsecret-1-dev:amd64 libsecret-1-dev:i386
+          sudo apt-get install -y libsecret-1-dev:amd64 libsecret-1-0:i386
+          bash "$GITHUB_WORKSPACE/.github/soda-secret-i386.sh" "$GITHUB_WORKSPACE/.soda-secret-i386"
           sudo apt-get install -y \
             cmake \
             file \
@@ -203,7 +204,7 @@ jobs:
           git -C /tmp/build-tools checkout "$BUILD_TOOLS_COMMIT"
           cp /tmp/build-tools/runners/vaniglia/wine-tkg-valve.cfg wine-tkg.cfg
           sed -i '$a_NOLIB32="false"' wine-tkg.cfg
-          sed -i '$a_configure_userargs32="--disable-wineopenxr"' wine-tkg.cfg
+          sed -i "\$a_configure_userargs32=\"--disable-wineopenxr SECRET_CFLAGS=-I$GITHUB_WORKSPACE/.soda-secret-i386/include SECRET_LIBS=-L$GITHUB_WORKSPACE/.soda-secret-i386/lib\"" wine-tkg.cfg
           if [[ "${{ steps.identity.outputs.pgo }}" == "true" ]]; then
             mkdir -p /tmp/soda-pgo/profiles /tmp/soda-pgo/evidence
             sed -i '$a_GCC_FLAGS="-O2 -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -fprofile-generate=/tmp/soda-pgo/profiles -fprofile-update=prefer-atomic -fprofile-exclude-files=preloader"' wine-tkg.cfg
