@@ -165,7 +165,8 @@ jobs:
             libvulkan-dev:i386
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcsclite-dev:amd64 libpcsclite-dev:i386
           sudo apt-get install -y libsecret-1-dev:amd64 libsecret-1-0:i386
-          bash "$GITHUB_WORKSPACE/.github/soda-secret-i386.sh" "$GITHUB_WORKSPACE/.soda-secret-i386"
+          bash "$GITHUB_WORKSPACE/.github/soda-secret-headers.sh" "$GITHUB_WORKSPACE/.soda-secret-amd64" amd64
+          bash "$GITHUB_WORKSPACE/.github/soda-secret-headers.sh" "$GITHUB_WORKSPACE/.soda-secret-i386" i386
           sudo apt-get install -y \
             cmake \
             file \
@@ -204,6 +205,7 @@ jobs:
           git -C /tmp/build-tools checkout "$BUILD_TOOLS_COMMIT"
           cp /tmp/build-tools/runners/vaniglia/wine-tkg-valve.cfg wine-tkg.cfg
           sed -i '$a_NOLIB32="false"' wine-tkg.cfg
+          sed -i "\$a_configure_userargs64=\"SECRET_CFLAGS=-I$GITHUB_WORKSPACE/.soda-secret-amd64/include SECRET_LIBS=-L$GITHUB_WORKSPACE/.soda-secret-amd64/lib\"" wine-tkg.cfg
           sed -i "\$a_configure_userargs32=\"--disable-wineopenxr SECRET_CFLAGS=-I$GITHUB_WORKSPACE/.soda-secret-i386/include SECRET_LIBS=-L$GITHUB_WORKSPACE/.soda-secret-i386/lib\"" wine-tkg.cfg
           if [[ "${{ steps.identity.outputs.pgo }}" == "true" ]]; then
             mkdir -p /tmp/soda-pgo/profiles /tmp/soda-pgo/evidence
@@ -253,6 +255,10 @@ jobs:
             test -f "$unix_dir/winebus.so"
             test -f "$unix_dir/winevulkan.so"
             test -f "$unix_dir/winex11.so"
+            if ! grep -aFq 'org.winehq.Soda.Identity' "$unix_dir/windows.security.authentication.onlineid.so"; then
+              printf 'Missing %s identity credential backend\n' "$arch" >&2
+              exit 1
+            fi
             module_count="$(find "$unix_dir" -maxdepth 1 -type f -name '*.so' | wc -l)"
             test "$module_count" -ge 30
             printf '%s Unix modules: %s\n' "$arch" "$module_count"
@@ -385,6 +391,10 @@ jobs:
             test -f "$unix_dir/winebus.so"
             test -f "$unix_dir/winevulkan.so"
             test -f "$unix_dir/winex11.so"
+            if ! grep -aFq 'org.winehq.Soda.Identity' "$unix_dir/windows.security.authentication.onlineid.so"; then
+              printf 'Missing %s identity credential backend\n' "$arch" >&2
+              exit 1
+            fi
             module_count="$(find "$unix_dir" -maxdepth 1 -type f -name '*.so' | wc -l)"
             test "$module_count" -ge 30
             printf '%s PGO Unix modules: %s\n' "$arch" "$module_count"
@@ -404,7 +414,7 @@ jobs:
           install -Dm644 "/tmp/$mono_file" "$runner_dir/share/wine/mono/$mono_file"
 
       - name: upload pre-test runner
-        if: steps.identity.outputs.stable == 'false'
+        if: steps.identity.outputs.prerelease == 'true' || steps.identity.outputs.publish == 'false'
         uses: actions/upload-artifact@v7
         with:
           name: pre-test-${{ steps.identity.outputs.component_name }}
