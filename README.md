@@ -9,4 +9,4 @@ Bottles provides a native sign-in dialog; outside Bottles, Soda provides its own
 
 #### Special thanks
 
-Thanks to Elkana Bardugo for Wine4Office, an AI-assisted project. We used its authentication and HTTP/JSON code in `onlineid-web-account-manager.mypatch` and `windows-web-http-json.mypatch` during development. Authentication now uses Soda Identity Bridge; some HTTP/JSON code and small fragments elsewhere remain Wine4Office-derived.
+Thanks to Elkana Bardugo for Wine4Office, an AI-assisted project. We used its authentication and HTTP/JSON code in `onlineid-web-account-manager.mypatch` and `windows-web-http-json.mypatch` during development. Authentication now uses Soda Identity Bridge.
