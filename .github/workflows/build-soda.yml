@@ -222,20 +222,13 @@ jobs:
           i686-w64-mingw32-gcc .github/soda-pgo-training.c \
             -O2 -municode -ladvapi32 -lgdi32 -o /tmp/soda-pgo/training32.exe
 
-      - name: build ICU and Office smoke programs
+      - name: build ICU smoke programs
         run: |
           mkdir -p /tmp/soda-icu
           x86_64-w64-mingw32-gcc .github/soda-icu-smoke.c \
             -O2 -Wall -Wextra -Werror -o /tmp/soda-icu/smoke64.exe
           i686-w64-mingw32-gcc .github/soda-icu-smoke.c \
             -O2 -Wall -Wextra -Werror -o /tmp/soda-icu/smoke32.exe
-          mkdir -p /tmp/soda-office-winrt
-          x86_64-w64-mingw32-gcc .github/soda-office-winrt-smoke.c \
-            -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
-            -o /tmp/soda-office-winrt/smoke64.exe
-          i686-w64-mingw32-gcc .github/soda-office-winrt-smoke.c \
-            -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
-            -o /tmp/soda-office-winrt/smoke32.exe
       
       - name: start build
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
@@ -535,13 +528,6 @@ jobs:
           xvfb-run -a "$runner_dir/bin/wine" /tmp/soda-icu/smoke32.exe \
             | tr -d '\r' | tee /tmp/soda-icu/runtime32.log
           grep -F 'ICU 72.1 timezone=America/Denver' /tmp/soda-icu/runtime32.log
-          for arch in 64 32; do
-            xvfb-run -a "$runner_dir/bin/wine" "/tmp/soda-office-winrt/smoke$arch.exe" \
-              | tr -d '\r' | tee "/tmp/soda-office-winrt/runtime$arch.log"
-            for factory in core_application message_websocket protection_policy retail_info web_authentication_manager; do
-              grep -Fx "$factory:00000000" "/tmp/soda-office-winrt/runtime$arch.log"
-            done
-          done
           "$runner_dir/bin/wineserver" -w
 
       - name: verify compatibility fixes
@@ -913,13 +899,20 @@ jobs:
           git -C /tmp/proton/wineopenxr apply --check "$GITHUB_WORKSPACE/.github/wineopenxr-host-runtime-proton.mypatch"
           git -C /tmp/proton/wineopenxr apply "$GITHUB_WORKSPACE/.github/wineopenxr-host-runtime-proton.mypatch"
 
-      - name: build ICU smoke programs
+      - name: build ICU and Office smoke programs
         run: |
           mkdir -p /tmp/soda-icu
           x86_64-w64-mingw32-gcc .github/soda-icu-smoke.c \
             -O2 -Wall -Wextra -Werror -o /tmp/soda-icu/smoke64.exe
           i686-w64-mingw32-gcc .github/soda-icu-smoke.c \
             -O2 -Wall -Wextra -Werror -o /tmp/soda-icu/smoke32.exe
+          mkdir -p "$RUNNER_TEMP/soda-office-winrt"
+          x86_64-w64-mingw32-gcc .github/soda-office-winrt-smoke.c \
+            -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
+            -o "$RUNNER_TEMP/soda-office-winrt/smoke64.exe"
+          i686-w64-mingw32-gcc .github/soda-office-winrt-smoke.c \
+            -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
+            -o "$RUNNER_TEMP/soda-office-winrt/smoke32.exe"
 
       - name: prepare identity SDK
         run: |
@@ -1060,6 +1053,13 @@ jobs:
           "$runner_dir/bin/wine" /tmp/soda-icu/smoke32.exe \
             | tr -d '\r' | tee /tmp/soda-icu/runtime32.log
           grep -F 'ICU 72.1 timezone=America/Denver' /tmp/soda-icu/runtime32.log
+          for arch in 64 32; do
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/smoke$arch.exe" \
+              | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/runtime$arch.log"
+            for factory in core_application message_websocket protection_policy retail_info web_authentication_manager; do
+              grep -Fx "$factory:00000000" "$RUNNER_TEMP/soda-office-winrt/runtime$arch.log"
+            done
+          done
           "$runner_dir/bin/wineserver" -w
 
   release:
