@@ -2,13 +2,11 @@
 
 Soda is the Wine runner maintained for Bottles. It tracks Wine and Valve's experimental work, then adds Bottles-specific fixes for Windows applications and games on Linux. Its scope includes desktop software, game launchers, graphics, input, media, Wayland, X11, and Windows API compatibility.
 
-#### Attribution: Wine4Office
+#### Soda Identity Bridge
 
-The only substantial overlap between the initial Soda Office import and Wine4Office by Elkana Bardugo, an AI-assisted project, was in these two patches:
+Soda Identity Bridge connects Windows authentication APIs to a Linux broker, with system-browser sign-in using Authorization Code with PKCE and tokens stored in the desktop credential store.
+Bottles provides a native sign-in dialog; outside Bottles, Soda provides its own device-code fallback. Soda's declarative WinRT factory handles class activation, including RetailInfo.
 
-- `onlineid-web-account-manager.mypatch`: Microsoft 365 sign-in and its OAuth helper. This implementation has since been replaced by the independently written Soda Identity Bridge.
-- `windows-web-http-json.mypatch`: less than half of the patch was shared.
+#### Special thanks
 
-Five other patches contained small matching fragments of fewer than 200 lines each. RetailInfo has also been replaced by Soda's declarative WinRT factory. The shared code entered the initial import without attribution, and the remaining overlap stays identified while it is reviewed or replaced.
-
-This acknowledgment remains as a record of those specific contributions to the earlier Soda Office work.
+Thanks to Elkana Bardugo for Wine4Office, an AI-assisted project. We used its authentication and HTTP/JSON code in `onlineid-web-account-manager.mypatch` and `windows-web-http-json.mypatch` during development. Authentication now uses Soda Identity Bridge; some HTTP/JSON code and small fragments elsewhere remain Wine4Office-derived.
