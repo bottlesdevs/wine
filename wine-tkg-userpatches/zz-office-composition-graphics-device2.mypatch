@@ -1,0 +1,589 @@
+diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
+index 10b776f..6646112 100644
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -534,6 +534,7 @@ struct compositor
+ struct composition_graphics_device
+ {
+     ICompositionGraphicsDevice ICompositionGraphicsDevice_iface;
++    ICompositionGraphicsDevice2 ICompositionGraphicsDevice2_iface;
+     IUnknown *device;
+     LONG ref;
+ };
+@@ -541,14 +542,17 @@ struct composition_graphics_device
+ struct composition_drawing_surface
+ {
+     ICompositionDrawingSurface ICompositionDrawingSurface_iface;
++    ICompositionVirtualDrawingSurface ICompositionVirtualDrawingSurface_iface;
+     ICompositionDrawingSurfaceInterop ICompositionDrawingSurfaceInterop_iface;
+     ID2D1Device *device;
+     ID2D1DeviceContext *context;
+     ID2D1Bitmap1 *bitmap;
+     BOOL drawing;
++    BOOL suspended;
+     Size size;
+     enum __x_ABI_CWindows_CGraphics_CDirectX_CDirectXPixelFormat format;
+     enum __x_ABI_CWindows_CGraphics_CDirectX_CDirectXAlphaMode mode;
++    BOOL virtual;
+     LONG ref;
+ };
+ 
+@@ -5983,6 +5987,12 @@ static inline struct composition_graphics_device *impl_from_ICompositionGraphics
+     return CONTAINING_RECORD( iface, struct composition_graphics_device, ICompositionGraphicsDevice_iface );
+ }
+ 
++static inline struct composition_graphics_device *impl_from_ICompositionGraphicsDevice2(
++        ICompositionGraphicsDevice2 *iface )
++{
++    return CONTAINING_RECORD( iface, struct composition_graphics_device, ICompositionGraphicsDevice2_iface );
++}
++
+ static inline struct composition_drawing_surface *impl_from_ICompositionDrawingSurface(
+         ICompositionDrawingSurface *iface )
+ {
+@@ -5995,6 +6005,13 @@ static inline struct composition_drawing_surface *impl_from_ICompositionDrawingS
+     return CONTAINING_RECORD( iface, struct composition_drawing_surface, ICompositionDrawingSurfaceInterop_iface );
+ }
+ 
++static inline struct composition_drawing_surface *impl_from_ICompositionVirtualDrawingSurface(
++        ICompositionVirtualDrawingSurface *iface )
++{
++    return CONTAINING_RECORD( iface, struct composition_drawing_surface,
++            ICompositionVirtualDrawingSurface_iface );
++}
++
+ static HRESULT WINAPI composition_drawing_surface_QueryInterface( ICompositionDrawingSurface *iface,
+         REFIID iid, void **out )
+ {
+@@ -6007,6 +6024,13 @@ static HRESULT WINAPI composition_drawing_surface_QueryInterface( ICompositionDr
+         ICompositionDrawingSurface_AddRef( iface );
+         return S_OK;
+     }
++    if (IsEqualGUID( iid, &IID_ICompositionVirtualDrawingSurface ) &&
++        impl_from_ICompositionDrawingSurface( iface )->virtual)
++    {
++        *out = &impl_from_ICompositionDrawingSurface( iface )->ICompositionVirtualDrawingSurface_iface;
++        ICompositionDrawingSurface_AddRef( iface );
++        return S_OK;
++    }
+     if (!IsEqualGUID( iid, &IID_IUnknown ) && !IsEqualGUID( iid, &IID_IInspectable ) &&
+         !IsEqualGUID( iid, &IID_IAgileObject ) && !IsEqualGUID( iid, &IID_ICompositionSurface ) &&
+         !IsEqualGUID( iid, &IID_ICompositionDrawingSurface ))
+@@ -6039,11 +6063,15 @@ static ULONG WINAPI composition_drawing_surface_Release( ICompositionDrawingSurf
+ static HRESULT WINAPI composition_drawing_surface_GetIids( ICompositionDrawingSurface *iface,
+         ULONG *count, IID **iids )
+ {
++    struct composition_drawing_surface *impl = impl_from_ICompositionDrawingSurface( iface );
++    ULONG iid_count = impl->virtual ? 3 : 2;
++
+     if (!count || !iids) return E_POINTER;
+-    if (!(*iids = CoTaskMemAlloc( 2 * sizeof(**iids) ))) return E_OUTOFMEMORY;
++    if (!(*iids = CoTaskMemAlloc( iid_count * sizeof(**iids) ))) return E_OUTOFMEMORY;
+     (*iids)[0] = IID_ICompositionDrawingSurface;
+     (*iids)[1] = IID_ICompositionSurface;
+-    *count = 2;
++    if (impl->virtual) (*iids)[2] = IID_ICompositionVirtualDrawingSurface;
++    *count = iid_count;
+     return S_OK;
+ }
+ 
+@@ -6051,6 +6079,9 @@ static HRESULT WINAPI composition_drawing_surface_GetRuntimeClassName( IComposit
+         HSTRING *name )
+ {
+     if (!name) return E_POINTER;
++    if (impl_from_ICompositionDrawingSurface( iface )->virtual)
++        return WindowsCreateString( RuntimeClass_Windows_UI_Composition_CompositionVirtualDrawingSurface,
++                ARRAY_SIZE(RuntimeClass_Windows_UI_Composition_CompositionVirtualDrawingSurface) - 1, name );
+     return WindowsCreateString( RuntimeClass_Windows_UI_Composition_CompositionDrawingSurface,
+             ARRAY_SIZE(RuntimeClass_Windows_UI_Composition_CompositionDrawingSurface) - 1, name );
+ }
+@@ -6099,6 +6130,69 @@ static const ICompositionDrawingSurfaceVtbl composition_drawing_surface_vtbl =
+     composition_drawing_surface_get_Size,
+ };
+ 
++static HRESULT WINAPI composition_virtual_drawing_surface_QueryInterface(
++        ICompositionVirtualDrawingSurface *iface, REFIID iid, void **out )
++{
++    return composition_drawing_surface_QueryInterface(
++            &impl_from_ICompositionVirtualDrawingSurface( iface )->ICompositionDrawingSurface_iface,
++            iid, out );
++}
++
++static ULONG WINAPI composition_virtual_drawing_surface_AddRef( ICompositionVirtualDrawingSurface *iface )
++{
++    return composition_drawing_surface_AddRef(
++            &impl_from_ICompositionVirtualDrawingSurface( iface )->ICompositionDrawingSurface_iface );
++}
++
++static ULONG WINAPI composition_virtual_drawing_surface_Release( ICompositionVirtualDrawingSurface *iface )
++{
++    return composition_drawing_surface_Release(
++            &impl_from_ICompositionVirtualDrawingSurface( iface )->ICompositionDrawingSurface_iface );
++}
++
++static HRESULT WINAPI composition_virtual_drawing_surface_GetIids( ICompositionVirtualDrawingSurface *iface,
++        ULONG *count, IID **iids )
++{
++    return composition_drawing_surface_GetIids(
++            &impl_from_ICompositionVirtualDrawingSurface( iface )->ICompositionDrawingSurface_iface,
++            count, iids );
++}
++
++static HRESULT WINAPI composition_virtual_drawing_surface_GetRuntimeClassName(
++        ICompositionVirtualDrawingSurface *iface, HSTRING *name )
++{
++    return composition_drawing_surface_GetRuntimeClassName(
++            &impl_from_ICompositionVirtualDrawingSurface( iface )->ICompositionDrawingSurface_iface,
++            name );
++}
++
++static HRESULT WINAPI composition_virtual_drawing_surface_GetTrustLevel(
++        ICompositionVirtualDrawingSurface *iface, TrustLevel *level )
++{
++    return composition_drawing_surface_GetTrustLevel(
++            &impl_from_ICompositionVirtualDrawingSurface( iface )->ICompositionDrawingSurface_iface,
++            level );
++}
++
++static HRESULT WINAPI composition_virtual_drawing_surface_Trim( ICompositionVirtualDrawingSurface *iface,
++        UINT32 count, struct RectInt32 *rects )
++{
++    FIXME( "iface %p, count %u, rects %p.\n", iface, count, rects );
++    if (count && !rects) return E_POINTER;
++    return S_OK;
++}
++
++static const ICompositionVirtualDrawingSurfaceVtbl composition_virtual_drawing_surface_vtbl =
++{
++    composition_virtual_drawing_surface_QueryInterface,
++    composition_virtual_drawing_surface_AddRef,
++    composition_virtual_drawing_surface_Release,
++    composition_virtual_drawing_surface_GetIids,
++    composition_virtual_drawing_surface_GetRuntimeClassName,
++    composition_virtual_drawing_surface_GetTrustLevel,
++    composition_virtual_drawing_surface_Trim,
++};
++
+ static HRESULT WINAPI composition_drawing_surface_interop_QueryInterface(
+         ICompositionDrawingSurfaceInterop *iface, REFIID iid, void **out )
+ {
+@@ -6124,7 +6218,7 @@ static HRESULT WINAPI composition_drawing_surface_interop_BeginDraw( ICompositio
+     struct composition_drawing_surface *impl = impl_from_ICompositionDrawingSurfaceInterop( iface );
+     D2D1_BITMAP_PROPERTIES1 desc = {0};
+     D2D1_COLOR_F clear = {0.0f, 0.0f, 0.0f, 0.0f};
+-    D2D1_SIZE_U size;
++    D2D1_SIZE_U bitmap_size, size;
+     IDXGISurface *surface;
+     HRESULT hr;
+ 
+@@ -6136,12 +6230,34 @@ static HRESULT WINAPI composition_drawing_surface_interop_BeginDraw( ICompositio
+     if (!IsEqualGUID( iid, &IID_IDXGISurface ) && !IsEqualGUID( iid, &IID_ID2D1DeviceContext ))
+         return E_NOINTERFACE;
+     if (impl->drawing) return D2DERR_WRONG_STATE;
++    if (update_rect && (update_rect->left < 0 || update_rect->top < 0 ||
++            update_rect->right <= update_rect->left || update_rect->bottom <= update_rect->top ||
++            update_rect->right > impl->size.Width || update_rect->bottom > impl->size.Height))
++        return E_INVALIDARG;
++    if (impl->virtual && !update_rect) return E_INVALIDARG;
+     if (!impl->context && FAILED(hr = ID2D1Device_CreateDeviceContext( impl->device,
+             D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &impl->context ))) return hr;
+-    if (!impl->bitmap)
++    if (impl->virtual)
++    {
++        size.width = update_rect->right - update_rect->left;
++        size.height = update_rect->bottom - update_rect->top;
++        if (impl->bitmap)
++        {
++            bitmap_size = ID2D1Bitmap1_GetPixelSize( impl->bitmap );
++            if (bitmap_size.width != size.width || bitmap_size.height != size.height)
++            {
++                ID2D1Bitmap1_Release( impl->bitmap );
++                impl->bitmap = NULL;
++            }
++        }
++    }
++    else
+     {
+         size.width = impl->size.Width;
+         size.height = impl->size.Height;
++    }
++    if (!impl->bitmap)
++    {
+         desc.pixelFormat.format = (DXGI_FORMAT)impl->format;
+         desc.pixelFormat.alphaMode = (D2D1_ALPHA_MODE)impl->mode;
+         desc.dpiX = desc.dpiY = 96.0f;
+@@ -6509,7 +6625,8 @@ static HRESULT WINAPI composition_drawing_surface_interop_EndDraw( ICompositionD
+     if (impl->drawing)
+     {
+         impl->drawing = FALSE;
+-        if (FAILED(hr = ID2D1DeviceContext_EndDraw( impl->context, NULL, NULL ))) return hr;
++        if (!impl->suspended && FAILED(hr = ID2D1DeviceContext_EndDraw( impl->context, NULL, NULL ))) return hr;
++        impl->suspended = FALSE;
+     }
+     return S_OK;
+ }
+@@ -6542,14 +6659,26 @@ static HRESULT WINAPI composition_drawing_surface_interop_Scroll( ICompositionDr
+ 
+ static HRESULT WINAPI composition_drawing_surface_interop_ResumeDraw( ICompositionDrawingSurfaceInterop *iface )
+ {
++    struct composition_drawing_surface *impl = impl_from_ICompositionDrawingSurfaceInterop( iface );
++
+     FIXME( "iface %p.\n", iface );
+-    return E_NOTIMPL;
++    if (!impl->drawing || !impl->suspended) return D2DERR_WRONG_STATE;
++    ID2D1DeviceContext_SetTarget( impl->context, (ID2D1Image *)impl->bitmap );
++    ID2D1DeviceContext_BeginDraw( impl->context );
++    impl->suspended = FALSE;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI composition_drawing_surface_interop_SuspendDraw( ICompositionDrawingSurfaceInterop *iface )
+ {
++    struct composition_drawing_surface *impl = impl_from_ICompositionDrawingSurfaceInterop( iface );
++    HRESULT hr;
++
+     FIXME( "iface %p.\n", iface );
+-    return E_NOTIMPL;
++    if (!impl->drawing || impl->suspended) return D2DERR_WRONG_STATE;
++    if (FAILED(hr = ID2D1DeviceContext_EndDraw( impl->context, NULL, NULL ))) return hr;
++    impl->suspended = TRUE;
++    return S_OK;
+ }
+ 
+ static const ICompositionDrawingSurfaceInteropVtbl composition_drawing_surface_interop_vtbl =
+@@ -6571,10 +6700,14 @@ static HRESULT WINAPI composition_graphics_device_QueryInterface( ICompositionGr
+     FIXME( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
+     if (!out) return E_POINTER;
+     *out = NULL;
++    if (IsEqualGUID( iid, &IID_ICompositionGraphicsDevice2 ))
++        *out = &impl_from_ICompositionGraphicsDevice( iface )->ICompositionGraphicsDevice2_iface;
++    else
+     if (!IsEqualGUID( iid, &IID_IUnknown ) && !IsEqualGUID( iid, &IID_IInspectable ) &&
+         !IsEqualGUID( iid, &IID_IAgileObject ) && !IsEqualGUID( iid, &IID_ICompositionGraphicsDevice ))
+         return E_NOINTERFACE;
+-    *out = iface;
++    else
++        *out = iface;
+     ICompositionGraphicsDevice_AddRef( iface );
+     return S_OK;
+ }
+@@ -6601,9 +6734,10 @@ static HRESULT WINAPI composition_graphics_device_GetIids( ICompositionGraphicsD
+         ULONG *count, IID **iids )
+ {
+     if (!count || !iids) return E_POINTER;
+-    if (!(*iids = CoTaskMemAlloc( sizeof(**iids) ))) return E_OUTOFMEMORY;
+-    **iids = IID_ICompositionGraphicsDevice;
+-    *count = 1;
++    if (!(*iids = CoTaskMemAlloc( 2 * sizeof(**iids) ))) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_ICompositionGraphicsDevice;
++    (*iids)[1] = IID_ICompositionGraphicsDevice2;
++    *count = 2;
+     return S_OK;
+ }
+ 
+@@ -6679,6 +6813,102 @@ static const ICompositionGraphicsDeviceVtbl composition_graphics_device_vtbl =
+     composition_graphics_device_remove_RenderingDeviceReplaced,
+ };
+ 
++static HRESULT WINAPI composition_graphics_device2_QueryInterface( ICompositionGraphicsDevice2 *iface,
++        REFIID iid, void **out )
++{
++    return composition_graphics_device_QueryInterface(
++            &impl_from_ICompositionGraphicsDevice2( iface )->ICompositionGraphicsDevice_iface, iid, out );
++}
++
++static ULONG WINAPI composition_graphics_device2_AddRef( ICompositionGraphicsDevice2 *iface )
++{
++    return composition_graphics_device_AddRef(
++            &impl_from_ICompositionGraphicsDevice2( iface )->ICompositionGraphicsDevice_iface );
++}
++
++static ULONG WINAPI composition_graphics_device2_Release( ICompositionGraphicsDevice2 *iface )
++{
++    return composition_graphics_device_Release(
++            &impl_from_ICompositionGraphicsDevice2( iface )->ICompositionGraphicsDevice_iface );
++}
++
++static HRESULT WINAPI composition_graphics_device2_GetIids( ICompositionGraphicsDevice2 *iface,
++        ULONG *count, IID **iids )
++{
++    return composition_graphics_device_GetIids(
++            &impl_from_ICompositionGraphicsDevice2( iface )->ICompositionGraphicsDevice_iface, count, iids );
++}
++
++static HRESULT WINAPI composition_graphics_device2_GetRuntimeClassName( ICompositionGraphicsDevice2 *iface,
++        HSTRING *name )
++{
++    return composition_graphics_device_GetRuntimeClassName(
++            &impl_from_ICompositionGraphicsDevice2( iface )->ICompositionGraphicsDevice_iface, name );
++}
++
++static HRESULT WINAPI composition_graphics_device2_GetTrustLevel( ICompositionGraphicsDevice2 *iface,
++        TrustLevel *level )
++{
++    return composition_graphics_device_GetTrustLevel(
++            &impl_from_ICompositionGraphicsDevice2( iface )->ICompositionGraphicsDevice_iface, level );
++}
++
++static HRESULT WINAPI composition_graphics_device2_CreateDrawingSurface2( ICompositionGraphicsDevice2 *iface,
++        struct SizeInt32 pixels, enum __x_ABI_CWindows_CGraphics_CDirectX_CDirectXPixelFormat format,
++        enum __x_ABI_CWindows_CGraphics_CDirectX_CDirectXAlphaMode mode,
++        ICompositionDrawingSurface **result )
++{
++    Size size = {pixels.Width, pixels.Height};
++
++    return composition_graphics_device_CreateDrawingSurface(
++            &impl_from_ICompositionGraphicsDevice2( iface )->ICompositionGraphicsDevice_iface,
++            size, format, mode, result );
++}
++
++static HRESULT WINAPI composition_graphics_device2_CreateVirtualDrawingSurface(
++        ICompositionGraphicsDevice2 *iface, struct SizeInt32 pixels,
++        enum __x_ABI_CWindows_CGraphics_CDirectX_CDirectXPixelFormat format,
++        enum __x_ABI_CWindows_CGraphics_CDirectX_CDirectXAlphaMode mode,
++        ICompositionVirtualDrawingSurface **result )
++{
++    struct composition_graphics_device *device = impl_from_ICompositionGraphicsDevice2( iface );
++    struct composition_drawing_surface *impl;
++
++    FIXME( "iface %p, pixels {%d, %d}, format %u, mode %u, result %p.\n",
++            iface, pixels.Width, pixels.Height, format, mode, result );
++    if (!result) return E_POINTER;
++    *result = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->ICompositionDrawingSurface_iface.lpVtbl = &composition_drawing_surface_vtbl;
++    impl->ICompositionVirtualDrawingSurface_iface.lpVtbl = &composition_virtual_drawing_surface_vtbl;
++    impl->ICompositionDrawingSurfaceInterop_iface.lpVtbl = &composition_drawing_surface_interop_vtbl;
++    if (FAILED(IUnknown_QueryInterface( device->device, &IID_ID2D1Device, (void **)&impl->device )))
++    {
++        free( impl );
++        return E_NOINTERFACE;
++    }
++    impl->size.Width = pixels.Width;
++    impl->size.Height = pixels.Height;
++    impl->format = format;
++    impl->mode = mode;
++    impl->virtual = TRUE;
++    impl->ref = 1;
++    *result = &impl->ICompositionVirtualDrawingSurface_iface;
++    return S_OK;
++}
++
++static const ICompositionGraphicsDevice2Vtbl composition_graphics_device2_vtbl =
++{
++    composition_graphics_device2_QueryInterface,
++    composition_graphics_device2_AddRef,
++    composition_graphics_device2_Release,
++    composition_graphics_device2_GetIids,
++    composition_graphics_device2_GetRuntimeClassName,
++    composition_graphics_device2_GetTrustLevel,
++    composition_graphics_device2_CreateDrawingSurface2,
++    composition_graphics_device2_CreateVirtualDrawingSurface,
++};
++
+ static HRESULT WINAPI compositor_interop_CreateCompositionSurfaceForHandle( ICompositorInterop *iface,
+         HANDLE handle, ICompositionSurface **result )
+ {
+@@ -6706,6 +6936,7 @@ static HRESULT WINAPI compositor_interop_CreateGraphicsDevice( ICompositorIntero
+     if (!device) return E_INVALIDARG;
+     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+     impl->ICompositionGraphicsDevice_iface.lpVtbl = &composition_graphics_device_vtbl;
++    impl->ICompositionGraphicsDevice2_iface.lpVtbl = &composition_graphics_device2_vtbl;
+     impl->device = device;
+     IUnknown_AddRef( device );
+     impl->ref = 1;
+diff --git a/dlls/windows.ui/private.h b/dlls/windows.ui/private.h
+index 7c299aa..8a7b7be 100644
+--- a/dlls/windows.ui/private.h
++++ b/dlls/windows.ui/private.h
+@@ -34,6 +34,8 @@
+ #include "windows.foundation.h"
+ #define WIDL_using_Windows_Foundation_Numerics
+ #include "windows.foundation.numerics.h"
++#define WIDL_using_Windows_Graphics
++#include "windows.graphics.h"
+ #define WIDL_using_Windows_Graphics_Effects
+ #include "windows.graphics.effects.h"
+ #define WIDL_using_Windows_UI
+diff --git a/dlls/windows.ui/tests/composition.c b/dlls/windows.ui/tests/composition.c
+index eaee186..1af1a7b 100644
+--- a/dlls/windows.ui/tests/composition.c
++++ b/dlls/windows.ui/tests/composition.c
+@@ -30,11 +30,14 @@
+ #include "windows.foundation.h"
+ #define WIDL_using_Windows_Foundation_Numerics
+ #include "windows.foundation.numerics.h"
++#define WIDL_using_Windows_Graphics
++#include "windows.graphics.h"
+ #define WIDL_using_Windows_UI
+ #include "windows.ui.h"
+ #define WIDL_using_Windows_UI_Core
+ #define WIDL_using_Windows_UI_Composition
+ #include "windows.ui.composition.h"
++#include "windows.ui.composition.interop.h"
+ #define WIDL_using_Windows_UI_Composition_Core
+ #include "windows.ui.composition.core.h"
+ #define WIDL_using_Windows_UI_Composition_Interactions
+@@ -48,6 +51,8 @@ static const GUID compositor5_iid =
+     {0x48ea31ad, 0x7fcd, 0x4076, {0xa7, 0x9c, 0x90, 0xcc, 0x4b, 0x85, 0x2c, 0x9b}};
+ static const GUID compositor_controller_iid =
+     {0x2d75f35a, 0x70a7, 0x4395, {0xba, 0x2d, 0xce, 0xf0, 0xb1, 0x83, 0x99, 0xf9}};
++static const GUID compositor_interop_iid =
++    {0x25297d5c, 0x3ad4, 0x4c9c, {0xb5, 0xcf, 0xe3, 0x6a, 0x38, 0x51, 0x23, 0x30}};
+ static const GUID interaction_tracker_statics_iid =
+     {0xbba5d7b7, 0x6590, 0x4498, {0x8d, 0x6c, 0xeb, 0x62, 0xb5, 0x14, 0xc9, 0x2a}};
+ static const GUID interaction_tracker_statics2_iid =
+@@ -168,6 +173,58 @@ done:
+     ICompositor_Release( compositor );
+ }
+ 
++static void test_composition_graphics_device2(void)
++{
++    struct SizeInt32 size = {640, 480};
++    ICompositionVirtualDrawingSurface *virtual_surface = (void *)0xdeadbeef;
++    ICompositionDrawingSurface *surface = (void *)0xdeadbeef;
++    ICompositionGraphicsDevice2 *device2 = NULL;
++    ICompositionGraphicsDevice *device = NULL;
++    ICompositorInterop *interop = NULL;
++    ICompositor *compositor;
++    IID *iids = NULL;
++    ULONG count = 0;
++    HRESULT hr;
++
++    if (!(compositor = create_compositor())) return;
++    hr = ICompositor_QueryInterface( compositor, &compositor_interop_iid, (void **)&interop );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    if (FAILED(hr)) goto done;
++
++    hr = ICompositorInterop_CreateGraphicsDevice( interop, (IUnknown *)compositor, &device );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    if (FAILED(hr)) goto done;
++
++    hr = ICompositionGraphicsDevice_QueryInterface( device, &IID_ICompositionGraphicsDevice2,
++            (void **)&device2 );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    if (FAILED(hr)) goto done;
++
++    hr = ICompositionGraphicsDevice2_GetIids( device2, &count, &iids );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    ok( count == 2, "Got count %lu.\n", count );
++    ok( IsEqualGUID( &iids[0], &IID_ICompositionGraphicsDevice ), "Unexpected first IID.\n" );
++    ok( IsEqualGUID( &iids[1], &IID_ICompositionGraphicsDevice2 ), "Unexpected second IID.\n" );
++
++    hr = ICompositionGraphicsDevice2_CreateDrawingSurface2( device2, size,
++            DirectXPixelFormat_B8G8R8A8UIntNormalized, DirectXAlphaMode_Premultiplied, &surface );
++    ok( hr == E_NOINTERFACE, "Got hr %#lx.\n", hr );
++    ok( surface == NULL, "Got surface %p.\n", surface );
++
++    hr = ICompositionGraphicsDevice2_CreateVirtualDrawingSurface( device2, size,
++            DirectXPixelFormat_B8G8R8A8UIntNormalized, DirectXAlphaMode_Premultiplied,
++            &virtual_surface );
++    ok( hr == E_NOINTERFACE, "Got hr %#lx.\n", hr );
++    ok( virtual_surface == NULL, "Got surface %p.\n", virtual_surface );
++
++done:
++    CoTaskMemFree( iids );
++    if (device2) ICompositionGraphicsDevice2_Release( device2 );
++    if (device) ICompositionGraphicsDevice_Release( device );
++    if (interop) ICompositorInterop_Release( interop );
++    ICompositor_Release( compositor );
++}
++
+ struct async_action_handler
+ {
+     IAsyncActionCompletedHandler IAsyncActionCompletedHandler_iface;
+@@ -569,6 +626,7 @@ START_TEST(composition)
+     ok( hr == S_OK, "RoInitialize failed, hr %#lx.\n", hr );
+ 
+     test_compositor_interfaces();
++    test_composition_graphics_device2();
+     test_compositor_controller_async();
+     test_compositor_animation();
+     test_visual_collection_iterable();
+diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition.idl
+index cb2bc10..cbc517b 100644
+--- a/include/windows.ui.composition.idl
++++ b/include/windows.ui.composition.idl
+@@ -26,7 +26,7 @@ import "eventtoken.idl";
+ import "windowscontracts.idl";
+ import "windows.foundation.idl";
+ import "windows.foundation.numerics.idl";
+-/* import "windows.graphics.idl"; */
++import "windows.graphics.idl";
+ import "windows.graphics.directx.idl";
+ import "windows.graphics.effects.idl";
+ import "windows.system.idl";
+@@ -85,6 +85,7 @@ namespace Windows.UI.Composition {
+     interface ICompositionSurfaceBrush;
+     interface ICompositionSurfaceBrush2;
+     interface ICompositionSurfaceBrush3;
++    interface ICompositionVirtualDrawingSurface;
+     interface ICompositionTarget;
+     interface ICompositionTargetFactory;
+     interface ICompositor;
+@@ -132,6 +133,7 @@ namespace Windows.UI.Composition {
+     runtimeclass CompositionEffectBrush;
+     runtimeclass CompositionEffectFactory;
+     runtimeclass CompositionGraphicsDevice;
++    runtimeclass CompositionVirtualDrawingSurface;
+     runtimeclass CompositionObject;
+     runtimeclass CompositionPropertySet;
+     runtimeclass CompositionScopedBatch;
+@@ -511,6 +513,34 @@ namespace Windows.UI.Composition {
+         [eventremove] HRESULT RenderingDeviceReplaced([in] EventRegistrationToken token);
+     }
+ 
++    [
++        contract(Windows.Foundation.UniversalApiContract, 4.0),
++        exclusiveto(Windows.UI.Composition.CompositionGraphicsDevice),
++        uuid(0fb8bdf6-c0f0-4bcc-9fb8-084982490d7d)
++    ]
++    interface ICompositionGraphicsDevice2 : IInspectable
++    {
++        HRESULT CreateDrawingSurface2(
++            [in] Windows.Graphics.SizeInt32 pixels, [in] Windows.Graphics.DirectX.DirectXPixelFormat format,
++            [in] Windows.Graphics.DirectX.DirectXAlphaMode mode, [out, retval] Windows.UI.Composition.CompositionDrawingSurface **result
++        );
++        HRESULT CreateVirtualDrawingSurface(
++            [in] Windows.Graphics.SizeInt32 pixels, [in] Windows.Graphics.DirectX.DirectXPixelFormat format,
++            [in] Windows.Graphics.DirectX.DirectXAlphaMode mode,
++            [out, retval] Windows.UI.Composition.CompositionVirtualDrawingSurface **result
++        );
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 4.0),
++        exclusiveto(Windows.UI.Composition.CompositionVirtualDrawingSurface),
++        uuid(a9c384db-8740-4f94-8b9d-b68521e7863d)
++    ]
++    interface ICompositionVirtualDrawingSurface : IInspectable
++    {
++        HRESULT Trim([in] UINT32 count, [in, size_is(count)] Windows.Graphics.RectInt32 *rects);
++    }
++
+     [
+         contract(Windows.Foundation.UniversalApiContract, 2.0),
+         exclusiveto(Windows.UI.Composition.CompositionPropertySet),
+@@ -1056,11 +1086,21 @@ namespace Windows.UI.Composition {
+     runtimeclass CompositionGraphicsDevice : Windows.UI.Composition.CompositionObject
+     {
+         [default] interface Windows.UI.Composition.ICompositionGraphicsDevice;
+-        /* [contract(Windows.Foundation.UniversalApiContract, 4.0)] interface Windows.UI.Composition.ICompositionGraphicsDevice2; */
++        [contract(Windows.Foundation.UniversalApiContract, 4.0)] interface Windows.UI.Composition.ICompositionGraphicsDevice2;
+         /* [contract(Windows.Foundation.UniversalApiContract, 8.0)] interface Windows.UI.Composition.ICompositionGraphicsDevice3; */
+         /* [contract(Windows.Foundation.UniversalApiContract, 12.0)] interface Windows.UI.Composition.ICompositionGraphicsDevice4; */
+     }
+ 
++    [
++        contract(Windows.Foundation.UniversalApiContract, 4.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass CompositionVirtualDrawingSurface : Windows.UI.Composition.CompositionDrawingSurface
++    {
++        [default] interface Windows.UI.Composition.ICompositionVirtualDrawingSurface;
++    }
++
+     [
+         composable(Windows.UI.Composition.ICompositionObjectFactory, public, Windows.Foundation.UniversalApiContract, 2.0),
+         contract(Windows.Foundation.UniversalApiContract, 2.0),
