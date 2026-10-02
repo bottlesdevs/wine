@@ -27,7 +27,7 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '23-experimental'
+  REVISION: '24-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -45,8 +45,14 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-23 Experimental, codenamed Windows Escape, adds system-browser Microsoft sign-in and declarative WinRT activation factories. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-24 Experimental, codenamed Windows Escape, fixes current Office startup, document opening, and composition regressions. It remains a prerelease and does not replace the current stable Soda build.
 
+    - Fixed Word opening existing documents by implementing CompositionGraphicsDevice2 and virtual drawing surfaces.
+    - Fixed PowerPoint startup failures caused by missing WinRT composition interfaces.
+    - Fixed Excel and PowerPoint crashes when Office enumerates WAM error properties.
+    - Added complete provider errors for unsuccessful Microsoft account token requests.
+    - Added SharedModeSettings through Soda's declarative WinRT factory.
+    - Fixed invalid empty scissor rectangles in the OpenGL and Vulkan rendering paths.
     - Added the Soda Identity Bridge for Microsoft 365 sign-in through the system browser, Authorization Code with PKCE, the desktop credential store, and a native device-code fallback outside Bottles.
     - Added the WAM interfaces used by current Microsoft 365 builds, including system account provider lookup.
     - Replaced per-class WinRT activation boilerplate with a declarative factory table and moved RetailInfo onto it.
