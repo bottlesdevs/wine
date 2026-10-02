@@ -1,0 +1,32 @@
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -4910,11 +4910,11 @@
+  */
+ void update_window_state( HWND hwnd )
+ {
+-    static const UINT swp_flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE |
+-                                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW;
++    UINT swp_flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE |
++                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW;
+     UINT context;
+     RECT valid_rects[2], surface_rect;
+-    struct window_surface *surface;
++    struct window_surface *surface, *previous;
+     struct window_rects new_rects;
+ 
+     if (!is_current_thread_window( hwnd ))
+@@ -4927,9 +4927,13 @@
+     get_window_rects( hwnd, COORDS_PARENT, &new_rects, get_thread_dpi() );
+     valid_rects[0] = valid_rects[1] = new_rects.client;
+ 
++    previous = window_surface_get( hwnd );
+     surface = get_window_surface( hwnd, swp_flags, FALSE, &new_rects, &surface_rect );
++    if (previous == &dummy_surface && surface && surface != &dummy_surface && !surface->alpha_mask)
++        swp_flags &= ~SWP_NOREDRAW;
+     apply_window_pos( hwnd, 0, swp_flags, surface, &new_rects, valid_rects );
+     if (surface) window_surface_release( surface );
++    if (previous) window_surface_release( previous );
+ 
+     set_thread_dpi_awareness_context( context );
+ }
