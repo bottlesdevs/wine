@@ -1,0 +1,296 @@
+diff --git a/dlls/twinapi.appcore/Makefile.in b/dlls/twinapi.appcore/Makefile.in
+index 76463b6..ea8528e 100644
+--- a/dlls/twinapi.appcore/Makefile.in
++++ b/dlls/twinapi.appcore/Makefile.in
+@@ -10,4 +10,5 @@ SOURCES = \
+ 	client_device_information.c \
+ 	main.c \
+ 	retail_info.c \
++	shared_mode_settings.c \
+ 	winrt_factory.c
+diff --git a/dlls/twinapi.appcore/classes.idl b/dlls/twinapi.appcore/classes.idl
+index a002438..8cf3534 100644
+--- a/dlls/twinapi.appcore/classes.idl
++++ b/dlls/twinapi.appcore/classes.idl
+@@ -38,6 +38,7 @@ namespace Windows.Security.ExchangeActiveSyncProvisioning {
+ namespace Windows.System.Profile {
+     runtimeclass AnalyticsInfo;
+     runtimeclass RetailInfo;
++    runtimeclass SharedModeSettings;
+ }
+ namespace Windows.System.UserProfile {
+     runtimeclass AdvertisingManager;
+diff --git a/dlls/twinapi.appcore/main.c b/dlls/twinapi.appcore/main.c
+index 6dd8d24..e7bb218 100644
+--- a/dlls/twinapi.appcore/main.c
++++ b/dlls/twinapi.appcore/main.c
+@@ -70,6 +70,7 @@ HRESULT WINAPI DllGetActivationFactory( HSTRING classid, IActivationFactory **fa
+         &advertising_manager_factory,
+         &application_view_factory,
+         &retail_info_factory,
++        &shared_mode_settings_factory,
+     };
+     const WCHAR *buffer = WindowsGetStringRawBuffer( classid, NULL );
+     struct winrt_factory *impl;
+diff --git a/dlls/twinapi.appcore/private.h b/dlls/twinapi.appcore/private.h
+index 9dfc4fc..038d3a1 100644
+--- a/dlls/twinapi.appcore/private.h
++++ b/dlls/twinapi.appcore/private.h
+@@ -65,6 +65,7 @@ extern IActivationFactory *client_device_information_factory;
+ extern IActivationFactory *analytics_info_factory;
+ extern IActivationFactory *advertising_manager_factory;
+ extern IActivationFactory *retail_info_factory;
++extern IActivationFactory *shared_mode_settings_factory;
+ 
+ #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
+     static inline impl_type *impl_from( iface_type *iface )                                        \
+diff --git a/new/dlls/twinapi.appcore/shared_mode_settings.c b/dlls/twinapi.appcore/shared_mode_settings.c
+new file mode 100644
+index 0000000..88f72fa
+--- /dev/null
++++ b/dlls/twinapi.appcore/shared_mode_settings.c
+@@ -0,0 +1,91 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(twinapi);
++
++struct shared_mode_settings_factory
++{
++    struct winrt_factory base;
++    ISharedModeSettingsStatics ISharedModeSettingsStatics_iface;
++    ISharedModeSettingsStatics2 ISharedModeSettingsStatics2_iface;
++};
++
++DEFINE_FACTORY_IINSPECTABLE( statics, ISharedModeSettingsStatics, struct shared_mode_settings_factory )
++DEFINE_FACTORY_IINSPECTABLE( statics2, ISharedModeSettingsStatics2, struct shared_mode_settings_factory )
++
++static HRESULT WINAPI statics_get_IsEnabled( ISharedModeSettingsStatics *iface, boolean *value )
++{
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (!value) return E_POINTER;
++    *value = FALSE;
++    return S_OK;
++}
++
++static HRESULT WINAPI statics2_get_ShouldAvoidLocalStorage( ISharedModeSettingsStatics2 *iface, boolean *value )
++{
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (!value) return E_POINTER;
++    *value = FALSE;
++    return S_OK;
++}
++
++static const ISharedModeSettingsStaticsVtbl statics_vtbl =
++{
++    statics_QueryInterface,
++    statics_AddRef,
++    statics_Release,
++    /* IInspectable methods */
++    statics_GetIids,
++    statics_GetRuntimeClassName,
++    statics_GetTrustLevel,
++    /* ISharedModeSettingsStatics methods */
++    statics_get_IsEnabled,
++};
++
++static const ISharedModeSettingsStatics2Vtbl statics2_vtbl =
++{
++    statics2_QueryInterface,
++    statics2_AddRef,
++    statics2_Release,
++    /* IInspectable methods */
++    statics2_GetIids,
++    statics2_GetRuntimeClassName,
++    statics2_GetTrustLevel,
++    /* ISharedModeSettingsStatics2 methods */
++    statics2_get_ShouldAvoidLocalStorage,
++};
++
++static const struct winrt_factory_interface factory_interfaces[] =
++{
++    {&IID_ISharedModeSettingsStatics, offsetof(struct shared_mode_settings_factory, ISharedModeSettingsStatics_iface)},
++    {&IID_ISharedModeSettingsStatics2, offsetof(struct shared_mode_settings_factory, ISharedModeSettingsStatics2_iface)},
++};
++
++static struct shared_mode_settings_factory factory =
++{
++    {{&winrt_factory_vtbl}, 1, RuntimeClass_Windows_System_Profile_SharedModeSettings,
++      factory_interfaces, ARRAY_SIZE(factory_interfaces), TRUE, NULL},
++    {&statics_vtbl},
++    {&statics2_vtbl},
++};
++
++IActivationFactory *shared_mode_settings_factory = &factory.base.IActivationFactory_iface;
+diff --git a/dlls/twinapi.appcore/tests/twinapi.c b/dlls/twinapi.appcore/tests/twinapi.c
+index a1c7657..629a46f 100644
+--- a/dlls/twinapi.appcore/tests/twinapi.c
++++ b/dlls/twinapi.appcore/tests/twinapi.c
+@@ -268,6 +268,53 @@ static void test_RetailInfo(void)
+     ok( ref == 1, "got ref %lu.\n", ref );
+ }
+ 
++static void test_SharedModeSettings(void)
++{
++    static const WCHAR *class_name = RuntimeClass_Windows_System_Profile_SharedModeSettings;
++    ISharedModeSettingsStatics2 *statics2;
++    ISharedModeSettingsStatics *statics;
++    IActivationFactory *factory;
++    HSTRING str;
++    boolean value;
++    HRESULT hr;
++    ULONG ref;
++
++    hr = WindowsCreateString( class_name, wcslen(class_name), &str );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++
++    hr = RoGetActivationFactory( str, &IID_IActivationFactory, (void **)&factory );
++    WindowsDeleteString( str );
++    ok( hr == S_OK || broken( hr == REGDB_E_CLASSNOTREG ), "got hr %#lx.\n", hr );
++    if (hr == REGDB_E_CLASSNOTREG)
++    {
++        win_skip( "%s runtimeclass not registered, skipping tests.\n", wine_dbgstr_w(class_name) );
++        return;
++    }
++
++    check_interface( factory, &IID_IUnknown, TRUE );
++    check_interface( factory, &IID_IInspectable, TRUE );
++    check_interface( factory, &IID_IAgileObject, TRUE );
++    check_interface( factory, &IID_ISharedModeSettingsStatics, TRUE );
++    check_interface( factory, &IID_ISharedModeSettingsStatics2, TRUE );
++
++    hr = IActivationFactory_QueryInterface( factory, &IID_ISharedModeSettingsStatics, (void **)&statics );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    hr = ISharedModeSettingsStatics_get_IsEnabled( statics, &value );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    ref = ISharedModeSettingsStatics_Release( statics );
++    ok( ref == 2, "got ref %lu.\n", ref );
++
++    hr = IActivationFactory_QueryInterface( factory, &IID_ISharedModeSettingsStatics2, (void **)&statics2 );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    hr = ISharedModeSettingsStatics2_get_ShouldAvoidLocalStorage( statics2, &value );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    ref = ISharedModeSettingsStatics2_Release( statics2 );
++    ok( ref == 2, "got ref %lu.\n", ref );
++
++    ref = IActivationFactory_Release( factory );
++    ok( ref == 1, "got ref %lu.\n", ref );
++}
++
+ static void test_AdvertisingManager(void)
+ {
+     static const WCHAR *class_name = RuntimeClass_Windows_System_UserProfile_AdvertisingManager;
+@@ -347,6 +394,7 @@ START_TEST(twinapi)
+     test_EasClientDeviceInformation();
+     test_AnalyticsVersionInfo();
+     test_RetailInfo();
++    test_SharedModeSettings();
+     test_AdvertisingManager();
+     test_ApplicationView();
+ 
+diff --git a/include/windows.system.profile.idl b/include/windows.system.profile.idl
+index 0058aa5..6145bd7 100644
+--- a/include/windows.system.profile.idl
++++ b/include/windows.system.profile.idl
+@@ -30,6 +30,7 @@ import "windows.system.idl";
+ 
+ namespace Windows.System.Profile {
+     apicontract ProfileRetailInfoContract;
++    apicontract ProfileSharedModeContract;
+     typedef enum PlatformDataCollectionLevel PlatformDataCollectionLevel;
+     typedef enum SystemIdentificationSource SystemIdentificationSource;
+     interface IAnalyticsInfoStatics;
+@@ -37,12 +38,15 @@ namespace Windows.System.Profile {
+     interface IAnalyticsVersionInfo;
+     interface IAnalyticsVersionInfo2;
+     interface IRetailInfoStatics;
++    interface ISharedModeSettingsStatics;
++    interface ISharedModeSettingsStatics2;
+     interface IPlatformDiagnosticsAndUsageDataSettingsStatics;
+     interface ISystemIdentificationInfo;
+     interface ISystemIdentificationStatics;
+     runtimeclass AnalyticsVersionInfo;
+     runtimeclass AnalyticsInfo;
+     runtimeclass RetailInfo;
++    runtimeclass SharedModeSettings;
+     runtimeclass PlatformDiagnosticsAndUsageDataSettings;
+     runtimeclass SystemIdentification;
+     runtimeclass SystemIdentificationInfo;
+@@ -52,6 +56,11 @@ namespace Windows.System.Profile {
+     {
+     }
+ 
++    [contractversion(2.0)]
++    apicontract ProfileSharedModeContract
++    {
++    }
++
+     [contract(Windows.Foundation.UniversalApiContract, 3.0)]
+     enum SystemIdentificationSource
+     {
+@@ -142,6 +151,26 @@ namespace Windows.System.Profile {
+         [propget] HRESULT Properties([out, retval] Windows.Foundation.Collections.IMapView<HSTRING, IInspectable *> **value);
+     }
+ 
++    [
++        contract(Windows.System.Profile.ProfileSharedModeContract, 1.0),
++        exclusiveto(Windows.System.Profile.SharedModeSettings),
++        uuid(893df40e-cad6-4d50-8c49-6fcfc03edb29)
++    ]
++    interface ISharedModeSettingsStatics : IInspectable
++    {
++        [propget] HRESULT IsEnabled([out, retval] boolean *value);
++    }
++
++    [
++        contract(Windows.System.Profile.ProfileSharedModeContract, 2.0),
++        exclusiveto(Windows.System.Profile.SharedModeSettings),
++        uuid(608988a4-ccf1-4ee8-a5e2-fd6a1d0cfac8)
++    ]
++    interface ISharedModeSettingsStatics2 : IInspectable
++    {
++        [propget] HRESULT ShouldAvoidLocalStorage([out, retval] boolean *value);
++    }
++
+     [
+         contract(Windows.Foundation.UniversalApiContract, 1.0),
+         marshaling_behavior(agile),
+@@ -174,6 +203,19 @@ namespace Windows.System.Profile {
+     {
+     }
+ 
++    [
++        contract(Windows.System.Profile.ProfileSharedModeContract, 1.0),
++        marshaling_behavior(agile),
++        static(Windows.System.Profile.ISharedModeSettingsStatics,
++                Windows.System.Profile.ProfileSharedModeContract, 1.0),
++        static(Windows.System.Profile.ISharedModeSettingsStatics2,
++                Windows.System.Profile.ProfileSharedModeContract, 2.0),
++        threading(both)
++    ]
++    runtimeclass SharedModeSettings
++    {
++    }
++
+     [
+         contract(Windows.Foundation.UniversalApiContract, 2.0),
+         marshaling_behavior(agile),
