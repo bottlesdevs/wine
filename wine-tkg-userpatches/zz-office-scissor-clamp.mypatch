@@ -1,0 +1,40 @@
+diff --git a/dlls/wined3d/context_vk.c b/dlls/wined3d/context_vk.c
+index 7fea48d..9ceee40 100644
+--- a/dlls/wined3d/context_vk.c
++++ b/dlls/wined3d/context_vk.c
+@@ -4177,8 +4177,8 @@ VkCommandBuffer wined3d_context_vk_apply_draw_state(struct wined3d_context_vk *c
+ 
+                 scissor->offset.x = r->left;
+                 scissor->offset.y = r->top;
+-                scissor->extent.width =  r->right - r->left;
+-                scissor->extent.height = r->bottom - r->top;
++                scissor->extent.width = max( 0, r->right - r->left );
++                scissor->extent.height = max( 0, r->bottom - r->top );
+             }
+             else
+             {
+diff --git a/dlls/wined3d/ffp_gl.c b/dlls/wined3d/ffp_gl.c
+index 8bba21c..357c651 100644
+--- a/dlls/wined3d/ffp_gl.c
++++ b/dlls/wined3d/ffp_gl.c
+@@ -1143,8 +1143,8 @@ static void scissorrect(struct wined3d_context *context, const struct wined3d_st
+ 
+             sr[i * 4] = r->left;
+             sr[i * 4 + 1] = r->top;
+-            sr[i * 4 + 2] = r->right - r->left;
+-            sr[i * 4 + 3] = r->bottom - r->top;
++            sr[i * 4 + 2] = max( 0, r->right - r->left );
++            sr[i * 4 + 3] = max( 0, r->bottom - r->top );
+         }
+ 
+         if (context->scissor_rect_count > state->scissor_rect_count)
+@@ -1160,7 +1160,8 @@ static void scissorrect(struct wined3d_context *context, const struct wined3d_st
+     else
+     {
+         r = &state->scissor_rects[0];
+-        gl_info->gl_ops.gl.p_glScissor(r->left, r->top, r->right - r->left, r->bottom - r->top);
++        gl_info->gl_ops.gl.p_glScissor(r->left, r->top,
++                max( 0, r->right - r->left ), max( 0, r->bottom - r->top ));
+         checkGLcall("glScissor");
+     }
+ }
