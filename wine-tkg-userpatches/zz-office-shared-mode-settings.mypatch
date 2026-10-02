@@ -208,7 +208,7 @@ index a1c7657..629a46f 100644
      test_ApplicationView();
  
 diff --git a/include/windows.system.profile.idl b/include/windows.system.profile.idl
-index 0058aa5..6145bd7 100644
+index e46fc14..581c11b 100644
 --- a/include/windows.system.profile.idl
 +++ b/include/windows.system.profile.idl
 @@ -30,6 +30,7 @@ import "windows.system.idl";
@@ -219,23 +219,22 @@ index 0058aa5..6145bd7 100644
      typedef enum PlatformDataCollectionLevel PlatformDataCollectionLevel;
      typedef enum SystemIdentificationSource SystemIdentificationSource;
      interface IAnalyticsInfoStatics;
-@@ -37,12 +38,15 @@ namespace Windows.System.Profile {
-     interface IAnalyticsVersionInfo;
-     interface IAnalyticsVersionInfo2;
+@@ -40,18 +41,26 @@ namespace Windows.System.Profile {
+     interface ISystemIdentificationInfo;
+     interface ISystemIdentificationStatics;
      interface IRetailInfoStatics;
 +    interface ISharedModeSettingsStatics;
 +    interface ISharedModeSettingsStatics2;
-     interface IPlatformDiagnosticsAndUsageDataSettingsStatics;
-     interface ISystemIdentificationInfo;
-     interface ISystemIdentificationStatics;
      runtimeclass AnalyticsVersionInfo;
      runtimeclass AnalyticsInfo;
-     runtimeclass RetailInfo;
-+    runtimeclass SharedModeSettings;
      runtimeclass PlatformDiagnosticsAndUsageDataSettings;
      runtimeclass SystemIdentification;
      runtimeclass SystemIdentificationInfo;
-@@ -52,6 +56,11 @@ namespace Windows.System.Profile {
+     runtimeclass RetailInfo;
++    runtimeclass SharedModeSettings;
+ 
+     [contractversion(1.0)]
+     apicontract ProfileRetailInfoContract
      {
      }
  
@@ -274,7 +273,7 @@ index 0058aa5..6145bd7 100644
      [
          contract(Windows.Foundation.UniversalApiContract, 1.0),
          marshaling_behavior(agile),
-@@ -174,6 +203,19 @@ namespace Windows.System.Profile {
+@@ -185,6 +214,19 @@ namespace Windows.System.Profile {
      {
      }
  
@@ -292,5 +291,5 @@ index 0058aa5..6145bd7 100644
 +    }
 +
      [
-         contract(Windows.Foundation.UniversalApiContract, 2.0),
+         contract(Windows.Foundation.UniversalApiContract, 3.0),
          marshaling_behavior(agile),

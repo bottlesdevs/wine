@@ -1,605 +1,113 @@
-diff --git a/dlls/windows.security.authentication.onlineid/string_map.c b/dlls/windows.security.authentication.onlineid/string_map.c
-index e45bdb1..e998026 100644
---- a/dlls/windows.security.authentication.onlineid/string_map.c
-+++ b/dlls/windows.security.authentication.onlineid/string_map.c
-@@ -21,6 +21,7 @@ struct string_map
- {
-     IMap_HSTRING_HSTRING IMap_iface;
-     IMapView_HSTRING_HSTRING IMapView_iface;
-+    IIterable_IKeyValuePair_HSTRING_HSTRING IIterable_iface;
-     LONG ref;
-     CRITICAL_SECTION cs;
-     struct map_entry *entries;
-@@ -38,6 +39,11 @@ static inline struct string_map *impl_from_IMapView( IMapView_HSTRING_HSTRING *i
-     return CONTAINING_RECORD( iface, struct string_map, IMapView_iface );
- }
- 
-+static inline struct string_map *impl_from_IIterable( IIterable_IKeyValuePair_HSTRING_HSTRING *iface )
-+{
-+    return CONTAINING_RECORD( iface, struct string_map, IIterable_iface );
-+}
-+
- static INT32 map_find( struct string_map *impl, HSTRING key )
- {
-     UINT32 i;
-@@ -59,6 +65,8 @@ static HRESULT map_query_interface( struct string_map *impl, REFIID iid, void **
-         *out = &impl->IMap_iface;
-     else if (IsEqualGUID( iid, &IID_IMapView_HSTRING_HSTRING ))
-         *out = &impl->IMapView_iface;
-+    else if (IsEqualGUID( iid, &IID_IIterable_IKeyValuePair_HSTRING_HSTRING ))
-+        *out = &impl->IIterable_iface;
-     else
-         return E_NOINTERFACE;
-     InterlockedIncrement( &impl->ref );
-@@ -88,10 +96,11 @@ static ULONG map_release( struct string_map *impl )
- static HRESULT map_get_iids( ULONG *count, IID **iids )
- {
-     if (!count || !iids) return E_POINTER;
--    *count = 2;
--    if (!(*iids = CoTaskMemAlloc( 2 * sizeof(**iids) ))) return E_OUTOFMEMORY;
-+    *count = 3;
-+    if (!(*iids = CoTaskMemAlloc( 3 * sizeof(**iids) ))) return E_OUTOFMEMORY;
-     (*iids)[0] = IID_IMap_HSTRING_HSTRING;
-     (*iids)[1] = IID_IMapView_HSTRING_HSTRING;
-+    (*iids)[2] = IID_IIterable_IKeyValuePair_HSTRING_HSTRING;
-     return S_OK;
- }
- 
-@@ -364,6 +373,307 @@ static const IMapView_HSTRING_HSTRINGVtbl view_vtbl =
-     view_Split,
- };
- 
-+struct string_pair
-+{
-+    IKeyValuePair_HSTRING_HSTRING IKeyValuePair_iface;
-+    LONG ref;
-+    HSTRING key;
-+    HSTRING value;
-+};
-+
-+static inline struct string_pair *impl_from_IKeyValuePair( IKeyValuePair_HSTRING_HSTRING *iface )
-+{
-+    return CONTAINING_RECORD( iface, struct string_pair, IKeyValuePair_iface );
-+}
-+
-+static HRESULT WINAPI pair_QueryInterface( IKeyValuePair_HSTRING_HSTRING *iface, REFIID iid, void **out )
-+{
-+    if (!out) return E_POINTER;
-+    *out = NULL;
-+    if (!IsEqualGUID( iid, &IID_IUnknown ) && !IsEqualGUID( iid, &IID_IInspectable ) &&
-+        !IsEqualGUID( iid, &IID_IAgileObject ) && !IsEqualGUID( iid, &IID_IKeyValuePair_HSTRING_HSTRING ))
-+        return E_NOINTERFACE;
-+    *out = iface;
-+    IKeyValuePair_HSTRING_HSTRING_AddRef( iface );
-+    return S_OK;
-+}
-+
-+static ULONG WINAPI pair_AddRef( IKeyValuePair_HSTRING_HSTRING *iface )
-+{
-+    return InterlockedIncrement( &impl_from_IKeyValuePair( iface )->ref );
-+}
-+
-+static ULONG WINAPI pair_Release( IKeyValuePair_HSTRING_HSTRING *iface )
-+{
-+    struct string_pair *impl = impl_from_IKeyValuePair( iface );
-+    ULONG ref = InterlockedDecrement( &impl->ref );
-+
-+    if (!ref)
-+    {
-+        WindowsDeleteString( impl->key );
-+        WindowsDeleteString( impl->value );
-+        free( impl );
-+    }
-+    return ref;
-+}
-+
-+static HRESULT WINAPI pair_GetIids( IKeyValuePair_HSTRING_HSTRING *iface, ULONG *count, IID **iids )
-+{
-+    if (!count || !iids) return E_POINTER;
-+    *count = 1;
-+    if (!(*iids = CoTaskMemAlloc( sizeof(**iids) ))) return E_OUTOFMEMORY;
-+    **iids = IID_IKeyValuePair_HSTRING_HSTRING;
-+    return S_OK;
-+}
-+
-+static HRESULT WINAPI pair_GetRuntimeClassName( IKeyValuePair_HSTRING_HSTRING *iface, HSTRING *name )
-+{
-+    return map_get_class_name( name );
-+}
-+
-+static HRESULT WINAPI pair_GetTrustLevel( IKeyValuePair_HSTRING_HSTRING *iface, TrustLevel *level )
-+{
-+    return map_get_trust_level( level );
-+}
-+
-+static HRESULT WINAPI pair_get_Key( IKeyValuePair_HSTRING_HSTRING *iface, HSTRING *value )
-+{
-+    return WindowsDuplicateString( impl_from_IKeyValuePair( iface )->key, value );
-+}
-+
-+static HRESULT WINAPI pair_get_Value( IKeyValuePair_HSTRING_HSTRING *iface, HSTRING *value )
-+{
-+    return WindowsDuplicateString( impl_from_IKeyValuePair( iface )->value, value );
-+}
-+
-+static const IKeyValuePair_HSTRING_HSTRINGVtbl pair_vtbl =
-+{
-+    pair_QueryInterface,
-+    pair_AddRef,
-+    pair_Release,
-+    pair_GetIids,
-+    pair_GetRuntimeClassName,
-+    pair_GetTrustLevel,
-+    pair_get_Key,
-+    pair_get_Value,
-+};
-+
-+static HRESULT pair_create( HSTRING key, HSTRING value, IKeyValuePair_HSTRING_HSTRING **out )
-+{
-+    struct string_pair *impl;
-+    HRESULT hr;
-+
-+    if (!out) return E_POINTER;
-+    *out = NULL;
-+    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
-+    impl->IKeyValuePair_iface.lpVtbl = &pair_vtbl;
-+    impl->ref = 1;
-+    if (FAILED(hr = WindowsDuplicateString( key, &impl->key )) ||
-+        FAILED(hr = WindowsDuplicateString( value, &impl->value )))
-+    {
-+        pair_Release( &impl->IKeyValuePair_iface );
-+        return hr;
-+    }
-+    *out = &impl->IKeyValuePair_iface;
-+    return S_OK;
-+}
-+
-+struct string_map_iterator
-+{
-+    IIterator_IKeyValuePair_HSTRING_HSTRING IIterator_iface;
-+    LONG ref;
-+    struct string_map *map;
-+    UINT32 index;
-+};
-+
-+static inline struct string_map_iterator *impl_from_IIterator( IIterator_IKeyValuePair_HSTRING_HSTRING *iface )
-+{
-+    return CONTAINING_RECORD( iface, struct string_map_iterator, IIterator_iface );
-+}
-+
-+static HRESULT WINAPI iterator_QueryInterface( IIterator_IKeyValuePair_HSTRING_HSTRING *iface, REFIID iid,
-+                                               void **out )
-+{
-+    if (!out) return E_POINTER;
-+    *out = NULL;
-+    if (!IsEqualGUID( iid, &IID_IUnknown ) && !IsEqualGUID( iid, &IID_IInspectable ) &&
-+        !IsEqualGUID( iid, &IID_IAgileObject ) && !IsEqualGUID( iid, &IID_IIterator_IKeyValuePair_HSTRING_HSTRING ))
-+        return E_NOINTERFACE;
-+    *out = iface;
-+    IIterator_IKeyValuePair_HSTRING_HSTRING_AddRef( iface );
-+    return S_OK;
-+}
-+
-+static ULONG WINAPI iterator_AddRef( IIterator_IKeyValuePair_HSTRING_HSTRING *iface )
-+{
-+    return InterlockedIncrement( &impl_from_IIterator( iface )->ref );
-+}
-+
-+static ULONG WINAPI iterator_Release( IIterator_IKeyValuePair_HSTRING_HSTRING *iface )
-+{
-+    struct string_map_iterator *impl = impl_from_IIterator( iface );
-+    ULONG ref = InterlockedDecrement( &impl->ref );
-+
-+    if (!ref)
-+    {
-+        map_release( impl->map );
-+        free( impl );
-+    }
-+    return ref;
-+}
-+
-+static HRESULT WINAPI iterator_GetIids( IIterator_IKeyValuePair_HSTRING_HSTRING *iface, ULONG *count, IID **iids )
-+{
-+    if (!count || !iids) return E_POINTER;
-+    *count = 1;
-+    if (!(*iids = CoTaskMemAlloc( sizeof(**iids) ))) return E_OUTOFMEMORY;
-+    **iids = IID_IIterator_IKeyValuePair_HSTRING_HSTRING;
-+    return S_OK;
-+}
-+
-+static HRESULT WINAPI iterator_GetRuntimeClassName( IIterator_IKeyValuePair_HSTRING_HSTRING *iface, HSTRING *name )
-+{
-+    return map_get_class_name( name );
-+}
-+
-+static HRESULT WINAPI iterator_GetTrustLevel( IIterator_IKeyValuePair_HSTRING_HSTRING *iface, TrustLevel *level )
-+{
-+    return map_get_trust_level( level );
-+}
-+
-+static HRESULT WINAPI iterator_get_Current( IIterator_IKeyValuePair_HSTRING_HSTRING *iface,
-+                                            IKeyValuePair_HSTRING_HSTRING **value )
-+{
-+    struct string_map_iterator *iterator = impl_from_IIterator( iface );
-+    struct string_map *map = iterator->map;
-+    HRESULT hr;
-+
-+    if (!value) return E_POINTER;
-+    *value = NULL;
-+    EnterCriticalSection( &map->cs );
-+    if (iterator->index < map->count)
-+        hr = pair_create( map->entries[iterator->index].key, map->entries[iterator->index].value, value );
-+    else
-+        hr = E_BOUNDS;
-+    LeaveCriticalSection( &map->cs );
-+    return hr;
-+}
-+
-+static HRESULT WINAPI iterator_get_HasCurrent( IIterator_IKeyValuePair_HSTRING_HSTRING *iface, boolean *value )
-+{
-+    struct string_map_iterator *iterator = impl_from_IIterator( iface );
-+    struct string_map *map = iterator->map;
-+
-+    if (!value) return E_POINTER;
-+    EnterCriticalSection( &map->cs );
-+    *value = iterator->index < map->count;
-+    LeaveCriticalSection( &map->cs );
-+    return S_OK;
-+}
-+
-+static HRESULT WINAPI iterator_MoveNext( IIterator_IKeyValuePair_HSTRING_HSTRING *iface, boolean *value )
-+{
-+    struct string_map_iterator *iterator = impl_from_IIterator( iface );
-+    struct string_map *map = iterator->map;
-+
-+    if (!value) return E_POINTER;
-+    EnterCriticalSection( &map->cs );
-+    if (iterator->index < map->count) ++iterator->index;
-+    *value = iterator->index < map->count;
-+    LeaveCriticalSection( &map->cs );
-+    return S_OK;
-+}
-+
-+static HRESULT WINAPI iterator_GetMany( IIterator_IKeyValuePair_HSTRING_HSTRING *iface, UINT32 capacity,
-+                                        IKeyValuePair_HSTRING_HSTRING **items, UINT32 *count )
-+{
-+    HRESULT hr = S_OK;
-+
-+    if (!count || (capacity && !items)) return E_POINTER;
-+    *count = 0;
-+    while (*count < capacity)
-+    {
-+        boolean has_current;
-+        if (FAILED(hr = iterator_get_HasCurrent( iface, &has_current )) || !has_current) break;
-+        if (FAILED(hr = iterator_get_Current( iface, &items[*count] ))) break;
-+        ++*count;
-+        if (FAILED(hr = iterator_MoveNext( iface, &has_current ))) break;
-+    }
-+    return hr;
-+}
-+
-+static const IIterator_IKeyValuePair_HSTRING_HSTRINGVtbl iterator_vtbl =
-+{
-+    iterator_QueryInterface,
-+    iterator_AddRef,
-+    iterator_Release,
-+    iterator_GetIids,
-+    iterator_GetRuntimeClassName,
-+    iterator_GetTrustLevel,
-+    iterator_get_Current,
-+    iterator_get_HasCurrent,
-+    iterator_MoveNext,
-+    iterator_GetMany,
-+};
-+
-+static HRESULT WINAPI iterable_QueryInterface( IIterable_IKeyValuePair_HSTRING_HSTRING *iface, REFIID iid,
-+                                               void **out )
-+{
-+    return map_query_interface( impl_from_IIterable( iface ), iid, out );
-+}
-+
-+static ULONG WINAPI iterable_AddRef( IIterable_IKeyValuePair_HSTRING_HSTRING *iface )
-+{
-+    return InterlockedIncrement( &impl_from_IIterable( iface )->ref );
-+}
-+
-+static ULONG WINAPI iterable_Release( IIterable_IKeyValuePair_HSTRING_HSTRING *iface )
-+{
-+    return map_release( impl_from_IIterable( iface ) );
-+}
-+
-+static HRESULT WINAPI iterable_GetIids( IIterable_IKeyValuePair_HSTRING_HSTRING *iface, ULONG *count, IID **iids )
-+{
-+    return map_get_iids( count, iids );
-+}
-+
-+static HRESULT WINAPI iterable_GetRuntimeClassName( IIterable_IKeyValuePair_HSTRING_HSTRING *iface, HSTRING *name )
-+{
-+    return map_get_class_name( name );
-+}
-+
-+static HRESULT WINAPI iterable_GetTrustLevel( IIterable_IKeyValuePair_HSTRING_HSTRING *iface, TrustLevel *level )
-+{
-+    return map_get_trust_level( level );
-+}
-+
-+static HRESULT WINAPI iterable_First( IIterable_IKeyValuePair_HSTRING_HSTRING *iface,
-+                                      IIterator_IKeyValuePair_HSTRING_HSTRING **value )
-+{
-+    struct string_map_iterator *iterator;
-+
-+    if (!value) return E_POINTER;
-+    *value = NULL;
-+    if (!(iterator = calloc( 1, sizeof(*iterator) ))) return E_OUTOFMEMORY;
-+    iterator->IIterator_iface.lpVtbl = &iterator_vtbl;
-+    iterator->ref = 1;
-+    iterator->map = impl_from_IIterable( iface );
-+    InterlockedIncrement( &iterator->map->ref );
-+    *value = &iterator->IIterator_iface;
-+    return S_OK;
-+}
-+
-+static const IIterable_IKeyValuePair_HSTRING_HSTRINGVtbl iterable_vtbl =
-+{
-+    iterable_QueryInterface,
-+    iterable_AddRef,
-+    iterable_Release,
-+    iterable_GetIids,
-+    iterable_GetRuntimeClassName,
-+    iterable_GetTrustLevel,
-+    iterable_First,
-+};
-+
- HRESULT string_map_create( IMap_HSTRING_HSTRING **out )
- {
-     struct string_map *impl;
-@@ -373,6 +683,7 @@ HRESULT string_map_create( IMap_HSTRING_HSTRING **out )
-     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
-     impl->IMap_iface.lpVtbl = &map_vtbl;
-     impl->IMapView_iface.lpVtbl = &view_vtbl;
-+    impl->IIterable_iface.lpVtbl = &iterable_vtbl;
-     impl->ref = 1;
-     InitializeCriticalSectionEx( &impl->cs, 0, RTL_CRITICAL_SECTION_FLAG_FORCE_DEBUG_INFO );
-     impl->cs.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": string_map.cs");
 diff --git a/dlls/windows.security.authentication.onlineid/tests/onlineid.c b/dlls/windows.security.authentication.onlineid/tests/onlineid.c
-index 53f0651..d3924d2 100644
+index 8f64743..a970204 100644
 --- a/dlls/windows.security.authentication.onlineid/tests/onlineid.c
 +++ b/dlls/windows.security.authentication.onlineid/tests/onlineid.c
-@@ -283,12 +283,17 @@ static void test_web_authentication_core(void)
+@@ -347,15 +347,16 @@ static void test_web_authentication_core(void)
+     IWebTokenRequest *request = NULL;
+     IMap_HSTRING_HSTRING *properties;
+     IIterable_IKeyValuePair_HSTRING_HSTRING *property_iterable = NULL;
++    IWebProviderError *response_error = NULL;
      IWebTokenRequestResult *result = NULL;
      IVectorView_WebTokenResponse *responses = NULL;
      IWebTokenResponse *response = NULL;
-+    IWebProviderError *provider_error = NULL;
-+    IMap_HSTRING_HSTRING *error_properties = NULL;
-+    IIterable_IKeyValuePair_HSTRING_HSTRING *error_iterable = NULL;
-+    IIterator_IKeyValuePair_HSTRING_HSTRING *error_iterator = NULL;
      WebTokenRequestStatus response_status;
      IActivationFactory *factory = NULL;
      HSTRING name = NULL, provider_id = NULL, authority = NULL, scope = NULL, client_id = NULL, token = NULL;
-+    HSTRING error_message = NULL;
+-    HSTRING response_authority = NULL;
++    HSTRING response_authority = NULL, error_message = NULL;
      AsyncStatus status;
 -    UINT32 size;
--    boolean is_system_provider;
 +    UINT32 size, error_code;
-+    boolean is_system_provider, has_current;
+     boolean is_system_provider;
      HRESULT hr;
  
-     WindowsCreateString( manager_name, ARRAY_SIZE(manager_name) - 1, &name );
-@@ -363,10 +368,53 @@ static void test_web_authentication_core(void)
+@@ -525,6 +526,23 @@ static void test_web_authentication_core(void)
      else
          ok( response_status == WebTokenRequestStatus_UserInteractionRequired,
              "got response status %u.\n", response_status );
-+    if (response_status != WebTokenRequestStatus_Success)
++    hr = IWebTokenRequestResult_get_ResponseError( result, &response_error );
++    ok( hr == S_OK, "got hr %#lx.\n", hr );
++    if (response_status == WebTokenRequestStatus_Success)
++        ok( !response_error, "got unexpected provider error %p.\n", response_error );
++    else
 +    {
-+        hr = IWebTokenRequestResult_get_ResponseError( result, &provider_error );
-+        ok( hr == S_OK && provider_error, "got hr %#lx, error %p.\n", hr, provider_error );
-+        if (provider_error) IWebProviderError_Release( provider_error );
++        ok( !!response_error, "missing provider error.\n" );
++        if (response_error)
++        {
++            hr = IWebProviderError_get_ErrorCode( response_error, &error_code );
++            ok( hr == S_OK && error_code, "got hr %#lx, error code %#x.\n", hr, error_code );
++            hr = IWebProviderError_get_ErrorMessage( response_error, &error_message );
++            ok( hr == S_OK && !WindowsIsStringEmpty(error_message), "got hr %#lx.\n", hr );
++            WindowsDeleteString( error_message );
++            IWebProviderError_Release( response_error );
++        }
 +    }
      IWebTokenRequestResult_Release( result );
      IAsyncOperation_WebTokenRequestResult_Release( token_operation );
  
--    if (GetEnvironmentVariableA( "SODA_IDENTITY_BRIDGE_SOCKET", NULL, 0 ))
-+    if (!GetEnvironmentVariableA( "SODA_IDENTITY_BRIDGE_SOCKET", NULL, 0 ))
-+    {
-+        SetEnvironmentVariableA( "SODA_IDENTITY_BRIDGE_SOCKET", "/nonexistent/soda-identity-bridge.sock" );
-+        hr = IWebAuthenticationCoreManagerStatics_RequestTokenAsync( manager, request, &token_operation );
-+        ok( hr == S_OK, "got hr %#lx.\n", hr );
-+        status = wait_operation( (IUnknown *)token_operation );
-+        ok( status == Completed, "got status %u.\n", status );
-+        hr = IAsyncOperation_WebTokenRequestResult_GetResults( token_operation, &result );
-+        ok( hr == S_OK, "got hr %#lx.\n", hr );
-+        hr = IWebTokenRequestResult_get_ResponseStatus( result, &response_status );
-+        ok( hr == S_OK, "got hr %#lx.\n", hr );
-+        ok( response_status == WebTokenRequestStatus_ProviderError, "got response status %u.\n", response_status );
-+        hr = IWebTokenRequestResult_get_ResponseError( result, &provider_error );
-+        ok( hr == S_OK && provider_error, "got hr %#lx, error %p.\n", hr, provider_error );
-+        hr = IWebProviderError_get_ErrorCode( provider_error, &error_code );
-+        ok( hr == S_OK && error_code, "got hr %#lx, error code %#x.\n", hr, error_code );
-+        hr = IWebProviderError_get_ErrorMessage( provider_error, &error_message );
-+        ok( hr == S_OK && WindowsGetStringLen( error_message ), "got hr %#lx, message %s.\n", hr,
-+            wine_dbgstr_w( WindowsGetStringRawBuffer( error_message, NULL ) ) );
-+        hr = IWebProviderError_get_Properties( provider_error, &error_properties );
-+        ok( hr == S_OK && error_properties, "got hr %#lx, properties %p.\n", hr, error_properties );
-+        hr = IMap_HSTRING_HSTRING_QueryInterface( error_properties,
-+            &IID_IIterable_IKeyValuePair_HSTRING_HSTRING, (void **)&error_iterable );
-+        ok( hr == S_OK && error_iterable, "got hr %#lx, iterable %p.\n", hr, error_iterable );
-+        hr = IIterable_IKeyValuePair_HSTRING_HSTRING_First( error_iterable, &error_iterator );
-+        ok( hr == S_OK && error_iterator, "got hr %#lx, iterator %p.\n", hr, error_iterator );
-+        hr = IIterator_IKeyValuePair_HSTRING_HSTRING_get_HasCurrent( error_iterator, &has_current );
-+        ok( hr == S_OK && !has_current, "got hr %#lx, has current %u.\n", hr, has_current );
-+        IIterator_IKeyValuePair_HSTRING_HSTRING_Release( error_iterator );
-+        IIterable_IKeyValuePair_HSTRING_HSTRING_Release( error_iterable );
-+        IMap_HSTRING_HSTRING_Release( error_properties );
-+        WindowsDeleteString( error_message );
-+        IWebProviderError_Release( provider_error );
-+        IWebTokenRequestResult_Release( result );
-+        IAsyncOperation_WebTokenRequestResult_Release( token_operation );
-+        SetEnvironmentVariableA( "SODA_IDENTITY_BRIDGE_SOCKET", NULL );
-+    }
-+    else
-     {
-         hr = IWebAuthenticationCoreManagerStatics_RequestTokenAsync( manager, request, &token_operation );
-         ok( hr == S_OK, "got hr %#lx.\n", hr );
 diff --git a/dlls/windows.security.authentication.onlineid/web_async.c b/dlls/windows.security.authentication.onlineid/web_async.c
-index 3c97994..f59b382 100644
+index 8af5ea2..ff4959a 100644
 --- a/dlls/windows.security.authentication.onlineid/web_async.c
 +++ b/dlls/windows.security.authentication.onlineid/web_async.c
-@@ -388,11 +388,11 @@ static HRESULT token_worker( struct web_async_operation *impl, IInspectable **re
+@@ -432,9 +432,9 @@ static HRESULT token_worker( struct web_async_operation *impl, IInspectable **re
      if (SUCCEEDED(hr))
-         hr = web_token_result_create( &reply, WebTokenRequestStatus_Success, &token_result );
+         hr = web_token_result_create( provider, &reply, WebTokenRequestStatus_Success, &token_result );
      else if (hr == HRESULT_FROM_WIN32( ERROR_CANCELLED ))
--        hr = web_token_result_create( NULL, WebTokenRequestStatus_UserCancel, &token_result );
-+        hr = web_token_result_create( &reply, WebTokenRequestStatus_UserCancel, &token_result );
+-        hr = web_token_result_create( provider, NULL, WebTokenRequestStatus_UserCancel, &token_result );
++        hr = web_token_result_create( provider, &reply, WebTokenRequestStatus_UserCancel, &token_result );
      else if (impl->u.token.silent)
--        hr = web_token_result_create( NULL, WebTokenRequestStatus_UserInteractionRequired, &token_result );
-+        hr = web_token_result_create( &reply, WebTokenRequestStatus_UserInteractionRequired, &token_result );
+-        hr = web_token_result_create( provider, NULL, WebTokenRequestStatus_UserInteractionRequired, &token_result );
++        hr = web_token_result_create( provider, &reply, WebTokenRequestStatus_UserInteractionRequired, &token_result );
      else
--        hr = web_token_result_create( NULL, WebTokenRequestStatus_ProviderError, &token_result );
-+        hr = web_token_result_create( &reply, WebTokenRequestStatus_ProviderError, &token_result );
+         hr = web_token_result_create( provider, &reply, WebTokenRequestStatus_ProviderError, &token_result );
  
- done:
-     if (account2) IWebAccount2_Release( account2 );
 diff --git a/dlls/windows.security.authentication.onlineid/web_token.c b/dlls/windows.security.authentication.onlineid/web_token.c
-index a7671b0..5b6a271 100644
+index f034509..69c31fe 100644
 --- a/dlls/windows.security.authentication.onlineid/web_token.c
 +++ b/dlls/windows.security.authentication.onlineid/web_token.c
-@@ -774,6 +774,127 @@ static HRESULT response_view_create( IWebTokenResponse *response, IVectorView_We
+@@ -744,6 +744,7 @@ static const IWebProviderErrorVtbl provider_error_vtbl =
+ 
+ HRESULT web_provider_error_create( HRESULT error, HSTRING message, IWebProviderError **out )
+ {
++    static const WCHAR fallback[] = L"Identity provider request failed.";
+     struct web_provider_error *impl;
+     HRESULT hr;
+ 
+@@ -753,14 +754,20 @@ HRESULT web_provider_error_create( HRESULT error, HSTRING message, IWebProviderE
+     impl->IWebProviderError_iface.lpVtbl = &provider_error_vtbl;
+     impl->ref = 1;
+     impl->error = error;
+-    if (FAILED(hr = WindowsDuplicateString( message, &impl->message )) ||
+-        FAILED(hr = string_map_create( &impl->properties )))
+-    {
+-        provider_error_Release( &impl->IWebProviderError_iface );
+-        return hr;
+-    }
++    if ((!message || WindowsIsStringEmpty(message)) &&
++        FAILED(hr = WindowsCreateString( fallback, ARRAY_SIZE(fallback) - 1, &impl->message )))
++        goto failed;
++    if (message && !WindowsIsStringEmpty(message) &&
++        FAILED(hr = WindowsDuplicateString( message, &impl->message )))
++        goto failed;
++    if (FAILED(hr = string_map_create( &impl->properties )))
++        goto failed;
+     *out = &impl->IWebProviderError_iface;
      return S_OK;
++
++failed:
++    provider_error_Release( &impl->IWebProviderError_iface );
++    return hr;
  }
  
-+struct web_provider_error
-+{
-+    IWebProviderError IWebProviderError_iface;
-+    LONG ref;
-+    UINT32 code;
-+    HSTRING message;
-+    IMap_HSTRING_HSTRING *properties;
-+};
-+
-+static inline struct web_provider_error *provider_error_from_IWebProviderError( IWebProviderError *iface )
-+{
-+    return CONTAINING_RECORD( iface, struct web_provider_error, IWebProviderError_iface );
-+}
-+
-+static HRESULT WINAPI provider_error_QueryInterface( IWebProviderError *iface, REFIID iid, void **out )
-+{
-+    if (!out) return E_POINTER;
-+    *out = NULL;
-+    if (!IsEqualGUID( iid, &IID_IUnknown ) && !IsEqualGUID( iid, &IID_IInspectable ) &&
-+        !IsEqualGUID( iid, &IID_IAgileObject ) && !IsEqualGUID( iid, &IID_IWebProviderError ))
-+        return E_NOINTERFACE;
-+    *out = iface;
-+    IWebProviderError_AddRef( iface );
-+    return S_OK;
-+}
-+
-+static ULONG WINAPI provider_error_AddRef( IWebProviderError *iface )
-+{
-+    return InterlockedIncrement( &provider_error_from_IWebProviderError( iface )->ref );
-+}
-+
-+static ULONG WINAPI provider_error_Release( IWebProviderError *iface )
-+{
-+    struct web_provider_error *impl = provider_error_from_IWebProviderError( iface );
-+    ULONG ref = InterlockedDecrement( &impl->ref );
-+    if (!ref)
-+    {
-+        if (impl->properties) IMap_HSTRING_HSTRING_Release( impl->properties );
-+        WindowsDeleteString( impl->message );
-+        free( impl );
-+    }
-+    return ref;
-+}
-+
-+static HRESULT WINAPI provider_error_GetIids( IWebProviderError *iface, ULONG *count, IID **iids )
-+{
-+    if (!count || !iids) return E_POINTER;
-+    *count = 1;
-+    if (!(*iids = CoTaskMemAlloc( sizeof(**iids) ))) return E_OUTOFMEMORY;
-+    **iids = IID_IWebProviderError;
-+    return S_OK;
-+}
-+
-+static HRESULT WINAPI provider_error_GetRuntimeClassName( IWebProviderError *iface, HSTRING *name )
-+{
-+    const WCHAR *class_name = RuntimeClass_Windows_Security_Authentication_Web_Core_WebProviderError;
-+    if (!name) return E_POINTER;
-+    return WindowsCreateString( class_name, wcslen( class_name ), name );
-+}
-+
-+static HRESULT WINAPI provider_error_GetTrustLevel( IWebProviderError *iface, TrustLevel *level )
-+{
-+    return web_get_trust_level( level );
-+}
-+
-+static HRESULT WINAPI provider_error_get_ErrorCode( IWebProviderError *iface, UINT32 *value )
-+{
-+    if (!value) return E_POINTER;
-+    *value = provider_error_from_IWebProviderError( iface )->code;
-+    return S_OK;
-+}
-+
-+static HRESULT WINAPI provider_error_get_ErrorMessage( IWebProviderError *iface, HSTRING *value )
-+{
-+    return WindowsDuplicateString( provider_error_from_IWebProviderError( iface )->message, value );
-+}
-+
-+static HRESULT WINAPI provider_error_get_Properties( IWebProviderError *iface, IMap_HSTRING_HSTRING **value )
-+{
-+    struct web_provider_error *impl = provider_error_from_IWebProviderError( iface );
-+    if (!value) return E_POINTER;
-+    *value = impl->properties;
-+    IMap_HSTRING_HSTRING_AddRef( *value );
-+    return S_OK;
-+}
-+
-+static const IWebProviderErrorVtbl provider_error_vtbl =
-+{
-+    provider_error_QueryInterface,
-+    provider_error_AddRef,
-+    provider_error_Release,
-+    provider_error_GetIids,
-+    provider_error_GetRuntimeClassName,
-+    provider_error_GetTrustLevel,
-+    provider_error_get_ErrorCode,
-+    provider_error_get_ErrorMessage,
-+    provider_error_get_Properties,
-+};
-+
-+static HRESULT web_provider_error_create( HRESULT error, IWebProviderError **out )
-+{
-+    static const WCHAR message[] = L"Identity provider request failed.";
-+    struct web_provider_error *impl;
-+    HRESULT hr;
-+
-+    if (!out) return E_POINTER;
-+    *out = NULL;
-+    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
-+    impl->IWebProviderError_iface.lpVtbl = &provider_error_vtbl;
-+    impl->ref = 1;
-+    impl->code = error;
-+    if (FAILED(hr = WindowsCreateString( message, ARRAY_SIZE(message) - 1, &impl->message )) ||
-+        FAILED(hr = string_map_create( &impl->properties )))
-+    {
-+        provider_error_Release( &impl->IWebProviderError_iface );
-+        return hr;
-+    }
-+    *out = &impl->IWebProviderError_iface;
-+    return S_OK;
-+}
-+
- struct web_token_result
- {
-     IWebTokenRequestResult IWebTokenRequestResult_iface;
-@@ -917,6 +1038,11 @@ HRESULT web_token_result_create( const struct identity_reply *reply, WebTokenReq
-             FAILED(hr = web_token_response_create( reply->access_token, account, NULL, &response )))
-             goto failed;
-     }
-+    else
-+    {
-+        HRESULT error = reply && FAILED(reply->error) ? reply->error : E_FAIL;
-+        if (FAILED(hr = web_provider_error_create( error, &impl->error ))) goto failed;
-+    }
-     if (FAILED(hr = response_view_create( response, &impl->responses ))) goto failed;
-     *out = &impl->IWebTokenRequestResult_iface;
-     hr = S_OK;
+ struct response_view
+@@ -1099,8 +1106,8 @@ HRESULT web_token_result_create( IWebAccountProvider *provider, const struct ide
+     impl->IWebTokenRequestResult_iface.lpVtbl = &result_vtbl;
+     impl->ref = 1;
+     impl->status = status;
+-    if (status == WebTokenRequestStatus_ProviderError &&
+-        FAILED(hr = web_provider_error_create( reply ? reply->error : E_FAIL,
++    if (status != WebTokenRequestStatus_Success &&
++        FAILED(hr = web_provider_error_create( reply && FAILED(reply->error) ? reply->error : E_FAIL,
+                                                 reply ? reply->error_message : NULL, &impl->error )))
+         goto failed;
+     if (status == WebTokenRequestStatus_Success)
