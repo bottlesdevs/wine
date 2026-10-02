@@ -15,6 +15,8 @@ static const GUID iid_retail_info_statics =
     {0x0712c6b8, 0x8b92, 0x4f2a, {0x84, 0x99, 0x03, 0x1f, 0x17, 0x98, 0xd6, 0xef}};
 static const GUID iid_web_authentication_core_manager_statics4 =
     {0x54e633fe, 0x96e0, 0x41e8, {0x98, 0x32, 0x12, 0x98, 0x89, 0x7c, 0x2a, 0xaf}};
+static const GUID iid_composition_effect_source_parameter_factory =
+    {0xb3d9f276, 0xaba3, 0x4724, {0xac, 0xf3, 0xd0, 0x39, 0x74, 0x64, 0xdb, 0x1c}};
 
 static int check_factory(const WCHAR *class_name, const GUID *iid, const char *label)
 {
@@ -60,6 +62,8 @@ int main(void)
             &iid_retail_info_statics, "retail_info");
     failures += check_factory(L"Windows.Security.Authentication.Web.Core.WebAuthenticationCoreManager",
             &iid_web_authentication_core_manager_statics4, "web_authentication_manager");
+    failures += check_factory(L"Windows.UI.Composition.CompositionEffectSourceParameter",
+            &iid_composition_effect_source_parameter_factory, "composition_effect_source_parameter");
 
     RoUninitialize();
     return failures != 0;

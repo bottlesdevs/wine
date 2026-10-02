@@ -504,6 +504,7 @@ jobs:
             grep -Fx 'protection_policy:00000000' "$log"
             grep -Fx 'retail_info:00000000' "$log"
             grep -Fx 'web_authentication_manager:00000000' "$log"
+            grep -Fx 'composition_effect_source_parameter:00000000' "$log"
             "$runner_dir/bin/wineserver" -w
           }
 
@@ -1062,7 +1063,7 @@ jobs:
           for arch in 64 32; do
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/smoke$arch.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/runtime$arch.log"
-            for factory in core_application message_websocket protection_policy retail_info web_authentication_manager; do
+            for factory in core_application message_websocket protection_policy retail_info web_authentication_manager composition_effect_source_parameter; do
               grep -Fx "$factory:00000000" "$RUNNER_TEMP/soda-office-winrt/runtime$arch.log"
             done
           done

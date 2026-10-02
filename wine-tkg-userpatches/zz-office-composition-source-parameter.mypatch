@@ -1,0 +1,492 @@
+diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition.idl
+--- a/include/windows.ui.composition.idl
++++ b/include/windows.ui.composition.idl
+@@ -68,6 +68,8 @@
+     interface ICompositionEasingFunctionStatics;
+     interface ICompositionEffectBrush;
+     interface ICompositionEffectFactory;
++    interface ICompositionEffectSourceParameter;
++    interface ICompositionEffectSourceParameterFactory;
+     interface ICompositionGraphicsDevice;
+     interface ICompositionGraphicsDevice2;
+     interface ICompositionGraphicsDevice3;
+@@ -132,6 +134,7 @@
+     runtimeclass CompositionEasingFunction;
+     runtimeclass CompositionEffectBrush;
+     runtimeclass CompositionEffectFactory;
++    runtimeclass CompositionEffectSourceParameter;
+     runtimeclass CompositionGraphicsDevice;
+     runtimeclass CompositionVirtualDrawingSurface;
+     runtimeclass CompositionObject;
+@@ -497,6 +500,27 @@
+ 
+     [
+         contract(Windows.Foundation.UniversalApiContract, 2.0),
++        exclusiveto(Windows.UI.Composition.CompositionEffectSourceParameter),
++        uuid(858ab13a-3292-4e4e-b3bb-2b6c6544a6ee)
++    ]
++    interface ICompositionEffectSourceParameter : IInspectable
++        requires Windows.Graphics.Effects.IGraphicsEffectSource
++    {
++        [propget] HRESULT Name([out, retval] HSTRING *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 2.0),
++        exclusiveto(Windows.UI.Composition.CompositionEffectSourceParameter),
++        uuid(b3d9f276-aba3-4724-acf3-d0397464db1c)
++    ]
++    interface ICompositionEffectSourceParameterFactory : IInspectable
++    {
++        HRESULT Create([in] HSTRING name, [out, retval] Windows.UI.Composition.CompositionEffectSourceParameter **value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 2.0),
+         exclusiveto(Windows.UI.Composition.CompositionGraphicsDevice),
+         uuid(fb22c6e1-80a2-4667-9936-dbeaf6eefe95)
+     ]
+@@ -1079,6 +1103,18 @@
+     }
+ 
+     [
++        activatable(Windows.UI.Composition.ICompositionEffectSourceParameterFactory, Windows.Foundation.UniversalApiContract, 2.0),
++        contract(Windows.Foundation.UniversalApiContract, 2.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass CompositionEffectSourceParameter
++    {
++        [default] interface Windows.UI.Composition.ICompositionEffectSourceParameter;
++        interface Windows.Graphics.Effects.IGraphicsEffectSource;
++    }
++
++    [
+         contract(Windows.Foundation.UniversalApiContract, 2.0),
+         marshaling_behavior(agile),
+         threading(both)
+diff --git a/dlls/windows.ui/classes.idl b/dlls/windows.ui/classes.idl
+--- a/dlls/windows.ui/classes.idl
++++ b/dlls/windows.ui/classes.idl
+@@ -47,6 +47,7 @@
+ 
+ namespace Windows.UI.Composition {
+     runtimeclass Compositor;
++    runtimeclass CompositionEffectSourceParameter;
+ }
+ 
+ namespace Windows.UI.Composition.Core {
+diff --git a/dlls/windows.ui/private.h b/dlls/windows.ui/private.h
+--- a/dlls/windows.ui/private.h
++++ b/dlls/windows.ui/private.h
+@@ -60,6 +60,7 @@
+ extern IActivationFactory *uiviewsettings_factory;
+ extern IActivationFactory *inputpane_factory;
+ extern IActivationFactory *compositor_factory;
++extern IActivationFactory *effect_source_parameter_factory;
+ extern IActivationFactory *compositor_controller_factory;
+ extern IActivationFactory *composition_conditional_value_factory;
+ extern IActivationFactory *interaction_tracker_factory;
+diff --git a/dlls/windows.ui/Makefile.in b/dlls/windows.ui/Makefile.in
+--- a/dlls/windows.ui/Makefile.in
++++ b/dlls/windows.ui/Makefile.in
+@@ -5,6 +5,7 @@
+ 	accessibilitysettings.c \
+ 	classes.idl \
+ 	composition.c \
++	effect.c \
+ 	inputpane.c \
+ 	interactions.c \
+ 	main.c \
+diff --git a/dlls/windows.ui/main.c b/dlls/windows.ui/main.c
+--- a/dlls/windows.ui/main.c
++++ b/dlls/windows.ui/main.c
+@@ -53,6 +53,9 @@
+     if (!wcscmp( buffer, RuntimeClass_Windows_UI_Composition_Compositor ))
+         IActivationFactory_QueryInterface( compositor_factory, &IID_IActivationFactory, (void **)factory );
+ 
++    if (!wcscmp( buffer, RuntimeClass_Windows_UI_Composition_CompositionEffectSourceParameter ))
++        IActivationFactory_QueryInterface( effect_source_parameter_factory, &IID_IActivationFactory, (void **)factory );
++
+     if (!wcscmp( buffer, RuntimeClass_Windows_UI_Composition_Core_CompositorController ))
+         IActivationFactory_QueryInterface( compositor_controller_factory, &IID_IActivationFactory, (void **)factory );
+ 
+diff --git a/dlls/windows.ui/tests/composition.c b/dlls/windows.ui/tests/composition.c
+--- a/dlls/windows.ui/tests/composition.c
++++ b/dlls/windows.ui/tests/composition.c
+@@ -28,6 +28,8 @@
+ #define WIDL_using_Windows_Foundation
+ #define WIDL_using_Windows_Foundation_Collections
+ #include "windows.foundation.h"
++#define WIDL_using_Windows_Graphics_Effects
++#include "windows.graphics.effects.h"
+ #define WIDL_using_Windows_Foundation_Numerics
+ #include "windows.foundation.numerics.h"
+ #define WIDL_using_Windows_Graphics
+@@ -618,6 +620,90 @@
+     ICompositor_Release( compositor );
+ }
+ 
++static void test_effect_source_parameter(void)
++{
++    ICompositionEffectSourceParameterFactory *constructor = NULL;
++    ICompositionEffectSourceParameter *parameter = NULL;
++    IGraphicsEffectSource *source = NULL;
++    IActivationFactory *factory = NULL;
++    IUnknown *identity = NULL, *other = NULL;
++    HSTRING class_name, name, value;
++    HSTRING_HEADER header;
++    WCHAR buffer[] = L"Backdrop";
++    IID *iids;
++    ULONG count;
++    HRESULT hr;
++
++    WindowsCreateString( RuntimeClass_Windows_UI_Composition_CompositionEffectSourceParameter,
++                        wcslen(RuntimeClass_Windows_UI_Composition_CompositionEffectSourceParameter), &class_name );
++    hr = RoGetActivationFactory( class_name, &IID_IActivationFactory, (void **)&factory );
++    WindowsDeleteString( class_name );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    if (FAILED(hr)) return;
++    hr = IActivationFactory_QueryInterface( factory, &IID_ICompositionEffectSourceParameterFactory,
++                                           (void **)&constructor );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    if (FAILED(hr)) goto done;
++
++    hr = ICompositionEffectSourceParameterFactory_Create( constructor, NULL, NULL );
++    ok( hr == E_POINTER, "Got hr %#lx.\n", hr );
++    WindowsCreateStringReference( buffer, wcslen(buffer), &header, &name );
++    hr = ICompositionEffectSourceParameterFactory_Create( constructor, name, &parameter );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    if (FAILED(hr)) goto done;
++    buffer[0] = L'X';
++    hr = ICompositionEffectSourceParameter_get_Name( parameter, &value );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    ok( !wcscmp( WindowsGetStringRawBuffer( value, NULL ), L"Backdrop" ), "Name was not copied.\n" );
++    WindowsDeleteString( value );
++    hr = ICompositionEffectSourceParameter_get_Name( parameter, NULL );
++    ok( hr == E_POINTER, "Got hr %#lx.\n", hr );
++    hr = ICompositionEffectSourceParameter_GetRuntimeClassName( parameter, &value );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    ok( !wcscmp( WindowsGetStringRawBuffer( value, NULL ),
++                 RuntimeClass_Windows_UI_Composition_CompositionEffectSourceParameter ), "Wrong class name.\n" );
++    WindowsDeleteString( value );
++    hr = ICompositionEffectSourceParameter_GetIids( parameter, &count, &iids );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    ok( count == 2, "Got count %lu.\n", count );
++    CoTaskMemFree( iids );
++    hr = ICompositionEffectSourceParameter_QueryInterface( parameter, &IID_IGraphicsEffectSource, (void **)&source );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    if (source)
++    {
++        ICompositionEffectSourceParameter_QueryInterface( parameter, &IID_IUnknown, (void **)&identity );
++        IGraphicsEffectSource_QueryInterface( source, &IID_IUnknown, (void **)&other );
++        ok( identity == other, "COM identity differs.\n" );
++        IUnknown_Release( identity );
++        IUnknown_Release( other );
++        IGraphicsEffectSource_Release( source );
++    }
++    hr = ICompositionEffectSourceParameter_QueryInterface( parameter, &IID_IAgileObject, (void **)&other );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    if (SUCCEEDED(hr)) IUnknown_Release( other );
++    other = (IUnknown *)0xdeadbeef;
++    hr = ICompositionEffectSourceParameter_QueryInterface( parameter, &IID_IGraphicsEffect, (void **)&other );
++    ok( hr == E_NOINTERFACE, "Got hr %#lx.\n", hr );
++    ok( !other, "Unsupported interface was not cleared.\n" );
++    ICompositionEffectSourceParameter_Release( parameter );
++    parameter = NULL;
++
++    hr = ICompositionEffectSourceParameterFactory_Create( constructor, NULL, &parameter );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    if (parameter)
++    {
++        hr = ICompositionEffectSourceParameter_get_Name( parameter, &value );
++        ok( hr == S_OK, "Got hr %#lx.\n", hr );
++        ok( !WindowsGetStringLen( value ), "Expected an empty name.\n" );
++        WindowsDeleteString( value );
++        ICompositionEffectSourceParameter_Release( parameter );
++    }
++
++done:
++    if (constructor) ICompositionEffectSourceParameterFactory_Release( constructor );
++    IActivationFactory_Release( factory );
++}
++
+ START_TEST(composition)
+ {
+     HRESULT hr;
+@@ -631,6 +717,7 @@
+     test_compositor_animation();
+     test_visual_collection_iterable();
+     test_interaction_tracker_bindings();
++    test_effect_source_parameter();
+ 
+     RoUninitialize();
+ }
+diff --git a/dlls/windows.ui/effect.c b/dlls/windows.ui/effect.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/windows.ui/effect.c
+@@ -0,0 +1,263 @@
++/* Windows.UI.Composition effect sources
++ *
++ * Copyright (C) 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(ui);
++
++struct effect_source_parameter
++{
++    ICompositionEffectSourceParameter ICompositionEffectSourceParameter_iface;
++    IGraphicsEffectSource IGraphicsEffectSource_iface;
++    LONG ref;
++    HSTRING name;
++};
++
++static inline struct effect_source_parameter *impl_from_ICompositionEffectSourceParameter(
++        ICompositionEffectSourceParameter *iface )
++{
++    return CONTAINING_RECORD( iface, struct effect_source_parameter, ICompositionEffectSourceParameter_iface );
++}
++
++static HRESULT WINAPI parameter_QueryInterface( ICompositionEffectSourceParameter *iface, REFIID iid, void **out )
++{
++    struct effect_source_parameter *impl = impl_from_ICompositionEffectSourceParameter( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out );
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_ICompositionEffectSourceParameter ))
++        *out = iface;
++    else if (IsEqualGUID( iid, &IID_IGraphicsEffectSource ))
++        *out = &impl->IGraphicsEffectSource_iface;
++    else return E_NOINTERFACE;
++
++    IUnknown_AddRef( (IUnknown *)*out );
++    return S_OK;
++}
++
++static ULONG WINAPI parameter_AddRef( ICompositionEffectSourceParameter *iface )
++{
++    return InterlockedIncrement( &impl_from_ICompositionEffectSourceParameter( iface )->ref );
++}
++
++static ULONG WINAPI parameter_Release( ICompositionEffectSourceParameter *iface )
++{
++    struct effect_source_parameter *impl = impl_from_ICompositionEffectSourceParameter( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        WindowsDeleteString( impl->name );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI parameter_GetIids( ICompositionEffectSourceParameter *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = CoTaskMemAlloc( 2 * sizeof(**iids) );
++    if (!*iids) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_ICompositionEffectSourceParameter;
++    (*iids)[1] = IID_IGraphicsEffectSource;
++    *count = 2;
++    return S_OK;
++}
++
++static HRESULT parameter_class_name( HSTRING *name )
++{
++    const WCHAR *class_name = RuntimeClass_Windows_UI_Composition_CompositionEffectSourceParameter;
++
++    if (!name) return E_POINTER;
++    return WindowsCreateString( class_name, wcslen(class_name), name );
++}
++
++static HRESULT WINAPI parameter_GetRuntimeClassName( ICompositionEffectSourceParameter *iface, HSTRING *name )
++{
++    return parameter_class_name( name );
++}
++
++static HRESULT WINAPI parameter_GetTrustLevel( ICompositionEffectSourceParameter *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI parameter_get_Name( ICompositionEffectSourceParameter *iface, HSTRING *name )
++{
++    struct effect_source_parameter *impl = impl_from_ICompositionEffectSourceParameter( iface );
++
++    if (!name) return E_POINTER;
++    return WindowsDuplicateString( impl->name, name );
++}
++
++static const ICompositionEffectSourceParameterVtbl parameter_vtbl =
++{
++    parameter_QueryInterface,
++    parameter_AddRef,
++    parameter_Release,
++    parameter_GetIids,
++    parameter_GetRuntimeClassName,
++    parameter_GetTrustLevel,
++    parameter_get_Name,
++};
++
++DEFINE_IINSPECTABLE( parameter_source, IGraphicsEffectSource, struct effect_source_parameter,
++                    ICompositionEffectSourceParameter_iface )
++
++static const IGraphicsEffectSourceVtbl parameter_source_vtbl =
++{
++    parameter_source_QueryInterface,
++    parameter_source_AddRef,
++    parameter_source_Release,
++    parameter_source_GetIids,
++    parameter_source_GetRuntimeClassName,
++    parameter_source_GetTrustLevel,
++};
++
++struct parameter_factory
++{
++    IActivationFactory IActivationFactory_iface;
++    ICompositionEffectSourceParameterFactory ICompositionEffectSourceParameterFactory_iface;
++    LONG ref;
++};
++
++static inline struct parameter_factory *impl_from_IActivationFactory( IActivationFactory *iface )
++{
++    return CONTAINING_RECORD( iface, struct parameter_factory, IActivationFactory_iface );
++}
++
++static HRESULT WINAPI parameter_factory_QueryInterface( IActivationFactory *iface, REFIID iid, void **out )
++{
++    struct parameter_factory *impl = impl_from_IActivationFactory( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out );
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IActivationFactory ))
++        *out = iface;
++    else if (IsEqualGUID( iid, &IID_ICompositionEffectSourceParameterFactory ))
++        *out = &impl->ICompositionEffectSourceParameterFactory_iface;
++    else return E_NOINTERFACE;
++
++    IUnknown_AddRef( (IUnknown *)*out );
++    return S_OK;
++}
++
++static ULONG WINAPI parameter_factory_AddRef( IActivationFactory *iface )
++{
++    return InterlockedIncrement( &impl_from_IActivationFactory( iface )->ref );
++}
++
++static ULONG WINAPI parameter_factory_Release( IActivationFactory *iface )
++{
++    return InterlockedDecrement( &impl_from_IActivationFactory( iface )->ref );
++}
++
++static HRESULT WINAPI parameter_factory_GetIids( IActivationFactory *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = CoTaskMemAlloc( sizeof(**iids) );
++    if (!*iids) return E_OUTOFMEMORY;
++    **iids = IID_ICompositionEffectSourceParameterFactory;
++    *count = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI parameter_factory_GetRuntimeClassName( IActivationFactory *iface, HSTRING *name )
++{
++    return parameter_class_name( name );
++}
++
++static HRESULT WINAPI parameter_factory_GetTrustLevel( IActivationFactory *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI parameter_factory_ActivateInstance( IActivationFactory *iface, IInspectable **instance )
++{
++    if (!instance) return E_POINTER;
++    *instance = NULL;
++    return E_NOTIMPL;
++}
++
++static const IActivationFactoryVtbl parameter_factory_vtbl =
++{
++    parameter_factory_QueryInterface,
++    parameter_factory_AddRef,
++    parameter_factory_Release,
++    parameter_factory_GetIids,
++    parameter_factory_GetRuntimeClassName,
++    parameter_factory_GetTrustLevel,
++    parameter_factory_ActivateInstance,
++};
++
++DEFINE_IINSPECTABLE( parameter_constructor, ICompositionEffectSourceParameterFactory, struct parameter_factory,
++                    IActivationFactory_iface )
++
++static HRESULT WINAPI parameter_constructor_Create( ICompositionEffectSourceParameterFactory *iface,
++        HSTRING name, ICompositionEffectSourceParameter **result )
++{
++    struct effect_source_parameter *impl;
++    HRESULT hr;
++
++    TRACE( "iface %p, name %s, result %p.\n", iface, debugstr_hstring(name), result );
++    if (!result) return E_POINTER;
++    *result = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    if (FAILED(hr = WindowsDuplicateString( name, &impl->name )))
++    {
++        free( impl );
++        return hr;
++    }
++    impl->ICompositionEffectSourceParameter_iface.lpVtbl = &parameter_vtbl;
++    impl->IGraphicsEffectSource_iface.lpVtbl = &parameter_source_vtbl;
++    impl->ref = 1;
++    *result = &impl->ICompositionEffectSourceParameter_iface;
++    return S_OK;
++}
++
++static const ICompositionEffectSourceParameterFactoryVtbl parameter_constructor_vtbl =
++{
++    parameter_constructor_QueryInterface,
++    parameter_constructor_AddRef,
++    parameter_constructor_Release,
++    parameter_constructor_GetIids,
++    parameter_constructor_GetRuntimeClassName,
++    parameter_constructor_GetTrustLevel,
++    parameter_constructor_Create,
++};
++
++static struct parameter_factory parameter_factory_impl =
++{
++    {&parameter_factory_vtbl},
++    {&parameter_constructor_vtbl},
++    1,
++};
++
++IActivationFactory *effect_source_parameter_factory = &parameter_factory_impl.IActivationFactory_iface;
