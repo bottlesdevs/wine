@@ -27,7 +27,7 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '24-experimental'
+  REVISION: '25-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -45,41 +45,16 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-24 Experimental, codenamed Windows Escape, fixes current Office startup, document opening, and composition regressions. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-25 Experimental, codenamed Windows Escape, adds composition and window repaint fixes and corrects locked credential-store error handling. It remains a prerelease and does not replace the current stable Soda build.
 
-    - Fixed Word opening existing documents by implementing CompositionGraphicsDevice2 and virtual drawing surfaces.
-    - Fixed PowerPoint startup failures caused by missing WinRT composition interfaces.
-    - Fixed Excel and PowerPoint crashes when Office enumerates WAM error properties.
-    - Added complete provider errors for unsuccessful Microsoft account token requests.
-    - Added SharedModeSettings through Soda's declarative WinRT factory.
-    - Fixed invalid empty scissor rectangles in the OpenGL and Vulkan rendering paths.
-    - Added the Soda Identity Bridge for Microsoft 365 sign-in through the system browser, Authorization Code with PKCE, the desktop credential store, and a native device-code fallback outside Bottles.
-    - Added the WAM interfaces used by current Microsoft 365 builds, including system account provider lookup.
-    - Replaced per-class WinRT activation boilerplate with a declarative factory table and moved RetailInfo onto it.
-    - Added package checks for the identity bridge Unix libraries and runtime checks for WAM and RetailInfo.
-    - Fixed classic Outlook closing after reaching the inbox by clipping DirectWrite glyphs to the analysis bitmap bounds.
-    - Fixed classic Outlook closing before the inbox appeared by exposing the required composition object interfaces.
-    - Implemented sparse MSIX registration and package identity propagation used by Office background components.
-    - Added ICompositor5 and the composition interfaces used by current Office windows.
-    - Added thread-pool timer, package identity, and filesystem compatibility APIs required by Office bootstrap.
-    - Registered CoreApplication, MessageWebSocket, and ProtectionPolicyManager for both 32-bit and 64-bit prefixes.
-    - Added a build-time runtime check for the Office WinRT classes to prevent incomplete runner releases.
-    - Fixed Click-to-Run repair after a prefix moves between environments with different machine IDs.
-    - Fixed Office applications closing after the splash screen by implementing the application licensing policy queries and completing the dispatcher and Direct2D startup paths.
-    - Implemented popup window positioning used by Microsoft 365 account dialogs.
-    - Added a browser device authorization fallback for work account MFA challenges.
-    - Fixed fresh-prefix work account sign-in when Office requests a resource token before creating its base account cache.
-    - Added experimental Microsoft Office 365 support for Click-to-Run installation, activation, Word, Excel, PowerPoint, OneNote, and classic Outlook.
-    - Added the WinRT APIs used by Office for accounts, application data, package queries, system identity, globalization, networking, HTTP, JSON, media, and input.
-    - Fixed resource-scoped Office tokens used after Microsoft sign-in.
-    - Renamed the Office authentication broker so older injected copies cannot shadow the runner implementation.
-    - Fixed Direct2D and DirectComposition paths used by Office, WebView2, and composition swap chains.
-    - Fixed Wayland child surfaces, tool popups, focus input, disabled overlays, monitor placement, and cross-process WebView2 windows.
-    - Fixed X11 popup presentation and Office font rendering.
-    - Added standard accessibility proxies and expanded UI Automation support used by Office controls.
-    - Fixed Click-to-Run MSI registration, software licensing calls, print preview, HTTP redirects and request options, and large XML documents.
-    - Kept the Soda 11.0-10 compatibility fixes, MS-ICU runtime, Adaptive Launch, host OpenXR, pure 32-bit prefixes, x86_64 PGO, and aarch64 support.
-    - Built both packages in GitHub Actions from the pinned Wine, Proton, and Wine-TKG revisions.
+    - Implemented CompositionEffectSourceParameter used by Office composition calls.
+    - Refresh display modes after host display changes when the virtual mode follows the physical display.
+    - Repaint newly drawable window surfaces and restore exposed client surfaces.
+    - Report a locked native credential store as a storage error instead of a missing account entry.
+    - Retain the Soda 11.0-24 compatibility fixes and pinned upstream revisions.
+
+    Office testing still shows PowerPoint repair dialogs, a safe-mode crash, and Direct2D text-rendering errors. Complete Microsoft sign-in, licensing, document editing, and saving are not verified for this build.
+
 jobs:
   patches:
     runs-on: ubuntu-24.04
