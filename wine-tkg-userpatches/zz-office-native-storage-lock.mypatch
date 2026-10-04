@@ -1,0 +1,39 @@
+--- a/dlls/windows.security.authentication.onlineid/native_store.c
++++ b/dlls/windows.security.authentication.onlineid/native_store.c
+@@ -53,6 +53,7 @@
+ static typeof(secret_password_free) *release;
+ static typeof(g_error_free) *release_error;
+ static typeof(secret_password_search_sync) *search;
++static typeof(secret_item_get_locked) *get_locked;
+ static typeof(secret_retrievable_get_attributes) *get_attributes;
+ static typeof(secret_retrievable_retrieve_secret_sync) *retrieve;
+ static typeof(secret_value_get_text) *get_text;
+@@ -73,6 +74,7 @@
+     release = dlsym( library, "secret_password_free" );
+     release_error = dlsym( library, "g_error_free" );
+     search = dlsym( library, "secret_password_search_sync" );
++    get_locked = dlsym( library, "secret_item_get_locked" );
+     get_attributes = dlsym( library, "secret_retrievable_get_attributes" );
+     retrieve = dlsym( library, "secret_retrievable_retrieve_secret_sync" );
+     get_text = dlsym( library, "secret_value_get_text" );
+@@ -210,7 +212,19 @@
+         secret = lookup( &identity_schema, NULL, &error, "prefix", canonical_prefix,
+                          "client", params->client_id, "authority", params->authority, NULL );
+         if (error) status = STATUS_ACCESS_DENIED;
+-        else if (!secret) status = STATUS_OBJECT_NAME_NOT_FOUND;
++        else if (!secret)
++        {
++            GList *items, *item;
++
++            if (!search || !get_locked || !release_list || !release_object) break;
++            items = search( &identity_schema, SECRET_SEARCH_ALL, NULL, &error,
++                            "prefix", canonical_prefix, "client", params->client_id,
++                            "authority", params->authority, NULL );
++            status = error ? STATUS_ACCESS_DENIED : STATUS_OBJECT_NAME_NOT_FOUND;
++            for (item = items; item; item = item->next)
++                if (get_locked( item->data )) status = STATUS_ACCESS_DENIED;
++            if (items) release_list( items, release_object );
++        }
+         else
+         {
+             size = strlen( secret ) + 1;
