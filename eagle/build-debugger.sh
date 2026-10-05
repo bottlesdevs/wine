@@ -11,6 +11,7 @@ if test -e "$destination"; then
     exit 1
 fi
 mkdir -p "$destination/lib/eagle/native" "$destination/bin" "$destination/share/eagle/licenses"
+cd "$root"
 for module in pe elf; do
     g++ -std=c++17 -O2 -g -Wall -Wextra -Werror -static \
         -ffile-prefix-map="$root"=/usr/src/soda/eagle \
