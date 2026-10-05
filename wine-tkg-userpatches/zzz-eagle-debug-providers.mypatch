@@ -252,7 +252,7 @@
  
 --- /dev/null
 +++ b/include/eagle_trace.h
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,111 @@
 +#ifndef __WINE_EAGLE_TRACE_H
 +#define __WINE_EAGLE_TRACE_H
 +
@@ -323,21 +323,43 @@
 +
 +static inline void eagle_trace_wait(const char *name, HANDLE object, DWORD value, DWORD timeout)
 +{
-+    static __thread BOOL busy;
++    static LONG tls_index = TLS_OUT_OF_INDEXES;
 +    static LONG emitted;
 +    char text[384];
-+    LONG count;
++    LONG count, index;
 +    DWORD saved_error = GetLastError();
-+    if (busy || !eagle_trace_enabled(8) || !IsDebuggerPresent()) return;
++    if (!eagle_trace_enabled(8) || !IsDebuggerPresent()) return;
++    index = InterlockedCompareExchange(&tls_index, TLS_OUT_OF_INDEXES, TLS_OUT_OF_INDEXES);
++    if (index == TLS_OUT_OF_INDEXES)
++    {
++        DWORD created = TlsAlloc();
++        if (created == TLS_OUT_OF_INDEXES)
++        {
++            SetLastError(saved_error);
++            return;
++        }
++        index = InterlockedCompareExchange(&tls_index, created, TLS_OUT_OF_INDEXES);
++        if (index == TLS_OUT_OF_INDEXES) index = created;
++        else TlsFree(created);
++    }
++    if (TlsGetValue(index) || !TlsSetValue(index, (void *)1))
++    {
++        SetLastError(saved_error);
++        return;
++    }
 +    count = InterlockedIncrement(&emitted);
-+    if (count > 50001) return;
-+    busy = TRUE;
++    if (count > 50001)
++    {
++        TlsSetValue(index, NULL);
++        SetLastError(saved_error);
++        return;
++    }
 +    if (count == 50001)
 +        snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":8,\"event\":\"ObserverBudgetExceeded\",\"limit\":50000}");
 +    else
 +        snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":8,\"event\":\"%s\",\"object\":\"%p\",\"value\":%lu,\"timeout_ms\":%lu}", name, object, value, timeout);
 +    OutputDebugStringA(text);
-+    busy = FALSE;
++    TlsSetValue(index, NULL);
 +    SetLastError(saved_error);
 +}
 +

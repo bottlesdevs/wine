@@ -938,7 +938,6 @@ jobs:
           curl --fail --location --retry 3 --output "/tmp/$mono_file" "$mono_url"
           echo "$WINE_MONO_SHA256  /tmp/$mono_file" | sha256sum --check -
           install -Dm644 "/tmp/$mono_file" "$runner_dir/share/wine/mono/$mono_file"
-          sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner_dir" "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           required_files=(
             lib/wine/aarch64-unix/ntdll.so
             lib/wine/aarch64-windows/ntdll.dll
