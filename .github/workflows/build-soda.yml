@@ -27,7 +27,7 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '25-experimental'
+  REVISION: '26-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -45,15 +45,16 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-25 Experimental, codenamed Windows Escape, adds composition and window repaint fixes and corrects locked credential-store error handling. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-26 Experimental adds the Eagle debugger and tracing tools. The diagnostic release is available for Linux x86_64 with x86 and x64 application targets.
 
-    - Implemented CompositionEffectSourceParameter used by Office composition calls.
-    - Refresh display modes after host display changes when the virtual mode follows the physical display.
-    - Repaint newly drawable window surfaces and restore exposed client surfaces.
-    - Report a locked native credential store as a storage error instead of a missing account entry.
-    - Retain the Soda 11.0-24 compatibility fixes and pinned upstream revisions.
+    - Capture process and exception history, registers, symbolized stacks and minidumps.
+    - Use source/function breakpoints, conditions, watchpoints, pause/resume, attach/detach and DAP.
+    - Trace WinRT, COM activation, DirectWrite glyph calls and observed mutex waits with caller frames.
+    - Save reviewed per-launch reports and a live log while the application is running.
 
-    Office testing still shows PowerPoint repair dialogs, a safe-mode crash, and Direct2D text-rendering errors. Complete Microsoft sign-in, licensing, document editing, and saving are not verified for this build.
+    Bottles keeps its current analyzer. The tracing toggle is not yet in distributed Bottles builds; use the command in eagle/README.md. Mixed architecture process trees and ARM tracing are not certified. Matching application symbols are required for source names and lines. Console input/output is disconnected during tracing.
+
+    This release adds diagnostics. The existing Office compatibility issues remain open.
 
 jobs:
   patches:
@@ -149,6 +150,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/soda-secret-headers.sh" "$GITHUB_WORKSPACE/.soda-secret-amd64" amd64
           bash "$GITHUB_WORKSPACE/.github/soda-secret-headers.sh" "$GITHUB_WORKSPACE/.soda-secret-i386" i386
           sudo apt-get install -y \
+            g++ \
             cmake \
             file \
             g++-mingw-w64-i686 \
@@ -801,6 +803,7 @@ jobs:
           test -f "$runner_dir/lib/wine/x86_64-windows/wineopenxr.dll"
           test -f "$runner_dir/lib/wine/x86_64-unix/wineopenxr.so"
           install -Dm644 /tmp/proton/wineopenxr/wineopenxr64.json "$runner_dir/share/openxr/wineopenxr64.json"
+          sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner_dir" "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mv "$runner_dir" "$COMPONENT_NAME"
           tar cJvf "$ARCHIVE_NAME" "$COMPONENT_NAME"
           mv "$ARCHIVE_NAME" "/tmp/$ARCHIVE_NAME"
@@ -848,6 +851,7 @@ jobs:
           test "$(uname -m)" = aarch64
           sudo apt-get update
           sudo apt-get install -y \
+            g++ \
             file \
             gcc-mingw-w64-i686 \
             gcc-mingw-w64-x86-64 \
@@ -934,6 +938,7 @@ jobs:
           curl --fail --location --retry 3 --output "/tmp/$mono_file" "$mono_url"
           echo "$WINE_MONO_SHA256  /tmp/$mono_file" | sha256sum --check -
           install -Dm644 "/tmp/$mono_file" "$runner_dir/share/wine/mono/$mono_file"
+          sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner_dir" "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           required_files=(
             lib/wine/aarch64-unix/ntdll.so
             lib/wine/aarch64-windows/ntdll.dll
