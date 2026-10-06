@@ -140,9 +140,9 @@ jobs:
           sudo aptitude remove -y '?narrow(?installed,?version(deb.sury.org))'
           sudo apt install -f
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcap-dev:amd64 libpcap-dev:i386
-          dpkg-query -W 'libglib2.0-*'
           sudo apt-get install -y libglib2.0-dev-bin libglib2.0-dev:amd64
-          sudo apt-get install -y -o Debug::pkgProblemResolver=yes -o Dpkg::Options::="--force-overwrite" \
+          sudo aptitude install -y -o Dpkg::Options::="--force-overwrite" \
+            libglib2.0-dev-bin:amd64 \
             libgudev-1.0-dev:amd64 \
             libgudev-1.0-dev:i386 \
             libvulkan-dev:amd64 \
