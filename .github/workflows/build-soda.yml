@@ -1146,6 +1146,7 @@ jobs:
             libvulkan-dev:i386
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcsclite-dev:amd64 libpcsclite-dev:i386
           sudo apt-get install -y libsecret-1-dev:amd64 libsecret-1-0:i386
+          sudo apt-get install -y libfreetype6:amd64 libfreetype6:i386 libfontconfig1:amd64 libfontconfig1:i386
           bash "$GITHUB_WORKSPACE/.github/soda-secret-headers.sh" "$GITHUB_WORKSPACE/.soda-secret-amd64" amd64
           bash "$GITHUB_WORKSPACE/.github/soda-secret-headers.sh" "$GITHUB_WORKSPACE/.soda-secret-i386" i386
           sudo apt-get install -y \
