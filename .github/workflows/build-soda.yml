@@ -27,7 +27,7 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '26-experimental'
+  REVISION: '27-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -45,16 +45,16 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-26 Experimental adds the Eagle debugger and tracing tools. The diagnostic release is available for Linux x86_64 with x86 and x64 application targets.
+    Soda 11.0-27 Experimental fixes the Office startup regression in Soda 26. Eagle's wait tracing no longer allocates compiler TLS in kernelbase before Office starts. Package checks reject this regression for both x86 and x64.
 
     - Capture process and exception history, registers, symbolized stacks and minidumps.
     - Use source/function breakpoints, conditions, watchpoints, pause/resume, attach/detach and DAP.
     - Trace WinRT, COM activation, DirectWrite glyph calls and observed mutex waits with caller frames.
     - Save reviewed per-launch reports and a live log while the application is running.
 
-    Bottles keeps its current analyzer. The tracing toggle is not yet in distributed Bottles builds; use the command in eagle/README.md. Mixed architecture process trees and ARM tracing are not certified. Matching application symbols are required for source names and lines. Console input/output is disconnected during tracing.
+    Enable Eagle Tracing in the bottle's Preferences with the latest Bottles cpak or development Flatpak build. Review logs in the bottle's logs/runs folder before sharing them. Eagle is included in the x86_64 runner for x86 and x64 apps; it is not included in the ARM64 runner. Matching application symbols are required for source names and lines. Console input/output is disconnected during tracing.
 
-    This release adds diagnostics. The existing Office compatibility issues remain open.
+    Update Bottles and cpak as well for the Microsoft browser callback and account lookup fixes. Other Office startup and document crashes remain under investigation.
 
 jobs:
   patches:
@@ -803,10 +803,18 @@ jobs:
           test -f "$runner_dir/lib/wine/x86_64-windows/wineopenxr.dll"
           test -f "$runner_dir/lib/wine/x86_64-unix/wineopenxr.so"
           install -Dm644 /tmp/proton/wineopenxr/wineopenxr64.json "$runner_dir/share/openxr/wineopenxr64.json"
-          sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner_dir" "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          xvfb-run -a sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner_dir" "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mv "$runner_dir" "$COMPONENT_NAME"
           tar cJvf "$ARCHIVE_NAME" "$COMPONENT_NAME"
           mv "$ARCHIVE_NAME" "/tmp/$ARCHIVE_NAME"
+
+      - name: upload Eagle test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eagle-test-logs-${{ github.sha }}
+          path: /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/**/*.log
+          if-no-files-found: ignore
 
       - name: upload
         uses: actions/upload-artifact@v7
@@ -1088,4 +1096,5 @@ jobs:
             echo "Release $tag already exists." >&2
             exit 1
           fi
-          gh release create "$tag" "$file" "$arm64_file" --target "$GITHUB_SHA" --title "$title" --notes "$RELEASE_NOTES" "${release_flags[@]}"
+          sha256sum "$file" "$arm64_file" > SHA256SUMS
+          gh release create "$tag" "$file" "$arm64_file" SHA256SUMS --target "$GITHUB_SHA" --title "$title" --notes "$RELEASE_NOTES" "${release_flags[@]}"

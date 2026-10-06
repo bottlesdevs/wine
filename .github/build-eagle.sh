@@ -11,6 +11,8 @@ sh "$root/eagle/build-debugger.sh" "$work/package"
 cp -a "$work/package/." "$runner/"
 python3 "$root/eagle/install.py" "$runner"
 mkdir -p "$work/tests"
+EAGLE_PACKAGE="$runner" python3 -S "$root/eagle/tests/test_debugger_package.py" \
+    DebuggerPackageTests.test_provider_dlls_leave_executable_tls_unchanged
 WINEPREFIX="$work/tests/prefix" WINEDEBUG=-all "$runner/bin/wine" wineboot -u
 export EAGLE_CANDIDATE="$runner" EAGLE_WAIT_TEST_ROOT="$work/tests"
 for architecture in x86_64 i686; do

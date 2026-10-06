@@ -9,7 +9,7 @@ printf '%s  %s\n' 197df341e4011f6cc60d4c6c8f1d281cd6622e323d3fdb94951295f3c24c94
 mkdir -p "$work/t"
 work=$(CDPATH= cd -- "$work" && pwd)
 export TMPDIR="$work/t" TMP="$work/t" TEMP="$work/t"
-component=soda-11.0-26-experimental-x86_64
+component=soda-11.0-27-experimental-x86_64
 tar -C "$work" -xJf "$archive"
 mv "$work/soda-11.0-25-experimental-x86_64" "$work/$component"
 for architecture in i386 x86_64; do
