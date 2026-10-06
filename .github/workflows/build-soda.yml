@@ -140,6 +140,7 @@ jobs:
           sudo aptitude remove -y '?narrow(?installed,?version(deb.sury.org))'
           sudo apt install -f
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcap-dev:amd64 libpcap-dev:i386
+          sudo apt-get install -y libglib2.0-dev-bin
           sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" \
             libgudev-1.0-dev:amd64 \
             libgudev-1.0-dev:i386 \
