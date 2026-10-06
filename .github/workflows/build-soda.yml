@@ -5,6 +5,10 @@ on:
       - 'soda'
   workflow_dispatch:
     inputs:
+      recovery_run:
+        description: 'Run with completed Wine builds and package tests'
+        required: false
+        type: string
       architecture:
         description: 'Candidate architecture'
         required: true
@@ -54,10 +58,11 @@ env:
 
     Enable Eagle Tracing in the bottle's Preferences with the latest Bottles cpak or development Flatpak build. Review logs in the bottle's logs/runs folder before sharing them. Eagle is included in the x86_64 runner for x86 and x64 apps; it is not included in the ARM64 runner. Matching application symbols are required for source names and lines. Console input/output is disconnected during tracing.
 
-    Update Bottles and cpak as well for the Microsoft browser callback and account lookup fixes. Other Office startup and document crashes remain under investigation.
+    Use the [cpak continuous build](https://github.com/Containerpak/cpak/releases/tag/continuous) for the Microsoft browser return fix and the latest Bottles main build for the account lookup fix. Stable cpak v2.14.2 does not include the browser fix. Other Office startup and document crashes remain under investigation.
 
 jobs:
   patches:
+    if: inputs.recovery_run == ''
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -815,7 +820,16 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: eagle-test-logs-${{ github.sha }}
-          path: /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/**/*.log
+          path: |
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/32/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/64/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/p32/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/p64/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/c32/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/c64/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/d/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/t/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/e/*.log
           if-no-files-found: ignore
 
       - name: upload
@@ -1057,6 +1071,176 @@ jobs:
             done
           done
           "$runner_dir/bin/wineserver" -w
+
+  recovery:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.recovery_run != '' &&
+      github.ref == 'refs/heads/soda'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN: ${{ inputs.recovery_run }}
+      SOURCE_COMMIT: '348313d6426f58cd892fc33a975919c1200f403c'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: verify completed builds
+        run: |
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$work/t" "$work/release" "$work/logs"
+          export TMPDIR="$work/t" TMP="$work/t" TEMP="$work/t"
+          echo "RECOVERY_WORK=$work" >> "$GITHUB_ENV"
+          echo "TMPDIR=$work/t" >> "$GITHUB_ENV"
+          echo "TMP=$work/t" >> "$GITHUB_ENV"
+          echo "TEMP=$work/t" >> "$GITHUB_ENV"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$work/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs" > "$work/jobs.json"
+          python3 - "$work" <<'PYCODE'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          work = Path(sys.argv[1])
+          run = json.loads((work / 'run.json').read_text())
+          jobs = json.loads((work / 'jobs.json').read_text())['jobs']
+          assert run['head_sha'] == os.environ['SOURCE_COMMIT']
+          assert run['head_branch'] == 'soda' and run['event'] == 'push'
+          assert run['status'] == 'completed' and run['conclusion'] == 'failure'
+          assert run['path'] == '.github/workflows/build-soda.yml'
+          for name in ('patches', 'arm64'):
+              assert next(job for job in jobs if job['name'] == name)['conclusion'] == 'success'
+          steps = next(job for job in jobs if job['name'] == 'build')['steps']
+          package = next(i for i, step in enumerate(steps) if step['name'] == 'package')
+          assert all(step['conclusion'] == 'success' or (step['name'] == 'Upload prepare.log on failure' and step['conclusion'] == 'skipped') for step in steps[:package + 1])
+          assert steps[package]['conclusion'] == 'success'
+          assert [step['name'] for step in steps if step['conclusion'] == 'failure'] == ['upload Eagle test logs']
+          print('Completed Wine builds and package tests verified; only log upload failed')
+          PYCODE
+          git merge-base --is-ancestor "$SOURCE_COMMIT" "$GITHUB_SHA"
+          test -z "$(git diff --name-only "$SOURCE_COMMIT" "$GITHUB_SHA" -- . ':(exclude).github/workflows/**')"
+
+      - name: setup
+        working-directory: /home/runner/work/
+        run: |
+          mkdir -p /home/runner/.config/frogminer/
+          sudo apt purge -y ubuntu-advantage-tools python3-update-manager
+          sudo dpkg --add-architecture i386 && sudo apt update
+          sudo apt-mark hold grub-common grub-efi-amd64-bin python3 python3-apt shim-signed
+          sudo apt install aptitude
+          sudo aptitude remove -y '?narrow(?installed,?version(deb.sury.org))'
+          sudo apt install -f
+          sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcap-dev:amd64 libpcap-dev:i386
+          sudo apt-get install -y libglib2.0-dev-bin libglib2.0-dev:amd64
+          sudo aptitude install -y -o Dpkg::Options::="--force-overwrite" \
+            libglib2.0-dev-bin:amd64 \
+            libgudev-1.0-dev:amd64 \
+            libgudev-1.0-dev:i386 \
+            libvulkan-dev:amd64 \
+            libvulkan-dev:i386
+          sudo apt-get install -y -o Dpkg::Options::="--force-overwrite" libpcsclite-dev:amd64 libpcsclite-dev:i386
+          sudo apt-get install -y libsecret-1-dev:amd64 libsecret-1-0:i386
+          bash "$GITHUB_WORKSPACE/.github/soda-secret-headers.sh" "$GITHUB_WORKSPACE/.soda-secret-amd64" amd64
+          bash "$GITHUB_WORKSPACE/.github/soda-secret-headers.sh" "$GITHUB_WORKSPACE/.soda-secret-i386" i386
+          sudo apt-get install -y \
+            g++ \
+            cmake \
+            file \
+            g++-mingw-w64-i686 \
+            g++-mingw-w64-x86-64 \
+            libopenxr-dev:amd64 \
+            "libopenxr1-monado=$MONADO_VERSION" \
+            mesa-vulkan-drivers \
+            "monado-service=$MONADO_VERSION" \
+            ninja-build \
+            xvfb
+          sudo apt-get check
+
+      - name: package verified Wine artifacts
+        run: |
+          work="$RECOVERY_WORK"
+          component="soda-$WINE_VERSION-$REVISION"
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "pre-test-$component-x86_64" --dir "$work/runner"
+          wine="$(find "$work/runner" -maxdepth 3 -type f -path '*/bin/wine' -print)"
+          test "$(printf '%s\n' "$wine" | wc -l)" = 1
+          test -n "$wine"
+          runner="${wine%/bin/wine}"
+          chmod +x "$runner"/bin/*
+          for name in msidb msiexec notepad regedit regsvr32 wineboot winecfg wineconsole winedbg winefile winemine winepath; do
+            cmp "$runner/bin/$name" "$runner/bin/wine"
+            ln -sf wine "$runner/bin/$name"
+          done
+          for name in winecpp wineg++; do
+            cmp "$runner/bin/$name" "$runner/bin/winegcc"
+            ln -sf winegcc "$runner/bin/$name"
+          done
+          install -d "$runner/share/openxr"
+          curl -fL "https://raw.githubusercontent.com/ValveSoftware/Proton/$PROTON_COMMIT/wineopenxr/wineopenxr64.json" \
+            -o "$runner/share/openxr/wineopenxr64.json"
+          file "$runner/bin/wine" | grep -F 'x86-64'
+          for arch in i386 x86_64; do
+            test -f "$runner/lib/wine/$arch-unix/winegstreamer.so"
+            test -f "$runner/lib/wine/$arch-unix/winscard.so"
+            test -f "$runner/lib/wine/$arch-unix/windows.security.authentication.onlineid.so"
+          done
+          test -f "$runner/lib/wine/x86_64-unix/wineopenxr.so"
+          xvfb-run -a sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner" "$work/eagle"
+          mv "$runner" "$work/release/$component-x86_64"
+          tar -C "$work/release" -cJf "$work/release/$component-x86_64.tar.xz" "$component-x86_64"
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "$component-aarch64" --dir "$work/release"
+          cd "$work/release"
+          echo 'df670ae214ae7ac6c1934fbf2d4b25efc5753561a27a47cb48ba4a4663725f4a  soda-11.0-27-experimental-aarch64.tar.xz' | sha256sum --check -
+          sha256sum "$component-x86_64.tar.xz" "$component-aarch64.tar.xz" > SHA256SUMS
+
+      - name: collect package test logs
+        if: always()
+        run: |
+          work="$RECOVERY_WORK"
+          for log in "$work"/eagle/tests/{32,64,p32,p64,c32,c64,d,t,e}/*.log; do
+            test -f "$log" || continue
+            directory="$(basename "$(dirname "$log")")"
+            cp "$log" "$work/logs/$directory-$(basename "$log")"
+          done
+
+      - name: upload package test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eagle-recovery-test-logs-${{ github.sha }}
+          path: ${{ env.RECOVERY_WORK }}/logs/*.log
+          if-no-files-found: error
+
+      - name: upload verified packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: soda-package-recovery-${{ github.sha }}
+          path: |
+            ${{ env.RECOVERY_WORK }}/release/*.tar.xz
+            ${{ env.RECOVERY_WORK }}/release/SHA256SUMS
+          if-no-files-found: error
+
+      - name: release
+        env:
+          GH_REPO: ${{ github.repository }}
+        run: |
+          component="soda-$WINE_VERSION-$REVISION"
+          cd "$RECOVERY_WORK/release"
+          if gh release view "$component" >/dev/null 2>&1; then
+            echo "Release $component already exists." >&2
+            exit 1
+          fi
+          printf '%s\n' "$RELEASE_NOTES" > "$RECOVERY_WORK/notes.md"
+          gh release create "$component" "$component-x86_64.tar.xz" "$component-aarch64.tar.xz" SHA256SUMS \
+            --target "$GITHUB_SHA" --title "Soda $WINE_VERSION-$REVISION" \
+            --notes-file "$RECOVERY_WORK/notes.md" --prerelease
 
   release:
     needs:
