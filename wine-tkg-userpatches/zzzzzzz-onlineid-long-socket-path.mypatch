@@ -1,0 +1,71 @@
+diff --git a/dlls/windows.security.authentication.onlineid/unixlib.c b/dlls/windows.security.authentication.onlineid/unixlib.c
+--- a/dlls/windows.security.authentication.onlineid/unixlib.c
++++ b/dlls/windows.security.authentication.onlineid/unixlib.c
+@@ -19,6 +19,7 @@
+ #include <poll.h>
+ #include <stddef.h>
+ #include <stdint.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/socket.h>
+@@ -122,17 +123,44 @@
+     LONGLONG deadline = monotonic_ms() + 620000;
+     NTSTATUS status;
+     size_t path_length;
+-    int fd = -1;
++    int fd = -1, directory_fd = -1;
+ 
+     params->response_size = 0;
+     if (!socket_path || !*socket_path) return STATUS_OBJECT_NAME_NOT_FOUND;
+-    path_length = strlen( socket_path );
+-    if (path_length >= sizeof(address.sun_path)) return STATUS_NAME_TOO_LONG;
+     if (!request || !response || params->request_size < 20 || params->response_capacity < 20)
+         return STATUS_INVALID_PARAMETER;
+-    if ((fd = socket( AF_UNIX, SOCK_STREAM, 0 )) < 0) return errno_status( errno );
++    path_length = strlen( socket_path );
++    if (path_length < sizeof(address.sun_path))
++        memcpy( address.sun_path, socket_path, path_length + 1 );
++    else
++    {
++        const char *name = strrchr( socket_path, '/' );
++        size_t directory_length;
++        char *directory;
++
++        if (!name || !name[1]) return STATUS_NAME_TOO_LONG;
++        directory_length = name - socket_path;
++        if (!directory_length) directory_length = 1;
++        if (!(directory = malloc( directory_length + 1 ))) return STATUS_NO_MEMORY;
++        memcpy( directory, socket_path, directory_length );
++        directory[directory_length] = 0;
++        directory_fd = open( directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW );
++        free( directory );
++        if (directory_fd < 0) return errno_status( errno );
++        path_length = snprintf( address.sun_path, sizeof(address.sun_path),
++                                "/proc/self/fd/%d/%s", directory_fd, name + 1 );
++        if (path_length >= sizeof(address.sun_path))
++        {
++            status = STATUS_NAME_TOO_LONG;
++            goto done;
++        }
++    }
++    if ((fd = socket( AF_UNIX, SOCK_STREAM, 0 )) < 0)
++    {
++        status = errno_status( errno );
++        goto done;
++    }
+     address.sun_family = AF_UNIX;
+-    memcpy( address.sun_path, socket_path, path_length + 1 );
+     if (fcntl( fd, F_SETFL, O_NONBLOCK ) < 0)
+     {
+         status = errno_status( errno );
+@@ -167,7 +195,8 @@
+     status = STATUS_SUCCESS;
+ 
+ done:
+-    close( fd );
++    if (fd != -1) close( fd );
++    if (directory_fd != -1) close( directory_fd );
+     return status;
+ }
+ 
