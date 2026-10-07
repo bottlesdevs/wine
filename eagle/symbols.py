@@ -12,8 +12,27 @@ def host_path(value, prefix):
         return Path(value)
     if len(value) > 2 and value[1] == ":":
         if value[0].lower() == "z":
-            return Path("/" + value[3:].replace("\\", "/"))
-        return Path(prefix) / "dosdevices" / (value[:2].lower()) / value[3:].replace("\\", "/")
+            root = Path("/")
+        else:
+            root = Path(prefix) / "dosdevices" / value[:2].lower()
+        relative = value[3:].replace("\\", "/")
+        path = root / relative
+        if path.exists():
+            return path
+        current = root
+        for part in Path(relative).parts:
+            exact = current / part
+            if exact.exists():
+                current = exact
+                continue
+            try:
+                matches = [entry for entry in current.iterdir() if entry.name.casefold() == part.casefold()]
+            except OSError:
+                return path
+            if len(matches) != 1:
+                return path
+            current = matches[0]
+        return current
     return None
 
 def image_metadata(image):

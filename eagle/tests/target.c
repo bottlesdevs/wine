@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 volatile int eagle_value = 1;
@@ -28,6 +29,47 @@ static DWORD WINAPI eagle_worker(void *argument)
 
 int main(int argc, char **argv)
 {
+    if (argc > 2 && !strcmp(argv[1], "pidalive"))
+    {
+        HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, strtoul(argv[2], NULL, 10));
+        DWORD status;
+        if (!process) return 15;
+        status = WaitForSingleObject(process, 0);
+        CloseHandle(process);
+        return status == WAIT_TIMEOUT ? 0 : 16;
+    }
+    if (argc > 1 && !strcmp(argv[1], "window"))
+    {
+        WNDCLASSA cls = {0};
+        HWND window;
+        MSG message;
+        DWORD deadline;
+        cls.lpfnWndProc = DefWindowProcA;
+        cls.hInstance = GetModuleHandleA(NULL);
+        cls.lpszClassName = "EagleWindowTest";
+        if (!RegisterClassA(&cls)) return 13;
+        window = CreateWindowA(cls.lpszClassName, "Eagle window test", WS_OVERLAPPEDWINDOW,
+                               0, 0, 320, 200, NULL, NULL, cls.hInstance, NULL);
+        if (!window) return 14;
+        ShowWindow(window, SW_SHOW);
+        deadline = GetTickCount() + (argc > 2 ? strtoul(argv[2], NULL, 10) : 500);
+        while (GetTickCount() < deadline)
+        {
+            while (PeekMessageA(&message, NULL, 0, 0, PM_REMOVE))
+            {
+                TranslateMessage(&message);
+                DispatchMessageA(&message);
+            }
+            Sleep(10);
+        }
+        DestroyWindow(window);
+        return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "waitexit"))
+    {
+        Sleep(1200);
+        return 7;
+    }
     if (argc > 1 && !strcmp(argv[1], "threads"))
     {
         HANDLE workers[2];
@@ -56,14 +98,14 @@ int main(int argc, char **argv)
         if (!library) return 12;
         FreeLibrary(library);
     }
-    if (argc > 1 && !strcmp(argv[1], "child"))
+    if (argc > 1 && (!strcmp(argv[1], "child") || !strcmp(argv[1], "childwait")))
     {
         STARTUPINFOA startup = {0};
         PROCESS_INFORMATION info;
         char path[MAX_PATH], command[MAX_PATH + 32];
         startup.cb = sizeof(startup);
         GetModuleFileNameA(NULL, path, sizeof(path));
-        snprintf(command, sizeof(command), "\"%s\" exit", path);
+        snprintf(command, sizeof(command), "\"%s\" %s", path, !strcmp(argv[1], "childwait") ? "waitexit" : "exit");
         if (!CreateProcessA(NULL, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &info)) return 3;
         CloseHandle(info.hThread); CloseHandle(info.hProcess);
         return 0;

@@ -1,0 +1,87 @@
+Keep recorded Direct2D data pointers valid when command storage moves.
+
+--- a/dlls/d2d1/command_list.c
++++ b/dlls/d2d1/command_list.c
+@@ -664,12 +664,82 @@
+     return CONTAINING_RECORD(iface, struct d2d_command_list, ID2D1CommandList_iface);
+ }
+ 
++static void d2d_command_list_rebase_field(void *field, ULONG_PTR offset)
++{
++    void **ptr = field;
++
++    if (*ptr) *ptr = (void *)((ULONG_PTR)*ptr + offset);
++}
++
++static void d2d_command_list_rebase(struct d2d_command_list *command_list, ULONG_PTR offset)
++{
++    char *data = command_list->data, *end = data + command_list->size;
++
++    while (data < end)
++    {
++        struct d2d_command *command = (struct d2d_command *)data;
++
++        switch (command->op)
++        {
++            case D2D_COMMAND_DRAW_GLYPH_RUN:
++            {
++                struct d2d_command_draw_glyph_run *c = (struct d2d_command_draw_glyph_run *)data;
++
++                d2d_command_list_rebase_field(&c->run.glyphIndices, offset);
++                d2d_command_list_rebase_field(&c->run.glyphAdvances, offset);
++                d2d_command_list_rebase_field(&c->run.glyphOffsets, offset);
++                d2d_command_list_rebase_field(&c->run_desc, offset);
++                if (c->run_desc)
++                {
++                    d2d_command_list_rebase_field(&c->run_desc->localeName, offset);
++                    d2d_command_list_rebase_field(&c->run_desc->string, offset);
++                    d2d_command_list_rebase_field(&c->run_desc->clusterMap, offset);
++                }
++                break;
++            }
++            case D2D_COMMAND_DRAW_BITMAP:
++            {
++                struct d2d_command_draw_bitmap *c = (struct d2d_command_draw_bitmap *)data;
++
++                d2d_command_list_rebase_field(&c->dst_rect, offset);
++                d2d_command_list_rebase_field(&c->src_rect, offset);
++                d2d_command_list_rebase_field(&c->perspective_transform, offset);
++                break;
++            }
++            case D2D_COMMAND_DRAW_IMAGE:
++            {
++                struct d2d_command_draw_image *c = (struct d2d_command_draw_image *)data;
++
++                d2d_command_list_rebase_field(&c->target_offset, offset);
++                d2d_command_list_rebase_field(&c->image_rect, offset);
++                break;
++            }
++            case D2D_COMMAND_FILL_OPACITY_MASK:
++            {
++                struct d2d_command_fill_opacity_mask *c = (struct d2d_command_fill_opacity_mask *)data;
++
++                d2d_command_list_rebase_field(&c->dst_rect, offset);
++                d2d_command_list_rebase_field(&c->src_rect, offset);
++                break;
++            }
++            default:
++                break;
++        }
++
++        data += command->size;
++    }
++}
++
+ static void * d2d_command_list_require_space(struct d2d_command_list *command_list, size_t size)
+ {
+     struct d2d_command *command;
++    ULONG_PTR old_data = (ULONG_PTR)command_list->data;
+ 
+     if (!d2d_array_reserve(&command_list->data, &command_list->capacity, command_list->size + size, 1))
+         return NULL;
++
++    if (old_data != (ULONG_PTR)command_list->data)
++        d2d_command_list_rebase(command_list, (ULONG_PTR)command_list->data - old_data);
+ 
+     command = (struct d2d_command *)((char *)command_list->data + command_list->size);
+     command->size = size;

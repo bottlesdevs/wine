@@ -56,7 +56,7 @@ class Integration(unittest.TestCase):
                 self.assertTrue(faults[-1]['disassembly']['instructions'])
                 stack = next(item for item in events if item["kind"] == "snapshot")
                 self.assertEqual(stack["frames"][0]["symbol"], "eagle_crash")
-                self.assertEqual(stack["frames"][0]["line"], 15)
+                self.assertEqual(stack["frames"][0]["line"], 16)
                 self.assertGreaterEqual(len(stack["frames"]), 4)
                 dump = next(item for item in events if item["kind"] == "dump")
                 self.assertEqual((root / "dumps" / dump["path"]).read_bytes()[:4], b"MDMP")
@@ -111,7 +111,7 @@ class Integration(unittest.TestCase):
     def test_source_breakpoint_and_module_load_stop(self):
         process, root = self.launch('source-line', argument='normal', interactive=True)
         initial = self.wait_event(root, 'stopped')
-        send_command(root, 'source target.c 8')
+        send_command(root, 'source target.c 9')
         registered = self.wait_event(root, 'source_breakpoint_set')
         self.assertTrue(registered['addresses'])
         send_command(root, 'continue')
@@ -257,7 +257,7 @@ class Integration(unittest.TestCase):
                         return message["body"]
             request(1, "initialize")
             request(2, "launch", {"wine": WINE, "prefix": str(ROOT / "prefix"), "session": str(ROOT / f"dap-source-hit-{bits}"), "program": str(ROOT / f"target{bits}.exe"), "architecture": architecture, "args": ["normal"]})
-            result = request(3, "setBreakpoints", {"source": {"path": str(Path(__file__).with_name("target.c"))}, "breakpoints": [{"line": 9, "hitCondition": "1"}]})
+            result = request(3, "setBreakpoints", {"source": {"path": str(Path(__file__).with_name("target.c"))}, "breakpoints": [{"line": 10, "hitCondition": "1"}]})
             self.assertTrue(result["breakpoints"][0]["verified"])
             request(4, "configurationDone")
             while True:
@@ -267,9 +267,9 @@ class Integration(unittest.TestCase):
                     tid = message["body"]["threadId"]; break
             frame = request(5, "stackTrace", {"threadId": tid})["stackFrames"][0]
             self.assertEqual(frame["name"].lstrip("_"), "eagle_checkpoint")
-            self.assertEqual(frame["line"], 9)
+            self.assertEqual(frame["line"], 10)
             self.assertEqual(frame["source"]["name"], "target.c")
-            request(6, "setBreakpoints", {"source": {"path": str(Path(__file__).with_name("target.c"))}, "breakpoints": [{"line": 9, "hitCondition": "1"}]})
+            request(6, "setBreakpoints", {"source": {"path": str(Path(__file__).with_name("target.c"))}, "breakpoints": [{"line": 10, "hitCondition": "1"}]})
             request(7, "continue", {"threadId": tid})
             while True:
                 message = read_message(process.stdout)
@@ -300,7 +300,7 @@ class Integration(unittest.TestCase):
             return request(seq, "setBreakpoints", {"source": source, "breakpoints": items})["breakpoints"]
         self.assertTrue(request(3, "setFunctionBreakpoints", {"breakpoints": [{"name": "eagle_checkpoint"}]})["breakpoints"][0]["verified"])
         # An alias must not change or remove a function breakpoint owned elsewhere.
-        self.assertFalse(sources(4, [{"line": 8}])[0]["verified"])
+        self.assertFalse(sources(4, [{"line": 9}])[0]["verified"])
         request(5, "configurationDone")
         while True:
             message = read_message(process.stdout)
@@ -309,11 +309,11 @@ class Integration(unittest.TestCase):
         self.assertEqual(request(6, "stackTrace", {"threadId": tid})["stackFrames"][0]["name"], "eagle_checkpoint")
         function = request(7, "setFunctionBreakpoints", {"breakpoints": [{"name": "eagle_crash"}]})["breakpoints"][0]
         self.assertTrue(function["verified"])
-        self.assertFalse(sources(8, [{"line": 8, "condition": "notaregister == 5"}])[0]["verified"])
-        self.assertTrue(sources(9, [{"line": 8}])[0]["verified"])
-        self.assertFalse(sources(10, [{"line": 90000}])[0]["verified"])
-        self.assertTrue(sources(11, [{"line": 8, "hitCondition": "1"}])[0]["verified"])
-        self.assertFalse(sources(12, [{"line": 8, "logMessage": "unsupported"}])[0]["verified"])
+        self.assertFalse(sources(8, [{"line": 9, "condition": "notaregister == 5"}])[0]["verified"])
+        self.assertTrue(sources(9, [{"line": 9}])[0]["verified"])
+        self.assertFalse(sources(10, [{"line": 100000}])[0]["verified"])
+        self.assertTrue(sources(11, [{"line": 9, "hitCondition": "1"}])[0]["verified"])
+        self.assertFalse(sources(12, [{"line": 9, "logMessage": "unsupported"}])[0]["verified"])
         sources(13, [])
         request(14, "continue", {"threadId": tid})
         while read_message(process.stdout).get("event") != "terminated": pass

@@ -24,6 +24,13 @@ int main(void)
     HANDLE threads[2];
     DWORD code;
     unsigned i;
+    for (i = 0; i < 1000; i++)
+    {
+        HANDLE event = CreateEventA(NULL, TRUE, FALSE, NULL);
+        if (!event) return 7;
+        SetLastError(0x12345678);
+        if (!CloseHandle(event) || GetLastError() != 0x12345678) return 8;
+    }
     for (i = 0; i < 2; i++)
     {
         locks[i] = CreateMutexA(NULL, FALSE, NULL);
