@@ -472,10 +472,15 @@ jobs:
           i686-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-office-winrt-smoke.c" \
             -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
             -o "$RUNNER_TEMP/soda-office-winrt-smoke32.exe"
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-ldap-smoke.c" \
+            -O2 -Wall -Wextra -Werror -o "$RUNNER_TEMP/soda-ldap-smoke64.exe"
+          i686-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-ldap-smoke.c" \
+            -O2 -Wall -Wextra -Werror -o "$RUNNER_TEMP/soda-ldap-smoke32.exe"
 
           run_smoke() {
             local arch="$1"
             local executable="$2"
+            local ldap_executable="$3"
             local log="$RUNNER_TEMP/soda-office-winrt-$arch.log"
             export WINEDEBUG=-all
             export WINEPREFIX="$RUNNER_TEMP/soda-office-winrt-prefix-$arch"
@@ -489,11 +494,17 @@ jobs:
             grep -Fx 'retail_info:00000000' "$log"
             grep -Fx 'web_authentication_manager:00000000' "$log"
             grep -Fx 'composition_effect_source_parameter:00000000' "$log"
+            xvfb-run -a "$runner_dir/bin/wine" reg add \
+              "HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\\$(basename "$ldap_executable")" \
+              /v GlobalFlag /t REG_DWORD /d 112 /f
+            xvfb-run -a "$runner_dir/bin/wine" "$ldap_executable" \
+              | tr -d '\r' | tee "$log.ldap"
+            grep -Fx 'ldap_init_checks:1024 failures:0' "$log.ldap"
             "$runner_dir/bin/wineserver" -w
           }
 
-          run_smoke win64 "$RUNNER_TEMP/soda-office-winrt-smoke64.exe"
-          run_smoke win32 "$RUNNER_TEMP/soda-office-winrt-smoke32.exe"
+          run_smoke win64 "$RUNNER_TEMP/soda-office-winrt-smoke64.exe" "$RUNNER_TEMP/soda-ldap-smoke64.exe"
+          run_smoke win32 "$RUNNER_TEMP/soda-office-winrt-smoke32.exe" "$RUNNER_TEMP/soda-ldap-smoke32.exe"
 
       - name: verify MS-ICU runtime
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
@@ -923,6 +934,10 @@ jobs:
           i686-w64-mingw32-gcc .github/soda-office-winrt-smoke.c \
             -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
             -o "$RUNNER_TEMP/soda-office-winrt/smoke32.exe"
+          x86_64-w64-mingw32-gcc .github/soda-ldap-smoke.c \
+            -O2 -Wall -Wextra -Werror -o "$RUNNER_TEMP/soda-office-winrt/ldap64.exe"
+          i686-w64-mingw32-gcc .github/soda-ldap-smoke.c \
+            -O2 -Wall -Wextra -Werror -o "$RUNNER_TEMP/soda-office-winrt/ldap32.exe"
 
       - name: prepare identity SDK
         run: |
@@ -1069,6 +1084,12 @@ jobs:
             for factory in core_application message_websocket protection_policy retail_info web_authentication_manager composition_effect_source_parameter; do
               grep -Fx "$factory:00000000" "$RUNNER_TEMP/soda-office-winrt/runtime$arch.log"
             done
+            "$runner_dir/bin/wine" reg add \
+              "HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\ldap$arch.exe" \
+              /v GlobalFlag /t REG_DWORD /d 112 /f
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/ldap$arch.exe" \
+              | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/ldap$arch.log"
+            grep -Fx 'ldap_init_checks:1024 failures:0' "$RUNNER_TEMP/soda-office-winrt/ldap$arch.log"
           done
           "$runner_dir/bin/wineserver" -w
 
