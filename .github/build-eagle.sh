@@ -36,6 +36,13 @@ for architecture in x86_64 i686; do
     ln -s ../prefix "$directory/prefix"
     export EAGLE_COM_TEST_ROOT="$directory"
     python3 "$root/eagle/tests/test_com_provider.py" > "$directory/integration.log" 2>&1
+    directory="$work/tests/s$bits"
+    mkdir -p "$directory"
+    "$architecture-w64-mingw32-gcc" -O2 -Wall -Wextra -Werror -D__WINESRC__ \
+        -I"$runner/include/wine/windows" "$root/eagle/tests/provider_state.c" -o "$directory/target.exe"
+    ln -s ../prefix "$directory/prefix"
+    export EAGLE_STATE_TEST_ROOT="$directory"
+    python3 "$root/eagle/tests/test_provider_state.py" > "$directory/integration.log" 2>&1
 done
 directory="$work/tests/d"
 mkdir -p "$directory"

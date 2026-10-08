@@ -1,0 +1,102 @@
+--- a/include/eagle_trace.h
++++ b/include/eagle_trace.h
+@@ -5,11 +5,13 @@
+ #include <stdlib.h>
+ #include "windef.h"
+ #include "winbase.h"
++#include "winternl.h"
+ 
+ static inline BOOL eagle_trace_enabled(unsigned mask)
+ {
+     static LONG enabled = -1;
+     DWORD saved_error = GetLastError();
++    ULONG saved_status = NtCurrentTeb()->LastStatusValue;
+     LONG value = InterlockedCompareExchange(&enabled, -1, -1);
+     if (value == -1)
+     {
+@@ -18,6 +20,7 @@
+         InterlockedExchange(&enabled, value);
+     }
+     SetLastError(saved_error);
++    NtCurrentTeb()->LastStatusValue = saved_status;
+     return (value & mask) != 0;
+ }
+ 
+@@ -29,7 +32,9 @@
+     SIZE_T read;
+     unsigned i;
+     DWORD saved_error;
++    ULONG saved_status;
+     saved_error = GetLastError();
++    saved_status = NtCurrentTeb()->LastStatusValue;
+     if (!eagle_trace_enabled(mask)) return;
+     for (i = 0; subject && subject[i] && i < sizeof(label) - 1; i++)
+     {
+@@ -42,6 +47,7 @@
+     snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":%u,\"event\":\"%s\",\"hresult\":\"0x%08lx\",\"a\":%ld,\"b\":%ld,\"c\":%lu,\"d\":%lu,\"subject\":\"%s\",\"iid\":\"%s\",\"caller\":\"%p\"}", mask, name, result, a, b, c, d, label, iid, caller);
+     OutputDebugStringA(text);
+     SetLastError(saved_error);
++    NtCurrentTeb()->LastStatusValue = saved_status;
+ }
+ 
+ static inline void eagle_trace_guid(const GUID *value, char *output, unsigned size)
+@@ -58,12 +64,14 @@
+ {
+     char text[768], class_name[40], iid[40];
+     DWORD saved_error = GetLastError();
++    ULONG saved_status = NtCurrentTeb()->LastStatusValue;
+     if (!eagle_trace_enabled(4)) return;
+     eagle_trace_guid(clsid, class_name, sizeof(class_name));
+     eagle_trace_guid(requested_iid, iid, sizeof(iid));
+     snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":4,\"event\":\"%s\",\"hresult\":\"0x%08lx\",\"clsid\":\"%s\",\"iid\":\"%s\",\"object\":\"%p\",\"context\":%lu,\"count\":%lu,\"caller\":\"%p\"}", name, result, class_name, iid, object, context, count, caller);
+     OutputDebugStringA(text);
+     SetLastError(saved_error);
++    NtCurrentTeb()->LastStatusValue = saved_status;
+ }
+ 
+ static inline void eagle_trace_wait(const char *name, HANDLE object, DWORD value, DWORD timeout)
+@@ -73,23 +81,26 @@
+     char text[384];
+     LONG count, index;
+     DWORD saved_error = GetLastError();
++    ULONG saved_status = NtCurrentTeb()->LastStatusValue;
+     if (!eagle_trace_enabled(8) || !IsDebuggerPresent()) return;
+     index = InterlockedCompareExchange(&tls_index, TLS_OUT_OF_INDEXES, TLS_OUT_OF_INDEXES);
+-    if (index == TLS_OUT_OF_INDEXES)
++    if (index == (LONG)TLS_OUT_OF_INDEXES)
+     {
+         DWORD created = TlsAlloc();
+         if (created == TLS_OUT_OF_INDEXES)
+         {
+             SetLastError(saved_error);
++            NtCurrentTeb()->LastStatusValue = saved_status;
+             return;
+         }
+         index = InterlockedCompareExchange(&tls_index, created, TLS_OUT_OF_INDEXES);
+-        if (index == TLS_OUT_OF_INDEXES) index = created;
++        if (index == (LONG)TLS_OUT_OF_INDEXES) index = created;
+         else TlsFree(created);
+     }
+     if (TlsGetValue(index) || !TlsSetValue(index, (void *)1))
+     {
+         SetLastError(saved_error);
++        NtCurrentTeb()->LastStatusValue = saved_status;
+         return;
+     }
+     count = InterlockedIncrement(&emitted);
+@@ -97,6 +108,7 @@
+     {
+         TlsSetValue(index, NULL);
+         SetLastError(saved_error);
++        NtCurrentTeb()->LastStatusValue = saved_status;
+         return;
+     }
+     if (count == 50001)
+@@ -106,6 +118,7 @@
+     OutputDebugStringA(text);
+     TlsSetValue(index, NULL);
+     SetLastError(saved_error);
++    NtCurrentTeb()->LastStatusValue = saved_status;
+ }
+ 
+ #endif
