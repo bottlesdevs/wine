@@ -1,0 +1,54 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -555,6 +555,7 @@
+     enum __x_ABI_CWindows_CGraphics_CDirectX_CDirectXPixelFormat format;
+     enum __x_ABI_CWindows_CGraphics_CDirectX_CDirectXAlphaMode mode;
+     BOOL virtual;
++    POINT bitmap_offset;
+     LONG ref;
+ };
+ 
+@@ -6425,6 +6426,8 @@
+         if (FAILED(hr = ID2D1Bitmap1_GetSurface( impl->bitmap, &surface ))) return hr;
+         *update_object = surface;
+     }
++    if (impl->virtual)
++        impl->bitmap_offset = (POINT){update_rect->left, update_rect->top};
+     return S_OK;
+ }
+ 
+@@ -6453,13 +6456,14 @@
+     struct composition_drawing_surface *surface = drawing_surface_from_surface_brush( brush );
+     D2D1_INTERPOLATION_MODE interpolation;
+     D2D1_RECT_F source_rect, dest_rect;
+-    D2D1_SIZE_F size;
+-    FLOAT scale;
++    D2D1_SIZE_F size, bitmap_size;
++    FLOAT scale, scale_x, scale_y;
+ 
+     if (!surface || !surface->bitmap) return;
+-    size = ID2D1Bitmap1_GetSize( surface->bitmap );
++    bitmap_size = ID2D1Bitmap1_GetSize( surface->bitmap );
++    size = surface->virtual ? (D2D1_SIZE_F){surface->size.Width, surface->size.Height} : bitmap_size;
+     if (size.width <= 0.0f || size.height <= 0.0f) return;
+-    source_rect = (D2D1_RECT_F){0.0f, 0.0f, size.width, size.height};
++    source_rect = (D2D1_RECT_F){0.0f, 0.0f, bitmap_size.width, bitmap_size.height};
+     dest_rect = *bounds;
+ 
+     if (brush->stretch == CompositionStretch_None)
+@@ -6485,6 +6489,15 @@
+         dest_rect.bottom = dest_rect.top + size.height * scale;
+     }
+ 
++    if (surface->virtual)
++    {
++        scale_x = (dest_rect.right - dest_rect.left) / size.width;
++        scale_y = (dest_rect.bottom - dest_rect.top) / size.height;
++        dest_rect.left += surface->bitmap_offset.x * scale_x;
++        dest_rect.top += surface->bitmap_offset.y * scale_y;
++        dest_rect.right = dest_rect.left + bitmap_size.width * scale_x;
++        dest_rect.bottom = dest_rect.top + bitmap_size.height * scale_y;
++    }
+     interpolation = brush->interpolation_mode == CompositionBitmapInterpolationMode_NearestNeighbor ?
+             D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR : D2D1_INTERPOLATION_MODE_LINEAR;
+     ID2D1DeviceContext_PushAxisAlignedClip( context, bounds, D2D1_ANTIALIAS_MODE_ALIASED );
