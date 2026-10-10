@@ -31,7 +31,7 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '28-experimental'
+  REVISION: '29-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -49,11 +49,9 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-28 Experimental fixes LDAP initialization with empty or padded host lists and Direct2D command lists after their storage grows. It adds Vector3 keyframe animation interfaces and InteractionTracker close support used by Office's UI.
+    Soda 11.0-29 Experimental corrects Thai font fallback in DirectWrite and GDI. GDI keeps fonts that already contain the requested characters and leaves explicit glyph-index drawing unchanged.
 
-    Eagle keeps the bottle's DLL overrides, follows the loaded binaries for symbol lookup and finishes a trace when only Wine's built-in desktop services remain. Mutex tracing skips unrelated handle closes.
-
-    The identity bridge now handles long socket paths. Use the latest Bottles main build for both sides of this fix.
+    Direct2D Flush now draws pending work and returns drawing errors and their tags instead of E_NOTIMPL. Eagle preserves Win32 and NT thread error values while checking trace providers.
 
     Enable Eagle Tracing in the bottle's Preferences to collect per-launch logs in logs/runs. Review them before sharing. Eagle is included in the x86_64 runner for x86 and x64 apps; it is not included in the ARM64 runner. Matching application symbols are required for source names and lines. Console input/output is disconnected during tracing.
 
