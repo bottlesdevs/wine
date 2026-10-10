@@ -1,0 +1,196 @@
+--- a/dlls/d2d1/device.c
++++ b/dlls/d2d1/device.c
+@@ -3333,7 +3333,28 @@
+ 
+     if (SUCCEEDED(ID2D1Image_QueryInterface(image, &IID_ID2D1CommandList, (void **)&command_list)))
+     {
+-        HRESULT hr = d2d_command_list_replay(command_list, (ID2D1DeviceContext *)iface);
++        D2D1_MATRIX_3X2_F previous_transform = context->drawing_state.transform;
++        D2D1_MATRIX_3X2_F transform = identity;
++        HRESULT hr;
++
++        if (target_offset)
++        {
++            transform._31 = target_offset->x;
++            transform._32 = target_offset->y;
++        }
++        if (image_rect)
++        {
++            transform._31 -= image_rect->left;
++            transform._32 -= image_rect->top;
++        }
++        d2d_matrix_multiply(&transform, &previous_transform);
++        ID2D1DeviceContext6_SetTransform(iface, &transform);
++        if (image_rect)
++            ID2D1DeviceContext6_PushAxisAlignedClip(iface, image_rect, D2D1_ANTIALIAS_MODE_ALIASED);
++        hr = d2d_command_list_replay(command_list, (ID2D1DeviceContext *)iface);
++        if (image_rect)
++            ID2D1DeviceContext6_PopAxisAlignedClip(iface);
++        ID2D1DeviceContext6_SetTransform(iface, &previous_transform);
+         ID2D1CommandList_Release(command_list);
+         if (FAILED(hr)) d2d_device_context_set_error(context, hr);
+         return;
+--- a/dlls/d2d1/command_list.c
++++ b/dlls/d2d1/command_list.c
+@@ -502,9 +502,21 @@
+ HRESULT d2d_command_list_replay(ID2D1CommandList *iface, ID2D1DeviceContext *context)
+ {
+     struct d2d_command_list *command_list = impl_from_ID2D1CommandList(iface);
++    ID2D1DrawingStateBlock *state;
++    D2D1_MATRIX_3X2_F base_transform;
++    ID2D1Factory *factory;
+     const void *data, *end;
++    unsigned int clip_count = 0;
++    HRESULT hr;
+ 
+     if (command_list->state != D2D_COMMAND_LIST_STATE_CLOSED) return D2DERR_WRONG_STATE;
++
++    ID2D1DeviceContext_GetFactory(context, &factory);
++    hr = ID2D1Factory_CreateDrawingStateBlock(factory, NULL, NULL, &state);
++    ID2D1Factory_Release(factory);
++    if (FAILED(hr)) return hr;
++    ID2D1DeviceContext_SaveDrawingState(context, state);
++    ID2D1DeviceContext_GetTransform(context, &base_transform);
+ 
+     data = command_list->data;
+     end = (char *)command_list->data + command_list->size;
+@@ -527,9 +539,12 @@
+                         ((const struct d2d_command_set_text_rendering_params *)data)->params);
+                 break;
+             case D2D_COMMAND_SET_TRANSFORM:
+-                ID2D1DeviceContext_SetTransform(context,
+-                        &((const struct d2d_command_set_transform *)data)->transform);
+-                break;
++            {
++                D2D1_MATRIX_3X2_F transform = ((const struct d2d_command_set_transform *)data)->transform;
++                d2d_matrix_multiply(&transform, &base_transform);
++                ID2D1DeviceContext_SetTransform(context, &transform);
++                break;
++            }
+             case D2D_COMMAND_SET_PRIMITIVE_BLEND:
+                 ID2D1DeviceContext_SetPrimitiveBlend(context,
+                         ((const struct d2d_command_set_primitive_blend *)data)->primitive_blend);
+@@ -602,18 +617,35 @@
+             {
+                 const struct d2d_command_push_clip *c = data;
+                 ID2D1DeviceContext_PushAxisAlignedClip(context, &c->rect, c->mode);
++                ++clip_count;
+                 break;
+             }
+             case D2D_COMMAND_POP_CLIP:
++                if (!clip_count)
++                {
++                    hr = D2DERR_PUSH_POP_UNBALANCED;
++                    goto done;
++                }
+                 ID2D1DeviceContext_PopAxisAlignedClip(context);
++                --clip_count;
+                 break;
+             default:
+                 FIXME("Unhandled command %u.\n", command->op);
+-                return E_NOTIMPL;
++                hr = E_NOTIMPL;
++                goto done;
+         }
+         data = (char *)data + command->size;
+     }
+-    return S_OK;
++    hr = clip_count ? D2DERR_PUSH_POP_UNBALANCED : S_OK;
++done:
++    while (clip_count)
++    {
++        ID2D1DeviceContext_PopAxisAlignedClip(context);
++        --clip_count;
++    }
++    ID2D1DeviceContext_RestoreDrawingState(context, state);
++    ID2D1DrawingStateBlock_Release(state);
++    return hr;
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE d2d_command_list_Close(ID2D1CommandList *iface)
+--- a/dlls/d2d1/tests/d2d1.c
++++ b/dlls/d2d1/tests/d2d1.c
+@@ -10512,6 +10512,75 @@
+     return device_context;
+ }
+ 
++static void test_command_list_draw_image(BOOL d3d11)
++{
++    static const D2D1_MATRIX_3X2_F record_transform = {{{1.0f, 0.0f, 0.0f, 1.0f, 10.0f, 20.0f}}};
++    static const D2D1_MATRIX_3X2_F draw_transform = {{{1.0f, 0.0f, 0.0f, 1.0f, 100.0f, 50.0f}}};
++    static const D2D1_COLOR_F white = {1.0f, 1.0f, 1.0f, 1.0f};
++    static const D2D1_COLOR_F black = {0.0f, 0.0f, 0.0f, 1.0f};
++    static const D2D1_RECT_F rect = {0.0f, 0.0f, 20.0f, 10.0f};
++    static const D2D1_POINT_2F offset = {30.0f, 40.0f};
++    struct d2d1_test_context ctx;
++    ID2D1SolidColorBrush *brush;
++    ID2D1CommandList *commands;
++    struct resource_readback rb;
++    D2D1_MATRIX_3X2_F transform;
++    D2D1_TAG tag1, tag2;
++    ID2D1Image *target;
++    unsigned int i;
++    HRESULT hr;
++    DWORD colour;
++
++    if (!init_test_context(&ctx, d3d11))
++        return;
++    if (!ctx.factory1)
++    {
++        release_test_context(&ctx);
++        return;
++    }
++    hr = ID2D1RenderTarget_CreateSolidColorBrush(ctx.rt, &black, NULL, &brush);
++    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
++    hr = ID2D1DeviceContext_CreateCommandList(ctx.context, &commands);
++    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
++    ID2D1DeviceContext_GetTarget(ctx.context, &target);
++    ID2D1DeviceContext_SetTarget(ctx.context, (ID2D1Image *)commands);
++    ID2D1DeviceContext_BeginDraw(ctx.context);
++    ID2D1DeviceContext_SetTransform(ctx.context, &record_transform);
++    ID2D1DeviceContext_SetTags(ctx.context, 7, 8);
++    ID2D1DeviceContext_FillRectangle(ctx.context, &rect, (ID2D1Brush *)brush);
++    hr = ID2D1DeviceContext_EndDraw(ctx.context, NULL, NULL);
++    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
++    hr = ID2D1CommandList_Close(commands);
++    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
++    ID2D1DeviceContext_SetTarget(ctx.context, target);
++    ID2D1Image_Release(target);
++
++    for (i = 0; i < 2; ++i)
++    {
++        ID2D1DeviceContext_BeginDraw(ctx.context);
++        ID2D1DeviceContext_Clear(ctx.context, &white);
++        ID2D1DeviceContext_SetTransform(ctx.context, &draw_transform);
++        ID2D1DeviceContext_SetTags(ctx.context, 123, 456);
++        ID2D1DeviceContext_DrawImage(ctx.context, (ID2D1Image *)commands, i ? &offset : NULL, NULL,
++                D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_COMPOSITE_MODE_SOURCE_OVER);
++        ID2D1DeviceContext_GetTransform(ctx.context, &transform);
++        ok(!memcmp(&transform, &draw_transform, sizeof(transform)), "Transform changed.\n");
++        ID2D1DeviceContext_GetTags(ctx.context, &tag1, &tag2);
++        ok(tag1 == 123 && tag2 == 456, "Tags changed.\n");
++        hr = ID2D1DeviceContext_EndDraw(ctx.context, NULL, NULL);
++        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
++        get_surface_readback(&ctx, &rb);
++        colour = get_readback_colour(&rb, i ? 150 : 120, i ? 115 : 75);
++        ok(colour == 0xff000000, "Got unexpected colour %#lx.\n", colour);
++        colour = get_readback_colour(&rb, 20, 25);
++        ok(colour == 0xffffffff, "Got unexpected colour %#lx.\n", colour);
++        release_resource_readback(&rb);
++    }
++    ID2D1CommandList_Release(commands);
++    ID2D1SolidColorBrush_Release(brush);
++    release_test_context(&ctx);
++}
++
+ static void test_command_list(BOOL d3d11)
+ {
+     static const DWORD bitmap_data[] =
+@@ -17784,6 +17853,7 @@
+     queue_d3d10_test(test_invert_matrix);
+     queue_d3d10_test(test_skew_matrix);
+     queue_test(test_command_list);
++    queue_test(test_command_list_draw_image);
+     queue_d3d10_test(test_max_bitmap_size);
+     queue_test(test_dpi);
+     queue_test(test_unit_mode);
