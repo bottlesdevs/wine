@@ -1,0 +1,70 @@
+--- a/dlls/d2d1/device.c
++++ b/dlls/d2d1/device.c
+@@ -2775,9 +2775,21 @@
+ static BOOL STDMETHODCALLTYPE d2d_device_context_IsSupported(ID2D1DeviceContext6 *iface,
+         const D2D1_RENDER_TARGET_PROPERTIES *desc)
+ {
+-    FIXME("iface %p, desc %p stub!\n", iface, desc);
+-
+-    return FALSE;
++    struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
++    const D2D1_RENDER_TARGET_PROPERTIES *target_desc = &context->desc;
++
++    TRACE("iface %p, desc %p.\n", iface, desc);
++
++    if (desc->type != D2D1_RENDER_TARGET_TYPE_DEFAULT && desc->type != target_desc->type)
++        return FALSE;
++    if (desc->pixelFormat.format != DXGI_FORMAT_UNKNOWN
++            && desc->pixelFormat.format != target_desc->pixelFormat.format)
++        return FALSE;
++    if (desc->pixelFormat.alphaMode != D2D1_ALPHA_MODE_UNKNOWN
++            && desc->pixelFormat.alphaMode != target_desc->pixelFormat.alphaMode)
++        return FALSE;
++
++    return (target_desc->usage & desc->usage) == desc->usage;
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE d2d_device_context_ID2D1DeviceContext_CreateBitmap(ID2D1DeviceContext6 *iface,
+@@ -5280,6 +5292,7 @@
+         goto err;
+     }
+ 
++    render_target->desc.type = D2D1_RENDER_TARGET_TYPE_HARDWARE;
+     render_target->desc.dpiX = 96.0f;
+     render_target->desc.dpiY = 96.0f;
+ 
+@@ -5351,6 +5364,10 @@
+         free(object);
+         return hr;
+     }
++
++    object->desc.type = desc->type == D2D1_RENDER_TARGET_TYPE_DEFAULT
++            ? D2D1_RENDER_TARGET_TYPE_HARDWARE : desc->type;
++    object->desc.usage = desc->usage;
+ 
+     ID2D1DeviceContext6_SetDpi(&object->ID2D1DeviceContext6_iface, bitmap_desc.dpiX, bitmap_desc.dpiY);
+ 
+--- a/dlls/d2d1/tests/d2d1.c
++++ b/dlls/d2d1/tests/d2d1.c
+@@ -15917,6 +15917,21 @@
+     hr = ID2D1DCRenderTarget_QueryInterface(rt, &IID_ID2D1DeviceContext, (void **)&device_context);
+     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+ 
++    supported = ID2D1DeviceContext_IsSupported(device_context, &template_desc);
++    ok(supported, "Expected supported format.\n");
++    test_desc = template_desc;
++    test_desc.dpiX = 144.0f;
++    test_desc.dpiY = 192.0f;
++    supported = ID2D1DeviceContext_IsSupported(device_context, &test_desc);
++    ok(supported, "Expected supported format with different DPI.\n");
++    test_desc.pixelFormat.format = DXGI_FORMAT_UNKNOWN;
++    test_desc.pixelFormat.alphaMode = D2D1_ALPHA_MODE_UNKNOWN;
++    supported = ID2D1DeviceContext_IsSupported(device_context, &test_desc);
++    ok(supported, "Expected supported default format.\n");
++    test_desc.pixelFormat.format = (DXGI_FORMAT)~0u;
++    supported = ID2D1DeviceContext_IsSupported(device_context, &test_desc);
++    ok(!supported, "Expected unsupported format.\n");
++
+     test_desc = template_desc;
+     test_desc.usage = D2D1_RENDER_TARGET_USAGE_GDI_COMPATIBLE;
+     supported = ID2D1DCRenderTarget_IsSupported(rt, &test_desc);
