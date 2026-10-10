@@ -1,0 +1,12 @@
+--- a/dlls/win32u/gdiobj.c
++++ b/dlls/win32u/gdiobj.c
+@@ -1007,7 +1007,8 @@
+  */
+ BOOL WINAPI NtGdiFlush(void)
+ {
+-    return TRUE;  /* FIXME */
++    flush_window_surfaces( TRUE );
++    return TRUE;
+ }
+ 
+ 
