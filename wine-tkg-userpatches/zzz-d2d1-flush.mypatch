@@ -16,9 +16,9 @@
 +    TRACE("iface %p, tag1 %p, tag2 %p.\n", iface, tag1, tag2);
 +
 +    if (context->target.type != D2D_TARGET_COMMAND_LIST && context->ops
-+            && context->ops->device_context_present)
++            && context->ops->device_context_flush)
 +    {
-+        if (FAILED(hr = context->ops->device_context_present(context->outer_unknown))
++        if (FAILED(hr = context->ops->device_context_flush(context->outer_unknown))
 +                && SUCCEEDED(context->error.code))
 +            d2d_device_context_set_error(context, hr);
 +    }
@@ -34,3 +34,53 @@
  }
  
  static void STDMETHODCALLTYPE d2d_device_context_SaveDrawingState(ID2D1DeviceContext6 *iface,
+--- a/dlls/d2d1/d2d1_private.h
++++ b/dlls/d2d1/d2d1_private.h
+@@ -144,6 +144,7 @@
+ struct d2d_device_context_ops
+ {
+     HRESULT (*device_context_present)(IUnknown *outer_unknown);
++    HRESULT (*device_context_flush)(IUnknown *outer_unknown);
+ };
+ 
+ enum d2d_device_context_sampler_limits
+--- a/dlls/d2d1/dc_render_target.c
++++ b/dlls/d2d1/dc_render_target.c
+@@ -832,6 +832,7 @@
+ static const struct d2d_device_context_ops d2d_dc_render_target_ops =
+ {
+     d2d_dc_render_target_present,
++    d2d_dc_render_target_present,
+ };
+ 
+ HRESULT d2d_dc_render_target_init(struct d2d_dc_render_target *render_target, ID2D1Factory1 *factory,
+--- a/dlls/d2d1/wic_render_target.c
++++ b/dlls/d2d1/wic_render_target.c
+@@ -147,6 +147,7 @@
+ static const struct d2d_device_context_ops d2d_wic_render_target_ops =
+ {
+     d2d_wic_render_target_present,
++    d2d_wic_render_target_present,
+ };
+ 
+ static HRESULT d2d_wic_resolve_pixel_format(D2D1_PIXEL_FORMAT *pixel_format,
+--- a/dlls/d2d1/hwnd_render_target.c
++++ b/dlls/d2d1/hwnd_render_target.c
+@@ -808,6 +808,7 @@
+ static const struct d2d_device_context_ops d2d_hwnd_render_target_ops =
+ {
+     d2d_hwnd_render_target_present,
++    NULL,
+ };
+ 
+ HRESULT d2d_hwnd_render_target_init(struct d2d_hwnd_render_target *render_target, ID2D1Factory1 *factory,
+--- a/dlls/d2d1/bitmap_render_target.c
++++ b/dlls/d2d1/bitmap_render_target.c
+@@ -723,6 +723,7 @@
+ static const struct d2d_device_context_ops d2d_bitmap_render_target_ops =
+ {
+     NULL,
++    NULL,
+ };
+ 
+ HRESULT d2d_bitmap_render_target_init(struct d2d_bitmap_render_target *render_target,

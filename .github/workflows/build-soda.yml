@@ -503,6 +503,22 @@ jobs:
           run_smoke win64 "$RUNNER_TEMP/soda-office-winrt-smoke64.exe" "$RUNNER_TEMP/soda-ldap-smoke64.exe"
           run_smoke win32 "$RUNNER_TEMP/soda-office-winrt-smoke32.exe" "$RUNNER_TEMP/soda-ldap-smoke32.exe"
 
+      - name: verify Direct2D Flush presentation
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-d2d-flush-smoke.c" \
+            -O2 -municode -Wall -Wextra -Werror -ld2d1 -lole32 -lgdi32 -luuid \
+            -o "$RUNNER_TEMP/soda-d2d-flush-smoke.exe"
+          export WINEDEBUG=-all
+          export WINEDLLOVERRIDES='d3d11,dxgi=b;winemenubuilder.exe=d'
+          export WINEPREFIX="$RUNNER_TEMP/soda-d2d-flush-prefix"
+          export WINEARCH=win64
+          mkdir -p "$WINEPREFIX"
+          xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-d2d-flush-smoke.exe"
+          "$runner_dir/bin/wineserver" -w
+
       - name: verify MS-ICU runtime
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
