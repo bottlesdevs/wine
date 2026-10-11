@@ -511,13 +511,26 @@ jobs:
           x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-d2d-flush-smoke.c" \
             -O2 -municode -Wall -Wextra -Werror -ld2d1 -lole32 -lgdi32 -luuid \
             -o "$RUNNER_TEMP/soda-d2d-flush-smoke.exe"
-          export WINEDEBUG=-all
+          export WINEDEBUG=-all,err+all,trace+dxgi,trace+d2d
           export WINEDLLOVERRIDES='d3d11,dxgi=b;winemenubuilder.exe=d'
           export WINEPREFIX="$RUNNER_TEMP/soda-d2d-flush-prefix"
           export WINEARCH=win64
           mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-d2d-flush-smoke.exe"
+          runtime_log="$RUNNER_TEMP/soda-d2d-flush-smoke.log"
+          if ! xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-d2d-flush-smoke.exe" >"$runtime_log" 2>&1; then
+            tail -n 160 "$runtime_log"
+            exit 1
+          fi
+          tail -n 40 "$runtime_log"
           "$runner_dir/bin/wineserver" -w
+
+      - name: upload Direct2D presentation log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: d2d-presentation-${{ github.sha }}
+          path: ${{ runner.temp }}/soda-d2d-flush-smoke.log
+          if-no-files-found: ignore
 
       - name: verify GdiFlush window surfaces
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
