@@ -24,7 +24,16 @@
  struct composition_drawing_surface
  {
      ICompositionDrawingSurface ICompositionDrawingSurface_iface;
-@@ -556,6 +564,7 @@
+@@ -549,6 +557,8 @@
+     ID2D1Device *device;
+     ID2D1DeviceContext *context;
+     ID2D1Bitmap1 *bitmap;
++    ID2D1Bitmap1 *committed_bitmap;
++    RECT update_rect;
+     BOOL drawing;
+     BOOL suspended;
+     Size size;
+@@ -556,6 +566,7 @@
      enum __x_ABI_CWindows_CGraphics_CDirectX_CDirectXAlphaMode mode;
      BOOL virtual;
      POINT bitmap_offset;
@@ -32,7 +41,7 @@
      LONG ref;
  };
  
-@@ -6189,6 +6198,27 @@
+@@ -6189,6 +6200,27 @@
      return InterlockedIncrement( &impl_from_ICompositionDrawingSurface( iface )->ref );
  }
  
@@ -60,15 +69,17 @@
  static ULONG WINAPI composition_drawing_surface_Release( ICompositionDrawingSurface *iface )
  {
      struct composition_drawing_surface *impl = impl_from_ICompositionDrawingSurface( iface );
-@@ -6196,6 +6226,7 @@
+@@ -6196,7 +6228,9 @@
  
      if (!ref)
      {
 +        drawing_surface_clear_tiles( impl );
          if (impl->bitmap) ID2D1Bitmap1_Release( impl->bitmap );
++        if (impl->committed_bitmap) ID2D1Bitmap1_Release( impl->committed_bitmap );
          if (impl->context) ID2D1DeviceContext_Release( impl->context );
          ID2D1Device_Release( impl->device );
-@@ -6321,8 +6352,47 @@
+         free( impl );
+@@ -6321,8 +6355,47 @@
  static HRESULT WINAPI composition_virtual_drawing_surface_Trim( ICompositionVirtualDrawingSurface *iface,
          UINT32 count, struct RectInt32 *rects )
  {
@@ -117,11 +128,20 @@
      return S_OK;
  }
  
-@@ -6455,12 +6525,17 @@
+@@ -6426,6 +6499,7 @@
+         if (FAILED(hr = ID2D1Bitmap1_GetSurface( impl->bitmap, &surface ))) return hr;
+         *update_object = surface;
+     }
++    impl->update_rect = update_rect ? *update_rect : (RECT){0, 0, size.width, size.height};
+     if (impl->virtual)
+         impl->bitmap_offset = (POINT){update_rect->left, update_rect->top};
+     return S_OK;
+@@ -6455,12 +6529,20 @@
  {
      struct composition_drawing_surface *surface = drawing_surface_from_surface_brush( brush );
      D2D1_INTERPOLATION_MODE interpolation;
 -    D2D1_RECT_F source_rect, dest_rect;
++    ID2D1Bitmap1 *bitmap;
 +    struct composition_surface_tile *tile;
 +    D2D1_RECT_F source_rect, dest_rect, tile_rect;
      D2D1_SIZE_F size, bitmap_size;
@@ -134,12 +154,14 @@
 +    RECT *rects;
 +    DWORD bytes, i;
 +
-+    if (!surface || (!surface->virtual && !surface->bitmap)) return;
-+    bitmap_size = surface->bitmap ? ID2D1Bitmap1_GetSize( surface->bitmap ) : (D2D1_SIZE_F){0.0f, 0.0f};
++    if (!surface) return;
++    bitmap = surface->virtual ? surface->bitmap : surface->committed_bitmap;
++    if (!surface->virtual && !bitmap) return;
++    bitmap_size = bitmap ? ID2D1Bitmap1_GetSize( bitmap ) : (D2D1_SIZE_F){0.0f, 0.0f};
      size = surface->virtual ? (D2D1_SIZE_F){surface->size.Width, surface->size.Height} : bitmap_size;
      if (size.width <= 0.0f || size.height <= 0.0f) return;
      source_rect = (D2D1_RECT_F){0.0f, 0.0f, bitmap_size.width, bitmap_size.height};
-@@ -6489,20 +6564,40 @@
+@@ -6489,20 +6571,40 @@
          dest_rect.bottom = dest_rect.top + size.height * scale;
      }
  
@@ -186,30 +208,60 @@
 +        }
 +    }
 +    else
-+        ID2D1DeviceContext_DrawBitmap( context, (ID2D1Bitmap *)surface->bitmap, &dest_rect,
++        ID2D1DeviceContext_DrawBitmap( context, (ID2D1Bitmap *)bitmap, &dest_rect,
 +                opacity, interpolation, &source_rect, NULL );
      ID2D1DeviceContext_PopAxisAlignedClip( context );
  }
  
-@@ -6649,7 +6744,7 @@
+@@ -6512,6 +6614,7 @@
+     struct surface_brush *source_brush;
+     struct composition_drawing_surface *surface;
+     D2D1_INTERPOLATION_MODE interpolation;
++    ID2D1Bitmap1 *bitmap;
+     D2D1_RECT_F source_rect, dest_rect;
+     D2D1_SIZE_F size;
+     FLOAT source_x[4], source_y[4], dest_x[4], dest_y[4];
+@@ -6520,8 +6623,10 @@
+ 
+     if (!brush->source || brush->source->lpVtbl != &surface_composition_brush_vtbl) return;
+     source_brush = surface_brush_from_ICompositionBrush( brush->source );
+-    if (!(surface = drawing_surface_from_surface_brush( source_brush )) || !surface->bitmap) return;
+-    size = ID2D1Bitmap1_GetSize( surface->bitmap );
++    if (!(surface = drawing_surface_from_surface_brush( source_brush ))) return;
++    bitmap = surface->virtual ? surface->bitmap : surface->committed_bitmap;
++    if (!bitmap) return;
++    size = ID2D1Bitmap1_GetSize( bitmap );
+     if (size.width <= 0.0f || size.height <= 0.0f) return;
+ 
+     left = min( max( brush->left_inset, 0.0f ), size.width );
+@@ -6563,7 +6668,7 @@
+                     dest_x[x] >= dest_x[x + 1] || dest_y[y] >= dest_y[y + 1]) continue;
+             source_rect = (D2D1_RECT_F){source_x[x], source_y[y], source_x[x + 1], source_y[y + 1]};
+             dest_rect = (D2D1_RECT_F){dest_x[x], dest_y[y], dest_x[x + 1], dest_y[y + 1]};
+-            ID2D1DeviceContext_DrawBitmap( context, (ID2D1Bitmap *)surface->bitmap, &dest_rect,
++            ID2D1DeviceContext_DrawBitmap( context, (ID2D1Bitmap *)bitmap, &dest_rect,
+                     opacity, interpolation, &source_rect, NULL );
+         }
+     }
+@@ -6649,7 +6754,7 @@
      if (impl->brush && impl->brush->lpVtbl == &surface_composition_brush_vtbl)
      {
          surface_brush = surface_brush_from_ICompositionBrush( impl->brush );
 -        if ((surface = drawing_surface_from_surface_brush( surface_brush )) && surface->bitmap)
-+        if ((surface = drawing_surface_from_surface_brush( surface_brush )) && (surface->bitmap || !list_empty( &surface->tiles )))
++        if ((surface = drawing_surface_from_surface_brush( surface_brush )) && (surface->committed_bitmap || !list_empty( &surface->tiles )))
              return surface;
      }
      else if (impl->brush && impl->brush->lpVtbl == &nine_grid_composition_brush_vtbl)
-@@ -6658,7 +6753,7 @@
+@@ -6658,7 +6763,7 @@
          if (nine_grid->source && nine_grid->source->lpVtbl == &surface_composition_brush_vtbl)
          {
              surface_brush = surface_brush_from_ICompositionBrush( nine_grid->source );
 -            if ((surface = drawing_surface_from_surface_brush( surface_brush )) && surface->bitmap)
-+            if ((surface = drawing_surface_from_surface_brush( surface_brush )) && (surface->bitmap || !list_empty( &surface->tiles )))
++            if ((surface = drawing_surface_from_surface_brush( surface_brush )) && (surface->committed_bitmap || !list_empty( &surface->tiles )))
                  return surface;
          }
      }
-@@ -6671,6 +6766,7 @@
+@@ -6671,6 +6776,7 @@
  static HRESULT desktop_window_target_render( struct desktop_window_target *target )
  {
      struct composition_drawing_surface *source;
@@ -217,7 +269,7 @@
      D2D1_BITMAP_PROPERTIES1 properties = {0};
      D2D1_MATRIX_3X2_F identity = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
      DXGI_SWAP_CHAIN_DESC1 desc = {0};
-@@ -6685,19 +6781,24 @@
+@@ -6685,19 +6791,24 @@
      const char *stage = "initialization";
      HRESULT hr;
  
@@ -237,7 +289,7 @@
  
      if (!target->swapchain)
      {
-+        source_bitmap = source->bitmap;
++        source_bitmap = source->virtual ? source->bitmap : source->committed_bitmap;
 +        if (!source_bitmap && !list_empty( &source->tiles ))
 +            source_bitmap = LIST_ENTRY( list_head( &source->tiles ), struct composition_surface_tile, entry )->bitmap;
 +        if (!source_bitmap) return S_FALSE;
@@ -247,7 +299,7 @@
          stage = "get d3d device";
          if (FAILED(hr = IDXGISurface_GetDevice( surface, &IID_ID3D11Device,
                  (void **)&d3d_device ))) goto done;
-@@ -6772,6 +6873,93 @@
+@@ -6772,6 +6883,128 @@
      return hr;
  }
  
@@ -338,18 +390,55 @@
 +    return hr;
 +}
 +
++static HRESULT drawing_surface_publish_bitmap( struct composition_drawing_surface *surface )
++{
++    D2D1_BITMAP_PROPERTIES1 properties = {0};
++    D2D1_COLOR_F clear = {0.0f, 0.0f, 0.0f, 0.0f};
++    ID2D1Bitmap1 *bitmap = surface->committed_bitmap;
++    D2D1_POINT_2U destination = {surface->update_rect.left, surface->update_rect.top};
++    D2D1_RECT_U rect = {surface->update_rect.left, surface->update_rect.top,
++            surface->update_rect.right, surface->update_rect.bottom};
++    HRESULT hr;
++
++    if (!bitmap)
++    {
++        properties.pixelFormat.format = (DXGI_FORMAT)surface->format;
++        properties.pixelFormat.alphaMode = (D2D1_ALPHA_MODE)surface->mode;
++        properties.dpiX = properties.dpiY = 96.0f;
++        properties.bitmapOptions = D2D1_BITMAP_OPTIONS_TARGET;
++        if (FAILED(hr = ID2D1DeviceContext_CreateBitmap( surface->context,
++                ID2D1Bitmap1_GetPixelSize( surface->bitmap ), NULL, 0, &properties, &bitmap ))) return hr;
++        ID2D1DeviceContext_SetTarget( surface->context, (ID2D1Image *)bitmap );
++        ID2D1DeviceContext_BeginDraw( surface->context );
++        ID2D1DeviceContext_Clear( surface->context, &clear );
++        hr = ID2D1DeviceContext_EndDraw( surface->context, NULL, NULL );
++        ID2D1DeviceContext_SetTarget( surface->context, (ID2D1Image *)surface->bitmap );
++        if (FAILED(hr)) { ID2D1Bitmap1_Release( bitmap ); return hr; }
++    }
++    hr = ID2D1Bitmap1_CopyFromBitmap( bitmap, &destination, (ID2D1Bitmap *)surface->bitmap, &rect );
++    if (FAILED(hr))
++    {
++        if (!surface->committed_bitmap) ID2D1Bitmap1_Release( bitmap );
++        return hr;
++    }
++    surface->committed_bitmap = bitmap;
++    return S_OK;
++}
++
  static HRESULT WINAPI composition_drawing_surface_interop_EndDraw( ICompositionDrawingSurfaceInterop *iface )
  {
      struct composition_drawing_surface *impl = impl_from_ICompositionDrawingSurfaceInterop( iface );
-@@ -6784,6 +6972,7 @@
+@@ -6784,21 +7017,50 @@
          if (!impl->suspended && FAILED(hr = ID2D1DeviceContext_EndDraw( impl->context, NULL, NULL ))) return hr;
          impl->suspended = FALSE;
      }
-+    if (impl->virtual && impl->bitmap) return drawing_surface_update_tiles( impl );
-     return S_OK;
+-    return S_OK;
++    if (!impl->bitmap) return S_OK;
++    if (impl->virtual) return drawing_surface_update_tiles( impl );
++    return drawing_surface_publish_bitmap( impl );
  }
  
-@@ -6791,12 +6980,34 @@
+ static HRESULT WINAPI composition_drawing_surface_interop_Resize( ICompositionDrawingSurfaceInterop *iface,
          SIZE size )
  {
      struct composition_drawing_surface *impl = impl_from_ICompositionDrawingSurfaceInterop( iface );
@@ -386,8 +475,15 @@
 +        ID2D1DeviceContext_SetTarget( impl->context, NULL );
          ID2D1Bitmap1_Release( impl->bitmap );
          impl->bitmap = NULL;
++    }
++    if (impl->committed_bitmap)
++    {
++        ID2D1Bitmap1_Release( impl->committed_bitmap );
++        impl->committed_bitmap = NULL;
      }
-@@ -6933,6 +7144,7 @@
+     impl->size.Width = size.cx;
+     impl->size.Height = size.cy;
+@@ -6933,6 +7195,7 @@
          free( impl );
          return E_NOINTERFACE;
      }
@@ -395,7 +491,7 @@
      impl->size = pixels;
      impl->format = format;
      impl->mode = mode;
-@@ -7034,6 +7246,8 @@
+@@ -7034,6 +7297,8 @@
              iface, pixels.Width, pixels.Height, format, mode, result );
      if (!result) return E_POINTER;
      *result = NULL;
@@ -404,7 +500,7 @@
      if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
      impl->ICompositionDrawingSurface_iface.lpVtbl = &composition_drawing_surface_vtbl;
      impl->ICompositionVirtualDrawingSurface_iface.lpVtbl = &composition_virtual_drawing_surface_vtbl;
-@@ -7043,6 +7257,7 @@
+@@ -7043,6 +7308,7 @@
          free( impl );
          return E_NOINTERFACE;
      }
