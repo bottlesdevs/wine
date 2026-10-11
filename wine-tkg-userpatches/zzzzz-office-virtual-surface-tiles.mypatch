@@ -1,0 +1,414 @@
+--- a/dlls/windows.ui/Makefile.in
++++ b/dlls/windows.ui/Makefile.in
+@@ -1,5 +1,5 @@
+ MODULE  = windows.ui.dll
+-IMPORTS = dcomp combase advapi32 user32
++IMPORTS = dcomp combase advapi32 user32 gdi32
+ 
+ SOURCES = \
+ 	accessibilitysettings.c \
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -541,6 +541,14 @@
+     LONG ref;
+ };
+ 
++struct composition_surface_tile
++{
++    struct list entry;
++    POINT origin;
++    HRGN valid;
++    ID2D1Bitmap1 *bitmap;
++};
++
+ struct composition_drawing_surface
+ {
+     ICompositionDrawingSurface ICompositionDrawingSurface_iface;
+@@ -556,6 +564,7 @@
+     enum __x_ABI_CWindows_CGraphics_CDirectX_CDirectXAlphaMode mode;
+     BOOL virtual;
+     POINT bitmap_offset;
++    struct list tiles;
+     LONG ref;
+ };
+ 
+@@ -6189,6 +6198,27 @@
+     return InterlockedIncrement( &impl_from_ICompositionDrawingSurface( iface )->ref );
+ }
+ 
++static void drawing_surface_free_tile( struct composition_surface_tile *tile )
++{
++    ULONG ref;
++
++    list_remove( &tile->entry );
++    DeleteObject( tile->valid );
++    ref = ID2D1Bitmap1_Release( tile->bitmap );
++    TRACE( "Released virtual tile {%ld,%ld}, bitmap ref %lu.\n", tile->origin.x, tile->origin.y, ref );
++    free( tile );
++}
++
++static void drawing_surface_clear_tiles( struct composition_drawing_surface *surface )
++{
++    struct composition_surface_tile *tile, *next;
++
++    LIST_FOR_EACH_ENTRY_SAFE( tile, next, &surface->tiles, struct composition_surface_tile, entry )
++    {
++        drawing_surface_free_tile( tile );
++    }
++}
++
+ static ULONG WINAPI composition_drawing_surface_Release( ICompositionDrawingSurface *iface )
+ {
+     struct composition_drawing_surface *impl = impl_from_ICompositionDrawingSurface( iface );
+@@ -6196,6 +6226,7 @@
+ 
+     if (!ref)
+     {
++        drawing_surface_clear_tiles( impl );
+         if (impl->bitmap) ID2D1Bitmap1_Release( impl->bitmap );
+         if (impl->context) ID2D1DeviceContext_Release( impl->context );
+         ID2D1Device_Release( impl->device );
+@@ -6321,8 +6352,47 @@
+ static HRESULT WINAPI composition_virtual_drawing_surface_Trim( ICompositionVirtualDrawingSurface *iface,
+         UINT32 count, struct RectInt32 *rects )
+ {
+-    FIXME( "iface %p, count %u, rects %p.\n", iface, count, rects );
++    struct composition_drawing_surface *surface = impl_from_ICompositionVirtualDrawingSurface( iface );
++    struct composition_surface_tile *tile, *next;
++    HRGN keep, region;
++    UINT32 i;
++    int type;
++
++    TRACE( "iface %p, count %u, rects %p.\n", iface, count, rects );
+     if (count && !rects) return E_POINTER;
++    if (surface->drawing) return D2DERR_WRONG_STATE;
++    for (i = 0; i < count; ++i)
++        if (rects[i].X < 0 || rects[i].Y < 0 || rects[i].Width < 0 || rects[i].Height < 0 ||
++                (LONGLONG)rects[i].X + rects[i].Width > surface->size.Width ||
++                (LONGLONG)rects[i].Y + rects[i].Height > surface->size.Height) return E_INVALIDARG;
++    if (!(keep = CreateRectRgn( 0, 0, 0, 0 ))) return E_OUTOFMEMORY;
++    for (i = 0; i < count; ++i)
++    {
++        if (!(region = CreateRectRgn( rects[i].X, rects[i].Y,
++                rects[i].X + rects[i].Width, rects[i].Y + rects[i].Height )))
++        {
++            DeleteObject( keep );
++            return E_OUTOFMEMORY;
++        }
++        type = CombineRgn( keep, keep, region, RGN_OR );
++        DeleteObject( region );
++        if (type == ERROR) { DeleteObject( keep ); return E_OUTOFMEMORY; }
++    }
++    LIST_FOR_EACH_ENTRY_SAFE( tile, next, &surface->tiles, struct composition_surface_tile, entry )
++    {
++        OffsetRgn( keep, -tile->origin.x, -tile->origin.y );
++        type = CombineRgn( tile->valid, tile->valid, keep, RGN_AND );
++        OffsetRgn( keep, tile->origin.x, tile->origin.y );
++        if (type == ERROR) { DeleteObject( keep ); return E_OUTOFMEMORY; }
++        if (type == NULLREGION) drawing_surface_free_tile( tile );
++    }
++    DeleteObject( keep );
++    if (!count && surface->bitmap)
++    {
++        ID2D1DeviceContext_SetTarget( surface->context, NULL );
++        ID2D1Bitmap1_Release( surface->bitmap );
++        surface->bitmap = NULL;
++    }
+     return S_OK;
+ }
+ 
+@@ -6455,12 +6525,17 @@
+ {
+     struct composition_drawing_surface *surface = drawing_surface_from_surface_brush( brush );
+     D2D1_INTERPOLATION_MODE interpolation;
+-    D2D1_RECT_F source_rect, dest_rect;
++    struct composition_surface_tile *tile;
++    D2D1_RECT_F source_rect, dest_rect, tile_rect;
+     D2D1_SIZE_F size, bitmap_size;
+     FLOAT scale, scale_x, scale_y;
+-
+-    if (!surface || !surface->bitmap) return;
+-    bitmap_size = ID2D1Bitmap1_GetSize( surface->bitmap );
++    RGNDATA *data;
++    D2D1_RECT_F clip;
++    RECT *rects;
++    DWORD bytes, i;
++
++    if (!surface || (!surface->virtual && !surface->bitmap)) return;
++    bitmap_size = surface->bitmap ? ID2D1Bitmap1_GetSize( surface->bitmap ) : (D2D1_SIZE_F){0.0f, 0.0f};
+     size = surface->virtual ? (D2D1_SIZE_F){surface->size.Width, surface->size.Height} : bitmap_size;
+     if (size.width <= 0.0f || size.height <= 0.0f) return;
+     source_rect = (D2D1_RECT_F){0.0f, 0.0f, bitmap_size.width, bitmap_size.height};
+@@ -6489,20 +6564,40 @@
+         dest_rect.bottom = dest_rect.top + size.height * scale;
+     }
+ 
+-    if (surface->virtual)
+-    {
+-        scale_x = (dest_rect.right - dest_rect.left) / size.width;
+-        scale_y = (dest_rect.bottom - dest_rect.top) / size.height;
+-        dest_rect.left += surface->bitmap_offset.x * scale_x;
+-        dest_rect.top += surface->bitmap_offset.y * scale_y;
+-        dest_rect.right = dest_rect.left + bitmap_size.width * scale_x;
+-        dest_rect.bottom = dest_rect.top + bitmap_size.height * scale_y;
+-    }
+     interpolation = brush->interpolation_mode == CompositionBitmapInterpolationMode_NearestNeighbor ?
+             D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR : D2D1_INTERPOLATION_MODE_LINEAR;
+     ID2D1DeviceContext_PushAxisAlignedClip( context, bounds, D2D1_ANTIALIAS_MODE_ALIASED );
+-    ID2D1DeviceContext_DrawBitmap( context, (ID2D1Bitmap *)surface->bitmap, &dest_rect,
+-            opacity, interpolation, &source_rect, NULL );
++    if (surface->virtual)
++    {
++        scale_x = (dest_rect.right - dest_rect.left) / size.width;
++        scale_y = (dest_rect.bottom - dest_rect.top) / size.height;
++        LIST_FOR_EACH_ENTRY( tile, &surface->tiles, struct composition_surface_tile, entry )
++        {
++            bitmap_size = ID2D1Bitmap1_GetSize( tile->bitmap );
++            source_rect = (D2D1_RECT_F){0.0f, 0.0f, bitmap_size.width, bitmap_size.height};
++            tile_rect.left = dest_rect.left + tile->origin.x * scale_x;
++            tile_rect.top = dest_rect.top + tile->origin.y * scale_y;
++            tile_rect.right = tile_rect.left + bitmap_size.width * scale_x;
++            tile_rect.bottom = tile_rect.top + bitmap_size.height * scale_y;
++            if (!(bytes = GetRegionData( tile->valid, 0, NULL )) || !(data = malloc( bytes ))) continue;
++            if (!GetRegionData( tile->valid, bytes, data )) { free( data ); continue; }
++            rects = (RECT *)data->Buffer;
++            for (i = 0; i < data->rdh.nCount; ++i)
++            {
++                clip = (D2D1_RECT_F){tile_rect.left + rects[i].left * scale_x,
++                        tile_rect.top + rects[i].top * scale_y, tile_rect.left + rects[i].right * scale_x,
++                        tile_rect.top + rects[i].bottom * scale_y};
++                ID2D1DeviceContext_PushAxisAlignedClip( context, &clip, D2D1_ANTIALIAS_MODE_ALIASED );
++                ID2D1DeviceContext_DrawBitmap( context, (ID2D1Bitmap *)tile->bitmap, &tile_rect,
++                        opacity, interpolation, &source_rect, NULL );
++                ID2D1DeviceContext_PopAxisAlignedClip( context );
++            }
++            free( data );
++        }
++    }
++    else
++        ID2D1DeviceContext_DrawBitmap( context, (ID2D1Bitmap *)surface->bitmap, &dest_rect,
++                opacity, interpolation, &source_rect, NULL );
+     ID2D1DeviceContext_PopAxisAlignedClip( context );
+ }
+ 
+@@ -6649,7 +6744,7 @@
+     if (impl->brush && impl->brush->lpVtbl == &surface_composition_brush_vtbl)
+     {
+         surface_brush = surface_brush_from_ICompositionBrush( impl->brush );
+-        if ((surface = drawing_surface_from_surface_brush( surface_brush )) && surface->bitmap)
++        if ((surface = drawing_surface_from_surface_brush( surface_brush )) && (surface->bitmap || !list_empty( &surface->tiles )))
+             return surface;
+     }
+     else if (impl->brush && impl->brush->lpVtbl == &nine_grid_composition_brush_vtbl)
+@@ -6658,7 +6753,7 @@
+         if (nine_grid->source && nine_grid->source->lpVtbl == &surface_composition_brush_vtbl)
+         {
+             surface_brush = surface_brush_from_ICompositionBrush( nine_grid->source );
+-            if ((surface = drawing_surface_from_surface_brush( surface_brush )) && surface->bitmap)
++            if ((surface = drawing_surface_from_surface_brush( surface_brush )) && (surface->bitmap || !list_empty( &surface->tiles )))
+                 return surface;
+         }
+     }
+@@ -6671,6 +6766,7 @@
+ static HRESULT desktop_window_target_render( struct desktop_window_target *target )
+ {
+     struct composition_drawing_surface *source;
++    ID2D1Bitmap1 *source_bitmap;
+     D2D1_BITMAP_PROPERTIES1 properties = {0};
+     D2D1_MATRIX_3X2_F identity = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+     DXGI_SWAP_CHAIN_DESC1 desc = {0};
+@@ -6685,19 +6781,24 @@
+     const char *stage = "initialization";
+     HRESULT hr;
+ 
+-    if (!target->root || !IsWindow( target->hwnd ) ||
+-            !(source = find_visual_drawing_surface( target->root, 0 ))) return S_FALSE;
++    if (!target->root || !IsWindow( target->hwnd )) return S_FALSE;
++    source = find_visual_drawing_surface( target->root, 0 );
++    if (!source && !target->swapchain) return S_FALSE;
+     GetClientRect( target->hwnd, &client );
+     width = max( 1, client.right - client.left );
+     height = max( 1, client.bottom - client.top );
+-    if ((target->width && (target->width != width || target->height != height)) ||
+-            (target->render_device && target->render_device != source->device))
++    if (source && ((target->width && (target->width != width || target->height != height)) ||
++            (target->render_device && target->render_device != source->device)))
+         desktop_window_target_reset_renderer( target );
+ 
+     if (!target->swapchain)
+     {
++        source_bitmap = source->bitmap;
++        if (!source_bitmap && !list_empty( &source->tiles ))
++            source_bitmap = LIST_ENTRY( list_head( &source->tiles ), struct composition_surface_tile, entry )->bitmap;
++        if (!source_bitmap) return S_FALSE;
+         stage = "get source surface";
+-        if (FAILED(hr = ID2D1Bitmap1_GetSurface( source->bitmap, &surface ))) goto done;
++        if (FAILED(hr = ID2D1Bitmap1_GetSurface( source_bitmap, &surface ))) goto done;
+         stage = "get d3d device";
+         if (FAILED(hr = IDXGISurface_GetDevice( surface, &IID_ID3D11Device,
+                 (void **)&d3d_device ))) goto done;
+@@ -6772,6 +6873,93 @@
+     return hr;
+ }
+ 
++static HRESULT drawing_surface_update_tiles( struct composition_drawing_surface *surface )
++{
++    struct composition_surface_tile *tile, *found;
++    D2D1_BITMAP_PROPERTIES1 properties = {0};
++    D2D1_COLOR_F clear = {0.0f, 0.0f, 0.0f, 0.0f};
++    D2D1_SIZE_U update_size, tile_size;
++    D2D1_POINT_2U destination;
++    D2D1_RECT_U source_rect;
++    RECT update, bounds, overlap;
++    LONG x, y;
++    HRESULT hr = S_OK;
++    HRGN region;
++    int type;
++
++    update_size = ID2D1Bitmap1_GetPixelSize( surface->bitmap );
++    update = (RECT){surface->bitmap_offset.x, surface->bitmap_offset.y,
++            surface->bitmap_offset.x + update_size.width, surface->bitmap_offset.y + update_size.height};
++    properties.pixelFormat.format = (DXGI_FORMAT)surface->format;
++    properties.pixelFormat.alphaMode = (D2D1_ALPHA_MODE)surface->mode;
++    properties.dpiX = properties.dpiY = 96.0f;
++    properties.bitmapOptions = D2D1_BITMAP_OPTIONS_TARGET;
++
++    for (y = update.top / 256 * 256; y < update.bottom; y += 256)
++    {
++        for (x = update.left / 256 * 256; x < update.right; x += 256)
++        {
++            bounds = (RECT){x, y, x + 256, y + 256};
++            bounds.right = min( bounds.right, (LONG)surface->size.Width );
++            bounds.bottom = min( bounds.bottom, (LONG)surface->size.Height );
++            if (!IntersectRect( &overlap, &update, &bounds )) continue;
++            found = NULL;
++            LIST_FOR_EACH_ENTRY( tile, &surface->tiles, struct composition_surface_tile, entry )
++            {
++                if (tile->origin.x != x || tile->origin.y != y) continue;
++                found = tile;
++                break;
++            }
++            if (!found)
++            {
++                if (!(found = calloc( 1, sizeof(*found) ))) { hr = E_OUTOFMEMORY; goto done; }
++                tile_size = (D2D1_SIZE_U){256, 256};
++                hr = ID2D1DeviceContext_CreateBitmap( surface->context, tile_size, NULL, 0,
++                        &properties, &found->bitmap );
++                if (FAILED(hr)) { free( found ); goto done; }
++                found->origin = (POINT){x, y};
++                ID2D1DeviceContext_SetTarget( surface->context, (ID2D1Image *)found->bitmap );
++                ID2D1DeviceContext_BeginDraw( surface->context );
++                ID2D1DeviceContext_Clear( surface->context, &clear );
++                hr = ID2D1DeviceContext_EndDraw( surface->context, NULL, NULL );
++                if (FAILED(hr))
++                {
++                    ID2D1Bitmap1_Release( found->bitmap );
++                    free( found );
++                    goto done;
++                }
++                if (!(found->valid = CreateRectRgn( 0, 0, 0, 0 )))
++                {
++                    ID2D1Bitmap1_Release( found->bitmap );
++                    free( found );
++                    hr = E_OUTOFMEMORY;
++                    goto done;
++                }
++                list_add_tail( &surface->tiles, &found->entry );
++                TRACE( "Allocated virtual tile {%ld,%ld}.\n", x, y );
++            }
++            destination = (D2D1_POINT_2U){overlap.left - x, overlap.top - y};
++            source_rect = (D2D1_RECT_U){overlap.left - update.left, overlap.top - update.top,
++                    overlap.right - update.left, overlap.bottom - update.top};
++            hr = ID2D1Bitmap1_CopyFromBitmap( found->bitmap, &destination,
++                    (ID2D1Bitmap *)surface->bitmap, &source_rect );
++            if (FAILED(hr)) goto done;
++            if (!(region = CreateRectRgn( destination.x, destination.y,
++                    destination.x + overlap.right - overlap.left, destination.y + overlap.bottom - overlap.top )))
++            {
++                hr = E_OUTOFMEMORY;
++                goto done;
++            }
++            type = CombineRgn( found->valid, found->valid, region, RGN_OR );
++            DeleteObject( region );
++            if (type == ERROR) { hr = E_OUTOFMEMORY; goto done; }
++        }
++    }
++done:
++    ID2D1DeviceContext_SetTarget( surface->context, (ID2D1Image *)surface->bitmap );
++    return hr;
++}
++
+ static HRESULT WINAPI composition_drawing_surface_interop_EndDraw( ICompositionDrawingSurfaceInterop *iface )
+ {
+     struct composition_drawing_surface *impl = impl_from_ICompositionDrawingSurfaceInterop( iface );
+@@ -6784,6 +6972,7 @@
+         if (!impl->suspended && FAILED(hr = ID2D1DeviceContext_EndDraw( impl->context, NULL, NULL ))) return hr;
+         impl->suspended = FALSE;
+     }
++    if (impl->virtual && impl->bitmap) return drawing_surface_update_tiles( impl );
+     return S_OK;
+ }
+ 
+@@ -6791,12 +6980,34 @@
+         SIZE size )
+ {
+     struct composition_drawing_surface *impl = impl_from_ICompositionDrawingSurfaceInterop( iface );
+-
+-    FIXME( "iface %p, size {%ld, %ld}.\n", iface, size.cx, size.cy );
+-    if (size.cx <= 0 || size.cy <= 0) return E_INVALIDARG;
++    struct composition_surface_tile *tile, *next;
++    HRGN bounds;
++    int type;
++
++    TRACE( "iface %p, size {%ld, %ld}.\n", iface, size.cx, size.cy );
++    if (impl->virtual)
++    {
++        if (size.cx < 0 || size.cy < 0 || size.cx > 0x1000000 || size.cy > 0x1000000) return E_INVALIDARG;
++    }
++    else if (size.cx <= 0 || size.cy <= 0) return E_INVALIDARG;
+     if (impl->drawing) return D2DERR_WRONG_STATE;
++    if (impl->virtual)
++    {
++        if (!(bounds = CreateRectRgn( 0, 0, size.cx, size.cy ))) return E_OUTOFMEMORY;
++        LIST_FOR_EACH_ENTRY_SAFE( tile, next, &impl->tiles, struct composition_surface_tile, entry )
++        {
++            OffsetRgn( bounds, -tile->origin.x, -tile->origin.y );
++            type = CombineRgn( tile->valid, tile->valid, bounds, RGN_AND );
++            OffsetRgn( bounds, tile->origin.x, tile->origin.y );
++            if (type == ERROR) { DeleteObject( bounds ); return E_OUTOFMEMORY; }
++            if (type == NULLREGION) drawing_surface_free_tile( tile );
++        }
++        DeleteObject( bounds );
++    }
++    else drawing_surface_clear_tiles( impl );
+     if (impl->bitmap)
+     {
++        ID2D1DeviceContext_SetTarget( impl->context, NULL );
+         ID2D1Bitmap1_Release( impl->bitmap );
+         impl->bitmap = NULL;
+     }
+@@ -6933,6 +7144,7 @@
+         free( impl );
+         return E_NOINTERFACE;
+     }
++    list_init( &impl->tiles );
+     impl->size = pixels;
+     impl->format = format;
+     impl->mode = mode;
+@@ -7034,6 +7246,8 @@
+             iface, pixels.Width, pixels.Height, format, mode, result );
+     if (!result) return E_POINTER;
+     *result = NULL;
++    if (pixels.Width < 0 || pixels.Height < 0 || pixels.Width > 0x1000000 || pixels.Height > 0x1000000)
++        return E_INVALIDARG;
+     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+     impl->ICompositionDrawingSurface_iface.lpVtbl = &composition_drawing_surface_vtbl;
+     impl->ICompositionVirtualDrawingSurface_iface.lpVtbl = &composition_virtual_drawing_surface_vtbl;
+@@ -7043,6 +7257,7 @@
+         free( impl );
+         return E_NOINTERFACE;
+     }
++    list_init( &impl->tiles );
+     impl->size.Width = pixels.Width;
+     impl->size.Height = pixels.Height;
+     impl->format = format;
