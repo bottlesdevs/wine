@@ -32,13 +32,14 @@ int wmain(void)
     WNDCLASSW cls = {0};
     D2D1_RENDER_TARGET_PROPERTIES properties = {0};
     D2D1_HWND_RENDER_TARGET_PROPERTIES hwnd_properties = {0};
-    D2D1_COLOR_F red = {1, 0, 0, 1}, blue = {0, 0, 1, 1};
+    D2D1_COLOR_F red = {1, 0, 0, 1}, blue = {0, 0, 1, 1}, green = {0, 1, 0, 1};
     ID2D1Factory *factory = NULL;
     ID2D1HwndRenderTarget *target = NULL;
     ID2D1RenderTarget *render_target;
     D2D1_TAG first = 0x1111, second = 0x2222;
     COLORREF before, flushed, ended;
     HRESULT flush_hr, end_hr;
+    unsigned int attempt;
     HWND window;
     RECT rect;
 
@@ -68,6 +69,14 @@ int wmain(void)
             &hwnd_properties, &target))) return 5;
     render_target = (ID2D1RenderTarget *)target;
     ID2D1RenderTarget_BeginDraw(render_target);
+    ID2D1RenderTarget_Clear(render_target, &green);
+    end_hr = ID2D1RenderTarget_EndDraw(render_target, NULL, NULL);
+    for (attempt = 0; attempt < 50; ++attempt)
+        if ((before = screen_pixel(window)) == RGB(0, 255, 0)) break;
+    printf("prime:%08lx pixel:%06lx attempts:%u\n", (unsigned long)end_hr,
+            (unsigned long)before, attempt + 1);
+    if (FAILED(end_hr) || before != RGB(0, 255, 0)) return 9;
+    ID2D1RenderTarget_BeginDraw(render_target);
     ID2D1RenderTarget_Clear(render_target, &red);
     flush_hr = ID2D1RenderTarget_Flush(render_target, &first, &second);
     flushed = screen_pixel(window);
@@ -75,7 +84,8 @@ int wmain(void)
             (unsigned long)flush_hr, first, second, (unsigned long)flushed);
     ID2D1RenderTarget_Clear(render_target, &blue);
     end_hr = ID2D1RenderTarget_EndDraw(render_target, NULL, NULL);
-    ended = screen_pixel(window);
+    for (attempt = 0; attempt < 50; ++attempt)
+        if ((ended = screen_pixel(window)) == RGB(0, 0, 255)) break;
     printf("end:%08lx pixel:%06lx\n", (unsigned long)end_hr, (unsigned long)ended);
     ID2D1RenderTarget_Release(render_target);
     ID2D1Factory_Release(factory);
