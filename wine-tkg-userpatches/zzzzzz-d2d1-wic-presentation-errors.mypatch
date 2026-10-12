@@ -1,0 +1,39 @@
+diff --git a/dlls/d2d1/wic_render_target.c b/dlls/d2d1/wic_render_target.c
+--- a/dlls/d2d1/wic_render_target.c
++++ b/dlls/d2d1/wic_render_target.c
+@@ -96,7 +96,7 @@
+     IWICBitmapLock_Release(bitmap_lock);
+ 
+ end:
+-    return S_OK;
++    return hr;
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE d2d_wic_render_target_QueryInterface(IUnknown *iface, REFIID iid, void **out)
+diff --git a/dlls/d2d1/device.c b/dlls/d2d1/device.c
+--- a/dlls/d2d1/device.c
++++ b/dlls/d2d1/device.c
+@@ -2693,16 +2693,17 @@
+         return context->error.code;
+     }
+ 
++    if (context->ops && context->ops->device_context_present)
++    {
++        if (FAILED(hr = context->ops->device_context_present(context->outer_unknown))
++                && SUCCEEDED(context->error.code))
++            d2d_device_context_set_error(context, hr);
++    }
++
+     if (tag1)
+         *tag1 = context->error.tag1;
+     if (tag2)
+         *tag2 = context->error.tag2;
+-
+-    if (context->ops && context->ops->device_context_present)
+-    {
+-        if (FAILED(hr = context->ops->device_context_present(context->outer_unknown)))
+-            context->error.code = hr;
+-    }
+ 
+     return context->error.code;
+ }

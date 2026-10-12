@@ -1,0 +1,671 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -6936,6 +6936,8 @@
+     struct animation_group_iface iface;
+     struct animation_iterable_iface iterable;
+     ICompositionObject ICompositionObject_iface;
++    IClosable closable;
++    BOOL closed;
+     LONG ref;
+     CRITICAL_SECTION cs;
+     ICompositor *compositor;
+@@ -6969,6 +6971,7 @@
+         *out = &impl->iface;
+     else if (IsEqualGUID( iid, &animation_iterable_iid )) *out = &impl->iterable;
+     else if (IsEqualGUID( iid, &IID_ICompositionObject )) *out = &impl->ICompositionObject_iface;
++    else if (IsEqualGUID( iid, &IID_IClosable )) *out = &impl->closable;
+     else return E_NOINTERFACE;
+     InterlockedIncrement( &impl->ref );
+     return S_OK;
+@@ -6999,8 +7002,8 @@
+     if (!ref)
+     {
+         animation_group_release_entries( impl->entries, impl->count );
+-        ICompositionPropertySet_Release( impl->properties );
+-        ICompositor_Release( impl->compositor );
++        if (impl->properties) ICompositionPropertySet_Release( impl->properties );
++        if (impl->compositor) ICompositor_Release( impl->compositor );
+         DeleteCriticalSection( &impl->cs );
+         free( impl );
+     }
+@@ -7012,13 +7015,14 @@
+ {
+     if (!count || !iids) return E_POINTER;
+     *count = 0;
+-    *iids = CoTaskMemAlloc( 4 * sizeof(**iids) );
++    *iids = CoTaskMemAlloc( 5 * sizeof(**iids) );
+     if (!*iids) return E_OUTOFMEMORY;
+     (*iids)[0] = animation_group_iid;
+     (*iids)[1] = IID_ICompositionAnimationBase;
+     (*iids)[2] = animation_iterable_iid;
+     (*iids)[3] = IID_ICompositionObject;
+-    *count = 4;
++    (*iids)[4] = IID_IClosable;
++    *count = 5;
+     return S_OK;
+ }
+ 
+@@ -7044,6 +7048,8 @@
+ 
+     if (!count) return E_POINTER;
+     EnterCriticalSection( &impl->cs );
++    *count = 0;
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return RO_E_CLOSED; }
+     *count = impl->count;
+     LeaveCriticalSection( &impl->cs );
+     return S_OK;
+@@ -7054,7 +7060,7 @@
+     struct native_animation_group *impl = impl_from_animation_group( iface );
+     struct animation_group_entry *entries;
+     ICompositionObject *object;
+-    ICompositor *compositor;
++    ICompositor *compositor, *parent;
+     IUnknown *identity, *owner, *expected;
+     UINT32 i;
+     HRESULT hr;
+@@ -7069,7 +7075,13 @@
+     hr = ICompositor_QueryInterface( compositor, &IID_IUnknown, (void **)&owner );
+     ICompositor_Release( compositor );
+     if (FAILED(hr)) return hr;
+-    hr = ICompositor_QueryInterface( impl->compositor, &IID_IUnknown, (void **)&expected );
++    EnterCriticalSection( &impl->cs );
++    parent = impl->compositor;
++    if (parent) ICompositor_AddRef( parent );
++    LeaveCriticalSection( &impl->cs );
++    if (!parent) { IUnknown_Release( owner ); return RO_E_CLOSED; }
++    hr = ICompositor_QueryInterface( parent, &IID_IUnknown, (void **)&expected );
++    ICompositor_Release( parent );
+     if (FAILED(hr)) { IUnknown_Release( owner ); return hr; }
+     hr = owner == expected ? S_OK : E_INVALIDARG;
+     IUnknown_Release( owner );
+@@ -7079,6 +7091,7 @@
+         return hr;
+     ICompositionAnimation_AddRef( animation );
+     EnterCriticalSection( &impl->cs );
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); ICompositionAnimation_Release( animation ); IUnknown_Release( identity ); return RO_E_CLOSED; }
+     for (i = 0; i < impl->count; ++i) if (impl->entries[i].identity == identity) break;
+     if (i != impl->count) hr = S_OK;
+     else if (impl->count == INT_MAX) hr = E_OUTOFMEMORY;
+@@ -7109,6 +7122,7 @@
+     if (!animation) return E_INVALIDARG;
+     if (FAILED(hr = ICompositionAnimation_QueryInterface( animation, &IID_IUnknown, (void **)&identity ))) return hr;
+     EnterCriticalSection( &impl->cs );
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); IUnknown_Release( identity ); return RO_E_CLOSED; }
+     for (i = 0; i < impl->count; ++i) if (impl->entries[i].identity == identity) break;
+     if (i != impl->count)
+     {
+@@ -7134,6 +7148,7 @@
+     UINT32 count;
+ 
+     EnterCriticalSection( &impl->cs );
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return RO_E_CLOSED; }
+     entries = impl->entries;
+     count = impl->count;
+     impl->entries = NULL;
+@@ -7214,7 +7229,8 @@
+     if (!value) return E_POINTER;
+     *value = NULL;
+     EnterCriticalSection( &impl->group->cs );
+-    if (impl->generation != impl->group->generation) hr = E_CHANGED_STATE;
++    if (impl->group->closed) hr = RO_E_CLOSED;
++    else if (impl->generation != impl->group->generation) hr = E_CHANGED_STATE;
+     else if (impl->index >= impl->group->count) hr = E_BOUNDS;
+     else
+     {
+@@ -7233,7 +7249,8 @@
+     if (!value) return E_POINTER;
+     *value = FALSE;
+     EnterCriticalSection( &impl->group->cs );
+-    if (impl->generation != impl->group->generation) hr = E_CHANGED_STATE;
++    if (impl->group->closed) hr = RO_E_CLOSED;
++    else if (impl->generation != impl->group->generation) hr = E_CHANGED_STATE;
+     else *value = impl->index < impl->group->count;
+     LeaveCriticalSection( &impl->group->cs );
+     return hr;
+@@ -7247,7 +7264,8 @@
+     if (!value) return E_POINTER;
+     *value = FALSE;
+     EnterCriticalSection( &impl->group->cs );
+-    if (impl->generation != impl->group->generation) hr = E_CHANGED_STATE;
++    if (impl->group->closed) hr = RO_E_CLOSED;
++    else if (impl->generation != impl->group->generation) hr = E_CHANGED_STATE;
+     else
+     {
+         if (impl->index < impl->group->count) ++impl->index;
+@@ -7267,7 +7285,8 @@
+     *count = 0;
+     if (capacity && !values) return E_POINTER;
+     EnterCriticalSection( &impl->group->cs );
+-    if (impl->generation != impl->group->generation) hr = E_CHANGED_STATE;
++    if (impl->group->closed) hr = RO_E_CLOSED;
++    else if (impl->generation != impl->group->generation) hr = E_CHANGED_STATE;
+     else while (*count < capacity && impl->index < impl->group->count)
+     {
+         values[*count] = impl->group->entries[impl->index++].animation;
+@@ -7298,6 +7317,13 @@
+     impl->group = group;
+     animation_group_AddRef( &group->iface );
+     EnterCriticalSection( &group->cs );
++    if (group->closed)
++    {
++        LeaveCriticalSection( &group->cs );
++        animation_group_Release( &group->iface );
++        free( impl );
++        return RO_E_CLOSED;
++    }
+     impl->generation = group->generation;
+     LeaveCriticalSection( &group->cs );
+     *value = &impl->iface;
+@@ -7400,16 +7426,26 @@
+     struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
+ 
+     if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->cs );
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return RO_E_CLOSED; }
+     *value = impl->compositor;
+     ICompositor_AddRef( *value );
++    LeaveCriticalSection( &impl->cs );
+     return S_OK;
+ }
+ 
+ static HRESULT WINAPI animation_group_object_get_Dispatcher( ICompositionObject *iface, ICoreDispatcher **value )
+ {
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
++    HRESULT hr;
++
+     if (!value) return E_POINTER;
+     *value = NULL;
+-    return S_OK;
++    EnterCriticalSection( &impl->cs );
++    hr = impl->closed ? RO_E_CLOSED : S_OK;
++    LeaveCriticalSection( &impl->cs );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI animation_group_object_get_Properties( ICompositionObject *iface, ICompositionPropertySet **value )
+@@ -7417,35 +7453,34 @@
+     struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
+ 
+     if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->cs );
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return RO_E_CLOSED; }
+     *value = impl->properties;
+     ICompositionPropertySet_AddRef( *value );
+-    return S_OK;
+-}
+-
+-static HRESULT WINAPI animation_group_object_StartAnimation( ICompositionObject *iface, HSTRING name,
+-        ICompositionAnimation *animation )
+-{
+-    ICompositionObject *object;
++    LeaveCriticalSection( &impl->cs );
++    return S_OK;
++}
++
++static HRESULT WINAPI animation_group_object_StartAnimation( ICompositionObject *iface, HSTRING name, ICompositionAnimation *animation )
++{
+     struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
+     HRESULT hr;
+ 
+-    hr = ICompositionPropertySet_QueryInterface( impl->properties, &IID_ICompositionObject, (void **)&object );
+-    if (FAILED(hr)) return hr;
+-    hr = ICompositionObject_StartAnimation( object, name, animation );
+-    ICompositionObject_Release( object );
++    EnterCriticalSection( &impl->cs );
++    hr = impl->closed ? RO_E_CLOSED : E_NOTIMPL;
++    LeaveCriticalSection( &impl->cs );
+     return hr;
+ }
+ 
+ static HRESULT WINAPI animation_group_object_StopAnimation( ICompositionObject *iface, HSTRING name )
+ {
+-    ICompositionObject *object;
+     struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
+     HRESULT hr;
+ 
+-    hr = ICompositionPropertySet_QueryInterface( impl->properties, &IID_ICompositionObject, (void **)&object );
+-    if (FAILED(hr)) return hr;
+-    hr = ICompositionObject_StopAnimation( object, name );
+-    ICompositionObject_Release( object );
++    EnterCriticalSection( &impl->cs );
++    hr = impl->closed ? RO_E_CLOSED : E_NOTIMPL;
++    LeaveCriticalSection( &impl->cs );
+     return hr;
+ }
+ 
+@@ -7455,6 +7490,91 @@
+     animation_group_object_GetIids, animation_group_object_GetRuntimeClassName, animation_group_object_GetTrustLevel,
+     animation_group_object_get_Compositor, animation_group_object_get_Dispatcher, animation_group_object_get_Properties,
+     animation_group_object_StartAnimation, animation_group_object_StopAnimation,
++};
++
++
++static HRESULT WINAPI animation_group_closable_QueryInterface( IClosable *iface, REFIID iid, void **out)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, closable );
++
++    return animation_group_QueryInterface( &impl->iface, iid, out );
++}
++
++static ULONG WINAPI animation_group_closable_AddRef( IClosable *iface)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, closable );
++
++    return animation_group_AddRef( &impl->iface );
++}
++
++static ULONG WINAPI animation_group_closable_Release( IClosable *iface)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, closable );
++
++    return animation_group_Release( &impl->iface );
++}
++
++static HRESULT WINAPI animation_group_closable_GetIids( IClosable *iface, ULONG *count, IID **iids)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, closable );
++
++    return animation_group_GetIids( &impl->iface, count, iids );
++}
++
++static HRESULT WINAPI animation_group_closable_GetRuntimeClassName( IClosable *iface, HSTRING *name)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, closable );
++
++    return animation_group_GetRuntimeClassName( &impl->iface, name );
++}
++
++static HRESULT WINAPI animation_group_closable_GetTrustLevel( IClosable *iface, TrustLevel *level)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, closable );
++
++    return animation_group_GetTrustLevel( &impl->iface, level );
++}
++
++static HRESULT WINAPI animation_group_closable_Close( IClosable *iface )
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, closable );
++    struct animation_group_entry *entries;
++    ICompositionPropertySet *properties;
++    ICompositor *compositor;
++    IClosable *child;
++    UINT32 count, i;
++
++    EnterCriticalSection( &impl->cs );
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return S_OK; }
++    impl->closed = TRUE;
++    ++impl->generation;
++    entries = impl->entries;
++    count = impl->count;
++    properties = impl->properties;
++    compositor = impl->compositor;
++    impl->entries = NULL;
++    impl->count = 0;
++    impl->properties = NULL;
++    impl->compositor = NULL;
++    LeaveCriticalSection( &impl->cs );
++    for (i = 0; i < count; ++i)
++    {
++        if (SUCCEEDED(IUnknown_QueryInterface( (IUnknown *)entries[i].animation, &IID_IClosable, (void **)&child )))
++        {
++            IClosable_Close( child );
++            IClosable_Release( child );
++        }
++    }
++    animation_group_release_entries( entries, count );
++    ICompositionPropertySet_Release( properties );
++    ICompositor_Release( compositor );
++    return S_OK;
++}
++
++static const IClosableVtbl animation_group_closable_vtbl =
++{
++    animation_group_closable_QueryInterface, animation_group_closable_AddRef, animation_group_closable_Release,
++    animation_group_closable_GetIids, animation_group_closable_GetRuntimeClassName, animation_group_closable_GetTrustLevel, animation_group_closable_Close,
+ };
+ 
+ static HRESULT WINAPI compositor2_CreateAnimationGroup( struct compositor2_iface *iface, IInspectable **value )
+@@ -7473,6 +7593,7 @@
+     impl->ICompositionObject_iface.lpVtbl = &animation_group_object_vtbl;
+     impl->compositor = &compositor->ICompositor_iface;
+     ICompositor_AddRef( impl->compositor );
++    impl->closable.lpVtbl = &animation_group_closable_vtbl;
+     impl->ref = 1;
+     InitializeCriticalSection( &impl->cs );
+     *value = (IInspectable *)&impl->iface;
+@@ -7544,6 +7665,8 @@
+     struct implicit_map_iface map;
+     struct implicit_iterable_iface iterable;
+     ICompositionObject object;
++    IClosable closable;
++    BOOL closed;
+     LONG ref;
+     CRITICAL_SECTION cs;
+     ICompositor *compositor;
+@@ -7701,6 +7824,7 @@
+     else if (IsEqualGUID( iid, &implicit_map_iid )) *out = &impl->map;
+     else if (IsEqualGUID( iid, &implicit_iterable_iid )) *out = &impl->iterable;
+     else if (IsEqualGUID( iid, &IID_ICompositionObject )) *out = &impl->object;
++    else if (IsEqualGUID( iid, &IID_IClosable )) *out = &impl->closable;
+     else return E_NOINTERFACE;
+     InterlockedIncrement( &impl->ref );
+     return S_OK;
+@@ -7719,8 +7843,8 @@
+     if (!ref)
+     {
+         implicit_entries_release( impl->entries, impl->count );
+-        ICompositionPropertySet_Release( impl->properties );
+-        ICompositor_Release( impl->compositor );
++        if (impl->properties) ICompositionPropertySet_Release( impl->properties );
++        if (impl->compositor) ICompositor_Release( impl->compositor );
+         DeleteCriticalSection( &impl->cs );
+         free( impl );
+     }
+@@ -7731,13 +7855,14 @@
+ {
+     if (!count || !iids) return E_POINTER;
+     *count = 0;
+-    *iids = CoTaskMemAlloc( 4 * sizeof(**iids) );
++    *iids = CoTaskMemAlloc( 5 * sizeof(**iids) );
+     if (!*iids) return E_OUTOFMEMORY;
+     (*iids)[0] = implicit_collection_iid;
+     (*iids)[1] = implicit_map_iid;
+     (*iids)[2] = implicit_iterable_iid;
+     (*iids)[3] = IID_ICompositionObject;
+-    *count = 4;
++    (*iids)[4] = IID_IClosable;
++    *count = 5;
+     return S_OK;
+ }
+ 
+@@ -7771,6 +7896,8 @@
+     if (!value) return E_POINTER;
+     *value = NULL;
+     EnterCriticalSection( &impl->cs );
++    *value = NULL;
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return RO_E_CLOSED; }
+     index = implicit_entries_find( impl->entries, impl->count, key );
+     hr = index < impl->count ? implicit_pair_get_Value( &impl->entries[index]->iface, value ) : E_BOUNDS;
+     LeaveCriticalSection( &impl->cs );
+@@ -7783,6 +7910,8 @@
+ 
+     if (!count) return E_POINTER;
+     EnterCriticalSection( &impl->cs );
++    *count = 0;
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return RO_E_CLOSED; }
+     *count = impl->count;
+     LeaveCriticalSection( &impl->cs );
+     return S_OK;
+@@ -7794,6 +7923,8 @@
+ 
+     if (!value) return E_POINTER;
+     EnterCriticalSection( &impl->cs );
++    *value = FALSE;
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return RO_E_CLOSED; }
+     *value = implicit_entries_find( impl->entries, impl->count, key ) < impl->count;
+     LeaveCriticalSection( &impl->cs );
+     return S_OK;
+@@ -7805,7 +7936,7 @@
+     struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
+     struct implicit_animation_pair *pair, *old = NULL, **entries;
+     ICompositionObject *object;
+-    ICompositor *compositor;
++    ICompositor *compositor, *parent;
+     IUnknown *identity, *expected;
+     UINT32 index;
+     SIZE_T entry_count;
+@@ -7822,7 +7953,13 @@
+     hr = ICompositor_QueryInterface( compositor, &IID_IUnknown, (void **)&identity );
+     ICompositor_Release( compositor );
+     if (FAILED(hr)) return hr;
+-    hr = ICompositor_QueryInterface( impl->compositor, &IID_IUnknown, (void **)&expected );
++    EnterCriticalSection( &impl->cs );
++    parent = impl->compositor;
++    if (parent) ICompositor_AddRef( parent );
++    LeaveCriticalSection( &impl->cs );
++    if (!parent) { IUnknown_Release( identity ); return RO_E_CLOSED; }
++    hr = ICompositor_QueryInterface( parent, &IID_IUnknown, (void **)&expected );
++    ICompositor_Release( parent );
+     if (FAILED(hr)) { IUnknown_Release( identity ); return hr; }
+     hr = identity == expected ? S_OK : E_INVALIDARG;
+     IUnknown_Release( identity );
+@@ -7830,6 +7967,7 @@
+     if (FAILED(hr)) return hr;
+     if (FAILED(hr = implicit_pair_create( key, value, &pair ))) return hr;
+     EnterCriticalSection( &impl->cs );
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); implicit_pair_Release( &pair->iface ); return RO_E_CLOSED; }
+     index = implicit_entries_find( impl->entries, impl->count, key );
+     if (index < impl->count)
+     {
+@@ -7860,6 +7998,7 @@
+     UINT32 index;
+ 
+     EnterCriticalSection( &impl->cs );
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return RO_E_CLOSED; }
+     index = implicit_entries_find( impl->entries, impl->count, key );
+     if (index < impl->count)
+     {
+@@ -7880,6 +8019,7 @@
+     UINT32 count;
+ 
+     EnterCriticalSection( &impl->cs );
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return RO_E_CLOSED; }
+     entries = impl->entries;
+     count = impl->count;
+     impl->entries = NULL;
+@@ -8060,6 +8200,11 @@
+     if (impl->collection)
+     {
+         EnterCriticalSection( &impl->collection->cs );
++        if (impl->collection->closed)
++        {
++            LeaveCriticalSection( &impl->collection->cs );
++            return RO_E_CLOSED;
++        }
+         if (impl->generation != impl->collection->generation)
+         {
+             LeaveCriticalSection( &impl->collection->cs );
+@@ -8176,6 +8321,13 @@
+     {
+         implicit_collection_AddRef( &collection->iface );
+         EnterCriticalSection( &collection->cs );
++        if (collection->closed)
++        {
++            LeaveCriticalSection( &collection->cs );
++            implicit_collection_Release( &collection->iface );
++            free( impl );
++            return RO_E_CLOSED;
++        }
+         impl->generation = collection->generation;
+         LeaveCriticalSection( &collection->cs );
+     }
+@@ -8405,6 +8557,8 @@
+     if (!value) return E_POINTER;
+     *value = NULL;
+     EnterCriticalSection( &impl->cs );
++    *value = NULL;
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return RO_E_CLOSED; }
+     hr = implicit_view_create( impl->entries, impl->count, value );
+     LeaveCriticalSection( &impl->cs );
+     return hr;
+@@ -8422,16 +8576,26 @@
+     struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
+ 
+     if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->cs );
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return RO_E_CLOSED; }
+     *value = impl->compositor;
+     ICompositor_AddRef( *value );
++    LeaveCriticalSection( &impl->cs );
+     return S_OK;
+ }
+ 
+ static HRESULT WINAPI implicit_object_get_Dispatcher( ICompositionObject *iface, ICoreDispatcher **value )
+ {
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
++    HRESULT hr;
++
+     if (!value) return E_POINTER;
+     *value = NULL;
+-    return S_OK;
++    EnterCriticalSection( &impl->cs );
++    hr = impl->closed ? RO_E_CLOSED : S_OK;
++    LeaveCriticalSection( &impl->cs );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI implicit_object_get_Properties( ICompositionObject *iface, ICompositionPropertySet **value )
+@@ -8439,35 +8603,34 @@
+     struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
+ 
+     if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->cs );
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return RO_E_CLOSED; }
+     *value = impl->properties;
+     ICompositionPropertySet_AddRef( *value );
+-    return S_OK;
+-}
+-
+-static HRESULT WINAPI implicit_object_StartAnimation( ICompositionObject *iface, HSTRING name,
+-        ICompositionAnimation *animation )
+-{
+-    ICompositionObject *object;
++    LeaveCriticalSection( &impl->cs );
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_object_StartAnimation( ICompositionObject *iface, HSTRING name, ICompositionAnimation *animation )
++{
+     struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
+     HRESULT hr;
+ 
+-    hr = ICompositionPropertySet_QueryInterface( impl->properties, &IID_ICompositionObject, (void **)&object );
+-    if (FAILED(hr)) return hr;
+-    hr = ICompositionObject_StartAnimation( object, name, animation );
+-    ICompositionObject_Release( object );
++    EnterCriticalSection( &impl->cs );
++    hr = impl->closed ? RO_E_CLOSED : E_NOTIMPL;
++    LeaveCriticalSection( &impl->cs );
+     return hr;
+ }
+ 
+ static HRESULT WINAPI implicit_object_StopAnimation( ICompositionObject *iface, HSTRING name )
+ {
+-    ICompositionObject *object;
+     struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
+     HRESULT hr;
+ 
+-    hr = ICompositionPropertySet_QueryInterface( impl->properties, &IID_ICompositionObject, (void **)&object );
+-    if (FAILED(hr)) return hr;
+-    hr = ICompositionObject_StopAnimation( object, name );
+-    ICompositionObject_Release( object );
++    EnterCriticalSection( &impl->cs );
++    hr = impl->closed ? RO_E_CLOSED : E_NOTIMPL;
++    LeaveCriticalSection( &impl->cs );
+     return hr;
+ }
+ 
+@@ -8479,6 +8642,91 @@
+     implicit_object_StartAnimation, implicit_object_StopAnimation,
+ };
+ 
++
++
++static HRESULT WINAPI implicit_collection_closable_QueryInterface( IClosable *iface, REFIID iid, void **out)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, closable );
++
++    return implicit_collection_QueryInterface( &impl->iface, iid, out );
++}
++
++static ULONG WINAPI implicit_collection_closable_AddRef( IClosable *iface)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, closable );
++
++    return implicit_collection_AddRef( &impl->iface );
++}
++
++static ULONG WINAPI implicit_collection_closable_Release( IClosable *iface)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, closable );
++
++    return implicit_collection_Release( &impl->iface );
++}
++
++static HRESULT WINAPI implicit_collection_closable_GetIids( IClosable *iface, ULONG *count, IID **iids)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, closable );
++
++    return implicit_collection_GetIids( &impl->iface, count, iids );
++}
++
++static HRESULT WINAPI implicit_collection_closable_GetRuntimeClassName( IClosable *iface, HSTRING *name)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, closable );
++
++    return implicit_collection_GetRuntimeClassName( &impl->iface, name );
++}
++
++static HRESULT WINAPI implicit_collection_closable_GetTrustLevel( IClosable *iface, TrustLevel *level)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, closable );
++
++    return implicit_collection_GetTrustLevel( &impl->iface, level );
++}
++
++static HRESULT WINAPI implicit_collection_closable_Close( IClosable *iface )
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, closable );
++    struct implicit_animation_pair **entries;
++    ICompositionPropertySet *properties;
++    ICompositor *compositor;
++    IClosable *child;
++    UINT32 count, i;
++
++    EnterCriticalSection( &impl->cs );
++    if (impl->closed) { LeaveCriticalSection( &impl->cs ); return S_OK; }
++    impl->closed = TRUE;
++    ++impl->generation;
++    entries = impl->entries;
++    count = impl->count;
++    properties = impl->properties;
++    compositor = impl->compositor;
++    impl->entries = NULL;
++    impl->count = 0;
++    impl->properties = NULL;
++    impl->compositor = NULL;
++    LeaveCriticalSection( &impl->cs );
++    for (i = 0; i < count; ++i)
++    {
++        if (SUCCEEDED(IUnknown_QueryInterface( (IUnknown *)entries[i]->value, &IID_IClosable, (void **)&child )))
++        {
++            IClosable_Close( child );
++            IClosable_Release( child );
++        }
++    }
++    implicit_entries_release( entries, count );
++    ICompositionPropertySet_Release( properties );
++    ICompositor_Release( compositor );
++    return S_OK;
++}
++
++static const IClosableVtbl implicit_collection_closable_vtbl =
++{
++    implicit_collection_closable_QueryInterface, implicit_collection_closable_AddRef, implicit_collection_closable_Release,
++    implicit_collection_closable_GetIids, implicit_collection_closable_GetRuntimeClassName, implicit_collection_closable_GetTrustLevel, implicit_collection_closable_Close,
++};
+ 
+ static HRESULT WINAPI compositor2_CreateImplicitAnimationCollection( struct compositor2_iface *iface, IInspectable **value )
+ {
+@@ -8497,6 +8745,7 @@
+     impl->object.lpVtbl = &implicit_object_vtbl;
+     impl->compositor = &compositor->ICompositor_iface;
+     ICompositor_AddRef( impl->compositor );
++    impl->closable.lpVtbl = &implicit_collection_closable_vtbl;
+     impl->ref = 1;
+     InitializeCriticalSection( &impl->cs );
+     *value = &impl->iface;

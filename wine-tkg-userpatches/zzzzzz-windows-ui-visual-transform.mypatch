@@ -1,0 +1,54 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -7436,6 +7436,8 @@
+     struct visual_collection *children;
+     IInsetClip *clip = NULL;
+     D2D1_RECT_F bounds, clip_bounds;
++    D2D1_MATRIX_3X2_F parent, local, transform;
++    FLOAT center_x, center_y;
+     FLOAT width, height;
+     UINT i;
+     HRESULT hr = S_OK;
+@@ -7458,7 +7460,25 @@
+     y += impl->offset.Y + parent_height * impl->relative_offset_adjustment.Y -
+             impl->anchor_point.Y * height;
+     opacity *= impl->opacity;
+-    bounds = (D2D1_RECT_F){x, y, x + width, y + height};
++    ID2D1DeviceContext_GetTransform( context, &parent );
++    center_x = impl->center_point.X * (1.0f - impl->scale.X);
++    center_y = impl->center_point.Y * (1.0f - impl->scale.Y);
++    local = (D2D1_MATRIX_3X2_F){impl->scale.X * impl->transform_matrix.M11,
++            impl->scale.X * impl->transform_matrix.M12,
++            impl->scale.Y * impl->transform_matrix.M21,
++            impl->scale.Y * impl->transform_matrix.M22,
++            center_x * impl->transform_matrix.M11 + center_y * impl->transform_matrix.M21 +
++                    impl->transform_matrix.M41 + x,
++            center_x * impl->transform_matrix.M12 + center_y * impl->transform_matrix.M22 +
++                    impl->transform_matrix.M42 + y};
++    transform = (D2D1_MATRIX_3X2_F){local._11 * parent._11 + local._12 * parent._21,
++            local._11 * parent._12 + local._12 * parent._22,
++            local._21 * parent._11 + local._22 * parent._21,
++            local._21 * parent._12 + local._22 * parent._22,
++            local._31 * parent._11 + local._32 * parent._21 + parent._31,
++            local._31 * parent._12 + local._32 * parent._22 + parent._32};
++    ID2D1DeviceContext_SetTransform( context, &transform );
++    bounds = (D2D1_RECT_F){0.0f, 0.0f, width, height};
+ 
+     if (impl->clip && SUCCEEDED(ICompositionClip_QueryInterface( impl->clip,
+             &IID_IInsetClip, (void **)&clip )))
+@@ -7471,13 +7491,14 @@
+     if (impl->brush && bounds.right > bounds.left && bounds.bottom > bounds.top)
+         hr = draw_composition_brush( context, impl->brush, &bounds, opacity, 0 );
+     for (i = 0; SUCCEEDED(hr) && i < children->count; ++i)
+-        hr = draw_composition_visual( context, children->items[i], x, y, width, height,
++        hr = draw_composition_visual( context, children->items[i], 0.0f, 0.0f, width, height,
+                 opacity, depth + 1 );
+     if (clip)
+     {
+         ID2D1DeviceContext_PopAxisAlignedClip( context );
+         IInsetClip_Release( clip );
+     }
++    ID2D1DeviceContext_SetTransform( context, &parent );
+     return hr;
+ }
+ 

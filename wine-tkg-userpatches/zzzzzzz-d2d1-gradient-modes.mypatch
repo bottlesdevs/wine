@@ -1,0 +1,159 @@
+--- a/dlls/d2d1/brush.c
++++ b/dlls/d2d1/brush.c
+@@ -103,16 +103,12 @@
+ 
+ static D2D1_GAMMA STDMETHODCALLTYPE d2d_gradient_GetColorInterpolationGamma(ID2D1GradientStopCollection *iface)
+ {
+-    FIXME("iface %p stub!\n", iface);
+-
+-    return D2D1_GAMMA_1_0;
++    return impl_from_ID2D1GradientStopCollection(iface)->gamma;
+ }
+ 
+ static D2D1_EXTEND_MODE STDMETHODCALLTYPE d2d_gradient_GetExtendMode(ID2D1GradientStopCollection *iface)
+ {
+-    FIXME("iface %p stub!\n", iface);
+-
+-    return D2D1_EXTEND_MODE_CLAMP;
++    return impl_from_ID2D1GradientStopCollection(iface)->extend_mode;
+ }
+ 
+ static const struct ID2D1GradientStopCollectionVtbl d2d_gradient_vtbl =
+@@ -141,6 +137,8 @@
+     HRESULT hr;
+ 
+     *out = NULL;
++    if (!stop_count || !stops || gamma > D2D1_GAMMA_1_0 || extend_mode > D2D1_EXTEND_MODE_MIRROR)
++        return E_INVALIDARG;
+     if (!(data = calloc(stop_count, 2 * sizeof(*data))))
+     {
+         ERR("Failed to allocate data.\n");
+@@ -193,10 +191,8 @@
+         return E_OUTOFMEMORY;
+     }
+ 
+-    if (gamma != D2D1_GAMMA_2_2)
+-        FIXME("Ignoring gamma %#x.\n", gamma);
+-    if (extend_mode != D2D1_EXTEND_MODE_CLAMP)
+-        FIXME("Ignoring extend mode %#x.\n", extend_mode);
++    gradient->gamma = gamma;
++    gradient->extend_mode = extend_mode;
+ 
+     gradient->ID2D1GradientStopCollection_iface.lpVtbl = &d2d_gradient_vtbl;
+     gradient->refcount = 1;
+@@ -1404,6 +1400,8 @@
+             d2d_point_transform(&cb->u.linear.start, &b, brush->u.linear.start.x, brush->u.linear.start.y);
+             d2d_point_transform(&cb->u.linear.end, &b, brush->u.linear.end.x, brush->u.linear.end.y);
+             cb->u.linear.stop_count = brush->u.linear.gradient->stop_count;
++            cb->u.linear.gamma = brush->u.linear.gradient->gamma;
++            cb->u.linear.extend_mode = brush->u.linear.gradient->extend_mode;
+ 
+             return TRUE;
+ 
+@@ -1446,6 +1444,8 @@
+             d2d_point_set(&cb->u.radial.rb, t * -sin_theta, t * cos_theta);
+ 
+             cb->u.radial.stop_count = brush->u.radial.gradient->stop_count;
++            cb->u.radial.gamma = brush->u.radial.gradient->gamma;
++            cb->u.radial.extend_mode = brush->u.radial.gradient->extend_mode;
+ 
+             return TRUE;
+ 
+--- a/dlls/d2d1/d2d1_private.h
++++ b/dlls/d2d1/d2d1_private.h
+@@ -97,6 +97,8 @@
+             D2D1_POINT_2F start;
+             D2D1_POINT_2F end;
+             unsigned int stop_count;
++            D2D1_GAMMA gamma;
++            D2D1_EXTEND_MODE extend_mode;
+         } linear;
+         struct
+         {
+@@ -105,7 +107,9 @@
+             D2D1_POINT_2F ra;
+             D2D1_POINT_2F rb;
+             unsigned int stop_count;
+-            float pad[3];
++            D2D1_GAMMA gamma;
++            D2D1_EXTEND_MODE extend_mode;
++            float pad;
+         } radial;
+         struct
+         {
+@@ -318,6 +322,8 @@
+     ID3D11ShaderResourceView *view;
+     D2D1_GRADIENT_STOP *stops;
+     UINT32 stop_count;
++    D2D1_GAMMA gamma;
++    D2D1_EXTEND_MODE extend_mode;
+ };
+ 
+ HRESULT d2d_gradient_create(ID2D1Factory *factory, ID3D11Device1 *device, const D2D1_GRADIENT_STOP *stops,
+--- a/dlls/d2d1/device.c
++++ b/dlls/d2d1/device.c
+@@ -5085,12 +5085,36 @@
+     "    nointerpolation float2x2 stroke_transform : STROKE_TRANSFORM;\n"
+     "};\n"
+     "\n"
+-    "float4 sample_gradient(Buffer<float4> gradient, uint stop_count, float position)\n"
++    "float srgb_to_linear(float value)\n"
++    "{\n"
++    "    return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4);\n"
++    "}\n"
++    "float linear_to_srgb(float value)\n"
++    "{\n"
++    "    return value <= 0.0031308 ? value * 12.92 : 1.055 * pow(value, 1.0 / 2.4) - 0.055;\n"
++    "}\n"
++    "float4 interpolate_gradient(float4 low, float4 high, float amount, uint gamma)\n"
++    "{\n"
++    "    float4 result;\n"
++    "    if (gamma == 0) return lerp(low, high, amount);\n"
++    "    low.rgb = float3(srgb_to_linear(low.r), srgb_to_linear(low.g), srgb_to_linear(low.b));\n"
++    "    high.rgb = float3(srgb_to_linear(high.r), srgb_to_linear(high.g), srgb_to_linear(high.b));\n"
++    "    result = lerp(low, high, amount);\n"
++    "    result.rgb = float3(linear_to_srgb(result.r), linear_to_srgb(result.g), linear_to_srgb(result.b));\n"
++    "    return result;\n"
++    "}\n"
++    "float4 sample_gradient(Buffer<float4> gradient, uint stop_count, float position, uint gamma, uint extend_mode)\n"
+     "{\n"
+     "    float4 c_low, c_high;\n"
+     "    float p_low, p_high;\n"
+     "    uint i;\n"
+     "\n"
++    "    if (extend_mode == 1) position = frac(position);\n"
++    "    else if (extend_mode == 2)\n"
++    "    {\n"
++    "        position = frac(position * 0.5) * 2.0;\n"
++    "        if (position > 1.0) position = 2.0 - position;\n"
++    "    }\n"
+     "    p_low = gradient.Load(0).x;\n"
+     "    c_low = gradient.Load(1);\n"
+     "    c_high = c_low;\n"
+@@ -5105,7 +5129,7 @@
+     "        c_high = gradient.Load(i * 2 + 1);\n"
+     "\n"
+     "        if (position >= p_low && position <= p_high)\n"
+-    "            return lerp(c_low, c_high, (position - p_low) / (p_high - p_low));\n"
++    "            return interpolate_gradient(c_low, c_high, p_high > p_low ? (position - p_low) / (p_high - p_low) : 1.0, gamma);\n"
+     "\n"
+     "        p_low = p_high;\n"
+     "        c_low = c_high;\n"
+@@ -5128,7 +5152,7 @@
+     "    v_q = end - start;\n"
+     "    p = dot(v_q, v_p) / dot(v_q, v_q);\n"
+     "\n"
+-    "    return sample_gradient(gradient, stop_count, p);\n"
++    "    return sample_gradient(gradient, stop_count, p, asuint(brush.data[1].y), asuint(brush.data[1].z));\n"
+     "}\n"
+     "\n"
+     "float4 brush_radial(struct brush brush, Buffer<float4> gradient, float2 position)\n"
+@@ -5161,7 +5185,7 @@
+     "    c = dot(v_q, v_q) - 1.0;\n"
+     "    t = -b + sqrt(b * b - c);\n"
+     "\n"
+-    "    return sample_gradient(gradient, stop_count, l / t);\n"
++    "    return sample_gradient(gradient, stop_count, l / t, asuint(brush.data[2].y), asuint(brush.data[2].z));\n"
+     "}\n"
+     "\n"
+     "float4 brush_bitmap(struct brush brush, Texture2D t, SamplerState s, float2 position)\n"

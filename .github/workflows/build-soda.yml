@@ -31,7 +31,7 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '29-experimental'
+  REVISION: '30-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -49,13 +49,21 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-29 Experimental corrects Thai font fallback in DirectWrite and GDI. GDI keeps fonts that already contain the requested characters and leaves explicit glyph-index drawing unchanged.
+    Soda 11.0-30 Experimental, codenamed Windows Escape, updates Direct2D, GDI and Windows.UI.Composition rendering. It remains a prerelease and does not replace the current stable Soda build.
 
-    Direct2D Flush now draws pending work and returns drawing errors and their tags instead of E_NOTIMPL. Eagle preserves Win32 and NT thread error values while checking trace providers.
-
-    Enable Eagle Tracing in the bottle's Preferences to collect per-launch logs in logs/runs. Review them before sharing. Eagle is included in the x86_64 runner for x86 and x64 apps; it is not included in the ARM64 runner. Matching application symbols are required for source names and lines. Console input/output is disconnected during tracing.
-
-    Other Office startup, sign-in and document crashes remain under investigation.
+    - Deferred Direct2D HWND presentation until EndDraw and flushed GDI window surfaces.
+    - Preserved Direct2D command-list drawing state and checked render target support.
+    - Aligned virtual drawing surface updates, preserved existing content and published changes on EndDraw.
+    - Implemented the Direct2D arithmetic image effect and preserved WIC drawing errors and tags.
+    - Handled DXGI presentation regions and swapchain buffer lifetime.
+    - Selected registered type library versions by major and minor version.
+    - Added Haptics waveform constants and activation interfaces.
+    - Added Composition effect factories, vector expressions and visual transforms.
+    - Implemented Composition gradient brushes and Direct2D gradient gamma and extend modes.
+    - Added RedirectVisual rendering, source changes and source retention.
+    - Added CompositionObject2 metadata and implicit-animation collection association.
+    - Added native animation-group and implicit-animation collection interfaces, iteration and disposal.
+    - Preserved application window styles when creating composition targets.
 
 jobs:
   patches:
@@ -547,6 +555,97 @@ jobs:
           mkdir -p "$WINEPREFIX"
           xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-gdi-flush-smoke.exe"
           "$runner_dir/bin/wineserver" -w
+
+      - name: verify registered type library versions
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          smoke_dir="$HOME/artifacts/soda-typelib-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$smoke_dir"
+          mkdir -p "$smoke_dir"
+          export TMPDIR="$smoke_dir" TMP="$smoke_dir" TEMP="$smoke_dir"
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-typelib-smoke.c" \
+            -O2 -municode -Wall -Wextra -Werror -loleaut32 -lole32 -luuid \
+            -o "$smoke_dir/smoke64.exe"
+          i686-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-typelib-smoke.c" \
+            -O2 -municode -Wall -Wextra -Werror -loleaut32 -lole32 -luuid \
+            -o "$smoke_dir/smoke32.exe"
+          export WINEDEBUG=-all
+          export WINEDLLOVERRIDES='winemenubuilder.exe=d'
+          for arch in 64 32; do
+            export WINEARCH="win$arch"
+            export WINEPREFIX="$smoke_dir/prefix$arch"
+            mkdir -p "$WINEPREFIX"
+            xvfb-run -a "$runner_dir/bin/wine" "$smoke_dir/smoke$arch.exe" \
+              | tr -d '\r' | tee "$smoke_dir/smoke$arch.log"
+            grep -Fx 'CANDIDATE_SELECTION_PASS=00000000' "$smoke_dir/smoke$arch.log"
+            grep -Fx 'REGISTERED_EXACT_VERSION=1.0' "$smoke_dir/smoke$arch.log"
+            grep -Fx 'WRONG_MAJOR=8002801d' "$smoke_dir/smoke$arch.log"
+            grep -Fx 'NEWER_MINOR=8002801d' "$smoke_dir/smoke$arch.log"
+            grep -Fx 'RESULT=00000000' "$smoke_dir/smoke$arch.log"
+            "$runner_dir/bin/wineserver" -w
+          done
+
+      - name: verify WIC presentation errors
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          smoke_dir="$HOME/artifacts/soda-d2d-wic-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$smoke_dir"
+          mkdir -p "$smoke_dir"
+          export TMPDIR="$smoke_dir" TMP="$smoke_dir" TEMP="$smoke_dir"
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-d2d-wic-smoke.c" \
+            -O2 -municode -Wall -Wextra -Werror -ld2d1 -lwindowscodecs -lole32 -luuid \
+            -o "$smoke_dir/smoke64.exe"
+          i686-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-d2d-wic-smoke.c" \
+            -O2 -municode -Wall -Wextra -Werror -ld2d1 -lwindowscodecs -lole32 -luuid \
+            -o "$smoke_dir/smoke32.exe"
+          export WINEDEBUG=-all
+          export WINEDLLOVERRIDES='winemenubuilder.exe=d'
+          for arch in 64 32; do
+            export WINEARCH="win$arch"
+            export WINEPREFIX="$smoke_dir/prefix$arch"
+            mkdir -p "$WINEPREFIX"
+            xvfb-run -a "$runner_dir/bin/wine" "$smoke_dir/smoke$arch.exe" \
+              | tr -d '\r' | tee "$smoke_dir/smoke$arch.log"
+            grep -Fx 'WIC_LOCKED_END=88982f0d tags=1111,2222' "$smoke_dir/smoke$arch.log"
+            grep -Fx 'WIC_RECOVERY=PASS' "$smoke_dir/smoke$arch.log"
+            grep -Fx 'WIC_FIRST_ERROR=88990018 tags=3333,4444' "$smoke_dir/smoke$arch.log"
+            grep -Fx 'RESULT=PASS' "$smoke_dir/smoke$arch.log"
+            "$runner_dir/bin/wineserver" -w
+          done
+
+      - name: verify Haptics waveform constants
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          smoke_dir="$HOME/artifacts/soda-haptics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$smoke_dir"
+          mkdir -p "$smoke_dir"
+          export TMPDIR="$smoke_dir" TMP="$smoke_dir" TEMP="$smoke_dir"
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-haptics-smoke.c" \
+            -O2 -municode -Wall -Wextra -Werror -lruntimeobject -lole32 -luuid \
+            -o "$smoke_dir/smoke64.exe"
+          i686-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-haptics-smoke.c" \
+            -O2 -municode -Wall -Wextra -Werror -lruntimeobject -lole32 -luuid \
+            -o "$smoke_dir/smoke32.exe"
+          export WINEDEBUG=-all
+          export WINEDLLOVERRIDES='winemenubuilder.exe=d'
+          for arch in 64 32; do
+            export WINEARCH="win$arch"
+            export WINEPREFIX="$smoke_dir/prefix$arch"
+            mkdir -p "$WINEPREFIX"
+            xvfb-run -a "$runner_dir/bin/wine" "$smoke_dir/smoke$arch.exe" \
+              | tr -d '\r' | tee "$smoke_dir/smoke$arch.log"
+            grep -Fx 'HAPTICS_FACTORY=00000000' "$smoke_dir/smoke$arch.log"
+            grep -Fx 'RUNTIME_CLASS=PASS' "$smoke_dir/smoke$arch.log"
+            grep -Fx 'STATICS_IID=PASS' "$smoke_dir/smoke$arch.log"
+            grep -Fx 'RESULT=00000000' "$smoke_dir/smoke$arch.log"
+            "$runner_dir/bin/wineserver" -w
+          done
 
       - name: verify MS-ICU runtime
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/

@@ -1,0 +1,161 @@
+--- a/dlls/dxgi/swapchain.c
++++ b/dlls/dxgi/swapchain.c
+@@ -301,8 +301,123 @@
+ 
+ /* IDXGISwapChain1 methods */
+ 
++static HRESULT d3d11_swapchain_copy_region(struct wined3d_device_context *context,
++        struct wined3d_resource *dst, struct wined3d_resource *src, HRGN region, LONG dx, LONG dy)
++{
++    struct wined3d_box box;
++    RGNDATA *data;
++    const RECT *rects;
++    unsigned int i;
++    DWORD size;
++    HRESULT hr = S_OK;
++
++    if (!(size = GetRegionData(region, 0, NULL)))
++        return E_FAIL;
++    if (!(data = malloc(size)))
++        return E_OUTOFMEMORY;
++    if (!GetRegionData(region, size, data))
++    {
++        free(data);
++        return E_FAIL;
++    }
++
++    rects = (const RECT *)data->Buffer;
++    for (i = 0; i < data->rdh.nCount; ++i)
++    {
++        box.left = (LONGLONG)rects[i].left - dx;
++        box.top = (LONGLONG)rects[i].top - dy;
++        box.right = (LONGLONG)rects[i].right - dx;
++        box.bottom = (LONGLONG)rects[i].bottom - dy;
++        box.front = 0;
++        box.back = 1;
++        if (FAILED(hr = wined3d_device_context_copy_sub_resource_region(context, dst, 0,
++                rects[i].left, rects[i].top, 0, src, 0, &box, 0)))
++            break;
++    }
++    free(data);
++    return hr;
++}
++
++static HRESULT d3d11_swapchain_update_back_buffer(struct d3d11_swapchain *swapchain,
++        const DXGI_PRESENT_PARAMETERS *parameters)
++{
++    struct dxgi_device *device = CONTAINING_RECORD(swapchain->device, struct dxgi_device, IWineDXGIDevice_iface);
++    struct wined3d_device_context *context;
++    struct wined3d_resource *back_buffer, *previous;
++    struct wined3d_swapchain_desc swapchain_desc;
++    struct wined3d_resource_desc desc;
++    HRGN preserved = NULL, dirty = NULL, scrolled = NULL;
++    LONG dx = 0, dy = 0;
++    unsigned int i;
++    HRESULT hr = E_OUTOFMEMORY;
++
++    if (!parameters || !parameters->DirtyRectsCount)
++        return S_OK;
++
++    wined3d_swapchain_get_desc(swapchain->wined3d_swapchain, &swapchain_desc);
++    if (swapchain_desc.backbuffer_count < 2 || (swapchain_desc.swap_effect != WINED3D_SWAP_EFFECT_FLIP_SEQUENTIAL
++            && swapchain_desc.swap_effect != WINED3D_SWAP_EFFECT_SEQUENTIAL))
++        return S_OK;
++    if (!parameters->pDirtyRects)
++        return DXGI_ERROR_INVALID_CALL;
++
++    back_buffer = wined3d_texture_get_resource(wined3d_swapchain_get_back_buffer(swapchain->wined3d_swapchain, 0));
++    wined3d_resource_get_desc(back_buffer, &desc);
++    for (i = 0; i < parameters->DirtyRectsCount; ++i)
++    {
++        const RECT *rect = &parameters->pDirtyRects[i];
++        if (rect->left < 0 || rect->top < 0 || rect->right <= rect->left || rect->bottom <= rect->top
++                || rect->right > desc.width || rect->bottom > desc.height)
++            return DXGI_ERROR_INVALID_CALL;
++    }
++
++    if (!(preserved = CreateRectRgn(0, 0, desc.width, desc.height)) || !(dirty = CreateRectRgn(0, 0, 0, 0)))
++        goto done;
++    if (parameters->pScrollRect && parameters->pScrollOffset
++            && swapchain_desc.swap_effect == WINED3D_SWAP_EFFECT_FLIP_SEQUENTIAL)
++    {
++        const RECT *rect = parameters->pScrollRect;
++        LONGLONG left, top, right, bottom;
++        dx = parameters->pScrollOffset->x;
++        dy = parameters->pScrollOffset->y;
++        left = max(max((LONGLONG)rect->left, 0), (LONGLONG)dx);
++        top = max(max((LONGLONG)rect->top, 0), (LONGLONG)dy);
++        right = min(min((LONGLONG)rect->right, desc.width), desc.width + (LONGLONG)dx);
++        bottom = min(min((LONGLONG)rect->bottom, desc.height), desc.height + (LONGLONG)dy);
++        if ((dx || dy) && left < right && top < bottom)
++        {
++            if (!(scrolled = CreateRectRgn(left, top, right, bottom)))
++                goto done;
++            hr = E_FAIL;
++            if (CombineRgn(preserved, preserved, scrolled, RGN_DIFF) == ERROR)
++                goto done;
++        }
++    }
++
++    hr = E_FAIL;
++    for (i = 0; i < parameters->DirtyRectsCount; ++i)
++    {
++        const RECT *rect = &parameters->pDirtyRects[i];
++        if (!SetRectRgn(dirty, rect->left, rect->top, rect->right, rect->bottom)
++                || CombineRgn(preserved, preserved, dirty, RGN_DIFF) == ERROR
++                || (scrolled && CombineRgn(scrolled, scrolled, dirty, RGN_DIFF) == ERROR))
++            goto done;
++    }
++
++    context = wined3d_device_get_immediate_context(device->wined3d_device);
++    previous = wined3d_texture_get_resource(wined3d_swapchain_get_back_buffer(swapchain->wined3d_swapchain,
++            swapchain_desc.backbuffer_count - 1));
++    if (SUCCEEDED(hr = d3d11_swapchain_copy_region(context, back_buffer, previous, preserved, 0, 0)) && scrolled)
++        hr = d3d11_swapchain_copy_region(context, back_buffer, previous, scrolled, dx, dy);
++done:
++    if (scrolled) DeleteObject(scrolled);
++    if (dirty) DeleteObject(dirty);
++    if (preserved) DeleteObject(preserved);
++    return hr;
++}
++
+ static HRESULT d3d11_swapchain_present(struct d3d11_swapchain *swapchain,
+-        unsigned int sync_interval, unsigned int flags)
++        unsigned int sync_interval, unsigned int flags, const DXGI_PRESENT_PARAMETERS *parameters)
+ {
+     HRESULT hr;
+ 
+@@ -323,7 +438,11 @@
+         return S_OK;
+     }
+ 
+-    if (SUCCEEDED(hr = wined3d_swapchain_present(swapchain->wined3d_swapchain, NULL, NULL, NULL, sync_interval, 0)))
++    wined3d_mutex_lock();
++    hr = d3d11_swapchain_update_back_buffer(swapchain, parameters);
++    wined3d_mutex_unlock();
++    if (SUCCEEDED(hr) && SUCCEEDED(hr = wined3d_swapchain_present(swapchain->wined3d_swapchain,
++            NULL, NULL, NULL, sync_interval, 0)))
+         InterlockedIncrement(&swapchain->present_count);
+     return hr;
+ }
+@@ -334,7 +453,7 @@
+ 
+     TRACE("iface %p, sync_interval %u, flags %#x.\n", iface, sync_interval, flags);
+ 
+-    return d3d11_swapchain_present(swapchain, sync_interval, flags);
++    return d3d11_swapchain_present(swapchain, sync_interval, flags, NULL);
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetBuffer(IDXGISwapChain4 *iface,
+@@ -708,10 +827,7 @@
+     TRACE("iface %p, sync_interval %u, flags %#x, present_parameters %p.\n",
+             iface, sync_interval, flags, present_parameters);
+ 
+-    if (present_parameters)
+-        FIXME("Ignored present parameters %p.\n", present_parameters);
+-
+-    return d3d11_swapchain_present(swapchain, sync_interval, flags);
++    return d3d11_swapchain_present(swapchain, sync_interval, flags, present_parameters);
+ }
+ 
+ static BOOL STDMETHODCALLTYPE d3d11_swapchain_IsTemporaryMonoSupported(IDXGISwapChain4 *iface)

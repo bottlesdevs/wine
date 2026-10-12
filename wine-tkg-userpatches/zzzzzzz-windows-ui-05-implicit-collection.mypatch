@@ -1,0 +1,1050 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -1414,11 +1414,18 @@
+     HRESULT (WINAPI *First)(struct animation_iterable_iface *,struct animation_iterator_iface **);
+ };
+ struct animation_iterable_iface { const struct animation_iterable_vtbl *lpVtbl; };
++struct implicit_view_iface;
+ struct implicit_map_iface;
+ struct implicit_map_vtbl
+ {
+     OBJECT2_INSPECTABLE(struct implicit_map_iface);
+     HRESULT (WINAPI *Lookup)(struct implicit_map_iface *,HSTRING,ICompositionAnimationBase **);
++    HRESULT (WINAPI *get_Size)(struct implicit_map_iface *,UINT32 *);
++    HRESULT (WINAPI *HasKey)(struct implicit_map_iface *,HSTRING,boolean *);
++    HRESULT (WINAPI *GetView)(struct implicit_map_iface *,struct implicit_view_iface **);
++    HRESULT (WINAPI *Insert)(struct implicit_map_iface *,HSTRING,ICompositionAnimationBase *,boolean *);
++    HRESULT (WINAPI *Remove)(struct implicit_map_iface *,HSTRING);
++    HRESULT (WINAPI *Clear)(struct implicit_map_iface *);
+ };
+ struct implicit_map_iface { const struct implicit_map_vtbl *lpVtbl; };
+ #undef OBJECT2_INSPECTABLE
+@@ -7475,7 +7482,1027 @@
+ DEFINE_COMPOSITOR2_CREATE_METHOD(CreateBackdropBrush)
+ DEFINE_COMPOSITOR2_CREATE_METHOD(CreateDistantLight)
+ DEFINE_COMPOSITOR2_CREATE_METHOD(CreateDropShadow)
+-DEFINE_COMPOSITOR2_CREATE_METHOD(CreateImplicitAnimationCollection)
++static const GUID implicit_pair_iid = {0x3b9a274f,0x891d,0x5208,{0x96,0xbb,0xe3,0xf4,0x0c,0x80,0x9e,0x9b}};
++static const GUID implicit_iterator_iid = {0x85924e77,0xfc46,0x5a0d,{0xbd,0xaf,0x46,0x3c,0x4f,0x86,0xc1,0x72}};
++static const GUID implicit_iterable_iid = {0xc739c420,0x64b2,0x53f2,{0x89,0xb9,0x05,0x90,0x6a,0xba,0x7c,0xb0}};
++static const GUID implicit_view_iid = {0xb65e6ece,0xd9af,0x5d4a,{0xab,0xaa,0xc0,0x8e,0x34,0xa5,0xf8,0x15}};
++#define IMPLICIT_INSPECTABLE(type) \
++    HRESULT (WINAPI *QueryInterface)(type *,REFIID,void **); \
++    ULONG (WINAPI *AddRef)(type *); \
++    ULONG (WINAPI *Release)(type *); \
++    HRESULT (WINAPI *GetIids)(type *,ULONG *,IID **); \
++    HRESULT (WINAPI *GetRuntimeClassName)(type *,HSTRING *); \
++    HRESULT (WINAPI *GetTrustLevel)(type *,TrustLevel *)
++struct implicit_pair_iface;
++struct implicit_pair_vtbl
++{
++    IMPLICIT_INSPECTABLE(struct implicit_pair_iface);
++    HRESULT (WINAPI *get_Key)(struct implicit_pair_iface *,HSTRING *);
++    HRESULT (WINAPI *get_Value)(struct implicit_pair_iface *,ICompositionAnimationBase **);
++};
++struct implicit_pair_iface { const struct implicit_pair_vtbl *lpVtbl; };
++struct implicit_iterator_iface;
++struct implicit_iterator_vtbl
++{
++    IMPLICIT_INSPECTABLE(struct implicit_iterator_iface);
++    HRESULT (WINAPI *get_Current)(struct implicit_iterator_iface *,struct implicit_pair_iface **);
++    HRESULT (WINAPI *get_HasCurrent)(struct implicit_iterator_iface *,boolean *);
++    HRESULT (WINAPI *MoveNext)(struct implicit_iterator_iface *,boolean *);
++    HRESULT (WINAPI *GetMany)(struct implicit_iterator_iface *,UINT32,struct implicit_pair_iface **,UINT32 *);
++};
++struct implicit_iterator_iface { const struct implicit_iterator_vtbl *lpVtbl; };
++struct implicit_iterable_iface;
++struct implicit_iterable_vtbl
++{
++    IMPLICIT_INSPECTABLE(struct implicit_iterable_iface);
++    HRESULT (WINAPI *First)(struct implicit_iterable_iface *,struct implicit_iterator_iface **);
++};
++struct implicit_iterable_iface { const struct implicit_iterable_vtbl *lpVtbl; };
++struct implicit_view_iface;
++struct implicit_view_vtbl
++{
++    IMPLICIT_INSPECTABLE(struct implicit_view_iface);
++    HRESULT (WINAPI *Lookup)(struct implicit_view_iface *,HSTRING,ICompositionAnimationBase **);
++    HRESULT (WINAPI *get_Size)(struct implicit_view_iface *,UINT32 *);
++    HRESULT (WINAPI *HasKey)(struct implicit_view_iface *,HSTRING,boolean *);
++    HRESULT (WINAPI *Split)(struct implicit_view_iface *,struct implicit_view_iface **,struct implicit_view_iface **);
++};
++struct implicit_view_iface { const struct implicit_view_vtbl *lpVtbl; };
++#undef IMPLICIT_INSPECTABLE
++
++struct implicit_animation_pair
++{
++    struct implicit_pair_iface iface;
++    LONG ref;
++    HSTRING key;
++    ICompositionAnimationBase *value;
++};
++
++struct implicit_animation_collection
++{
++    IInspectable iface;
++    struct implicit_map_iface map;
++    struct implicit_iterable_iface iterable;
++    ICompositionObject object;
++    LONG ref;
++    CRITICAL_SECTION cs;
++    ICompositor *compositor;
++    ICompositionPropertySet *properties;
++    struct implicit_animation_pair **entries;
++    UINT32 count, generation;
++};
++
++struct implicit_animation_view
++{
++    struct implicit_view_iface iface;
++    struct implicit_iterable_iface iterable;
++    LONG ref;
++    struct implicit_animation_pair **entries;
++    UINT32 count;
++};
++
++struct implicit_animation_iterator
++{
++    struct implicit_iterator_iface iface;
++    LONG ref;
++    struct implicit_animation_collection *collection;
++    struct implicit_animation_view *view;
++    UINT32 index, generation;
++};
++
++static ULONG WINAPI implicit_pair_AddRef( struct implicit_pair_iface *iface )
++{
++    return InterlockedIncrement( &CONTAINING_RECORD( iface, struct implicit_animation_pair, iface )->ref );
++}
++
++static ULONG WINAPI implicit_pair_Release( struct implicit_pair_iface *iface )
++{
++    struct implicit_animation_pair *impl = CONTAINING_RECORD( iface, struct implicit_animation_pair, iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        WindowsDeleteString( impl->key );
++        ICompositionAnimationBase_Release( impl->value );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI implicit_pair_QueryInterface( struct implicit_pair_iface *iface, REFIID iid, void **out )
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!IsEqualGUID( iid, &IID_IUnknown ) && !IsEqualGUID( iid, &IID_IInspectable ) &&
++            !IsEqualGUID( iid, &implicit_pair_iid )) return E_NOINTERFACE;
++    *out = iface;
++    implicit_pair_AddRef( iface );
++    return S_OK;
++}
++
++static HRESULT implicit_single_iid( REFIID iid, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = CoTaskMemAlloc( sizeof(**iids) );
++    if (!*iids) return E_OUTOFMEMORY;
++    **iids = *iid;
++    *count = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_pair_GetIids( struct implicit_pair_iface *iface, ULONG *count, IID **iids )
++{
++    return implicit_single_iid( &implicit_pair_iid, count, iids );
++}
++
++static HRESULT WINAPI implicit_pair_GetRuntimeClassName( struct implicit_pair_iface *iface, HSTRING *name )
++{
++    if (!name) return E_POINTER;
++    *name = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_pair_GetTrustLevel( struct implicit_pair_iface *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_pair_get_Key( struct implicit_pair_iface *iface, HSTRING *key )
++{
++    struct implicit_animation_pair *impl = CONTAINING_RECORD( iface, struct implicit_animation_pair, iface );
++
++    if (!key) return E_POINTER;
++    return WindowsDuplicateString( impl->key, key );
++}
++
++static HRESULT WINAPI implicit_pair_get_Value( struct implicit_pair_iface *iface, ICompositionAnimationBase **value )
++{
++    struct implicit_animation_pair *impl = CONTAINING_RECORD( iface, struct implicit_animation_pair, iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->value;
++    ICompositionAnimationBase_AddRef( *value );
++    return S_OK;
++}
++
++static const struct implicit_pair_vtbl implicit_pair_vtbl =
++{
++    implicit_pair_QueryInterface, implicit_pair_AddRef, implicit_pair_Release,
++    implicit_pair_GetIids, implicit_pair_GetRuntimeClassName, implicit_pair_GetTrustLevel,
++    implicit_pair_get_Key, implicit_pair_get_Value,
++};
++
++static HRESULT implicit_pair_create( HSTRING key, ICompositionAnimationBase *value,
++        struct implicit_animation_pair **out )
++{
++    struct implicit_animation_pair *impl;
++    HRESULT hr;
++
++    *out = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    if (FAILED(hr = WindowsDuplicateString( key, &impl->key ))) { free( impl ); return hr; }
++    impl->iface.lpVtbl = &implicit_pair_vtbl;
++    impl->ref = 1;
++    impl->value = value;
++    ICompositionAnimationBase_AddRef( value );
++    *out = impl;
++    return S_OK;
++}
++
++static void implicit_entries_release( struct implicit_animation_pair **entries, UINT32 count )
++{
++    UINT32 i;
++
++    for (i = 0; i < count; ++i) implicit_pair_Release( &entries[i]->iface );
++    free( entries );
++}
++
++static UINT32 implicit_entries_find( struct implicit_animation_pair **entries, UINT32 count, HSTRING key )
++{
++    UINT32 i;
++    INT32 order;
++
++    for (i = 0; i < count; ++i)
++        if (SUCCEEDED(WindowsCompareStringOrdinal( entries[i]->key, key, &order )) && !order) break;
++    return i;
++}
++
++static HRESULT WINAPI implicit_collection_QueryInterface( IInspectable *iface, REFIID iid, void **out )
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, iface );
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++            IsEqualGUID( iid, &implicit_collection_iid )) *out = &impl->iface;
++    else if (IsEqualGUID( iid, &implicit_map_iid )) *out = &impl->map;
++    else if (IsEqualGUID( iid, &implicit_iterable_iid )) *out = &impl->iterable;
++    else if (IsEqualGUID( iid, &IID_ICompositionObject )) *out = &impl->object;
++    else return E_NOINTERFACE;
++    InterlockedIncrement( &impl->ref );
++    return S_OK;
++}
++
++static ULONG WINAPI implicit_collection_AddRef( IInspectable *iface )
++{
++    return InterlockedIncrement( &CONTAINING_RECORD( iface, struct implicit_animation_collection, iface )->ref );
++}
++
++static ULONG WINAPI implicit_collection_Release( IInspectable *iface )
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        implicit_entries_release( impl->entries, impl->count );
++        ICompositionPropertySet_Release( impl->properties );
++        ICompositor_Release( impl->compositor );
++        DeleteCriticalSection( &impl->cs );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI implicit_collection_GetIids( IInspectable *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = CoTaskMemAlloc( 4 * sizeof(**iids) );
++    if (!*iids) return E_OUTOFMEMORY;
++    (*iids)[0] = implicit_collection_iid;
++    (*iids)[1] = implicit_map_iid;
++    (*iids)[2] = implicit_iterable_iid;
++    (*iids)[3] = IID_ICompositionObject;
++    *count = 4;
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_collection_GetRuntimeClassName( IInspectable *iface, HSTRING *name )
++{
++    static const WCHAR class_name[] = L"Windows.UI.Composition.ImplicitAnimationCollection";
++
++    if (!name) return E_POINTER;
++    return WindowsCreateString( class_name, ARRAY_SIZE(class_name) - 1, name );
++}
++
++static HRESULT WINAPI implicit_collection_GetTrustLevel( IInspectable *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static const IInspectableVtbl implicit_collection_vtbl =
++{
++    implicit_collection_QueryInterface, implicit_collection_AddRef, implicit_collection_Release,
++    implicit_collection_GetIids, implicit_collection_GetRuntimeClassName, implicit_collection_GetTrustLevel,
++};
++
++static HRESULT WINAPI implicit_map_Lookup( struct implicit_map_iface *iface, HSTRING key, ICompositionAnimationBase **value )
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++    UINT32 index;
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->cs );
++    index = implicit_entries_find( impl->entries, impl->count, key );
++    hr = index < impl->count ? implicit_pair_get_Value( &impl->entries[index]->iface, value ) : E_BOUNDS;
++    LeaveCriticalSection( &impl->cs );
++    return hr;
++}
++
++static HRESULT WINAPI implicit_map_get_Size( struct implicit_map_iface *iface, UINT32 *count )
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++
++    if (!count) return E_POINTER;
++    EnterCriticalSection( &impl->cs );
++    *count = impl->count;
++    LeaveCriticalSection( &impl->cs );
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_map_HasKey( struct implicit_map_iface *iface, HSTRING key, boolean *value )
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++
++    if (!value) return E_POINTER;
++    EnterCriticalSection( &impl->cs );
++    *value = implicit_entries_find( impl->entries, impl->count, key ) < impl->count;
++    LeaveCriticalSection( &impl->cs );
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_map_Insert( struct implicit_map_iface *iface, HSTRING key,
++        ICompositionAnimationBase *value, boolean *replaced )
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++    struct implicit_animation_pair *pair, *old = NULL, **entries;
++    ICompositionObject *object;
++    ICompositor *compositor;
++    IUnknown *identity, *expected;
++    UINT32 index;
++    SIZE_T entry_count;
++    HRESULT hr;
++
++    if (!replaced) return E_POINTER;
++    *replaced = FALSE;
++    if (!value || !WindowsGetStringLen( key )) return E_INVALIDARG;
++    if (FAILED(hr = ICompositionAnimationBase_QueryInterface( value, &IID_ICompositionObject, (void **)&object ))) return hr;
++    hr = ICompositionObject_get_Compositor( object, &compositor );
++    ICompositionObject_Release( object );
++    if (FAILED(hr)) return hr;
++    if (!compositor) return E_INVALIDARG;
++    hr = ICompositor_QueryInterface( compositor, &IID_IUnknown, (void **)&identity );
++    ICompositor_Release( compositor );
++    if (FAILED(hr)) return hr;
++    hr = ICompositor_QueryInterface( impl->compositor, &IID_IUnknown, (void **)&expected );
++    if (FAILED(hr)) { IUnknown_Release( identity ); return hr; }
++    hr = identity == expected ? S_OK : E_INVALIDARG;
++    IUnknown_Release( identity );
++    IUnknown_Release( expected );
++    if (FAILED(hr)) return hr;
++    if (FAILED(hr = implicit_pair_create( key, value, &pair ))) return hr;
++    EnterCriticalSection( &impl->cs );
++    index = implicit_entries_find( impl->entries, impl->count, key );
++    if (index < impl->count)
++    {
++        old = impl->entries[index];
++        impl->entries[index] = pair;
++        *replaced = TRUE;
++        ++impl->generation;
++    }
++    else if (impl->count == UINT_MAX ||
++            (entry_count = (SIZE_T)impl->count + 1) > SIZE_MAX / sizeof(*entries)) hr = E_OUTOFMEMORY;
++    else if (!(entries = realloc( impl->entries, entry_count * sizeof(*entries) ))) hr = E_OUTOFMEMORY;
++    else
++    {
++        impl->entries = entries;
++        impl->entries[impl->count++] = pair;
++        ++impl->generation;
++    }
++    LeaveCriticalSection( &impl->cs );
++    if (old) implicit_pair_Release( &old->iface );
++    if (FAILED(hr)) implicit_pair_Release( &pair->iface );
++    return hr;
++}
++
++static HRESULT WINAPI implicit_map_Remove( struct implicit_map_iface *iface, HSTRING key )
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++    struct implicit_animation_pair *old = NULL;
++    UINT32 index;
++
++    EnterCriticalSection( &impl->cs );
++    index = implicit_entries_find( impl->entries, impl->count, key );
++    if (index < impl->count)
++    {
++        old = impl->entries[index];
++        memmove( impl->entries + index, impl->entries + index + 1, (--impl->count - index) * sizeof(*impl->entries) );
++        ++impl->generation;
++    }
++    LeaveCriticalSection( &impl->cs );
++    if (!old) return E_BOUNDS;
++    implicit_pair_Release( &old->iface );
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_map_Clear( struct implicit_map_iface *iface )
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++    struct implicit_animation_pair **entries;
++    UINT32 count;
++
++    EnterCriticalSection( &impl->cs );
++    entries = impl->entries;
++    count = impl->count;
++    impl->entries = NULL;
++    impl->count = 0;
++    if (count) ++impl->generation;
++    LeaveCriticalSection( &impl->cs );
++    implicit_entries_release( entries, count );
++    return S_OK;
++}
++static ULONG WINAPI implicit_view_AddRef( struct implicit_view_iface *iface )
++{
++    return InterlockedIncrement( &CONTAINING_RECORD( iface, struct implicit_animation_view, iface )->ref );
++}
++
++static ULONG WINAPI implicit_view_Release( struct implicit_view_iface *iface )
++{
++    struct implicit_animation_view *impl = CONTAINING_RECORD( iface, struct implicit_animation_view, iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        implicit_entries_release( impl->entries, impl->count );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI implicit_view_QueryInterface( struct implicit_view_iface *iface, REFIID iid, void **out )
++{
++    struct implicit_animation_view *impl = CONTAINING_RECORD( iface, struct implicit_animation_view, iface );
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++            IsEqualGUID( iid, &implicit_view_iid )) *out = &impl->iface;
++    else if (IsEqualGUID( iid, &implicit_iterable_iid )) *out = &impl->iterable;
++    else return E_NOINTERFACE;
++    implicit_view_AddRef( iface );
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_view_GetIids( struct implicit_view_iface *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = CoTaskMemAlloc( 2 * sizeof(**iids) );
++    if (!*iids) return E_OUTOFMEMORY;
++    (*iids)[0] = implicit_view_iid;
++    (*iids)[1] = implicit_iterable_iid;
++    *count = 2;
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_view_GetRuntimeClassName( struct implicit_view_iface *iface, HSTRING *name )
++{
++    if (!name) return E_POINTER;
++    *name = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_view_GetTrustLevel( struct implicit_view_iface *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_view_Lookup( struct implicit_view_iface *iface, HSTRING key, ICompositionAnimationBase **value )
++{
++    struct implicit_animation_view *impl = CONTAINING_RECORD( iface, struct implicit_animation_view, iface );
++    UINT32 index;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    index = implicit_entries_find( impl->entries, impl->count, key );
++    return index < impl->count ? implicit_pair_get_Value( &impl->entries[index]->iface, value ) : E_BOUNDS;
++}
++
++static HRESULT WINAPI implicit_view_get_Size( struct implicit_view_iface *iface, UINT32 *count )
++{
++    if (!count) return E_POINTER;
++    *count = CONTAINING_RECORD( iface, struct implicit_animation_view, iface )->count;
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_view_HasKey( struct implicit_view_iface *iface, HSTRING key, boolean *value )
++{
++    struct implicit_animation_view *impl = CONTAINING_RECORD( iface, struct implicit_animation_view, iface );
++
++    if (!value) return E_POINTER;
++    *value = implicit_entries_find( impl->entries, impl->count, key ) < impl->count;
++    return S_OK;
++}
++
++static HRESULT implicit_view_create( struct implicit_animation_pair **entries, UINT32 count,
++        struct implicit_view_iface **out );
++
++static HRESULT WINAPI implicit_view_Split( struct implicit_view_iface *iface,
++        struct implicit_view_iface **first, struct implicit_view_iface **second )
++{
++    struct implicit_animation_view *impl = CONTAINING_RECORD( iface, struct implicit_animation_view, iface );
++    HRESULT hr;
++    UINT32 middle;
++
++    if (!first || !second) return E_POINTER;
++    *first = *second = NULL;
++    if (first == second) return E_INVALIDARG;
++    if (impl->count < 2) return S_OK;
++    middle = impl->count / 2;
++    if (FAILED(hr = implicit_view_create( impl->entries, middle, first ))) return hr;
++    if (FAILED(hr = implicit_view_create( impl->entries + middle, impl->count - middle, second )))
++    {
++        (*first)->lpVtbl->Release( *first );
++        *first = NULL;
++    }
++    return hr;
++}
++
++static const struct implicit_view_vtbl implicit_view_vtbl =
++{
++    implicit_view_QueryInterface, implicit_view_AddRef, implicit_view_Release,
++    implicit_view_GetIids, implicit_view_GetRuntimeClassName, implicit_view_GetTrustLevel,
++    implicit_view_Lookup, implicit_view_get_Size, implicit_view_HasKey, implicit_view_Split,
++};
++
++static ULONG WINAPI implicit_iterator_AddRef( struct implicit_iterator_iface *iface )
++{
++    return InterlockedIncrement( &CONTAINING_RECORD( iface, struct implicit_animation_iterator, iface )->ref );
++}
++
++static ULONG WINAPI implicit_iterator_Release( struct implicit_iterator_iface *iface )
++{
++    struct implicit_animation_iterator *impl = CONTAINING_RECORD( iface, struct implicit_animation_iterator, iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        if (impl->collection) implicit_collection_Release( &impl->collection->iface );
++        else implicit_view_Release( &impl->view->iface );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI implicit_iterator_QueryInterface( struct implicit_iterator_iface *iface, REFIID iid, void **out )
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!IsEqualGUID( iid, &IID_IUnknown ) && !IsEqualGUID( iid, &IID_IInspectable ) &&
++            !IsEqualGUID( iid, &implicit_iterator_iid )) return E_NOINTERFACE;
++    *out = iface;
++    implicit_iterator_AddRef( iface );
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_iterator_GetIids( struct implicit_iterator_iface *iface, ULONG *count, IID **iids )
++{
++    return implicit_single_iid( &implicit_iterator_iid, count, iids );
++}
++
++static HRESULT WINAPI implicit_iterator_GetRuntimeClassName( struct implicit_iterator_iface *iface, HSTRING *name )
++{
++    if (!name) return E_POINTER;
++    *name = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_iterator_GetTrustLevel( struct implicit_iterator_iface *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT implicit_iterator_lock( struct implicit_animation_iterator *impl,
++        struct implicit_animation_pair ***entries, UINT32 *count )
++{
++    if (impl->collection)
++    {
++        EnterCriticalSection( &impl->collection->cs );
++        if (impl->generation != impl->collection->generation)
++        {
++            LeaveCriticalSection( &impl->collection->cs );
++            return E_CHANGED_STATE;
++        }
++        *entries = impl->collection->entries;
++        *count = impl->collection->count;
++    }
++    else
++    {
++        *entries = impl->view->entries;
++        *count = impl->view->count;
++    }
++    return S_OK;
++}
++
++static void implicit_iterator_unlock( struct implicit_animation_iterator *impl )
++{
++    if (impl->collection) LeaveCriticalSection( &impl->collection->cs );
++}
++
++static HRESULT WINAPI implicit_iterator_get_Current( struct implicit_iterator_iface *iface, struct implicit_pair_iface **value )
++{
++    struct implicit_animation_iterator *impl = CONTAINING_RECORD( iface, struct implicit_animation_iterator, iface );
++    struct implicit_animation_pair **entries;
++    UINT32 count;
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (FAILED(hr = implicit_iterator_lock( impl, &entries, &count ))) return hr;
++    if (impl->index >= count) hr = E_BOUNDS;
++    else
++    {
++        *value = &entries[impl->index]->iface;
++        implicit_pair_AddRef( *value );
++    }
++    implicit_iterator_unlock( impl );
++    return hr;
++}
++
++static HRESULT WINAPI implicit_iterator_get_HasCurrent( struct implicit_iterator_iface *iface, boolean *value )
++{
++    struct implicit_animation_iterator *impl = CONTAINING_RECORD( iface, struct implicit_animation_iterator, iface );
++    struct implicit_animation_pair **entries;
++    UINT32 count;
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = FALSE;
++    if (FAILED(hr = implicit_iterator_lock( impl, &entries, &count ))) return hr;
++    *value = impl->index < count;
++    implicit_iterator_unlock( impl );
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_iterator_MoveNext( struct implicit_iterator_iface *iface, boolean *value )
++{
++    struct implicit_animation_iterator *impl = CONTAINING_RECORD( iface, struct implicit_animation_iterator, iface );
++    struct implicit_animation_pair **entries;
++    UINT32 count;
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = FALSE;
++    if (FAILED(hr = implicit_iterator_lock( impl, &entries, &count ))) return hr;
++    if (impl->index < count) ++impl->index;
++    *value = impl->index < count;
++    implicit_iterator_unlock( impl );
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_iterator_GetMany( struct implicit_iterator_iface *iface, UINT32 capacity,
++        struct implicit_pair_iface **values, UINT32 *fetched )
++{
++    struct implicit_animation_iterator *impl = CONTAINING_RECORD( iface, struct implicit_animation_iterator, iface );
++    struct implicit_animation_pair **entries;
++    UINT32 count;
++    HRESULT hr;
++
++    if (!fetched) return E_POINTER;
++    *fetched = 0;
++    if (capacity && !values) return E_POINTER;
++    if (FAILED(hr = implicit_iterator_lock( impl, &entries, &count ))) return hr;
++    while (*fetched < capacity && impl->index < count)
++    {
++        values[*fetched] = &entries[impl->index++]->iface;
++        implicit_pair_AddRef( values[(*fetched)++] );
++    }
++    implicit_iterator_unlock( impl );
++    return S_OK;
++}
++
++static const struct implicit_iterator_vtbl implicit_iterator_vtbl =
++{
++    implicit_iterator_QueryInterface, implicit_iterator_AddRef, implicit_iterator_Release,
++    implicit_iterator_GetIids, implicit_iterator_GetRuntimeClassName, implicit_iterator_GetTrustLevel,
++    implicit_iterator_get_Current, implicit_iterator_get_HasCurrent, implicit_iterator_MoveNext, implicit_iterator_GetMany,
++};
++
++static HRESULT implicit_iterator_create( struct implicit_animation_collection *collection,
++        struct implicit_animation_view *view, struct implicit_iterator_iface **value )
++{
++    struct implicit_animation_iterator *impl;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->iface.lpVtbl = &implicit_iterator_vtbl;
++    impl->ref = 1;
++    impl->collection = collection;
++    impl->view = view;
++    if (collection)
++    {
++        implicit_collection_AddRef( &collection->iface );
++        EnterCriticalSection( &collection->cs );
++        impl->generation = collection->generation;
++        LeaveCriticalSection( &collection->cs );
++    }
++    else implicit_view_AddRef( &view->iface );
++    *value = &impl->iface;
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_iterable_First( struct implicit_iterable_iface *iface, struct implicit_iterator_iface **value )
++{
++    return implicit_iterator_create( CONTAINING_RECORD( iface, struct implicit_animation_collection, iterable ), NULL, value );
++}
++
++static HRESULT WINAPI implicit_view_iterable_First( struct implicit_iterable_iface *iface, struct implicit_iterator_iface **value )
++{
++    return implicit_iterator_create( NULL, CONTAINING_RECORD( iface, struct implicit_animation_view, iterable ), value );
++}
++
++static HRESULT WINAPI implicit_map_QueryInterface( struct implicit_map_iface *iface, REFIID iid, void **out)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++
++    return implicit_collection_QueryInterface( &impl->iface, iid, out );
++}
++
++static ULONG WINAPI implicit_map_AddRef( struct implicit_map_iface *iface)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++
++    return implicit_collection_AddRef( &impl->iface );
++}
++
++static ULONG WINAPI implicit_map_Release( struct implicit_map_iface *iface)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++
++    return implicit_collection_Release( &impl->iface );
++}
++
++static HRESULT WINAPI implicit_map_GetIids( struct implicit_map_iface *iface, ULONG *count, IID **iids)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++
++    return implicit_collection_GetIids( &impl->iface, count, iids );
++}
++
++static HRESULT WINAPI implicit_map_GetRuntimeClassName( struct implicit_map_iface *iface, HSTRING *name)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++
++    return implicit_collection_GetRuntimeClassName( &impl->iface, name );
++}
++
++static HRESULT WINAPI implicit_map_GetTrustLevel( struct implicit_map_iface *iface, TrustLevel *level)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++
++    return implicit_collection_GetTrustLevel( &impl->iface, level );
++}
++
++static HRESULT WINAPI implicit_iterable_QueryInterface( struct implicit_iterable_iface *iface, REFIID iid, void **out)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, iterable );
++
++    return implicit_collection_QueryInterface( &impl->iface, iid, out );
++}
++
++static ULONG WINAPI implicit_iterable_AddRef( struct implicit_iterable_iface *iface)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, iterable );
++
++    return implicit_collection_AddRef( &impl->iface );
++}
++
++static ULONG WINAPI implicit_iterable_Release( struct implicit_iterable_iface *iface)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, iterable );
++
++    return implicit_collection_Release( &impl->iface );
++}
++
++static HRESULT WINAPI implicit_iterable_GetIids( struct implicit_iterable_iface *iface, ULONG *count, IID **iids)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, iterable );
++
++    return implicit_collection_GetIids( &impl->iface, count, iids );
++}
++
++static HRESULT WINAPI implicit_iterable_GetRuntimeClassName( struct implicit_iterable_iface *iface, HSTRING *name)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, iterable );
++
++    return implicit_collection_GetRuntimeClassName( &impl->iface, name );
++}
++
++static HRESULT WINAPI implicit_iterable_GetTrustLevel( struct implicit_iterable_iface *iface, TrustLevel *level)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, iterable );
++
++    return implicit_collection_GetTrustLevel( &impl->iface, level );
++}
++
++static HRESULT WINAPI implicit_object_QueryInterface( ICompositionObject *iface, REFIID iid, void **out)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
++
++    return implicit_collection_QueryInterface( &impl->iface, iid, out );
++}
++
++static ULONG WINAPI implicit_object_AddRef( ICompositionObject *iface)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
++
++    return implicit_collection_AddRef( &impl->iface );
++}
++
++static ULONG WINAPI implicit_object_Release( ICompositionObject *iface)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
++
++    return implicit_collection_Release( &impl->iface );
++}
++
++static HRESULT WINAPI implicit_object_GetIids( ICompositionObject *iface, ULONG *count, IID **iids)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
++
++    return implicit_collection_GetIids( &impl->iface, count, iids );
++}
++
++static HRESULT WINAPI implicit_object_GetRuntimeClassName( ICompositionObject *iface, HSTRING *name)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
++
++    return implicit_collection_GetRuntimeClassName( &impl->iface, name );
++}
++
++static HRESULT WINAPI implicit_object_GetTrustLevel( ICompositionObject *iface, TrustLevel *level)
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
++
++    return implicit_collection_GetTrustLevel( &impl->iface, level );
++}
++
++static HRESULT WINAPI implicit_view_iterable_QueryInterface( struct implicit_iterable_iface *iface, REFIID iid, void **out)
++{
++    struct implicit_animation_view *impl = CONTAINING_RECORD( iface, struct implicit_animation_view, iterable );
++
++    return implicit_view_QueryInterface( &impl->iface, iid, out );
++}
++
++static ULONG WINAPI implicit_view_iterable_AddRef( struct implicit_iterable_iface *iface)
++{
++    struct implicit_animation_view *impl = CONTAINING_RECORD( iface, struct implicit_animation_view, iterable );
++
++    return implicit_view_AddRef( &impl->iface );
++}
++
++static ULONG WINAPI implicit_view_iterable_Release( struct implicit_iterable_iface *iface)
++{
++    struct implicit_animation_view *impl = CONTAINING_RECORD( iface, struct implicit_animation_view, iterable );
++
++    return implicit_view_Release( &impl->iface );
++}
++
++static HRESULT WINAPI implicit_view_iterable_GetIids( struct implicit_iterable_iface *iface, ULONG *count, IID **iids)
++{
++    struct implicit_animation_view *impl = CONTAINING_RECORD( iface, struct implicit_animation_view, iterable );
++
++    return implicit_view_GetIids( &impl->iface, count, iids );
++}
++
++static HRESULT WINAPI implicit_view_iterable_GetRuntimeClassName( struct implicit_iterable_iface *iface, HSTRING *name)
++{
++    struct implicit_animation_view *impl = CONTAINING_RECORD( iface, struct implicit_animation_view, iterable );
++
++    return implicit_view_GetRuntimeClassName( &impl->iface, name );
++}
++
++static HRESULT WINAPI implicit_view_iterable_GetTrustLevel( struct implicit_iterable_iface *iface, TrustLevel *level)
++{
++    struct implicit_animation_view *impl = CONTAINING_RECORD( iface, struct implicit_animation_view, iterable );
++
++    return implicit_view_GetTrustLevel( &impl->iface, level );
++}
++
++static const struct implicit_iterable_vtbl implicit_iterable_vtbl =
++{
++    implicit_iterable_QueryInterface, implicit_iterable_AddRef, implicit_iterable_Release,
++    implicit_iterable_GetIids, implicit_iterable_GetRuntimeClassName, implicit_iterable_GetTrustLevel, implicit_iterable_First,
++};
++
++static const struct implicit_iterable_vtbl implicit_view_iterable_vtbl =
++{
++    implicit_view_iterable_QueryInterface, implicit_view_iterable_AddRef, implicit_view_iterable_Release,
++    implicit_view_iterable_GetIids, implicit_view_iterable_GetRuntimeClassName, implicit_view_iterable_GetTrustLevel,
++    implicit_view_iterable_First,
++};
++
++static HRESULT implicit_view_create( struct implicit_animation_pair **entries, UINT32 count,
++        struct implicit_view_iface **out )
++{
++    struct implicit_animation_view *impl;
++    UINT32 i;
++
++    *out = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    if (count && !(impl->entries = calloc( count, sizeof(*entries) ))) { free( impl ); return E_OUTOFMEMORY; }
++    impl->iface.lpVtbl = &implicit_view_vtbl;
++    impl->iterable.lpVtbl = &implicit_view_iterable_vtbl;
++    impl->ref = 1;
++    impl->count = count;
++    for (i = 0; i < count; ++i)
++    {
++        impl->entries[i] = entries[i];
++        implicit_pair_AddRef( &entries[i]->iface );
++    }
++    *out = &impl->iface;
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_map_GetView( struct implicit_map_iface *iface, struct implicit_view_iface **value )
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, map );
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->cs );
++    hr = implicit_view_create( impl->entries, impl->count, value );
++    LeaveCriticalSection( &impl->cs );
++    return hr;
++}
++
++static const struct implicit_map_vtbl implicit_map_vtbl =
++{
++    implicit_map_QueryInterface, implicit_map_AddRef, implicit_map_Release,
++    implicit_map_GetIids, implicit_map_GetRuntimeClassName, implicit_map_GetTrustLevel,
++    implicit_map_Lookup, implicit_map_get_Size, implicit_map_HasKey, implicit_map_GetView,
++    implicit_map_Insert, implicit_map_Remove, implicit_map_Clear,
++};
++static HRESULT WINAPI implicit_object_get_Compositor( ICompositionObject *iface, ICompositor **value )
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
++
++    if (!value) return E_POINTER;
++    *value = impl->compositor;
++    ICompositor_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_object_get_Dispatcher( ICompositionObject *iface, ICoreDispatcher **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_object_get_Properties( ICompositionObject *iface, ICompositionPropertySet **value )
++{
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
++
++    if (!value) return E_POINTER;
++    *value = impl->properties;
++    ICompositionPropertySet_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI implicit_object_StartAnimation( ICompositionObject *iface, HSTRING name,
++        ICompositionAnimation *animation )
++{
++    ICompositionObject *object;
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
++    HRESULT hr;
++
++    hr = ICompositionPropertySet_QueryInterface( impl->properties, &IID_ICompositionObject, (void **)&object );
++    if (FAILED(hr)) return hr;
++    hr = ICompositionObject_StartAnimation( object, name, animation );
++    ICompositionObject_Release( object );
++    return hr;
++}
++
++static HRESULT WINAPI implicit_object_StopAnimation( ICompositionObject *iface, HSTRING name )
++{
++    ICompositionObject *object;
++    struct implicit_animation_collection *impl = CONTAINING_RECORD( iface, struct implicit_animation_collection, object );
++    HRESULT hr;
++
++    hr = ICompositionPropertySet_QueryInterface( impl->properties, &IID_ICompositionObject, (void **)&object );
++    if (FAILED(hr)) return hr;
++    hr = ICompositionObject_StopAnimation( object, name );
++    ICompositionObject_Release( object );
++    return hr;
++}
++
++static const ICompositionObjectVtbl implicit_object_vtbl =
++{
++    implicit_object_QueryInterface, implicit_object_AddRef, implicit_object_Release,
++    implicit_object_GetIids, implicit_object_GetRuntimeClassName, implicit_object_GetTrustLevel,
++    implicit_object_get_Compositor, implicit_object_get_Dispatcher, implicit_object_get_Properties,
++    implicit_object_StartAnimation, implicit_object_StopAnimation,
++};
++
++
++static HRESULT WINAPI compositor2_CreateImplicitAnimationCollection( struct compositor2_iface *iface, IInspectable **value )
++{
++    struct compositor *compositor = impl_from_compositor2( iface );
++    struct implicit_animation_collection *impl;
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    hr = composition_property_set_create( &compositor->ICompositor_iface, &impl->properties );
++    if (FAILED(hr)) { free( impl ); return hr; }
++    impl->iface.lpVtbl = &implicit_collection_vtbl;
++    impl->map.lpVtbl = &implicit_map_vtbl;
++    impl->iterable.lpVtbl = &implicit_iterable_vtbl;
++    impl->object.lpVtbl = &implicit_object_vtbl;
++    impl->compositor = &compositor->ICompositor_iface;
++    ICompositor_AddRef( impl->compositor );
++    impl->ref = 1;
++    InitializeCriticalSection( &impl->cs );
++    *value = &impl->iface;
++    return S_OK;
++}
++
+ DEFINE_COMPOSITOR2_CREATE_METHOD(CreateLayerVisual)
+ DEFINE_COMPOSITOR2_CREATE_METHOD(CreateMaskBrush)
+ DEFINE_COMPOSITOR2_CREATE_METHOD(CreatePointLight)

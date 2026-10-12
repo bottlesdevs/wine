@@ -1,0 +1,433 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -579,12 +579,39 @@
+     LONG ref;
+ };
+ 
++static const GUID redirect_visual_iid =
++    {0x8cc6e340,0x8b75,0x5422,{0xb0,0x6f,0x09,0xff,0xe9,0xf8,0x61,0x7e}};
++struct redirect_visual_iface;
++struct redirect_visual_vtbl
++{
++    HRESULT (WINAPI *QueryInterface)(struct redirect_visual_iface *, REFIID, void **);
++    ULONG (WINAPI *AddRef)(struct redirect_visual_iface *);
++    ULONG (WINAPI *Release)(struct redirect_visual_iface *);
++    HRESULT (WINAPI *GetIids)(struct redirect_visual_iface *, ULONG *, IID **);
++    HRESULT (WINAPI *GetRuntimeClassName)(struct redirect_visual_iface *, HSTRING *);
++    HRESULT (WINAPI *GetTrustLevel)(struct redirect_visual_iface *, TrustLevel *);
++    HRESULT (WINAPI *get_Source)(struct redirect_visual_iface *, IVisual **);
++    HRESULT (WINAPI *put_Source)(struct redirect_visual_iface *, IVisual *);
++};
++struct redirect_visual_iface { const struct redirect_visual_vtbl *lpVtbl; };
++
++static CRITICAL_SECTION visual_graph_cs;
++static CRITICAL_SECTION_DEBUG visual_graph_cs_debug =
++{
++    0, 0, &visual_graph_cs,
++    { &visual_graph_cs_debug.ProcessLocksList, &visual_graph_cs_debug.ProcessLocksList },
++    0, 0, { (DWORD_PTR)(__FILE__ ": visual_graph_cs") }
++};
++static CRITICAL_SECTION visual_graph_cs = { &visual_graph_cs_debug, -1, 0, 0, 0, 0 };
++static BOOL visual_contains(IVisual *visual, IVisual *target, UINT depth);
++
+ struct visual_collection
+ {
+     IVisualCollection IVisualCollection_iface;
+     IIterable_Visual IIterable_Visual_iface;
+     IVisual **items;
+     IDCompositionVisual *dcomp_parent;
++    IVisual *owner;
+     UINT32 count;
+     UINT32 capacity;
+     LONG ref;
+@@ -682,28 +709,34 @@
+     return S_OK;
+ }
+ 
+-static HRESULT visual_collection_insert( struct visual_collection *impl, UINT32 index, IVisual *child )
++static HRESULT visual_collection_insert(struct visual_collection *impl, UINT32 index, IVisual *child)
+ {
+     IDCompositionVisual *dcomp_child, *dcomp_reference = NULL;
+-    HRESULT hr;
++    HRESULT hr = S_OK;
+ 
+     if (!child) return E_INVALIDARG;
+-    if (FAILED(hr = visual_collection_reserve( impl ))) return hr;
+-    memmove( impl->items + index + 1, impl->items + index,
+-             (impl->count - index) * sizeof(*impl->items) );
+-    IVisual_AddRef( child );
+-    impl->items[index] = child;
+-    ++impl->count;
+-    if (impl->dcomp_parent && (dcomp_child = dcomp_visual_from_visual( child )))
+-    {
+-        if (index) dcomp_reference = dcomp_visual_from_visual( impl->items[index - 1] );
+-        if (FAILED(hr = IDCompositionVisual_AddVisual( impl->dcomp_parent, dcomp_child,
+-                index != 0, dcomp_reference ))) return hr;
+-    }
+-    return S_OK;
+-}
+-
+-static HRESULT WINAPI visual_collection_InsertAbove( IVisualCollection *iface,
++    EnterCriticalSection(&visual_graph_cs);
++    if (index > impl->count) hr = E_INVALIDARG;
++    else if (impl->owner && visual_contains(child, impl->owner, 0)) hr = E_INVALIDARG;
++    else if (FAILED(hr = visual_collection_reserve(impl))) {}
++    else
++    {
++        memmove(impl->items + index + 1, impl->items + index,
++                (impl->count - index) * sizeof(*impl->items));
++        IVisual_AddRef(child);
++        impl->items[index] = child;
++        ++impl->count;
++        if (impl->dcomp_parent && (dcomp_child = dcomp_visual_from_visual(child)))
++        {
++            if (index) dcomp_reference = dcomp_visual_from_visual(impl->items[index - 1]);
++            hr = IDCompositionVisual_AddVisual(impl->dcomp_parent, dcomp_child, index != 0, dcomp_reference);
++        }
++    }
++    LeaveCriticalSection(&visual_graph_cs);
++    return hr;
++}
++
++static HRESULT WINAPI visual_collection_InsertAbove_locked( IVisualCollection *iface,
+         IVisual *child, IVisual *sibling )
+ {
+     struct visual_collection *impl = impl_from_IVisualCollection( iface );
+@@ -714,18 +747,18 @@
+     return E_INVALIDARG;
+ }
+ 
+-static HRESULT WINAPI visual_collection_InsertAtBottom( IVisualCollection *iface, IVisual *child )
++static HRESULT WINAPI visual_collection_InsertAtBottom_locked( IVisualCollection *iface, IVisual *child )
+ {
+     return visual_collection_insert( impl_from_IVisualCollection( iface ), 0, child );
+ }
+ 
+-static HRESULT WINAPI visual_collection_InsertAtTop( IVisualCollection *iface, IVisual *child )
++static HRESULT WINAPI visual_collection_InsertAtTop_locked( IVisualCollection *iface, IVisual *child )
+ {
+     struct visual_collection *impl = impl_from_IVisualCollection( iface );
+     return visual_collection_insert( impl, impl->count, child );
+ }
+ 
+-static HRESULT WINAPI visual_collection_InsertBelow( IVisualCollection *iface,
++static HRESULT WINAPI visual_collection_InsertBelow_locked( IVisualCollection *iface,
+         IVisual *child, IVisual *sibling )
+ {
+     struct visual_collection *impl = impl_from_IVisualCollection( iface );
+@@ -736,7 +769,7 @@
+     return E_INVALIDARG;
+ }
+ 
+-static HRESULT WINAPI visual_collection_Remove( IVisualCollection *iface, IVisual *child )
++static HRESULT WINAPI visual_collection_Remove_locked( IVisualCollection *iface, IVisual *child )
+ {
+     struct visual_collection *impl = impl_from_IVisualCollection( iface );
+     UINT32 i;
+@@ -758,7 +791,7 @@
+     return E_INVALIDARG;
+ }
+ 
+-static HRESULT WINAPI visual_collection_RemoveAll( IVisualCollection *iface )
++static HRESULT WINAPI visual_collection_RemoveAll_locked( IVisualCollection *iface )
+ {
+     struct visual_collection *impl = impl_from_IVisualCollection( iface );
+ 
+@@ -931,6 +964,68 @@
+     visual_collection_iterable_GetTrustLevel,
+     visual_collection_iterable_First,
+ };
++
++static HRESULT WINAPI visual_collection_InsertAbove( IVisualCollection *iface,
++        IVisual *child, IVisual *sibling )
++{
++    HRESULT hr;
++
++    EnterCriticalSection(&visual_graph_cs);
++    hr = visual_collection_InsertAbove_locked(iface, child, sibling);
++    LeaveCriticalSection(&visual_graph_cs);
++    return hr;
++}
++
++static HRESULT WINAPI visual_collection_InsertBelow( IVisualCollection *iface,
++        IVisual *child, IVisual *sibling )
++{
++    HRESULT hr;
++
++    EnterCriticalSection(&visual_graph_cs);
++    hr = visual_collection_InsertBelow_locked(iface, child, sibling);
++    LeaveCriticalSection(&visual_graph_cs);
++    return hr;
++}
++
++static HRESULT WINAPI visual_collection_InsertAtTop( IVisualCollection *iface, IVisual *child )
++{
++    HRESULT hr;
++
++    EnterCriticalSection(&visual_graph_cs);
++    hr = visual_collection_InsertAtTop_locked(iface, child);
++    LeaveCriticalSection(&visual_graph_cs);
++    return hr;
++}
++
++static HRESULT WINAPI visual_collection_InsertAtBottom( IVisualCollection *iface, IVisual *child )
++{
++    HRESULT hr;
++
++    EnterCriticalSection(&visual_graph_cs);
++    hr = visual_collection_InsertAtBottom_locked(iface, child);
++    LeaveCriticalSection(&visual_graph_cs);
++    return hr;
++}
++
++static HRESULT WINAPI visual_collection_Remove( IVisualCollection *iface, IVisual *child )
++{
++    HRESULT hr;
++
++    EnterCriticalSection(&visual_graph_cs);
++    hr = visual_collection_Remove_locked(iface, child);
++    LeaveCriticalSection(&visual_graph_cs);
++    return hr;
++}
++
++static HRESULT WINAPI visual_collection_RemoveAll( IVisualCollection *iface )
++{
++    HRESULT hr;
++
++    EnterCriticalSection(&visual_graph_cs);
++    hr = visual_collection_RemoveAll_locked(iface);
++    LeaveCriticalSection(&visual_graph_cs);
++    return hr;
++}
+ 
+ static const IVisualCollectionVtbl visual_collection_vtbl =
+ {
+@@ -1260,6 +1355,9 @@
+ struct sprite_visual
+ {
+     ISpriteVisual ISpriteVisual_iface;
++    struct redirect_visual_iface redirect_iface;
++    IVisual *source;
++    BOOL is_redirect;
+     IVisual IVisual_iface;
+     IVisual2 IVisual2_iface;
+     IContainerVisual IContainerVisual_iface;
+@@ -1330,7 +1428,12 @@
+     FIXME( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
+     if (!out) return E_POINTER;
+     if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
+-        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_ISpriteVisual ))
++        IsEqualGUID( iid, &IID_IAgileObject ))
++        *out = impl_from_ISpriteVisual(iface)->is_redirect ?
++                (void *)&impl_from_ISpriteVisual(iface)->redirect_iface : (void *)iface;
++    else if (IsEqualGUID(iid, &redirect_visual_iid) && impl_from_ISpriteVisual(iface)->is_redirect)
++        *out = &impl_from_ISpriteVisual(iface)->redirect_iface;
++    else if (IsEqualGUID(iid, &IID_ISpriteVisual) && !impl_from_ISpriteVisual(iface)->is_redirect)
+         *out = iface;
+     else if (IsEqualGUID( iid, &IID_IVisual ))
+         *out = &impl_from_ISpriteVisual( iface )->IVisual_iface;
+@@ -1385,6 +1488,10 @@
+         if (impl->center_expression) IExpressionAnimation_Release( impl->center_expression );
+         if (impl->clip) ICompositionClip_Release( impl->clip );
+         if (impl->parent_for_transform) IVisual_Release( impl->parent_for_transform );
++        EnterCriticalSection(&visual_graph_cs);
++        if (impl->children) impl_from_IVisualCollection(impl->children)->owner = NULL;
++        LeaveCriticalSection(&visual_graph_cs);
++        if (impl->source) IVisual_Release(impl->source);
+         if (impl->children) IVisualCollection_Release( impl->children );
+         if (impl->properties) ICompositionPropertySet_Release( impl->properties );
+         if (impl->compositor) ICompositor_Release( impl->compositor );
+@@ -1400,7 +1507,7 @@
+ 
+     if (!count || !iids) return E_POINTER;
+     if (!(values = CoTaskMemAlloc( 5 * sizeof(*values) ))) return E_OUTOFMEMORY;
+-    values[0] = IID_ISpriteVisual;
++    values[0] = impl_from_ISpriteVisual(iface)->is_redirect ? redirect_visual_iid : IID_ISpriteVisual;
+     values[1] = IID_IVisual;
+     values[2] = IID_IContainerVisual;
+     values[3] = IID_IVisual2;
+@@ -1413,6 +1520,8 @@
+ static HRESULT WINAPI sprite_visual_GetRuntimeClassName( ISpriteVisual *iface, HSTRING *name )
+ {
+     if (!name) return E_POINTER;
++    if (impl_from_ISpriteVisual(iface)->is_redirect)
++        return WindowsCreateString(L"Windows.UI.Composition.RedirectVisual", 37, name);
+     return WindowsCreateString( RuntimeClass_Windows_UI_Composition_SpriteVisual,
+                                 ARRAY_SIZE(RuntimeClass_Windows_UI_Composition_SpriteVisual) - 1, name );
+ }
+@@ -6126,6 +6235,82 @@
+     return surface_brush_create( NULL, result );
+ }
+ 
++DEFINE_IINSPECTABLE_(redirect_visual, struct redirect_visual_iface, struct sprite_visual,
++        impl_from_redirect_visual, redirect_iface, &impl->ISpriteVisual_iface)
++
++static IVisual *visual_get_source(struct sprite_visual *impl)
++{
++    IVisual *source;
++
++    EnterCriticalSection(&visual_graph_cs);
++    source = impl->source;
++    if (source) IVisual_AddRef(source);
++    LeaveCriticalSection(&visual_graph_cs);
++    return source;
++}
++
++static BOOL visual_contains(IVisual *visual, IVisual *target, UINT depth)
++{
++    struct sprite_visual *impl;
++    struct visual_collection *children;
++    UINT i;
++
++    if (!visual) return FALSE;
++    if (visual == target || depth > 64) return TRUE;
++    if (visual->lpVtbl != &visual_vtbl) return TRUE;
++    impl = sprite_visual_from_IVisual(visual);
++    if (visual_contains(impl->source, target, depth + 1)) return TRUE;
++    children = impl_from_IVisualCollection(impl->children);
++    for (i = 0; i < children->count; ++i)
++        if (visual_contains(children->items[i], target, depth + 1)) return TRUE;
++    return FALSE;
++}
++
++static HRESULT WINAPI redirect_visual_get_Source(struct redirect_visual_iface *iface, IVisual **value)
++{
++    if (!value) return E_POINTER;
++    *value = visual_get_source(impl_from_redirect_visual(iface));
++    return S_OK;
++}
++
++static HRESULT WINAPI redirect_visual_put_Source(struct redirect_visual_iface *iface, IVisual *value)
++{
++    struct sprite_visual *impl = impl_from_redirect_visual(iface), *source;
++    IVisual *previous;
++
++    if (value)
++    {
++        if (value->lpVtbl != &visual_vtbl) return E_INVALIDARG;
++        source = sprite_visual_from_IVisual(value);
++        if (source->compositor != impl->compositor) return E_INVALIDARG;
++    }
++    EnterCriticalSection(&visual_graph_cs);
++    if (visual_contains(value, &impl->IVisual_iface, 0))
++    {
++        LeaveCriticalSection(&visual_graph_cs);
++        return E_INVALIDARG;
++    }
++    if (value) IVisual_AddRef(value);
++    previous = impl->source;
++    impl->source = value;
++    LeaveCriticalSection(&visual_graph_cs);
++    if (previous) IVisual_Release(previous);
++    compositor_notify_commit_needed(impl_from_ICompositor(impl->compositor));
++    return S_OK;
++}
++
++static const struct redirect_visual_vtbl redirect_visual_vtbl =
++{
++    redirect_visual_QueryInterface,
++    redirect_visual_AddRef,
++    redirect_visual_Release,
++    redirect_visual_GetIids,
++    redirect_visual_GetRuntimeClassName,
++    redirect_visual_GetTrustLevel,
++    redirect_visual_get_Source,
++    redirect_visual_put_Source,
++};
++
+ static HRESULT WINAPI compositor_CreateSpriteVisual( ICompositor *iface, ISpriteVisual **result )
+ {
+     struct sprite_visual *impl;
+@@ -6137,6 +6322,7 @@
+     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+     impl->ISpriteVisual_iface.lpVtbl = &sprite_visual_vtbl;
+     impl->IVisual_iface.lpVtbl = &visual_vtbl;
++    impl->redirect_iface.lpVtbl = &redirect_visual_vtbl;
+     impl->IVisual2_iface.lpVtbl = &visual2_vtbl;
+     impl->IContainerVisual_iface.lpVtbl = &container_visual_vtbl;
+     impl->ICompositionObject_iface.lpVtbl = &sprite_visual_composition_object_vtbl;
+@@ -6161,6 +6347,7 @@
+         return hr;
+     }
+     impl->compositor = iface;
++    impl_from_IVisualCollection(impl->children)->owner = &impl->IVisual_iface;
+     ICompositor_AddRef( iface );
+     impl->visible = TRUE;
+     impl->opacity = 1.0f;
+@@ -7093,7 +7280,7 @@
+     }
+ 
+ DEFINE_COMPOSITOR6_CREATE_METHOD(CreateGeometricClip)
+-DEFINE_COMPOSITOR6_CREATE_METHOD(CreateRedirectVisual)
++
+ 
+ #undef DEFINE_COMPOSITOR6_CREATE_METHOD
+ 
+@@ -7117,10 +7304,33 @@
+ static HRESULT WINAPI compositor6_CreateRedirectVisualWithSourceVisual( struct compositor6_iface *iface,
+         IInspectable *visual, IInspectable **result )
+ {
+-    FIXME( "iface %p, visual %p, result %p stub!\n", iface, visual, result );
++    struct sprite_visual *impl;
++    ISpriteVisual *sprite;
++    IVisual *source = NULL;
++    HRESULT hr;
++
++    TRACE("iface %p, visual %p, result %p.\n", iface, visual, result);
+     if (!result) return E_POINTER;
+     *result = NULL;
+-    return E_NOTIMPL;
++    if (visual && FAILED(hr = IInspectable_QueryInterface(visual, &IID_IVisual, (void **)&source)))
++        return hr;
++    hr = compositor_CreateSpriteVisual(&impl_from_compositor6(iface)->ICompositor_iface, &sprite);
++    if (SUCCEEDED(hr))
++    {
++        impl = impl_from_ISpriteVisual(sprite);
++        impl->is_redirect = TRUE;
++        hr = redirect_visual_put_Source(&impl->redirect_iface, source);
++        if (SUCCEEDED(hr)) *result = (IInspectable *)&impl->redirect_iface;
++        else ISpriteVisual_Release(sprite);
++    }
++    if (source) IVisual_Release(source);
++    return hr;
++}
++
++static HRESULT WINAPI compositor6_CreateRedirectVisual(struct compositor6_iface *iface,
++        IInspectable **result)
++{
++    return compositor6_CreateRedirectVisualWithSourceVisual(iface, NULL, result);
+ }
+ 
+ static const struct compositor6_vtbl compositor6_vtbl =
+@@ -8085,7 +8295,16 @@
+                 bounds.right - inset->right, bounds.bottom - inset->bottom};
+         ID2D1DeviceContext_PushAxisAlignedClip( context, &clip_bounds, D2D1_ANTIALIAS_MODE_ALIASED );
+     }
+-    if (impl->brush && bounds.right > bounds.left && bounds.bottom > bounds.top)
++    if (impl->is_redirect)
++    {
++        IVisual *source = visual_get_source(impl);
++        if (source)
++        {
++            hr = draw_composition_visual(context, source, 0.0f, 0.0f, width, height, opacity, depth + 1);
++            IVisual_Release(source);
++        }
++    }
++    if (SUCCEEDED(hr) && impl->brush && bounds.right > bounds.left && bounds.bottom > bounds.top)
+         hr = draw_composition_brush( context, impl->brush, &bounds, opacity, 0 );
+     for (i = 0; SUCCEEDED(hr) && i < children->count; ++i)
+         hr = draw_composition_visual( context, children->items[i], 0.0f, 0.0f, width, height,
+@@ -8142,6 +8361,13 @@
+ 
+     if (!visual || depth > 64) return NULL;
+     impl = sprite_visual_from_IVisual( visual );
++    if (impl->is_redirect)
++    {
++        IVisual *source = visual_get_source(impl);
++        surface = find_visual_drawing_surface(source, depth + 1);
++        if (source) IVisual_Release(source);
++        if (surface) return surface;
++    }
+     if ((surface = find_brush_drawing_surface( impl->brush, 0 ))) return surface;
+     children = impl_from_IVisualCollection( impl->children );
+     for (i = 0; i < children->count; ++i)

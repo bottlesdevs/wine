@@ -1,0 +1,601 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -1352,12 +1352,88 @@
+     return S_OK;
+ }
+ 
++static const GUID composition_object2_iid = {0xef874ea1,0x5cff,0x4b68,{0x9e,0x30,0xa1,0x51,0x9d,0x08,0xba,0x03}};
++static const GUID implicit_collection_iid = {0x0598a3ff,0x0a92,0x4c9d,{0xa4,0x27,0xb2,0x55,0x19,0x25,0x0d,0xbf}};
++static const GUID animation_group_iid = {0x5e7cc90c,0xcd14,0x4e07,{0x8a,0x55,0xc7,0x25,0x27,0xaa,0xbd,0xac}};
++static const GUID animation2_iid = {0x369b603e,0xa80f,0x4948,{0x93,0xe3,0xed,0x23,0xfb,0x38,0xc6,0xcb}};
++static const GUID animation_iterable_iid = {0x0cb59942,0xc6f3,0x585f,{0x9a,0x92,0xb4,0x7e,0x8d,0xd3,0x8e,0xbf}};
++static const GUID animation_iterator_iid = {0x98efbe55,0x0a66,0x556a,{0x9a,0xdc,0x4a,0xb5,0x9c,0x69,0x68,0x46}};
++static const GUID implicit_map_iid = {0x4ba9aa1d,0x57ac,0x54de,{0xa8,0x07,0xb5,0x2e,0x68,0x9b,0xfc,0x04}};
++#define OBJECT2_INSPECTABLE(type) \
++    HRESULT (WINAPI *QueryInterface)(type *,REFIID,void **); \
++    ULONG (WINAPI *AddRef)(type *); \
++    ULONG (WINAPI *Release)(type *); \
++    HRESULT (WINAPI *GetIids)(type *,ULONG *,IID **); \
++    HRESULT (WINAPI *GetRuntimeClassName)(type *,HSTRING *); \
++    HRESULT (WINAPI *GetTrustLevel)(type *,TrustLevel *)
++struct composition_object2_iface;
++struct composition_object2_vtbl
++{
++    OBJECT2_INSPECTABLE(struct composition_object2_iface);
++    HRESULT (WINAPI *get_Comment)(struct composition_object2_iface *,HSTRING *);
++    HRESULT (WINAPI *put_Comment)(struct composition_object2_iface *,HSTRING);
++    HRESULT (WINAPI *get_ImplicitAnimations)(struct composition_object2_iface *,IInspectable **);
++    HRESULT (WINAPI *put_ImplicitAnimations)(struct composition_object2_iface *,IInspectable *);
++    HRESULT (WINAPI *StartAnimationGroup)(struct composition_object2_iface *,ICompositionAnimationBase *);
++    HRESULT (WINAPI *StopAnimationGroup)(struct composition_object2_iface *,ICompositionAnimationBase *);
++};
++struct composition_object2_iface { const struct composition_object2_vtbl *lpVtbl; };
++struct animation_group_iface;
++struct animation_group_vtbl
++{
++    OBJECT2_INSPECTABLE(struct animation_group_iface);
++    HRESULT (WINAPI *get_Count)(struct animation_group_iface *,INT32 *);
++    HRESULT (WINAPI *Add)(struct animation_group_iface *,ICompositionAnimation *);
++    HRESULT (WINAPI *Remove)(struct animation_group_iface *,ICompositionAnimation *);
++    HRESULT (WINAPI *RemoveAll)(struct animation_group_iface *);
++};
++struct animation_group_iface { const struct animation_group_vtbl *lpVtbl; };
++struct animation2_iface;
++struct animation2_vtbl
++{
++    OBJECT2_INSPECTABLE(struct animation2_iface);
++    HRESULT (WINAPI *SetBooleanParameter)(struct animation2_iface *,HSTRING,boolean);
++    HRESULT (WINAPI *get_Target)(struct animation2_iface *,HSTRING *);
++    HRESULT (WINAPI *put_Target)(struct animation2_iface *,HSTRING);
++};
++struct animation2_iface { const struct animation2_vtbl *lpVtbl; };
++struct animation_iterator_iface;
++struct animation_iterator_vtbl
++{
++    OBJECT2_INSPECTABLE(struct animation_iterator_iface);
++    HRESULT (WINAPI *get_Current)(struct animation_iterator_iface *,ICompositionAnimation **);
++    HRESULT (WINAPI *get_HasCurrent)(struct animation_iterator_iface *,boolean *);
++    HRESULT (WINAPI *MoveNext)(struct animation_iterator_iface *,boolean *);
++    HRESULT (WINAPI *GetMany)(struct animation_iterator_iface *,UINT32,ICompositionAnimation **,UINT32 *);
++};
++struct animation_iterator_iface { const struct animation_iterator_vtbl *lpVtbl; };
++struct animation_iterable_iface;
++struct animation_iterable_vtbl
++{
++    OBJECT2_INSPECTABLE(struct animation_iterable_iface);
++    HRESULT (WINAPI *First)(struct animation_iterable_iface *,struct animation_iterator_iface **);
++};
++struct animation_iterable_iface { const struct animation_iterable_vtbl *lpVtbl; };
++struct implicit_map_iface;
++struct implicit_map_vtbl
++{
++    OBJECT2_INSPECTABLE(struct implicit_map_iface);
++    HRESULT (WINAPI *Lookup)(struct implicit_map_iface *,HSTRING,ICompositionAnimationBase **);
++};
++struct implicit_map_iface { const struct implicit_map_vtbl *lpVtbl; };
++#undef OBJECT2_INSPECTABLE
++struct sprite_visual;
++static HRESULT visual_apply_implicit_animation(struct sprite_visual *impl,const WCHAR *name);
++
+ struct sprite_visual
+ {
+     ISpriteVisual ISpriteVisual_iface;
+     struct redirect_visual_iface redirect_iface;
+     IVisual *source;
+     BOOL is_redirect;
++    struct composition_object2_iface object2_iface;
++    HSTRING comment;
++    IInspectable *implicit_animations;
+     IVisual IVisual_iface;
+     IVisual2 IVisual2_iface;
+     IContainerVisual IContainerVisual_iface;
+@@ -1435,6 +1511,8 @@
+         *out = &impl_from_ISpriteVisual(iface)->redirect_iface;
+     else if (IsEqualGUID(iid, &IID_ISpriteVisual) && !impl_from_ISpriteVisual(iface)->is_redirect)
+         *out = iface;
++    else if (IsEqualGUID(iid,&composition_object2_iid))
++        *out = &impl_from_ISpriteVisual(iface)->object2_iface;
+     else if (IsEqualGUID( iid, &IID_IVisual ))
+         *out = &impl_from_ISpriteVisual( iface )->IVisual_iface;
+     else if (IsEqualGUID( iid, &IID_IVisual2 ))
+@@ -1491,6 +1569,8 @@
+         EnterCriticalSection(&visual_graph_cs);
+         if (impl->children) impl_from_IVisualCollection(impl->children)->owner = NULL;
+         LeaveCriticalSection(&visual_graph_cs);
++        WindowsDeleteString(impl->comment);
++        if (impl->implicit_animations) IInspectable_Release(impl->implicit_animations);
+         if (impl->source) IVisual_Release(impl->source);
+         if (impl->children) IVisualCollection_Release( impl->children );
+         if (impl->properties) ICompositionPropertySet_Release( impl->properties );
+@@ -1506,13 +1586,14 @@
+     IID *values;
+ 
+     if (!count || !iids) return E_POINTER;
+-    if (!(values = CoTaskMemAlloc( 5 * sizeof(*values) ))) return E_OUTOFMEMORY;
++    if (!(values = CoTaskMemAlloc( 6 * sizeof(*values) ))) return E_OUTOFMEMORY;
+     values[0] = impl_from_ISpriteVisual(iface)->is_redirect ? redirect_visual_iid : IID_ISpriteVisual;
+     values[1] = IID_IVisual;
+     values[2] = IID_IContainerVisual;
+     values[3] = IID_IVisual2;
+     values[4] = IID_ICompositionObject;
+-    *count = 5;
++    values[5] = composition_object2_iid;
++    *count = 6;
+     *iids = values;
+     return S_OK;
+ }
+@@ -1788,6 +1869,21 @@
+     return ISpriteVisual_GetTrustLevel( &impl->ISpriteVisual_iface, level );
+ }
+ 
++static BOOL visual_property_equal(const WCHAR *name,const void *a,const void *b,SIZE_T size)
++{
++    FLOAT previous[16], current[16];
++    UINT i;
++
++    if (size % sizeof(FLOAT) || size > sizeof(previous) || !wcscmp(name,L"BackfaceVisibility") ||
++            !wcscmp(name,L"BorderMode") || !wcscmp(name,L"CompositeMode"))
++        return !memcmp(a,b,size);
++    memcpy(previous,a,size);
++    memcpy(current,b,size);
++    for (i = 0; i < size / sizeof(FLOAT); ++i)
++        if (previous[i] != current[i]) return FALSE;
++    return TRUE;
++}
++
+ #define VISUAL_PROPERTY(name, type, field) \
+     static HRESULT WINAPI visual_get_##name( IVisual *iface, type *value ) \
+     { \
+@@ -1797,8 +1893,10 @@
+     } \
+     static HRESULT WINAPI visual_put_##name( IVisual *iface, type value ) \
+     { \
+-        sprite_visual_from_IVisual( iface )->field = value; \
+-        return S_OK; \
++        struct sprite_visual *impl = sprite_visual_from_IVisual(iface); \
++        if (visual_property_equal(L## #name,&impl->field,&value,sizeof(value))) return S_OK; \
++        impl->field = value; \
++        return visual_apply_implicit_animation(impl,L## #name); \
+     }
+ 
+ VISUAL_PROPERTY( AnchorPoint, struct Vector2, anchor_point )
+@@ -3943,9 +4041,119 @@
+     return S_OK;
+ }
+ 
++struct animation_boolean_parameter
++{
++    struct animation_boolean_parameter *next;
++    HSTRING key;
++    boolean value;
++};
++struct animation2_state
++{
++    struct animation2_iface iface;
++    ICompositionAnimation *animation;
++    HSTRING target;
++    struct animation_boolean_parameter *parameters;
++};
++
++DEFINE_IINSPECTABLE_(animation2, struct animation2_iface, struct animation2_state,
++        impl_from_animation2, iface, impl->animation)
++
++static HRESULT WINAPI animation2_get_Target(struct animation2_iface *iface,HSTRING *value)
++{
++    HRESULT hr;
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection(&visual_graph_cs);
++    hr = WindowsDuplicateString(impl_from_animation2(iface)->target,value);
++    LeaveCriticalSection(&visual_graph_cs);
++    return hr;
++}
++
++static HRESULT WINAPI animation2_put_Target(struct animation2_iface *iface,HSTRING value)
++{
++    struct animation2_state *impl = impl_from_animation2(iface);
++    HSTRING copy, previous;
++    HRESULT hr;
++
++    if (FAILED(hr = WindowsDuplicateString(value,&copy))) return hr;
++    EnterCriticalSection(&visual_graph_cs);
++    previous = impl->target;
++    impl->target = copy;
++    LeaveCriticalSection(&visual_graph_cs);
++    WindowsDeleteString(previous);
++    return S_OK;
++}
++
++static void animation2_clear_parameters(struct animation2_state *impl,HSTRING key)
++{
++    struct animation_boolean_parameter **entry, *removed;
++    INT32 comparison;
++
++    EnterCriticalSection(&visual_graph_cs);
++    entry = &impl->parameters;
++    while (*entry)
++    {
++        comparison = 1;
++        if (key) WindowsCompareStringOrdinal(key,(*entry)->key,&comparison);
++        if (!key || !comparison)
++        {
++            removed = *entry;
++            *entry = removed->next;
++            WindowsDeleteString(removed->key);
++            free(removed);
++        }
++        else entry = &(*entry)->next;
++    }
++    LeaveCriticalSection(&visual_graph_cs);
++}
++
++static HRESULT WINAPI animation2_SetBooleanParameter(struct animation2_iface *iface,HSTRING key,
++        boolean value)
++{
++    struct animation2_state *impl = impl_from_animation2(iface);
++    struct animation_boolean_parameter *entry;
++    INT32 comparison;
++    HRESULT hr = S_OK;
++
++    if (!WindowsGetStringLen(key)) return E_INVALIDARG;
++    EnterCriticalSection(&visual_graph_cs);
++    for (entry = impl->parameters; entry; entry = entry->next)
++    {
++        WindowsCompareStringOrdinal(key,entry->key,&comparison);
++        if (!comparison) break;
++    }
++    if (!entry)
++    {
++        if (!(entry = calloc(1,sizeof(*entry)))) hr = E_OUTOFMEMORY;
++        else if (FAILED(hr = WindowsDuplicateString(key,&entry->key))) free(entry);
++        else
++        {
++            entry->next = impl->parameters;
++            impl->parameters = entry;
++        }
++    }
++    if (SUCCEEDED(hr)) entry->value = value;
++    LeaveCriticalSection(&visual_graph_cs);
++    return hr;
++}
++
++static const struct animation2_vtbl animation2_vtbl =
++{
++    animation2_QueryInterface,
++    animation2_AddRef,
++    animation2_Release,
++    animation2_GetIids,
++    animation2_GetRuntimeClassName,
++    animation2_GetTrustLevel,
++    animation2_SetBooleanParameter,
++    animation2_get_Target,
++    animation2_put_Target,
++};
++
+ struct scalar_key_frame_animation
+ {
+     IScalarKeyFrameAnimation IScalarKeyFrameAnimation_iface;
++    struct animation2_state animation2;
+     IVector3KeyFrameAnimation IVector3KeyFrameAnimation_iface;
+     struct boolean_key_frame_animation_iface IBooleanKeyFrameAnimation_iface;
+     struct key_frame_animation_iface IKeyFrameAnimation_iface;
+@@ -4104,6 +4312,8 @@
+         *out = &impl->IBooleanKeyFrameAnimation_iface;
+     else if (IsEqualGUID( iid, &key_frame_animation_iid ))
+         *out = &impl->IKeyFrameAnimation_iface;
++    else if (IsEqualGUID(iid,&animation2_iid))
++        *out = &impl->animation2.iface;
+     else if (IsEqualGUID( iid, &IID_ICompositionAnimation ))
+         *out = &impl->ICompositionAnimation_iface;
+     else if (IsEqualGUID( iid, &IID_ICompositionAnimationBase ))
+@@ -4127,6 +4337,8 @@
+ 
+     if (!ref)
+     {
++        animation2_clear_parameters(&impl->animation2,NULL);
++        WindowsDeleteString(impl->animation2.target);
+         ICompositor_Release( impl->compositor );
+         free( impl );
+     }
+@@ -4137,7 +4349,7 @@
+         ULONG *count, IID **iids )
+ {
+     if (!count || !iids) return E_POINTER;
+-    if (!(*iids = CoTaskMemAlloc( 5 * sizeof(**iids) ))) return E_OUTOFMEMORY;
++    if (!(*iids = CoTaskMemAlloc( 6 * sizeof(**iids) ))) return E_OUTOFMEMORY;
+     (*iids)[0] = impl->is_vector3 ? IID_IVector3KeyFrameAnimation :
+                 impl->is_boolean ? boolean_key_frame_animation_iid :
+                                     IID_IScalarKeyFrameAnimation;
+@@ -4145,7 +4357,8 @@
+     (*iids)[2] = IID_ICompositionAnimation;
+     (*iids)[3] = IID_ICompositionAnimationBase;
+     (*iids)[4] = IID_ICompositionObject;
+-    *count = 5;
++    (*iids)[5] = animation2_iid;
++    *count = 6;
+     return S_OK;
+ }
+ 
+@@ -4547,13 +4760,16 @@
+ 
+ static HRESULT WINAPI scalar_composition_animation_ClearAllParameters( ICompositionAnimation *iface )
+ {
++    animation2_clear_parameters(&scalar_animation_from_ICompositionAnimation(iface)->animation2,NULL);
+     return S_OK;
+ }
+ 
+ static HRESULT WINAPI scalar_composition_animation_ClearParameter( ICompositionAnimation *iface,
+         HSTRING key )
+ {
+-    return key ? S_OK : E_INVALIDARG;
++    if (!key) return E_INVALIDARG;
++    animation2_clear_parameters(&scalar_animation_from_ICompositionAnimation(iface)->animation2,key);
++    return S_OK;
+ }
+ 
+ #define SCALAR_COMPOSITION_ANIMATION_PARAMETER(name, type) \
+@@ -4752,6 +4968,8 @@
+     impl->IScalarKeyFrameAnimation_iface.lpVtbl = &scalar_key_frame_animation_vtbl;
+     impl->IKeyFrameAnimation_iface.lpVtbl = &key_frame_animation_vtbl;
+     impl->ICompositionAnimation_iface.lpVtbl = &scalar_composition_animation_vtbl;
++    impl->animation2.iface.lpVtbl = &animation2_vtbl;
++    impl->animation2.animation = &impl->ICompositionAnimation_iface;
+     impl->ICompositionAnimationBase_iface.lpVtbl = &scalar_composition_animation_base_vtbl;
+     impl->ICompositionObject_iface.lpVtbl = &scalar_animation_composition_object_vtbl;
+     impl->compositor = compositor;
+@@ -4790,6 +5008,8 @@
+     impl->IBooleanKeyFrameAnimation_iface.lpVtbl = &boolean_key_frame_animation_vtbl;
+     impl->IKeyFrameAnimation_iface.lpVtbl = &key_frame_animation_vtbl;
+     impl->ICompositionAnimation_iface.lpVtbl = &scalar_composition_animation_vtbl;
++    impl->animation2.iface.lpVtbl = &animation2_vtbl;
++    impl->animation2.animation = &impl->ICompositionAnimation_iface;
+     impl->ICompositionAnimationBase_iface.lpVtbl = &scalar_composition_animation_base_vtbl;
+     impl->ICompositionObject_iface.lpVtbl = &scalar_animation_composition_object_vtbl;
+     impl->compositor = compositor;
+@@ -6311,6 +6531,238 @@
+     redirect_visual_put_Source,
+ };
+ 
++DEFINE_IINSPECTABLE_(visual_object2, struct composition_object2_iface, struct sprite_visual,
++        impl_from_visual_object2, object2_iface, &impl->ISpriteVisual_iface)
++
++static HRESULT WINAPI visual_object2_get_Comment(struct composition_object2_iface *iface,HSTRING *value)
++{
++    struct sprite_visual *impl = impl_from_visual_object2(iface);
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection(&visual_graph_cs);
++    hr = WindowsDuplicateString(impl->comment,value);
++    LeaveCriticalSection(&visual_graph_cs);
++    return hr;
++}
++
++static HRESULT WINAPI visual_object2_put_Comment(struct composition_object2_iface *iface,HSTRING value)
++{
++    struct sprite_visual *impl = impl_from_visual_object2(iface);
++    HSTRING copy, previous;
++    HRESULT hr;
++
++    if (FAILED(hr = WindowsDuplicateString(value,&copy))) return hr;
++    EnterCriticalSection(&visual_graph_cs);
++    previous = impl->comment;
++    impl->comment = copy;
++    LeaveCriticalSection(&visual_graph_cs);
++    WindowsDeleteString(previous);
++    return S_OK;
++}
++
++static HRESULT WINAPI visual_object2_get_ImplicitAnimations(struct composition_object2_iface *iface,
++        IInspectable **value)
++{
++    struct sprite_visual *impl = impl_from_visual_object2(iface);
++
++    if (!value) return E_POINTER;
++    EnterCriticalSection(&visual_graph_cs);
++    *value = impl->implicit_animations;
++    if (*value) IInspectable_AddRef(*value);
++    LeaveCriticalSection(&visual_graph_cs);
++    return S_OK;
++}
++
++static HRESULT WINAPI visual_object2_put_ImplicitAnimations(struct composition_object2_iface *iface,
++        IInspectable *value)
++{
++    struct sprite_visual *impl = impl_from_visual_object2(iface);
++    IInspectable *copy = NULL, *previous;
++    HRESULT hr;
++
++    if (value && FAILED(hr = IInspectable_QueryInterface(value,&implicit_collection_iid,(void **)&copy)))
++        return hr;
++    EnterCriticalSection(&visual_graph_cs);
++    previous = impl->implicit_animations;
++    impl->implicit_animations = copy;
++    LeaveCriticalSection(&visual_graph_cs);
++    if (previous) IInspectable_Release(previous);
++    return S_OK;
++}
++
++struct group_animation_binding
++{
++    ICompositionAnimation *animation;
++    HSTRING target;
++};
++
++static HRESULT visual_validate_animation(ICompositionAnimation *animation,HSTRING name)
++{
++    const WCHAR *target = WindowsGetStringRawBuffer(name,NULL);
++    IExpressionAnimation *expression;
++    struct Vector3 vector;
++    FLOAT scalar;
++    boolean boolean_value;
++    HRESULT hr;
++
++    if (!wcscmp(target,L"Opacity")) return scalar_key_frame_animation_get_final_value(animation,&scalar);
++    if (!wcscmp(target,L"IsVisible")) return boolean_key_frame_animation_get_final_value(animation,&boolean_value);
++    if (!wcscmp(target,L"Offset") || !wcscmp(target,L"Scale") || !wcscmp(target,L"CenterPoint"))
++    {
++        if (SUCCEEDED(ICompositionAnimation_QueryInterface(animation,&IID_IExpressionAnimation,(void **)&expression)))
++        {
++            hr = expression_animation_get_vector(expression,&vector);
++            IExpressionAnimation_Release(expression);
++            return hr;
++        }
++        return vector3_key_frame_animation_get_final_value(animation,&vector);
++    }
++    if (!wcscmp(target,L"RotationAxis")) return vector3_key_frame_animation_get_final_value(animation,&vector);
++    return E_NOTIMPL;
++}
++
++static HRESULT visual_run_animation_group(struct sprite_visual *impl,
++        ICompositionAnimationBase *value,BOOL stop)
++{
++    struct animation_group_iface *group = NULL;
++    struct animation_iterable_iface *iterable = NULL;
++    struct animation_iterator_iface *iterator = NULL;
++    struct animation2_iface *animation2;
++    struct group_animation_binding *bindings = NULL;
++    INT32 count = 0, i;
++    boolean current;
++    HRESULT hr;
++
++    if (!value) return E_INVALIDARG;
++    if (FAILED(hr = ICompositionAnimationBase_QueryInterface(value,&animation_group_iid,(void **)&group)))
++        return hr;
++    if (FAILED(hr = group->lpVtbl->get_Count(group,&count))) goto done;
++    if (count < 0) { hr = E_INVALIDARG; goto done; }
++    if (count && !(bindings = calloc(count,sizeof(*bindings)))) { hr = E_OUTOFMEMORY; goto done; }
++    if (FAILED(hr = ICompositionAnimationBase_QueryInterface(value,&animation_iterable_iid,(void **)&iterable)))
++        goto done;
++    if (FAILED(hr = iterable->lpVtbl->First(iterable,&iterator))) goto done;
++    if (!iterator) { hr = E_UNEXPECTED; goto done; }
++    /* Validate every target before changing any binding on the visual. */
++    for (i = 0; i < count; ++i)
++    {
++        if (FAILED(hr = iterator->lpVtbl->get_HasCurrent(iterator,&current))) goto done;
++        if (!current) { hr = E_CHANGED_STATE; goto done; }
++        if (FAILED(hr = iterator->lpVtbl->get_Current(iterator,&bindings[i].animation))) goto done;
++        if (!bindings[i].animation) { hr = E_INVALIDARG; goto done; }
++        if (FAILED(hr = ICompositionAnimation_QueryInterface(bindings[i].animation,&animation2_iid,
++                (void **)&animation2))) goto done;
++        hr = animation2->lpVtbl->get_Target(animation2,&bindings[i].target);
++        animation2->lpVtbl->Release(animation2);
++        if (FAILED(hr)) goto done;
++        if (!WindowsGetStringLen(bindings[i].target)) { hr = E_INVALIDARG; goto done; }
++        if (!stop && FAILED(hr = visual_validate_animation(bindings[i].animation,bindings[i].target)))
++            goto done;
++        if (FAILED(hr = iterator->lpVtbl->MoveNext(iterator,&current))) goto done;
++    }
++    if (FAILED(hr = iterator->lpVtbl->get_HasCurrent(iterator,&current))) goto done;
++    if (current) { hr = E_CHANGED_STATE; goto done; }
++    for (i = 0; i < count; ++i)
++    {
++        if (stop) hr = ICompositionObject_StopAnimation(&impl->ICompositionObject_iface,bindings[i].target);
++        else hr = ICompositionObject_StartAnimation(&impl->ICompositionObject_iface,
++                bindings[i].target,bindings[i].animation);
++        if (FAILED(hr)) goto done;
++    }
++    hr = S_OK;
++done:
++    if (bindings)
++    {
++        for (i = 0; i < count; ++i)
++        {
++            if (bindings[i].animation) ICompositionAnimation_Release(bindings[i].animation);
++            WindowsDeleteString(bindings[i].target);
++        }
++        free(bindings);
++    }
++    if (iterator) iterator->lpVtbl->Release(iterator);
++    if (iterable) iterable->lpVtbl->Release(iterable);
++    if (group) group->lpVtbl->Release(group);
++    return hr;
++}
++
++static HRESULT WINAPI visual_object2_StartAnimationGroup(struct composition_object2_iface *iface,
++        ICompositionAnimationBase *value)
++{
++    TRACE("iface %p, value %p.\n",iface,value);
++    return visual_run_animation_group(impl_from_visual_object2(iface),value,FALSE);
++}
++
++static HRESULT WINAPI visual_object2_StopAnimationGroup(struct composition_object2_iface *iface,
++        ICompositionAnimationBase *value)
++{
++    TRACE("iface %p, value %p.\n",iface,value);
++    return visual_run_animation_group(impl_from_visual_object2(iface),value,TRUE);
++}
++
++static HRESULT visual_apply_implicit_animation(struct sprite_visual *impl,const WCHAR *property)
++{
++    IInspectable *collection;
++    struct implicit_map_iface *map;
++    struct animation2_iface *animation2;
++    ICompositionAnimationBase *value = NULL;
++    ICompositionAnimation *animation;
++    HSTRING name, target = NULL;
++    HRESULT hr;
++
++    visual_object2_get_ImplicitAnimations(&impl->object2_iface,&collection);
++    if (!collection) return S_OK;
++    hr = IInspectable_QueryInterface(collection,&implicit_map_iid,(void **)&map);
++    IInspectable_Release(collection);
++    if (FAILED(hr)) return hr;
++    hr = WindowsCreateString(property,wcslen(property),&name);
++    if (SUCCEEDED(hr))
++    {
++        hr = map->lpVtbl->Lookup(map,name,&value);
++        WindowsDeleteString(name);
++    }
++    map->lpVtbl->Release(map);
++    if (hr == E_BOUNDS) return S_OK;
++    if (FAILED(hr)) return hr;
++    if (!value) return E_INVALIDARG;
++    if (SUCCEEDED(hr = ICompositionAnimationBase_QueryInterface(value,&IID_ICompositionAnimation,
++            (void **)&animation)))
++    {
++        hr = ICompositionAnimation_QueryInterface(animation,&animation2_iid,(void **)&animation2);
++        if (SUCCEEDED(hr))
++        {
++            hr = animation2->lpVtbl->get_Target(animation2,&target);
++            animation2->lpVtbl->Release(animation2);
++            if (SUCCEEDED(hr) && !WindowsGetStringLen(target)) hr = E_INVALIDARG;
++            if (SUCCEEDED(hr)) hr = visual_validate_animation(animation,target);
++            if (SUCCEEDED(hr)) hr = ICompositionObject_StartAnimation(&impl->ICompositionObject_iface,target,animation);
++            WindowsDeleteString(target);
++        }
++        ICompositionAnimation_Release(animation);
++    }
++    else hr = visual_run_animation_group(impl,value,FALSE);
++    ICompositionAnimationBase_Release(value);
++    return hr;
++}
++
++static const struct composition_object2_vtbl visual_object2_vtbl =
++{
++    visual_object2_QueryInterface,
++    visual_object2_AddRef,
++    visual_object2_Release,
++    visual_object2_GetIids,
++    visual_object2_GetRuntimeClassName,
++    visual_object2_GetTrustLevel,
++    visual_object2_get_Comment,
++    visual_object2_put_Comment,
++    visual_object2_get_ImplicitAnimations,
++    visual_object2_put_ImplicitAnimations,
++    visual_object2_StartAnimationGroup,
++    visual_object2_StopAnimationGroup,
++};
++
+ static HRESULT WINAPI compositor_CreateSpriteVisual( ICompositor *iface, ISpriteVisual **result )
+ {
+     struct sprite_visual *impl;
+@@ -6323,6 +6775,7 @@
+     impl->ISpriteVisual_iface.lpVtbl = &sprite_visual_vtbl;
+     impl->IVisual_iface.lpVtbl = &visual_vtbl;
+     impl->redirect_iface.lpVtbl = &redirect_visual_vtbl;
++    impl->object2_iface.lpVtbl = &visual_object2_vtbl;
+     impl->IVisual2_iface.lpVtbl = &visual2_vtbl;
+     impl->IContainerVisual_iface.lpVtbl = &container_visual_vtbl;
+     impl->ICompositionObject_iface.lpVtbl = &sprite_visual_composition_object_vtbl;

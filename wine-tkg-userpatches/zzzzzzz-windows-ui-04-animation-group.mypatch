@@ -1,0 +1,564 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -6918,7 +6918,560 @@
+     }
+ 
+ DEFINE_COMPOSITOR2_CREATE_METHOD(CreateAmbientLight)
+-DEFINE_COMPOSITOR2_CREATE_METHOD(CreateAnimationGroup)
++struct animation_group_entry
++{
++    ICompositionAnimation *animation;
++    IUnknown *identity;
++};
++
++struct native_animation_group
++{
++    struct animation_group_iface iface;
++    struct animation_iterable_iface iterable;
++    ICompositionObject ICompositionObject_iface;
++    LONG ref;
++    CRITICAL_SECTION cs;
++    ICompositor *compositor;
++    ICompositionPropertySet *properties;
++    struct animation_group_entry *entries;
++    UINT32 count, generation;
++};
++
++struct native_animation_iterator
++{
++    struct animation_iterator_iface iface;
++    LONG ref;
++    struct native_animation_group *group;
++    UINT32 index, generation;
++};
++
++static struct native_animation_group *impl_from_animation_group( struct animation_group_iface *iface )
++{
++    return CONTAINING_RECORD( iface, struct native_animation_group, iface );
++}
++
++static HRESULT WINAPI animation_group_QueryInterface( struct animation_group_iface *iface,
++        REFIID iid, void **out )
++{
++    struct native_animation_group *impl = impl_from_animation_group( iface );
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++            IsEqualGUID( iid, &animation_group_iid ) || IsEqualGUID( iid, &IID_ICompositionAnimationBase ))
++        *out = &impl->iface;
++    else if (IsEqualGUID( iid, &animation_iterable_iid )) *out = &impl->iterable;
++    else if (IsEqualGUID( iid, &IID_ICompositionObject )) *out = &impl->ICompositionObject_iface;
++    else return E_NOINTERFACE;
++    InterlockedIncrement( &impl->ref );
++    return S_OK;
++}
++
++static ULONG WINAPI animation_group_AddRef( struct animation_group_iface *iface )
++{
++    return InterlockedIncrement( &impl_from_animation_group( iface )->ref );
++}
++
++static void animation_group_release_entries( struct animation_group_entry *entries, UINT32 count )
++{
++    UINT32 i;
++
++    for (i = 0; i < count; ++i)
++    {
++        ICompositionAnimation_Release( entries[i].animation );
++        IUnknown_Release( entries[i].identity );
++    }
++    free( entries );
++}
++
++static ULONG WINAPI animation_group_Release( struct animation_group_iface *iface )
++{
++    struct native_animation_group *impl = impl_from_animation_group( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        animation_group_release_entries( impl->entries, impl->count );
++        ICompositionPropertySet_Release( impl->properties );
++        ICompositor_Release( impl->compositor );
++        DeleteCriticalSection( &impl->cs );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI animation_group_GetIids( struct animation_group_iface *iface,
++        ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = CoTaskMemAlloc( 4 * sizeof(**iids) );
++    if (!*iids) return E_OUTOFMEMORY;
++    (*iids)[0] = animation_group_iid;
++    (*iids)[1] = IID_ICompositionAnimationBase;
++    (*iids)[2] = animation_iterable_iid;
++    (*iids)[3] = IID_ICompositionObject;
++    *count = 4;
++    return S_OK;
++}
++
++static HRESULT WINAPI animation_group_GetRuntimeClassName( struct animation_group_iface *iface,
++        HSTRING *name )
++{
++    static const WCHAR class_name[] = L"Windows.UI.Composition.CompositionAnimationGroup";
++
++    if (!name) return E_POINTER;
++    return WindowsCreateString( class_name, ARRAY_SIZE(class_name) - 1, name );
++}
++
++static HRESULT WINAPI animation_group_GetTrustLevel( struct animation_group_iface *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI animation_group_get_Count( struct animation_group_iface *iface, INT32 *count )
++{
++    struct native_animation_group *impl = impl_from_animation_group( iface );
++
++    if (!count) return E_POINTER;
++    EnterCriticalSection( &impl->cs );
++    *count = impl->count;
++    LeaveCriticalSection( &impl->cs );
++    return S_OK;
++}
++
++static HRESULT WINAPI animation_group_Add( struct animation_group_iface *iface, ICompositionAnimation *animation )
++{
++    struct native_animation_group *impl = impl_from_animation_group( iface );
++    struct animation_group_entry *entries;
++    ICompositionObject *object;
++    ICompositor *compositor;
++    IUnknown *identity, *owner, *expected;
++    UINT32 i;
++    HRESULT hr;
++
++    if (!animation) return E_INVALIDARG;
++    if (FAILED(hr = ICompositionAnimation_QueryInterface( animation, &IID_ICompositionObject, (void **)&object )))
++        return hr;
++    hr = ICompositionObject_get_Compositor( object, &compositor );
++    ICompositionObject_Release( object );
++    if (FAILED(hr)) return hr;
++    if (!compositor) return E_INVALIDARG;
++    hr = ICompositor_QueryInterface( compositor, &IID_IUnknown, (void **)&owner );
++    ICompositor_Release( compositor );
++    if (FAILED(hr)) return hr;
++    hr = ICompositor_QueryInterface( impl->compositor, &IID_IUnknown, (void **)&expected );
++    if (FAILED(hr)) { IUnknown_Release( owner ); return hr; }
++    hr = owner == expected ? S_OK : E_INVALIDARG;
++    IUnknown_Release( owner );
++    IUnknown_Release( expected );
++    if (FAILED(hr)) return hr;
++    if (FAILED(hr = ICompositionAnimation_QueryInterface( animation, &IID_IUnknown, (void **)&identity )))
++        return hr;
++    ICompositionAnimation_AddRef( animation );
++    EnterCriticalSection( &impl->cs );
++    for (i = 0; i < impl->count; ++i) if (impl->entries[i].identity == identity) break;
++    if (i != impl->count) hr = S_OK;
++    else if (impl->count == INT_MAX) hr = E_OUTOFMEMORY;
++    else if (!(entries = realloc( impl->entries, ((size_t)impl->count + 1) * sizeof(*entries) ))) hr = E_OUTOFMEMORY;
++    else
++    {
++        impl->entries = entries;
++        impl->entries[impl->count].animation = animation;
++        impl->entries[impl->count++].identity = identity;
++        ++impl->generation;
++        LeaveCriticalSection( &impl->cs );
++        return S_OK;
++    }
++    LeaveCriticalSection( &impl->cs );
++    ICompositionAnimation_Release( animation );
++    IUnknown_Release( identity );
++    return hr;
++}
++
++static HRESULT WINAPI animation_group_Remove( struct animation_group_iface *iface, ICompositionAnimation *animation )
++{
++    struct native_animation_group *impl = impl_from_animation_group( iface );
++    struct animation_group_entry removed;
++    IUnknown *identity;
++    UINT32 i;
++    HRESULT hr;
++
++    if (!animation) return E_INVALIDARG;
++    if (FAILED(hr = ICompositionAnimation_QueryInterface( animation, &IID_IUnknown, (void **)&identity ))) return hr;
++    EnterCriticalSection( &impl->cs );
++    for (i = 0; i < impl->count; ++i) if (impl->entries[i].identity == identity) break;
++    if (i != impl->count)
++    {
++        removed = impl->entries[i];
++        memmove( impl->entries + i, impl->entries + i + 1, (--impl->count - i) * sizeof(*impl->entries) );
++        ++impl->generation;
++    }
++    else removed.animation = NULL;
++    LeaveCriticalSection( &impl->cs );
++    IUnknown_Release( identity );
++    if (removed.animation)
++    {
++        ICompositionAnimation_Release( removed.animation );
++        IUnknown_Release( removed.identity );
++    }
++    return S_OK;
++}
++
++static HRESULT WINAPI animation_group_RemoveAll( struct animation_group_iface *iface )
++{
++    struct native_animation_group *impl = impl_from_animation_group( iface );
++    struct animation_group_entry *entries;
++    UINT32 count;
++
++    EnterCriticalSection( &impl->cs );
++    entries = impl->entries;
++    count = impl->count;
++    impl->entries = NULL;
++    impl->count = 0;
++    if (count) ++impl->generation;
++    LeaveCriticalSection( &impl->cs );
++    animation_group_release_entries( entries, count );
++    return S_OK;
++}
++
++static const struct animation_group_vtbl animation_group_vtbl =
++{
++    animation_group_QueryInterface, animation_group_AddRef, animation_group_Release,
++    animation_group_GetIids, animation_group_GetRuntimeClassName, animation_group_GetTrustLevel,
++    animation_group_get_Count, animation_group_Add, animation_group_Remove, animation_group_RemoveAll,
++};
++
++static HRESULT WINAPI animation_iterator_QueryInterface( struct animation_iterator_iface *iface,
++        REFIID iid, void **out )
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!IsEqualGUID( iid, &IID_IUnknown ) && !IsEqualGUID( iid, &IID_IInspectable ) &&
++            !IsEqualGUID( iid, &animation_iterator_iid )) return E_NOINTERFACE;
++    *out = iface;
++    iface->lpVtbl->AddRef( iface );
++    return S_OK;
++}
++
++static ULONG WINAPI animation_iterator_AddRef( struct animation_iterator_iface *iface )
++{
++    return InterlockedIncrement( &CONTAINING_RECORD( iface, struct native_animation_iterator, iface )->ref );
++}
++
++static ULONG WINAPI animation_iterator_Release( struct animation_iterator_iface *iface )
++{
++    struct native_animation_iterator *impl = CONTAINING_RECORD( iface, struct native_animation_iterator, iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        animation_group_Release( &impl->group->iface );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI animation_iterator_GetIids( struct animation_iterator_iface *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = CoTaskMemAlloc( sizeof(**iids) );
++    if (!*iids) return E_OUTOFMEMORY;
++    **iids = animation_iterator_iid;
++    *count = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI animation_iterator_GetRuntimeClassName( struct animation_iterator_iface *iface, HSTRING *name )
++{
++    if (!name) return E_POINTER;
++    *name = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI animation_iterator_GetTrustLevel( struct animation_iterator_iface *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI animation_iterator_get_Current( struct animation_iterator_iface *iface, ICompositionAnimation **value )
++{
++    struct native_animation_iterator *impl = CONTAINING_RECORD( iface, struct native_animation_iterator, iface );
++    HRESULT hr = S_OK;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->group->cs );
++    if (impl->generation != impl->group->generation) hr = E_CHANGED_STATE;
++    else if (impl->index >= impl->group->count) hr = E_BOUNDS;
++    else
++    {
++        *value = impl->group->entries[impl->index].animation;
++        ICompositionAnimation_AddRef( *value );
++    }
++    LeaveCriticalSection( &impl->group->cs );
++    return hr;
++}
++
++static HRESULT WINAPI animation_iterator_get_HasCurrent( struct animation_iterator_iface *iface, boolean *value )
++{
++    struct native_animation_iterator *impl = CONTAINING_RECORD( iface, struct native_animation_iterator, iface );
++    HRESULT hr = S_OK;
++
++    if (!value) return E_POINTER;
++    *value = FALSE;
++    EnterCriticalSection( &impl->group->cs );
++    if (impl->generation != impl->group->generation) hr = E_CHANGED_STATE;
++    else *value = impl->index < impl->group->count;
++    LeaveCriticalSection( &impl->group->cs );
++    return hr;
++}
++
++static HRESULT WINAPI animation_iterator_MoveNext( struct animation_iterator_iface *iface, boolean *value )
++{
++    struct native_animation_iterator *impl = CONTAINING_RECORD( iface, struct native_animation_iterator, iface );
++    HRESULT hr = S_OK;
++
++    if (!value) return E_POINTER;
++    *value = FALSE;
++    EnterCriticalSection( &impl->group->cs );
++    if (impl->generation != impl->group->generation) hr = E_CHANGED_STATE;
++    else
++    {
++        if (impl->index < impl->group->count) ++impl->index;
++        *value = impl->index < impl->group->count;
++    }
++    LeaveCriticalSection( &impl->group->cs );
++    return hr;
++}
++
++static HRESULT WINAPI animation_iterator_GetMany( struct animation_iterator_iface *iface, UINT32 capacity,
++        ICompositionAnimation **values, UINT32 *count )
++{
++    struct native_animation_iterator *impl = CONTAINING_RECORD( iface, struct native_animation_iterator, iface );
++    HRESULT hr = S_OK;
++
++    if (!count) return E_POINTER;
++    *count = 0;
++    if (capacity && !values) return E_POINTER;
++    EnterCriticalSection( &impl->group->cs );
++    if (impl->generation != impl->group->generation) hr = E_CHANGED_STATE;
++    else while (*count < capacity && impl->index < impl->group->count)
++    {
++        values[*count] = impl->group->entries[impl->index++].animation;
++        ICompositionAnimation_AddRef( values[(*count)++] );
++    }
++    LeaveCriticalSection( &impl->group->cs );
++    return hr;
++}
++
++static const struct animation_iterator_vtbl animation_iterator_vtbl =
++{
++    animation_iterator_QueryInterface, animation_iterator_AddRef, animation_iterator_Release,
++    animation_iterator_GetIids, animation_iterator_GetRuntimeClassName, animation_iterator_GetTrustLevel,
++    animation_iterator_get_Current, animation_iterator_get_HasCurrent, animation_iterator_MoveNext,
++    animation_iterator_GetMany,
++};
++
++static HRESULT WINAPI animation_iterable_First( struct animation_iterable_iface *iface, struct animation_iterator_iface **value )
++{
++    struct native_animation_group *group = CONTAINING_RECORD( iface, struct native_animation_group, iterable );
++    struct native_animation_iterator *impl;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->iface.lpVtbl = &animation_iterator_vtbl;
++    impl->ref = 1;
++    impl->group = group;
++    animation_group_AddRef( &group->iface );
++    EnterCriticalSection( &group->cs );
++    impl->generation = group->generation;
++    LeaveCriticalSection( &group->cs );
++    *value = &impl->iface;
++    return S_OK;
++}
++
++static HRESULT WINAPI animation_iterable_QueryInterface( struct animation_iterable_iface *iface, REFIID iid, void **out)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, iterable );
++
++    return animation_group_QueryInterface( &impl->iface, iid, out );
++}
++
++static ULONG WINAPI animation_iterable_AddRef( struct animation_iterable_iface *iface)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, iterable );
++
++    return animation_group_AddRef( &impl->iface );
++}
++
++static ULONG WINAPI animation_iterable_Release( struct animation_iterable_iface *iface)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, iterable );
++
++    return animation_group_Release( &impl->iface );
++}
++
++static HRESULT WINAPI animation_iterable_GetIids( struct animation_iterable_iface *iface, ULONG *count, IID **iids)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, iterable );
++
++    return animation_group_GetIids( &impl->iface, count, iids );
++}
++
++static HRESULT WINAPI animation_iterable_GetRuntimeClassName( struct animation_iterable_iface *iface, HSTRING *name)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, iterable );
++
++    return animation_group_GetRuntimeClassName( &impl->iface, name );
++}
++
++static HRESULT WINAPI animation_iterable_GetTrustLevel( struct animation_iterable_iface *iface, TrustLevel *level)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, iterable );
++
++    return animation_group_GetTrustLevel( &impl->iface, level );
++}
++
++static HRESULT WINAPI animation_group_object_QueryInterface( ICompositionObject *iface, REFIID iid, void **out)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
++
++    return animation_group_QueryInterface( &impl->iface, iid, out );
++}
++
++static ULONG WINAPI animation_group_object_AddRef( ICompositionObject *iface)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
++
++    return animation_group_AddRef( &impl->iface );
++}
++
++static ULONG WINAPI animation_group_object_Release( ICompositionObject *iface)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
++
++    return animation_group_Release( &impl->iface );
++}
++
++static HRESULT WINAPI animation_group_object_GetIids( ICompositionObject *iface, ULONG *count, IID **iids)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
++
++    return animation_group_GetIids( &impl->iface, count, iids );
++}
++
++static HRESULT WINAPI animation_group_object_GetRuntimeClassName( ICompositionObject *iface, HSTRING *name)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
++
++    return animation_group_GetRuntimeClassName( &impl->iface, name );
++}
++
++static HRESULT WINAPI animation_group_object_GetTrustLevel( ICompositionObject *iface, TrustLevel *level)
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
++
++    return animation_group_GetTrustLevel( &impl->iface, level );
++}
++
++static const struct animation_iterable_vtbl animation_iterable_vtbl =
++{
++    animation_iterable_QueryInterface, animation_iterable_AddRef, animation_iterable_Release,
++    animation_iterable_GetIids, animation_iterable_GetRuntimeClassName, animation_iterable_GetTrustLevel,
++    animation_iterable_First,
++};
++
++static HRESULT WINAPI animation_group_object_get_Compositor( ICompositionObject *iface, ICompositor **value )
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->compositor;
++    ICompositor_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI animation_group_object_get_Dispatcher( ICompositionObject *iface, ICoreDispatcher **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI animation_group_object_get_Properties( ICompositionObject *iface, ICompositionPropertySet **value )
++{
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->properties;
++    ICompositionPropertySet_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI animation_group_object_StartAnimation( ICompositionObject *iface, HSTRING name,
++        ICompositionAnimation *animation )
++{
++    ICompositionObject *object;
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
++    HRESULT hr;
++
++    hr = ICompositionPropertySet_QueryInterface( impl->properties, &IID_ICompositionObject, (void **)&object );
++    if (FAILED(hr)) return hr;
++    hr = ICompositionObject_StartAnimation( object, name, animation );
++    ICompositionObject_Release( object );
++    return hr;
++}
++
++static HRESULT WINAPI animation_group_object_StopAnimation( ICompositionObject *iface, HSTRING name )
++{
++    ICompositionObject *object;
++    struct native_animation_group *impl = CONTAINING_RECORD( iface, struct native_animation_group, ICompositionObject_iface );
++    HRESULT hr;
++
++    hr = ICompositionPropertySet_QueryInterface( impl->properties, &IID_ICompositionObject, (void **)&object );
++    if (FAILED(hr)) return hr;
++    hr = ICompositionObject_StopAnimation( object, name );
++    ICompositionObject_Release( object );
++    return hr;
++}
++
++static const ICompositionObjectVtbl animation_group_object_vtbl =
++{
++    animation_group_object_QueryInterface, animation_group_object_AddRef, animation_group_object_Release,
++    animation_group_object_GetIids, animation_group_object_GetRuntimeClassName, animation_group_object_GetTrustLevel,
++    animation_group_object_get_Compositor, animation_group_object_get_Dispatcher, animation_group_object_get_Properties,
++    animation_group_object_StartAnimation, animation_group_object_StopAnimation,
++};
++
++static HRESULT WINAPI compositor2_CreateAnimationGroup( struct compositor2_iface *iface, IInspectable **value )
++{
++    struct compositor *compositor = impl_from_compositor2( iface );
++    struct native_animation_group *impl;
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    hr = composition_property_set_create( &compositor->ICompositor_iface, &impl->properties );
++    if (FAILED(hr)) { free( impl ); return hr; }
++    impl->iface.lpVtbl = &animation_group_vtbl;
++    impl->iterable.lpVtbl = &animation_iterable_vtbl;
++    impl->ICompositionObject_iface.lpVtbl = &animation_group_object_vtbl;
++    impl->compositor = &compositor->ICompositor_iface;
++    ICompositor_AddRef( impl->compositor );
++    impl->ref = 1;
++    InitializeCriticalSection( &impl->cs );
++    *value = (IInspectable *)&impl->iface;
++    return S_OK;
++}
++
+ DEFINE_COMPOSITOR2_CREATE_METHOD(CreateBackdropBrush)
+ DEFINE_COMPOSITOR2_CREATE_METHOD(CreateDistantLight)
+ DEFINE_COMPOSITOR2_CREATE_METHOD(CreateDropShadow)

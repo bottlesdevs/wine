@@ -1,0 +1,702 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -18,6 +18,9 @@
+  */
+ 
+ #include <stdlib.h>
++#include <limits.h>
++#include <math.h>
++#include <stdint.h>
+ #include "private.h"
+ #include "initguid.h"
+ #include "dcomp.h"
+@@ -5966,6 +5969,7 @@
+     unsigned int count = 0, i = 0;
+     HRESULT hr;
+ 
++    TRACE( "batch %p End begin.\n", iface );
+     EnterCriticalSection( &impl->cs );
+     if (impl->ended)
+     {
+@@ -5990,13 +5994,17 @@
+     ICompositionScopedBatch_AddRef( iface );
+     for (i = 0; i < count; ++i)
+     {
+-        if (FAILED(hr = ITypedEventHandler_IInspectable_CompositionBatchCompletedEventArgs_Invoke(
+-                handlers[i], (IInspectable *)iface, NULL )))
++        TRACE( "batch %p Completed handler %u/%u begin.\n", iface, i, count );
++        hr = ITypedEventHandler_IInspectable_CompositionBatchCompletedEventArgs_Invoke(
++                handlers[i], (IInspectable *)iface, NULL );
++        TRACE( "batch %p Completed handler %u/%u end hr %#lx.\n", iface, i, count, hr );
++        if (FAILED(hr))
+             WARN( "CompositionScopedBatch Completed handler returned %#lx.\n", hr );
+         ITypedEventHandler_IInspectable_CompositionBatchCompletedEventArgs_Release( handlers[i] );
+     }
+     ICompositionScopedBatch_Release( iface );
+     free( handlers );
++    TRACE( "batch %p End return.\n", iface );
+     return S_OK;
+ }
+ 
+@@ -6364,6 +6372,458 @@
+     return ICompositor_GetTrustLevel( &impl->ICompositor_iface, level );
+ }
+ 
++struct gradient_object;
++struct gradient_iface { const void *lpVtbl; struct gradient_object *owner; };
++#define GRADIENT_INSPECTABLE \
++    HRESULT (WINAPI *QueryInterface)( struct gradient_iface *, REFIID, void ** ); \
++    ULONG (WINAPI *AddRef)( struct gradient_iface * ); \
++    ULONG (WINAPI *Release)( struct gradient_iface * ); \
++    HRESULT (WINAPI *GetIids)( struct gradient_iface *, ULONG *, IID ** ); \
++    HRESULT (WINAPI *GetRuntimeClassName)( struct gradient_iface *, HSTRING * ); \
++    HRESULT (WINAPI *GetTrustLevel)( struct gradient_iface *, TrustLevel * )
++static const GUID gradient_linear_iid = {0x983bc519, 0xa9db, 0x413c, {0xa2, 0xd8, 0x2a, 0x90, 0x56, 0xfc, 0x52, 0x5e}};
++struct gradient_linear_vtbl
++{
++    GRADIENT_INSPECTABLE;
++    HRESULT (WINAPI *get_EndPoint)( struct gradient_iface *iface, struct Vector2* value );
++    HRESULT (WINAPI *put_EndPoint)( struct gradient_iface *iface, struct Vector2 value );
++    HRESULT (WINAPI *get_StartPoint)( struct gradient_iface *iface, struct Vector2* value );
++    HRESULT (WINAPI *put_StartPoint)( struct gradient_iface *iface, struct Vector2 value );
++};
++static const GUID gradient_gradient_iid = {0x1d9709e0, 0xffc6, 0x4c0e, {0xa9, 0xab, 0x34, 0x14, 0x4d, 0x4c, 0x90, 0x98}};
++struct gradient_gradient_vtbl
++{
++    GRADIENT_INSPECTABLE;
++    HRESULT (WINAPI *get_AnchorPoint)( struct gradient_iface *iface, struct Vector2* value );
++    HRESULT (WINAPI *put_AnchorPoint)( struct gradient_iface *iface, struct Vector2 value );
++    HRESULT (WINAPI *get_CenterPoint)( struct gradient_iface *iface, struct Vector2* value );
++    HRESULT (WINAPI *put_CenterPoint)( struct gradient_iface *iface, struct Vector2 value );
++    HRESULT (WINAPI *get_ColorStops)( struct gradient_iface *iface, struct gradient_iface** value );
++    HRESULT (WINAPI *get_ExtendMode)( struct gradient_iface *iface, INT32* value );
++    HRESULT (WINAPI *put_ExtendMode)( struct gradient_iface *iface, INT32 value );
++    HRESULT (WINAPI *get_InterpolationSpace)( struct gradient_iface *iface, INT32* value );
++    HRESULT (WINAPI *put_InterpolationSpace)( struct gradient_iface *iface, INT32 value );
++    HRESULT (WINAPI *get_Offset)( struct gradient_iface *iface, struct Vector2* value );
++    HRESULT (WINAPI *put_Offset)( struct gradient_iface *iface, struct Vector2 value );
++    HRESULT (WINAPI *get_RotationAngle)( struct gradient_iface *iface, FLOAT* value );
++    HRESULT (WINAPI *put_RotationAngle)( struct gradient_iface *iface, FLOAT value );
++    HRESULT (WINAPI *get_RotationAngleInDegrees)( struct gradient_iface *iface, FLOAT* value );
++    HRESULT (WINAPI *put_RotationAngleInDegrees)( struct gradient_iface *iface, FLOAT value );
++    HRESULT (WINAPI *get_Scale)( struct gradient_iface *iface, struct Vector2* value );
++    HRESULT (WINAPI *put_Scale)( struct gradient_iface *iface, struct Vector2 value );
++    HRESULT (WINAPI *get_TransformMatrix)( struct gradient_iface *iface, struct Matrix3x2* value );
++    HRESULT (WINAPI *put_TransformMatrix)( struct gradient_iface *iface, struct Matrix3x2 value );
++};
++static const GUID gradient_mapping_iid = {0x899dd5a1, 0xb4c7, 0x4b33, {0xa1, 0xb6, 0x26, 0x4a, 0xdd, 0xc2, 0x6d, 0x10}};
++struct gradient_mapping_vtbl
++{
++    GRADIENT_INSPECTABLE;
++    HRESULT (WINAPI *get_MappingMode)( struct gradient_iface *iface, INT32* value );
++    HRESULT (WINAPI *put_MappingMode)( struct gradient_iface *iface, INT32 value );
++};
++static const GUID gradient_stop_iid = {0x6f00ca92, 0xc801, 0x4e41, {0x9a, 0x8f, 0xa5, 0x3e, 0x20, 0xf5, 0x77, 0x78}};
++struct gradient_stop_vtbl
++{
++    GRADIENT_INSPECTABLE;
++    HRESULT (WINAPI *get_Color)( struct gradient_iface *iface, struct Color* value );
++    HRESULT (WINAPI *put_Color)( struct gradient_iface *iface, struct Color value );
++    HRESULT (WINAPI *get_Offset)( struct gradient_iface *iface, FLOAT* value );
++    HRESULT (WINAPI *put_Offset)( struct gradient_iface *iface, FLOAT value );
++};
++static const GUID gradient_vector_iid = {0xbf2e107e, 0xf3db, 0x56cd, {0x91, 0xed, 0xc1, 0x12, 0x94, 0x06, 0xd5, 0x52}};
++static const GUID gradient_view_iid = {0x801d95c7, 0x7ce2, 0x55d7, {0xa6, 0x2f, 0x2f, 0xf9, 0x4c, 0x54, 0x40, 0x34}};
++static const GUID gradient_iterable_iid = {0x0f2cfac1, 0xcdbc, 0x5c4e, {0xa7, 0xd2, 0xa3, 0x91, 0x4f, 0xb6, 0x34, 0x26}};
++static const GUID gradient_iterator_iid = {0x746a0f51, 0x47f4, 0x5395, {0x8e, 0xdd, 0x8a, 0xe1, 0xe9, 0x3a, 0x81, 0x83}};
++static const GUID gradient_collection_iid = {0x9f1d20ec,0x7b04,0x4b1d,{0x90,0xbc,0x9f,0xa3,0x2c,0x0c,0xfd,0x26}};
++
++struct gradient_vector_vtbl
++{
++    GRADIENT_INSPECTABLE;
++    HRESULT (WINAPI *GetAt)( struct gradient_iface *, UINT32, struct gradient_iface ** );
++    HRESULT (WINAPI *get_Size)( struct gradient_iface *, UINT32 * );
++    HRESULT (WINAPI *GetView)( struct gradient_iface *, struct gradient_iface ** );
++    HRESULT (WINAPI *IndexOf)( struct gradient_iface *, struct gradient_iface *, UINT32 *, boolean * );
++    HRESULT (WINAPI *SetAt)( struct gradient_iface *, UINT32, struct gradient_iface * );
++    HRESULT (WINAPI *InsertAt)( struct gradient_iface *, UINT32, struct gradient_iface * );
++    HRESULT (WINAPI *RemoveAt)( struct gradient_iface *, UINT32 );
++    HRESULT (WINAPI *Append)( struct gradient_iface *, struct gradient_iface * );
++    HRESULT (WINAPI *RemoveAtEnd)( struct gradient_iface * );
++    HRESULT (WINAPI *Clear)( struct gradient_iface * );
++    HRESULT (WINAPI *GetMany)( struct gradient_iface *, UINT32, UINT32, struct gradient_iface **, UINT32 * );
++    HRESULT (WINAPI *ReplaceAll)( struct gradient_iface *, UINT32, struct gradient_iface ** );
++};
++struct gradient_view_vtbl
++{
++    GRADIENT_INSPECTABLE;
++    HRESULT (WINAPI *GetAt)( struct gradient_iface *, UINT32, struct gradient_iface ** );
++    HRESULT (WINAPI *get_Size)( struct gradient_iface *, UINT32 * );
++    HRESULT (WINAPI *IndexOf)( struct gradient_iface *, struct gradient_iface *, UINT32 *, boolean * );
++    HRESULT (WINAPI *GetMany)( struct gradient_iface *, UINT32, UINT32, struct gradient_iface **, UINT32 * );
++};
++struct gradient_iterable_vtbl { GRADIENT_INSPECTABLE; HRESULT (WINAPI *First)( struct gradient_iface *, struct gradient_iface ** ); };
++struct gradient_iterator_vtbl
++{
++    GRADIENT_INSPECTABLE;
++    HRESULT (WINAPI *get_Current)( struct gradient_iface *, struct gradient_iface ** );
++    HRESULT (WINAPI *get_HasCurrent)( struct gradient_iface *, boolean * );
++    HRESULT (WINAPI *MoveNext)( struct gradient_iface *, boolean * );
++    HRESULT (WINAPI *GetMany)( struct gradient_iface *, UINT32, struct gradient_iface **, UINT32 * );
++};
++struct gradient_object_vtbl
++{
++    GRADIENT_INSPECTABLE;
++    HRESULT (WINAPI *get_Compositor)( struct gradient_iface *, ICompositor ** );
++    HRESULT (WINAPI *get_Dispatcher)( struct gradient_iface *, ICoreDispatcher ** );
++    HRESULT (WINAPI *get_Properties)( struct gradient_iface *, ICompositionPropertySet ** );
++    HRESULT (WINAPI *StartAnimation)( struct gradient_iface *, HSTRING, ICompositionAnimation * );
++    HRESULT (WINAPI *StopAnimation)( struct gradient_iface *, HSTRING );
++};
++struct gradient_closable_vtbl { GRADIENT_INSPECTABLE; HRESULT (WINAPI *Close)( struct gradient_iface * ); };
++enum gradient_kind { GRADIENT_BRUSH, GRADIENT_STOP, GRADIENT_COLLECTION, GRADIENT_VIEW, GRADIENT_ITERATOR };
++struct gradient_object
++{
++    struct gradient_iface primary, base, mapping, brush, object, closable, iterable;
++    enum gradient_kind kind;
++    LONG ref, closed;
++    CRITICAL_SECTION lock;
++    ICompositor *compositor;
++    ICompositionPropertySet *properties;
++    struct gradient_object *stops;
++    struct gradient_iface **items;
++    UINT32 count, capacity, position, version, observed_version;
++    struct Color color;
++    FLOAT offset, rotation;
++    struct Vector2 start, end, anchor, center, translation, scale;
++    struct Matrix3x2 transform;
++    INT32 extend, interpolation, mapping_mode;
++};
++static const struct gradient_linear_vtbl gradient_linear_vtbl;
++static const struct gradient_stop_vtbl gradient_stop_vtbl;
++static const struct gradient_vector_vtbl gradient_vector_vtbl;
++static const struct gradient_view_vtbl gradient_view_vtbl;
++static const struct gradient_iterator_vtbl gradient_iterator_vtbl;
++static const struct gradient_iterable_vtbl gradient_iterable_vtbl;
++static const struct gradient_gradient_vtbl gradient_gradient_vtbl;
++static const struct gradient_mapping_vtbl gradient_mapping_vtbl;
++static const struct gradient_object_vtbl gradient_object_vtbl;
++static const struct gradient_closable_vtbl gradient_closable_vtbl;
++struct gradient_inspectable_vtbl { GRADIENT_INSPECTABLE; };
++static const struct gradient_inspectable_vtbl gradient_brush_vtbl;
++static HRESULT gradient_create( ICompositor *, enum gradient_kind, struct gradient_object ** );
++static ULONG WINAPI gradient_addref( struct gradient_iface *iface ) { return InterlockedIncrement( &iface->owner->ref ); }
++static ULONG WINAPI gradient_release( struct gradient_iface *iface )
++{
++    struct gradient_object *impl = iface->owner;
++    ULONG ref = InterlockedDecrement( &impl->ref );
++    UINT32 i;
++    if (!ref)
++    {
++        for (i = 0; i < impl->count; ++i) IUnknown_Release( (IUnknown *)impl->items[i] );
++        free( impl->items );
++        if (impl->stops) gradient_release( &impl->stops->primary );
++        if (impl->properties) ICompositionPropertySet_Release( impl->properties );
++        ICompositor_Release( impl->compositor );
++        DeleteCriticalSection( &impl->lock );
++        free( impl );
++    }
++    return ref;
++}
++static HRESULT WINAPI gradient_query( struct gradient_iface *iface, REFIID iid, void **out )
++{
++    struct gradient_object *impl = iface->owner;
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) || IsEqualGUID( iid, &IID_IAgileObject )) *out = &impl->primary;
++    else if (impl->kind == GRADIENT_BRUSH && IsEqualGUID( iid, &gradient_linear_iid )) *out = &impl->primary;
++    else if (impl->kind == GRADIENT_BRUSH && IsEqualGUID( iid, &gradient_gradient_iid )) *out = &impl->base;
++    else if (impl->kind == GRADIENT_BRUSH && IsEqualGUID( iid, &gradient_mapping_iid )) *out = &impl->mapping;
++    else if (impl->kind == GRADIENT_BRUSH && IsEqualGUID( iid, &IID_ICompositionBrush )) *out = &impl->brush;
++    else if (impl->kind == GRADIENT_STOP && IsEqualGUID( iid, &gradient_stop_iid )) *out = &impl->primary;
++    else if (impl->kind == GRADIENT_COLLECTION && (IsEqualGUID( iid, &gradient_collection_iid ) || IsEqualGUID( iid, &gradient_vector_iid ))) *out = &impl->primary;
++    else if (impl->kind == GRADIENT_VIEW && IsEqualGUID( iid, &gradient_view_iid )) *out = &impl->primary;
++    else if ((impl->kind == GRADIENT_COLLECTION || impl->kind == GRADIENT_VIEW) && IsEqualGUID( iid, &gradient_iterable_iid )) *out = &impl->iterable;
++    else if (impl->kind == GRADIENT_ITERATOR && IsEqualGUID( iid, &gradient_iterator_iid )) *out = &impl->primary;
++    else if (impl->kind <= GRADIENT_COLLECTION && IsEqualGUID( iid, &IID_ICompositionObject )) *out = &impl->object;
++    else if (impl->kind <= GRADIENT_COLLECTION && IsEqualGUID( iid, &IID_IClosable )) *out = &impl->closable;
++    else return E_NOINTERFACE;
++    gradient_addref( iface );
++    return S_OK;
++}
++static HRESULT WINAPI gradient_iids( struct gradient_iface *iface, ULONG *count, IID **ids )
++{
++    struct gradient_object *impl = iface->owner;
++    IID supported[7];
++    ULONG n = 0;
++    if (!count || !ids) return E_POINTER;
++    *count = 0; *ids = NULL;
++    if (impl->kind == GRADIENT_BRUSH) { supported[n++] = gradient_linear_iid; supported[n++] = gradient_gradient_iid; supported[n++] = gradient_mapping_iid; supported[n++] = IID_ICompositionBrush; }
++    else if (impl->kind == GRADIENT_STOP) supported[n++] = gradient_stop_iid;
++    else if (impl->kind == GRADIENT_COLLECTION) { supported[n++] = gradient_collection_iid; supported[n++] = gradient_vector_iid; supported[n++] = gradient_iterable_iid; }
++    else if (impl->kind == GRADIENT_VIEW) { supported[n++] = gradient_view_iid; supported[n++] = gradient_iterable_iid; }
++    else supported[n++] = gradient_iterator_iid;
++    if (impl->kind <= GRADIENT_COLLECTION) { supported[n++] = IID_ICompositionObject; supported[n++] = IID_IClosable; }
++    if (!(*ids = CoTaskMemAlloc( n * sizeof(**ids) ))) return E_OUTOFMEMORY;
++    memcpy( *ids, supported, n * sizeof(**ids) ); *count = n;
++    return S_OK;
++}
++static HRESULT WINAPI gradient_name( struct gradient_iface *iface, HSTRING *name )
++{
++    static const WCHAR *names[] = {L"Windows.UI.Composition.CompositionLinearGradientBrush", L"Windows.UI.Composition.CompositionColorGradientStop", L"Windows.UI.Composition.CompositionColorGradientStopCollection", L"Windows.Foundation.Collections.IVectorView`1<Windows.UI.Composition.CompositionColorGradientStop>", L"Windows.Foundation.Collections.IIterator`1<Windows.UI.Composition.CompositionColorGradientStop>"};
++    if (!name) return E_POINTER;
++    return WindowsCreateString( names[iface->owner->kind], wcslen( names[iface->owner->kind] ), name );
++}
++static HRESULT WINAPI gradient_trust( struct gradient_iface *iface, TrustLevel *level )
++{ if (!level) return E_POINTER; *level = BaseTrust; return S_OK; }
++#define GRADIENT_FORWARD gradient_query, gradient_addref, gradient_release, gradient_iids, gradient_name, gradient_trust
++static void gradient_changed( struct gradient_object *impl ) { compositor_notify_commit_needed( impl_from_ICompositor( impl->compositor ) ); }
++#define GRADIENT_PROPERTY(name, type, field) \
++static HRESULT WINAPI gradient_get_##name( struct gradient_iface *iface, type *value ) \
++{ struct gradient_object *impl = iface->owner; if (!value) return E_POINTER; if (impl->closed) return RO_E_CLOSED; EnterCriticalSection( &impl->lock ); *value = impl->field; LeaveCriticalSection( &impl->lock ); return S_OK; } \
++static HRESULT WINAPI gradient_put_##name( struct gradient_iface *iface, type value ) \
++{ struct gradient_object *impl = iface->owner; if (impl->closed) return RO_E_CLOSED; EnterCriticalSection( &impl->lock ); impl->field = value; LeaveCriticalSection( &impl->lock ); gradient_changed( impl ); return S_OK; }
++GRADIENT_PROPERTY( StartPoint, struct Vector2, start )
++GRADIENT_PROPERTY( EndPoint, struct Vector2, end )
++GRADIENT_PROPERTY( AnchorPoint, struct Vector2, anchor )
++GRADIENT_PROPERTY( CenterPoint, struct Vector2, center )
++GRADIENT_PROPERTY( Offset, struct Vector2, translation )
++GRADIENT_PROPERTY( Scale, struct Vector2, scale )
++GRADIENT_PROPERTY( TransformMatrix, struct Matrix3x2, transform )
++GRADIENT_PROPERTY( RotationAngle, FLOAT, rotation )
++GRADIENT_PROPERTY( Color, struct Color, color )
++GRADIENT_PROPERTY( StopOffset, FLOAT, offset )
++GRADIENT_PROPERTY( ExtendMode, INT32, extend )
++GRADIENT_PROPERTY( InterpolationSpace, INT32, interpolation )
++GRADIENT_PROPERTY( MappingMode, INT32, mapping_mode )
++static HRESULT WINAPI gradient_get_RotationAngleInDegrees( struct gradient_iface *iface, FLOAT *value )
++{ HRESULT hr = gradient_get_RotationAngle( iface, value ); if (SUCCEEDED(hr)) *value *= 57.29577951308232f; return hr; }
++static HRESULT WINAPI gradient_put_RotationAngleInDegrees( struct gradient_iface *iface, FLOAT value )
++{ return gradient_put_RotationAngle( iface, value * 0.017453292519943295f ); }
++static HRESULT WINAPI gradient_get_ColorStops( struct gradient_iface *iface, struct gradient_iface **value )
++{ if (!value) return E_POINTER; *value = NULL; if (iface->owner->closed) return RO_E_CLOSED; *value = &iface->owner->stops->primary; gradient_addref( *value ); return S_OK; }
++static HRESULT WINAPI gradient_get_Compositor( struct gradient_iface *iface, ICompositor **value )
++{ if (!value) return E_POINTER; *value = iface->owner->compositor; ICompositor_AddRef( *value ); return S_OK; }
++static HRESULT WINAPI gradient_get_Dispatcher( struct gradient_iface *iface, ICoreDispatcher **value )
++{ if (!value) return E_POINTER; *value = NULL; return S_OK; }
++static HRESULT WINAPI gradient_get_Properties( struct gradient_iface *iface, ICompositionPropertySet **value )
++{ if (!value) return E_POINTER; *value = NULL; if (iface->owner->closed) return RO_E_CLOSED; *value = iface->owner->properties; ICompositionPropertySet_AddRef( *value ); return S_OK; }
++static HRESULT WINAPI gradient_StartAnimation( struct gradient_iface *iface, HSTRING name, ICompositionAnimation *animation )
++{ return iface->owner->closed ? RO_E_CLOSED : E_NOTIMPL; }
++static HRESULT WINAPI gradient_StopAnimation( struct gradient_iface *iface, HSTRING name )
++{ return iface->owner->closed ? RO_E_CLOSED : E_NOTIMPL; }
++static HRESULT WINAPI gradient_Close( struct gradient_iface *iface )
++{ InterlockedExchange( &iface->owner->closed, TRUE ); return S_OK; }
++static HRESULT WINAPI gradient_vector_GetAt( struct gradient_iface *iface, UINT32 index, struct gradient_iface **value )
++{
++    struct gradient_object *impl = iface->owner;
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (impl->closed) return RO_E_CLOSED;
++    EnterCriticalSection( &impl->lock );
++    if (index >= impl->count) { LeaveCriticalSection( &impl->lock ); return E_BOUNDS; }
++    *value = impl->items[index]; IUnknown_AddRef( (IUnknown *)*value );
++    LeaveCriticalSection( &impl->lock ); return S_OK;
++}
++static HRESULT WINAPI gradient_vector_Size( struct gradient_iface *iface, UINT32 *value )
++{ if (!value) return E_POINTER; if (iface->owner->closed) return RO_E_CLOSED; EnterCriticalSection( &iface->owner->lock ); *value = iface->owner->count; LeaveCriticalSection( &iface->owner->lock ); return S_OK; }
++static HRESULT WINAPI gradient_vector_GetMany( struct gradient_iface *iface, UINT32 start, UINT32 capacity, struct gradient_iface **values, UINT32 *actual )
++{
++    struct gradient_object *impl = iface->owner;
++    UINT32 i;
++    if (!actual || (capacity && !values)) return E_POINTER;
++    *actual = 0;
++    if (impl->closed) return RO_E_CLOSED;
++    EnterCriticalSection( &impl->lock );
++    if (start > impl->count) { LeaveCriticalSection( &impl->lock ); return E_BOUNDS; }
++    *actual = min( capacity, impl->count - start );
++    for (i = 0; i < *actual; ++i) { values[i] = impl->items[start + i]; IUnknown_AddRef( (IUnknown *)values[i] ); }
++    LeaveCriticalSection( &impl->lock ); return S_OK;
++}
++static HRESULT WINAPI gradient_vector_IndexOf( struct gradient_iface *iface, struct gradient_iface *value, UINT32 *index, boolean *found )
++{
++    struct gradient_object *impl = iface->owner;
++    IUnknown *identity, *current;
++    UINT32 i;
++    if (!index || !found) return E_POINTER;
++    *index = 0; *found = FALSE;
++    if (impl->closed) return RO_E_CLOSED;
++    if (!value || FAILED(IUnknown_QueryInterface( (IUnknown *)value, &IID_IUnknown, (void **)&identity ))) return S_OK;
++    EnterCriticalSection( &impl->lock );
++    for (i = 0; i < impl->count; ++i)
++    {
++        if (FAILED(IUnknown_QueryInterface( (IUnknown *)impl->items[i], &IID_IUnknown, (void **)&current ))) continue;
++        if (current == identity) { *index = i; *found = TRUE; }
++        IUnknown_Release( current ); if (*found) break;
++    }
++    LeaveCriticalSection( &impl->lock ); IUnknown_Release( identity ); return S_OK;
++}
++static HRESULT gradient_vector_set( struct gradient_iface *iface, UINT32 index, struct gradient_iface *input, BOOL insert, BOOL append )
++{
++    struct gradient_object *impl = iface->owner;
++    struct gradient_iface *value, *old = NULL, **items;
++    HRESULT hr;
++    UINT32 capacity;
++    if (impl->closed) return RO_E_CLOSED;
++    if (!input) return E_POINTER;
++    if (FAILED(hr = IUnknown_QueryInterface( (IUnknown *)input, &gradient_stop_iid, (void **)&value ))) return hr;
++    EnterCriticalSection( &impl->lock );
++    if (append) index = impl->count;
++    if (index > impl->count || (!insert && index == impl->count)) hr = E_BOUNDS;
++    else if (insert && impl->count == UINT_MAX) hr = E_OUTOFMEMORY;
++    else if (insert && impl->count == impl->capacity)
++    {
++        capacity = impl->capacity ? impl->capacity * 2 : 4;
++        if (capacity <= impl->count || (SIZE_T)capacity > SIZE_MAX / sizeof(*items)) hr = E_OUTOFMEMORY;
++        else if (!(items = realloc( impl->items, capacity * sizeof(*items) ))) hr = E_OUTOFMEMORY;
++        else { impl->items = items; impl->capacity = capacity; }
++    }
++    if (SUCCEEDED(hr))
++    {
++        if (insert) { memmove( impl->items + index + 1, impl->items + index, (impl->count - index) * sizeof(*impl->items) ); ++impl->count; }
++        else old = impl->items[index];
++        impl->items[index] = value; ++impl->version;
++    }
++    LeaveCriticalSection( &impl->lock );
++    if (old) IUnknown_Release( (IUnknown *)old );
++    if (FAILED(hr)) IUnknown_Release( (IUnknown *)value ); else gradient_changed( impl );
++    return hr;
++}
++static HRESULT WINAPI gradient_vector_SetAt( struct gradient_iface *iface, UINT32 index, struct gradient_iface *value ) { return gradient_vector_set( iface, index, value, FALSE, FALSE ); }
++static HRESULT WINAPI gradient_vector_InsertAt( struct gradient_iface *iface, UINT32 index, struct gradient_iface *value ) { return gradient_vector_set( iface, index, value, TRUE, FALSE ); }
++static HRESULT WINAPI gradient_vector_Append( struct gradient_iface *iface, struct gradient_iface *value ) { return gradient_vector_set( iface, 0, value, TRUE, TRUE ); }
++static HRESULT gradient_vector_remove( struct gradient_iface *iface, UINT32 index, BOOL last )
++{
++    struct gradient_object *impl = iface->owner;
++    struct gradient_iface *old;
++    if (impl->closed) return RO_E_CLOSED;
++    EnterCriticalSection( &impl->lock );
++    if (last) index = impl->count - 1;
++    if (index >= impl->count) { LeaveCriticalSection( &impl->lock ); return E_BOUNDS; }
++    old = impl->items[index]; --impl->count;
++    memmove( impl->items + index, impl->items + index + 1, (impl->count - index) * sizeof(*impl->items) ); ++impl->version;
++    LeaveCriticalSection( &impl->lock ); IUnknown_Release( (IUnknown *)old ); gradient_changed( impl ); return S_OK;
++}
++static HRESULT WINAPI gradient_vector_RemoveAt( struct gradient_iface *iface, UINT32 index ) { return gradient_vector_remove( iface, index, FALSE ); }
++static HRESULT WINAPI gradient_vector_RemoveAtEnd( struct gradient_iface *iface ) { return gradient_vector_remove( iface, 0, TRUE ); }
++static HRESULT WINAPI gradient_vector_ReplaceAll( struct gradient_iface *iface, UINT32 count, struct gradient_iface **values )
++{
++    struct gradient_object *impl = iface->owner;
++    struct gradient_iface **items = NULL, **old;
++    UINT32 i, old_count;
++    HRESULT hr = S_OK;
++    if (impl->closed) return RO_E_CLOSED;
++    if (count && !values) return E_POINTER;
++    if ((SIZE_T)count > SIZE_MAX / sizeof(*items)) return E_OUTOFMEMORY;
++    if (count && !(items = calloc( count, sizeof(*items) ))) return E_OUTOFMEMORY;
++    for (i = 0; i < count; ++i)
++    {
++        if (!values[i]) { hr = E_POINTER; break; }
++        if (FAILED(hr = IUnknown_QueryInterface( (IUnknown *)values[i], &gradient_stop_iid, (void **)&items[i] ))) break;
++    }
++    if (FAILED(hr)) { while (i) { --i; IUnknown_Release( (IUnknown *)items[i] ); } free( items ); return hr; }
++    EnterCriticalSection( &impl->lock ); old = impl->items; old_count = impl->count;
++    impl->items = items; impl->count = impl->capacity = count; ++impl->version;
++    LeaveCriticalSection( &impl->lock );
++    for (i = 0; i < old_count; ++i) IUnknown_Release( (IUnknown *)old[i] );
++    free( old ); gradient_changed( impl ); return S_OK;
++}
++static HRESULT WINAPI gradient_vector_Clear( struct gradient_iface *iface ) { return gradient_vector_ReplaceAll( iface, 0, NULL ); }
++static HRESULT WINAPI gradient_vector_GetView( struct gradient_iface *iface, struct gradient_iface **value )
++{
++    struct gradient_object *source = iface->owner, *view;
++    HRESULT hr;
++    UINT32 i;
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (source->closed) return RO_E_CLOSED;
++    if (FAILED(hr = gradient_create( source->compositor, GRADIENT_VIEW, &view ))) return hr;
++    EnterCriticalSection( &source->lock );
++    if (source->count && !(view->items = calloc( source->count, sizeof(*view->items) ))) hr = E_OUTOFMEMORY;
++    else for (i = 0; i < source->count; ++i) { view->items[view->count++] = source->items[i]; IUnknown_AddRef( (IUnknown *)source->items[i] ); }
++    LeaveCriticalSection( &source->lock );
++    if (FAILED(hr)) { gradient_release( &view->primary ); return hr; }
++    *value = &view->primary; return S_OK;
++}
++static HRESULT WINAPI gradient_iterable_First( struct gradient_iface *iface, struct gradient_iface **value )
++{
++    struct gradient_object *iter;
++    HRESULT hr;
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (iface->owner->closed) return RO_E_CLOSED;
++    if (FAILED(hr = gradient_create( iface->owner->compositor, GRADIENT_ITERATOR, &iter ))) return hr;
++    iter->stops = iface->owner; gradient_addref( &iter->stops->primary );
++    EnterCriticalSection( &iter->stops->lock ); iter->observed_version = iter->stops->version; LeaveCriticalSection( &iter->stops->lock );
++    *value = &iter->primary; return S_OK;
++}
++static HRESULT WINAPI gradient_iterator_Current( struct gradient_iface *iface, struct gradient_iface **value )
++{
++    struct gradient_object *iter = iface->owner;
++    HRESULT hr;
++    if (!value) return E_POINTER;
++    *value = NULL; EnterCriticalSection( &iter->stops->lock );
++    hr = iter->observed_version == iter->stops->version ? gradient_vector_GetAt( &iter->stops->primary, iter->position, value ) : E_CHANGED_STATE;
++    LeaveCriticalSection( &iter->stops->lock ); return hr;
++}
++static HRESULT WINAPI gradient_iterator_HasCurrent( struct gradient_iface *iface, boolean *value )
++{
++    struct gradient_object *iter = iface->owner;
++    HRESULT hr = S_OK;
++    if (!value) return E_POINTER;
++    *value = FALSE; EnterCriticalSection( &iter->stops->lock );
++    if (iter->observed_version != iter->stops->version) hr = E_CHANGED_STATE;
++    else *value = iter->position < iter->stops->count;
++    LeaveCriticalSection( &iter->stops->lock ); return hr;
++}
++static HRESULT WINAPI gradient_iterator_MoveNext( struct gradient_iface *iface, boolean *value )
++{
++    struct gradient_object *iter = iface->owner;
++    HRESULT hr;
++    EnterCriticalSection( &iter->stops->lock );
++    hr = gradient_iterator_HasCurrent( iface, value );
++    if (SUCCEEDED(hr) && *value) { ++iter->position; *value = iter->position < iter->stops->count; }
++    LeaveCriticalSection( &iter->stops->lock ); return hr;
++}
++static HRESULT WINAPI gradient_iterator_GetMany( struct gradient_iface *iface, UINT32 capacity, struct gradient_iface **values, UINT32 *actual )
++{
++    struct gradient_object *iter = iface->owner;
++    HRESULT hr;
++    if (!actual) return E_POINTER;
++    *actual = 0; EnterCriticalSection( &iter->stops->lock );
++    if (iter->observed_version != iter->stops->version) hr = E_CHANGED_STATE;
++    else { hr = gradient_vector_GetMany( &iter->stops->primary, iter->position, capacity, values, actual ); if (SUCCEEDED(hr)) iter->position += *actual; }
++    LeaveCriticalSection( &iter->stops->lock ); return hr;
++}
++static const struct gradient_linear_vtbl gradient_linear_vtbl = {GRADIENT_FORWARD, gradient_get_EndPoint, gradient_put_EndPoint, gradient_get_StartPoint, gradient_put_StartPoint};
++static const struct gradient_stop_vtbl gradient_stop_vtbl = {GRADIENT_FORWARD, gradient_get_Color, gradient_put_Color, gradient_get_StopOffset, gradient_put_StopOffset};
++static const struct gradient_gradient_vtbl gradient_gradient_vtbl = {GRADIENT_FORWARD, gradient_get_AnchorPoint, gradient_put_AnchorPoint, gradient_get_CenterPoint, gradient_put_CenterPoint, gradient_get_ColorStops, gradient_get_ExtendMode, gradient_put_ExtendMode, gradient_get_InterpolationSpace, gradient_put_InterpolationSpace, gradient_get_Offset, gradient_put_Offset, gradient_get_RotationAngle, gradient_put_RotationAngle, gradient_get_RotationAngleInDegrees, gradient_put_RotationAngleInDegrees, gradient_get_Scale, gradient_put_Scale, gradient_get_TransformMatrix, gradient_put_TransformMatrix};
++static const struct gradient_mapping_vtbl gradient_mapping_vtbl = {GRADIENT_FORWARD, gradient_get_MappingMode, gradient_put_MappingMode};
++static const struct gradient_inspectable_vtbl gradient_brush_vtbl = {GRADIENT_FORWARD};
++static const struct gradient_object_vtbl gradient_object_vtbl = {GRADIENT_FORWARD, gradient_get_Compositor, gradient_get_Dispatcher, gradient_get_Properties, gradient_StartAnimation, gradient_StopAnimation};
++static const struct gradient_closable_vtbl gradient_closable_vtbl = {GRADIENT_FORWARD, gradient_Close};
++static const struct gradient_vector_vtbl gradient_vector_vtbl = {GRADIENT_FORWARD, gradient_vector_GetAt, gradient_vector_Size, gradient_vector_GetView, gradient_vector_IndexOf, gradient_vector_SetAt, gradient_vector_InsertAt, gradient_vector_RemoveAt, gradient_vector_Append, gradient_vector_RemoveAtEnd, gradient_vector_Clear, gradient_vector_GetMany, gradient_vector_ReplaceAll};
++static const struct gradient_view_vtbl gradient_view_vtbl = {GRADIENT_FORWARD, gradient_vector_GetAt, gradient_vector_Size, gradient_vector_IndexOf, gradient_vector_GetMany};
++static const struct gradient_iterable_vtbl gradient_iterable_vtbl = {GRADIENT_FORWARD, gradient_iterable_First};
++static const struct gradient_iterator_vtbl gradient_iterator_vtbl = {GRADIENT_FORWARD, gradient_iterator_Current, gradient_iterator_HasCurrent, gradient_iterator_MoveNext, gradient_iterator_GetMany};
++static HRESULT gradient_create( ICompositor *compositor, enum gradient_kind kind, struct gradient_object **out )
++{
++    struct gradient_object *impl;
++    HRESULT hr;
++    *out = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->kind = kind; impl->ref = 1; impl->compositor = compositor; ICompositor_AddRef( compositor );
++    InitializeCriticalSection( &impl->lock );
++    impl->primary.owner = impl->base.owner = impl->mapping.owner = impl->brush.owner = impl->object.owner = impl->closable.owner = impl->iterable.owner = impl;
++    impl->primary.lpVtbl = kind == GRADIENT_BRUSH ? (const void *)&gradient_linear_vtbl : kind == GRADIENT_STOP ? (const void *)&gradient_stop_vtbl : kind == GRADIENT_COLLECTION ? (const void *)&gradient_vector_vtbl : kind == GRADIENT_VIEW ? (const void *)&gradient_view_vtbl : (const void *)&gradient_iterator_vtbl;
++    impl->base.lpVtbl = &gradient_gradient_vtbl; impl->mapping.lpVtbl = &gradient_mapping_vtbl; impl->brush.lpVtbl = &gradient_brush_vtbl;
++    impl->object.lpVtbl = &gradient_object_vtbl; impl->closable.lpVtbl = &gradient_closable_vtbl; impl->iterable.lpVtbl = &gradient_iterable_vtbl;
++    impl->end.X = impl->end.Y = impl->scale.X = impl->scale.Y = 1;
++    impl->transform.M11 = impl->transform.M22 = 1; impl->interpolation = 2; impl->mapping_mode = 1;
++    hr = composition_property_set_create( compositor, &impl->properties );
++    if (SUCCEEDED(hr) && kind == GRADIENT_BRUSH) hr = gradient_create( compositor, GRADIENT_COLLECTION, &impl->stops );
++    if (FAILED(hr)) { gradient_release( &impl->primary ); return hr; }
++    *out = impl; return S_OK;
++}
++
+ #define DEFINE_COMPOSITOR4_CREATE_METHOD(name) \
+     static HRESULT WINAPI compositor4_##name( struct compositor4_iface *iface, IInspectable **result ) \
+     { \
+@@ -6373,8 +6833,26 @@
+         return E_NOTIMPL; \
+     }
+ 
+-DEFINE_COMPOSITOR4_CREATE_METHOD(CreateColorGradientStop)
+-DEFINE_COMPOSITOR4_CREATE_METHOD(CreateLinearGradientBrush)
++static HRESULT WINAPI compositor4_CreateColorGradientStop( struct compositor4_iface *iface, IInspectable **result )
++{
++    struct gradient_object *object;
++    HRESULT hr;
++    if (!result) return E_POINTER;
++    *result = NULL;
++    hr = gradient_create( &impl_from_compositor4( iface )->ICompositor_iface, GRADIENT_STOP, &object );
++    if (SUCCEEDED(hr)) *result = (IInspectable *)&object->primary;
++    return hr;
++}
++static HRESULT WINAPI compositor4_CreateLinearGradientBrush( struct compositor4_iface *iface, IInspectable **result )
++{
++    struct gradient_object *object;
++    HRESULT hr;
++    if (!result) return E_POINTER;
++    *result = NULL;
++    hr = gradient_create( &impl_from_compositor4( iface )->ICompositor_iface, GRADIENT_BRUSH, &object );
++    if (SUCCEEDED(hr)) *result = (IInspectable *)&object->primary;
++    return hr;
++}
+ DEFINE_COMPOSITOR4_CREATE_METHOD(CreateSpringScalarAnimation)
+ DEFINE_COMPOSITOR4_CREATE_METHOD(CreateSpringVector2Animation)
+ DEFINE_COMPOSITOR4_CREATE_METHOD(CreateSpringVector3Animation)
+@@ -6384,11 +6862,16 @@
+ static HRESULT WINAPI compositor4_CreateColorGradientStopWithOffsetAndColor(
+         struct compositor4_iface *iface, FLOAT offset, struct Color color, IInspectable **result )
+ {
+-    FIXME( "iface %p, offset %f, color %#02x%02x%02x%02x, result %p stub!\n",
+-           iface, offset, color.A, color.R, color.G, color.B, result );
++    struct gradient_object *object;
++    HRESULT hr;
+     if (!result) return E_POINTER;
+     *result = NULL;
+-    return E_NOTIMPL;
++    hr = gradient_create( &impl_from_compositor4( iface )->ICompositor_iface, GRADIENT_STOP, &object );
++    if (FAILED(hr)) return hr;
++    object->offset = offset;
++    object->color = color;
++    *result = (IInspectable *)&object->primary;
++    return S_OK;
+ }
+ 
+ static const struct compositor4_vtbl compositor4_vtbl =
+@@ -6734,8 +7217,14 @@
+     HRESULT hr;
+ 
+     FIXME( "iface %p, hwnd %p, topmost %u, result %p.\n", iface, hwnd, topmost, result );
+-    if (SUCCEEDED(hr = desktop_window_target_create( impl->dcomp_device, &impl->targets,
+-            hwnd, topmost, result ))) compositor_notify_commit_needed( impl );
++    hr = desktop_window_target_create( impl->dcomp_device, &impl->targets, hwnd, topmost, result );
++    TRACE( "desktop target hwnd %p create returned %#lx.\n", hwnd, hr );
++    if (SUCCEEDED(hr))
++    {
++        TRACE( "desktop target hwnd %p notify begin.\n", hwnd );
++        compositor_notify_commit_needed( impl );
++        TRACE( "desktop target hwnd %p notify end.\n", hwnd );
++    }
+     return hr;
+ }
+ 
+@@ -7311,6 +7800,112 @@
+     ID2D1DeviceContext_PopAxisAlignedClip( context );
+ }
+ 
++struct gradient_render_stop
++{
++    D2D1_GRADIENT_STOP value;
++    UINT32 order;
++};
++
++static int gradient_compare_stops( const void *a, const void *b )
++{
++    const struct gradient_render_stop *left = a, *right = b;
++    if (left->value.position < right->value.position) return -1;
++    if (left->value.position > right->value.position) return 1;
++    return left->order < right->order ? -1 : left->order > right->order;
++}
++
++static HRESULT draw_gradient_brush( ID2D1DeviceContext *context, struct gradient_object *impl,
++        const D2D1_RECT_F *bounds, FLOAT opacity )
++{
++    struct gradient_render_stop *sorted = NULL;
++    struct gradient_iface *view = NULL;
++    struct gradient_object state = {0};
++    D2D1_GRADIENT_STOP *stops = NULL;
++    ID2D1GradientStopCollection *collection = NULL;
++    ID2D1LinearGradientBrush *brush = NULL;
++    D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES points;
++    D2D1_BRUSH_PROPERTIES properties = {0};
++    struct Color color;
++    struct Matrix3x2 *matrix;
++    FLOAT width, height, sine, cosine, x, y, cx, cy;
++    UINT32 i, count;
++    HRESULT hr;
++
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else
++    {
++        state.start = impl->start; state.end = impl->end;
++        state.anchor = impl->anchor; state.center = impl->center;
++        state.scale = impl->scale; state.translation = impl->translation;
++        state.transform = impl->transform; state.rotation = impl->rotation;
++        state.mapping_mode = impl->mapping_mode; state.extend = impl->extend;
++        state.interpolation = impl->interpolation;
++        hr = gradient_vector_GetView( &impl->stops->primary, &view );
++    }
++    LeaveCriticalSection( &impl->lock );
++    if (FAILED(hr)) return hr;
++    count = view->owner->count;
++    if (!count) goto done;
++    if ((SIZE_T)count > SIZE_MAX / sizeof(*sorted) || (SIZE_T)count > SIZE_MAX / sizeof(*stops))
++    { hr = E_OUTOFMEMORY; goto done; }
++    if (!(sorted = calloc( count, sizeof(*sorted) )) || !(stops = calloc( count, sizeof(*stops) )))
++    { hr = E_OUTOFMEMORY; goto done; }
++    for (i = 0; i < count; ++i)
++    {
++        struct gradient_iface *stop = view->owner->items[i];
++        const struct gradient_stop_vtbl *vtbl = stop->lpVtbl;
++        if (FAILED(hr = vtbl->get_Color( stop, &color ))) goto done;
++        if (FAILED(hr = vtbl->get_Offset( stop, &sorted[i].value.position ))) goto done;
++        if (!isfinite( sorted[i].value.position )) { hr = E_INVALIDARG; goto done; }
++        sorted[i].value.color = (D2D1_COLOR_F){color.R / 255.0f, color.G / 255.0f,
++                color.B / 255.0f, color.A / 255.0f};
++        sorted[i].order = i;
++    }
++    qsort( sorted, count, sizeof(*sorted), gradient_compare_stops );
++    for (i = 0; i < count; ++i) stops[i] = sorted[i].value;
++    if ((state.interpolation != 2 && state.interpolation != 4) || state.extend < 0 || state.extend > 2 ||
++            state.mapping_mode < 0 || state.mapping_mode > 1)
++    { hr = E_INVALIDARG; goto done; }
++    hr = ID2D1RenderTarget_CreateGradientStopCollection( (ID2D1RenderTarget *)context, stops, count,
++            state.interpolation == 2 ? D2D1_GAMMA_2_2 : D2D1_GAMMA_1_0,
++            state.extend, &collection );
++    if (FAILED(hr)) goto done;
++    width = bounds->right - bounds->left;
++    height = bounds->bottom - bounds->top;
++    points.startPoint = (D2D1_POINT_2F){state.start.X, state.start.Y};
++    points.endPoint = (D2D1_POINT_2F){state.end.X, state.end.Y};
++    if (state.mapping_mode)
++    {
++        points.startPoint.x *= width; points.startPoint.y *= height;
++        points.endPoint.x *= width; points.endPoint.y *= height;
++    }
++    sine = sinf( state.rotation ); cosine = cosf( state.rotation );
++    cx = state.center.X; cy = state.center.Y;
++    x = cx - cx * state.scale.X * cosine + cy * state.scale.Y * sine;
++    y = cy - cx * state.scale.X * sine - cy * state.scale.Y * cosine;
++    matrix = &state.transform;
++    properties.transform._11 = state.scale.X * (cosine * matrix->M11 + sine * matrix->M21);
++    properties.transform._12 = state.scale.X * (cosine * matrix->M12 + sine * matrix->M22);
++    properties.transform._21 = state.scale.Y * (-sine * matrix->M11 + cosine * matrix->M21);
++    properties.transform._22 = state.scale.Y * (-sine * matrix->M12 + cosine * matrix->M22);
++    properties.transform._31 = x * matrix->M11 + y * matrix->M21 + matrix->M31 +
++            state.translation.X - state.anchor.X * width + bounds->left;
++    properties.transform._32 = x * matrix->M12 + y * matrix->M22 + matrix->M32 +
++            state.translation.Y - state.anchor.Y * height + bounds->top;
++    properties.opacity = opacity;
++    hr = ID2D1DeviceContext_CreateLinearGradientBrush( context, &points, &properties, collection, &brush );
++    if (FAILED(hr)) goto done;
++    ID2D1DeviceContext_FillRectangle( context, bounds, (ID2D1Brush *)brush );
++
++done:
++    if (brush) ID2D1LinearGradientBrush_Release( brush );
++    if (collection) ID2D1GradientStopCollection_Release( collection );
++    if (view) gradient_release( view );
++    free( stops ); free( sorted );
++    return hr;
++}
++
+ static HRESULT draw_composition_brush( ID2D1DeviceContext *context, ICompositionBrush *brush,
+         const D2D1_RECT_F *bounds, FLOAT opacity, UINT depth );
+ 
+@@ -7419,6 +8014,8 @@
+             ID2D1SolidColorBrush_Release( solid );
+         }
+     }
++    else if ((const void *)brush->lpVtbl == &gradient_brush_vtbl)
++        return draw_gradient_brush( context, ((struct gradient_iface *)brush)->owner, bounds, opacity );
+     else if (brush->lpVtbl == &surface_composition_brush_vtbl)
+         draw_surface_brush( context, surface_brush_from_ICompositionBrush( brush ), bounds, opacity );
+     else if (brush->lpVtbl == &nine_grid_composition_brush_vtbl)
+@@ -8704,9 +9301,11 @@
+     }
+     for (i = 0; i < count; ++i)
+     {
+-        if (FAILED(hr = ITypedEventHandler_CompositorController_IInspectable_Invoke(
+-                handlers[i], &controller->ICompositorController_iface, NULL )))
+-            WARN( "CommitNeeded handler returned %#lx.\n", hr );
++        TRACE( "controller %p CommitNeeded handler %u/%u begin.\n", controller, i, count );
++        hr = ITypedEventHandler_CompositorController_IInspectable_Invoke(
++                handlers[i], &controller->ICompositorController_iface, NULL );
++        TRACE( "controller %p CommitNeeded handler %u/%u end hr %#lx.\n", controller, i, count, hr );
++        if (FAILED(hr)) WARN( "CommitNeeded handler returned %#lx.\n", hr );
+         ITypedEventHandler_CompositorController_IInspectable_Release( handlers[i] );
+     }
+     free( handlers );
