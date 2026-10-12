@@ -80,7 +80,7 @@ int wmain(int argc, WCHAR **argv)
     ID2D1RenderTarget_SetTags(target, 0x5555, 0x6666);
     hr = ID2D1RenderTarget_EndDraw(target, &first, &second);
     printf("WIC_FIRST_ERROR=%08lx tags=%llx,%llx\n", (unsigned long)hr, first, second);
-    if (hr != D2DERR_INCOMPATIBLE_BRUSH_TYPES || first != 0x3333 || second != 0x4444) goto done;
+    if (hr != (HRESULT)D2DERR_INCOMPATIBLE_BRUSH_TYPES || first != 0x3333 || second != 0x4444) goto done;
     result = 0;
 done:
     if (held) IWICBitmapLock_Release(held);
