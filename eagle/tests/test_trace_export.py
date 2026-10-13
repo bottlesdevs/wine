@@ -9,9 +9,60 @@ PACKAGE = Path(os.environ['EAGLE_PACKAGE'])
 ROOT = Path(os.environ['EAGLE_TRACE_EXPORT_ROOT'])
 sys.path.insert(0, str(PACKAGE / 'lib/eagle'))
 from tracing import trace
+from session import export
 
 
 class TraceExports(unittest.TestCase):
+    def test_wait_events_do_not_displace_other_providers(self):
+        bundle = ROOT / 'provider-balance'
+        bundle.mkdir()
+        events = [{'seq': provider, 'kind': 'provider', 'data': {
+            'provider': provider, 'event': 'failure', 'hresult': '0x80070005',
+            'path': str(ROOT / 'private'),
+        }} for provider in (1, 2, 4)]
+        events.extend({'seq': seq, 'kind': 'provider', 'data': {
+            'provider': 8, 'event': 'WaitBegin',
+        }} for seq in range(5, 3005))
+        (bundle / 'manifest.json').write_text(json.dumps({'schema': 1}))
+        (bundle / 'events.jsonl').write_text(''.join(json.dumps(event) + '\n' for event in events))
+        destination = ROOT / 'provider-balance.log'
+        report = export(bundle, destination)
+        self.assertEqual(len(report['providers']), 2000)
+        self.assertEqual(report['provider_events_omitted'], 1003)
+        self.assertEqual(report['providers'][:3], [dict(event, data=dict(event['data'], path='[redacted]')) for event in events[:3]])
+        self.assertEqual(report['providers'][-1]['seq'], 3004)
+        self.assertEqual([event['seq'] for event in report['providers']], sorted(event['seq'] for event in report['providers']))
+        self.assertNotIn(str(ROOT), destination.read_text())
+
+    def test_provider_limit_is_shared_across_busy_providers(self):
+        bundle = ROOT / 'busy-providers'
+        bundle.mkdir()
+        events = [{'seq': seq, 'kind': 'provider', 'data': {
+            'provider': (2, 4, 8)[seq // 3000], 'event': 'fixture',
+        }} for seq in range(9000)]
+        (bundle / 'manifest.json').write_text(json.dumps({'schema': 1}))
+        (bundle / 'events.jsonl').write_text(''.join(json.dumps(event) + '\n' for event in events))
+        report = export(bundle, ROOT / 'busy-providers.log')
+        counts = [sum(event['data']['provider'] == provider for event in report['providers']) for provider in (2, 4, 8)]
+        self.assertEqual(len(report['providers']), 2000)
+        self.assertLessEqual(max(counts) - min(counts), 1)
+        self.assertEqual(report['provider_events_omitted'], 7000)
+        self.assertEqual(report['providers'][-1]['seq'], 8999)
+
+    def test_provider_selection_handles_the_limit_and_empty_sessions(self):
+        for count in (0, 1, 1999, 2000, 2001):
+            with self.subTest(count=count):
+                bundle = ROOT / ('provider-limit-' + str(count))
+                bundle.mkdir()
+                events = [{'seq': seq, 'kind': 'provider', 'data': {
+                    'provider': 8, 'event': 'WaitBegin',
+                }} for seq in range(count)]
+                (bundle / 'manifest.json').write_text(json.dumps({'schema': 1}))
+                (bundle / 'events.jsonl').write_text(''.join(json.dumps(event) + '\n' for event in events))
+                report = export(bundle, ROOT / ('provider-limit-' + str(count) + '.log'))
+                self.assertEqual(report['providers'], events[-2000:])
+                self.assertEqual(report['provider_events_omitted'], max(0, count - 2000))
+
     def test_failed_capture_exports_partial_history_without_raw_memory(self):
         prefix = ROOT / 'failure-prefix'
         prefix.mkdir()

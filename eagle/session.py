@@ -120,10 +120,22 @@ def summary(root):
     exits = [{key: event[key] for key in ("pid", "code")} for event in events if event["kind"] == "process_exit"]
     faults = [event for event in events if event["kind"] == "exception" and not event["first_chance"]]
     providers = [event for event in events if event['kind'] == 'provider']
+    groups = collections.defaultdict(list)
+    for index, event in enumerate(providers):
+        groups[event.get('data', {}).get('provider')].append(index)
+    selected = []
+    while groups and len(selected) < 2000:
+        for provider in list(groups):
+            selected.append(groups[provider].pop())
+            if not groups[provider]:
+                del groups[provider]
+            if len(selected) == 2000:
+                break
+    selected_providers = [providers[index] for index in sorted(selected)]
     cycles = [event for event in providers if event.get('wait_graph', {}).get('cycles')]
     timeline = [event for event in events if event['kind'] not in ('provider', 'snapshot', 'dump', 'memory') and not (event['kind'] == 'exception' and event.get('internal'))]
     dumps = [{key: event[key] for key in ('seq', 'time_ms', 'kind', 'pid', 'tid', 'path', 'size') if key in event} for event in events if event['kind'] == 'dump']
-    return {"manifest": manifest, "counts": dict(collections.Counter(event["kind"] for event in events)), "exits": exits, "terminal_exceptions": faults, "snapshots": [event for event in events if event["kind"] == "snapshot"], "dumps": dumps, 'providers': providers[-2000:], 'provider_selection': 'most recent 2000', 'timeline': timeline[-4096:], 'timeline_events_omitted': max(0, len(timeline) - 4096), 'provider_events_omitted': max(0, len(providers) - 2000), 'observed_wait_cycles': cycles[:100], 'wait_cycles_omitted': max(0, len(cycles) - 100)}
+    return {"manifest": manifest, "counts": dict(collections.Counter(event["kind"] for event in events)), "exits": exits, "terminal_exceptions": faults, "snapshots": [event for event in events if event["kind"] == "snapshot"], "dumps": dumps, 'providers': selected_providers, 'provider_selection': 'up to 2000 recent events balanced across providers', 'timeline': timeline[-4096:], 'timeline_events_omitted': max(0, len(timeline) - 4096), 'provider_events_omitted': len(providers) - len(selected_providers), 'observed_wait_cycles': cycles[:100], 'wait_cycles_omitted': max(0, len(cycles) - 100)}
 
 def fingerprint(event):
     frame = event.get("frame", {}) or {}
