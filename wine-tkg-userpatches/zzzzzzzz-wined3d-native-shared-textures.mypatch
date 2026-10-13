@@ -1,0 +1,2542 @@
+diff --git a/dlls/d3d11/Makefile.in b/dlls/d3d11/Makefile.in
+--- a/dlls/d3d11/Makefile.in
++++ b/dlls/d3d11/Makefile.in
+@@ -1,6 +1,6 @@
+ MODULE    = d3d11.dll
+ IMPORTLIB = d3d11
+-IMPORTS   = dxguid uuid dxgi wined3d
++IMPORTS   = gdi32 dxguid uuid dxgi wined3d
+ EXTRAINCL = $(VKD3D_PE_CFLAGS)
+ 
+ SOURCES = \
+diff --git a/dlls/d3d11/buffer.c b/dlls/d3d11/buffer.c
+--- a/dlls/d3d11/buffer.c
++++ b/dlls/d3d11/buffer.c
+@@ -486,7 +486,7 @@
+ 
+     hr = d3d_device_create_dxgi_resource((IUnknown *)&device->ID3D10Device1_iface,
+             wined3d_buffer_get_resource(buffer->wined3d_buffer), (IUnknown *)&buffer->ID3D10Buffer_iface,
+-            FALSE, &buffer->dxgi_resource);
++            FALSE, NULL, &buffer->dxgi_resource);
+     if (FAILED(hr))
+     {
+         ERR("Failed to create DXGI resource, returning %#.lx\n", hr);
+diff --git a/dlls/d3d11/d3d11_private.h b/dlls/d3d11/d3d11_private.h
+--- a/dlls/d3d11/d3d11_private.h
++++ b/dlls/d3d11/d3d11_private.h
+@@ -62,7 +62,7 @@
+ DWORD wined3d_clear_flags_from_d3d11_clear_flags(UINT clear_flags);
+ unsigned int wined3d_access_from_d3d11(D3D11_USAGE usage, UINT cpu_access);
+ HRESULT d3d_device_create_dxgi_resource(IUnknown *device, struct wined3d_resource *wined3d_resource,
+-        IUnknown *outer, BOOL needs_surface, IUnknown **dxgi_resource);
++        IUnknown *outer, BOOL needs_surface, const DXGI_SHARED_RESOURCE *shared_resource, IUnknown **dxgi_resource);
+ 
+ enum D3D11_USAGE d3d11_usage_from_d3d10_usage(enum D3D10_USAGE usage);
+ enum D3D10_USAGE d3d10_usage_from_d3d11_usage(enum D3D11_USAGE usage);
+@@ -153,7 +153,7 @@
+ 
+ HRESULT d3d_texture2d_create(struct d3d_device *device, const D3D11_TEXTURE2D_DESC *desc,
+         struct wined3d_texture *wined3d_texture,
+-        const D3D11_SUBRESOURCE_DATA *data, struct d3d_texture2d **out);
++        const D3D11_SUBRESOURCE_DATA *data, const DXGI_SHARED_RESOURCE *shared_resource, struct d3d_texture2d **out);
+ struct d3d_texture2d *unsafe_impl_from_ID3D11Texture2D(ID3D11Texture2D *iface);
+ struct d3d_texture2d *unsafe_impl_from_ID3D10Texture2D(ID3D10Texture2D *iface);
+ 
+diff --git a/dlls/d3d11/device.c b/dlls/d3d11/device.c
+--- a/dlls/d3d11/device.c
++++ b/dlls/d3d11/device.c
+@@ -20,6 +20,7 @@
+ #define NONAMELESSUNION
+ #define WINE_NO_NAMELESS_EXTENSION
+ #include "d3d11_private.h"
++#include "wine/dxgi_shared.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(d3d11);
+ 
+@@ -4079,7 +4080,7 @@
+ 
+     TRACE("iface %p, desc %p, data %p, texture %p.\n", iface, desc, data, texture);
+ 
+-    if (FAILED(hr = d3d_texture2d_create(device, desc, NULL, data, &object)))
++    if (FAILED(hr = d3d_texture2d_create(device, desc, NULL, data, NULL, &object)))
+         return hr;
+ 
+     *texture = &object->ID3D11Texture2D_iface;
+@@ -4596,9 +4597,81 @@
+ static HRESULT STDMETHODCALLTYPE d3d11_device_OpenSharedResource(ID3D11Device5 *iface, HANDLE resource, REFIID iid,
+         void **out)
+ {
+-    FIXME("iface %p, resource %p, iid %s, out %p stub!\n", iface, resource, debugstr_guid(iid), out);
+-
+-    return E_NOTIMPL;
++    struct d3d_device *device = impl_from_ID3D11Device5(iface);
++    struct dxgi_shared_texture_metadata metadata = {0};
++    D3DKMT_OPENADAPTERFROMLUID open_adapter = {0};
++    D3DKMT_CREATEDEVICE create_device = {{0}};
++    D3DKMT_QUERYRESOURCEINFO query = {0};
++    D3DKMT_OPENRESOURCE open = {0};
++    D3DDDI_OPENALLOCATIONINFO allocation = {0};
++    D3DKMT_DESTROYALLOCATION destroy = {0};
++    D3DKMT_DESTROYDEVICE destroy_device = {0};
++    D3DKMT_CLOSEADAPTER close_adapter = {0};
++    struct d3d_texture2d *texture = NULL;
++    DXGI_ADAPTER_DESC adapter_desc;
++    IDXGIDevice *dxgi_device;
++    IDXGIAdapter *adapter;
++    HRESULT hr;
++
++    TRACE("iface %p, resource %p, iid %s, out %p.\n", iface, resource, debugstr_guid(iid), out);
++
++    if (!out) return E_INVALIDARG;
++    *out = NULL;
++    if (!resource) return E_INVALIDARG;
++    if (FAILED(hr = IUnknown_QueryInterface(device->outer_unk, &IID_IDXGIDevice, (void **)&dxgi_device)))
++        return hr;
++    hr = IDXGIDevice_GetAdapter(dxgi_device, &adapter);
++    IDXGIDevice_Release(dxgi_device);
++    if (FAILED(hr)) return hr;
++    hr = IDXGIAdapter_GetDesc(adapter, &adapter_desc);
++    IDXGIAdapter_Release(adapter);
++    if (FAILED(hr)) return hr;
++    hr = E_INVALIDARG;
++    open_adapter.AdapterLuid = adapter_desc.AdapterLuid;
++    if (D3DKMTOpenAdapterFromLuid(&open_adapter)) goto done;
++    close_adapter.hAdapter = open_adapter.hAdapter;
++    create_device.u.hAdapter = open_adapter.hAdapter;
++    if (D3DKMTCreateDevice(&create_device)) goto done;
++    destroy_device.hDevice = create_device.hDevice;
++    query.hDevice = create_device.hDevice;
++    query.hGlobalShare = (D3DKMT_HANDLE)(ULONG_PTR)resource;
++    if (D3DKMTQueryResourceInfo(&query) || query.PrivateRuntimeDataSize != sizeof(metadata)) goto done;
++    open.hDevice = create_device.hDevice;
++    open.hGlobalShare = query.hGlobalShare;
++    open.NumAllocations = 1;
++    open.pOpenAllocationInfo = &allocation;
++    open.pPrivateRuntimeData = &metadata;
++    open.PrivateRuntimeDataSize = sizeof(metadata);
++    if (D3DKMTOpenResource(&open)) goto done;
++    destroy.hDevice = create_device.hDevice;
++    destroy.hResource = open.hResource;
++    if (metadata.size != sizeof(metadata) || metadata.version != 1
++            || metadata.dimension != D3D11_RESOURCE_DIMENSION_TEXTURE2D
++            || metadata.width != metadata.texture.Width || metadata.height != metadata.texture.Height
++            || metadata.format != metadata.texture.Format) goto done;
++    if (metadata.nt_shared)
++    {
++        hr = E_NOTIMPL;
++        goto done;
++    }
++    if (!(metadata.texture.MiscFlags & (D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX))) goto done;
++    if (!!metadata.keyed_mutex != !!(metadata.texture.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)) goto done;
++    if (FAILED(hr = d3d_texture2d_create(device, &metadata.texture, NULL, NULL, &(DXGI_SHARED_RESOURCE){resource}, &texture))) goto done;
++    if (FAILED(hr = ID3D11Texture2D_QueryInterface(&texture->ID3D11Texture2D_iface, iid, out))) goto done;
++    wined3d_mutex_lock();
++    hr = wined3d_texture_open_shared_handle(texture->wined3d_texture, resource);
++    wined3d_mutex_unlock();
++    if (FAILED(hr))
++    {
++        IUnknown_Release((IUnknown *)*out);
++        *out = NULL;
++    }
++done:
++    if (texture) ID3D11Texture2D_Release(&texture->ID3D11Texture2D_iface);
++    if (destroy.hResource) D3DKMTDestroyAllocation(&destroy);
++    if (destroy_device.hDevice) D3DKMTDestroyDevice(&destroy_device);
++    if (close_adapter.hAdapter) D3DKMTCloseAdapter(&close_adapter);
++    return hr;
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE d3d11_device_CheckFormatSupport(ID3D11Device5 *iface, DXGI_FORMAT format,
+@@ -6992,7 +7065,7 @@
+     d3d11_desc.CPUAccessFlags = d3d11_cpu_access_flags_from_d3d10_cpu_access_flags(desc->CPUAccessFlags);
+     d3d11_desc.MiscFlags = d3d11_resource_misc_flags_from_d3d10_resource_misc_flags(desc->MiscFlags);
+ 
+-    if (FAILED(hr = d3d_texture2d_create(device, &d3d11_desc, NULL, (const D3D11_SUBRESOURCE_DATA *)data, &object)))
++    if (FAILED(hr = d3d_texture2d_create(device, &d3d11_desc, NULL, (const D3D11_SUBRESOURCE_DATA *)data, NULL, &object)))
+         return hr;
+ 
+     *texture = &object->ID3D10Texture2D_iface;
+@@ -8033,7 +8106,7 @@
+     if (texture_flags)
+         FIXME("Unhandled flags %#x.\n", texture_flags);
+ 
+-    if (FAILED(hr = d3d_texture2d_create(device, &desc, wined3d_texture, NULL, &object)))
++    if (FAILED(hr = d3d_texture2d_create(device, &desc, wined3d_texture, NULL, NULL, &object)))
+         return hr;
+ 
+     hr = IUnknown_QueryInterface(object->dxgi_resource, &IID_IDXGISurface, (void **)ret_surface);
+diff --git a/dlls/d3d11/texture.c b/dlls/d3d11/texture.c
+--- a/dlls/d3d11/texture.c
++++ b/dlls/d3d11/texture.c
+@@ -414,7 +414,7 @@
+ };
+ 
+ HRESULT d3d_device_create_dxgi_resource(IUnknown *device, struct wined3d_resource *wined3d_resource,
+-        IUnknown *outer, BOOL needs_surface, IUnknown **dxgi_resource)
++        IUnknown *outer, BOOL needs_surface, const DXGI_SHARED_RESOURCE *shared_resource, IUnknown **dxgi_resource)
+ {
+     IWineDXGIDevice *wine_device;
+     HRESULT hr;
+@@ -425,7 +425,7 @@
+         return E_FAIL;
+     }
+ 
+-    hr = IWineDXGIDevice_create_resource(wine_device, wined3d_resource, 0, NULL, outer,
++    hr = IWineDXGIDevice_create_resource(wine_device, wined3d_resource, 0, shared_resource, outer,
+             needs_surface, (void **)dxgi_resource);
+     IWineDXGIDevice_Release(wine_device);
+     if (FAILED(hr))
+@@ -491,7 +491,7 @@
+     needs_surface = desc->MipLevels == 1 && desc->ArraySize == 1;
+     hr = d3d_device_create_dxgi_resource((IUnknown *)&device->ID3D10Device1_iface,
+             wined3d_texture_get_resource(texture->wined3d_texture), (IUnknown *)&texture->ID3D10Texture1D_iface,
+-            needs_surface, &texture->dxgi_resource);
++            needs_surface, NULL, &texture->dxgi_resource);
+     if (FAILED(hr))
+     {
+         ERR("Failed to create DXGI resource, returning %#.lx\n", hr);
+@@ -962,7 +962,8 @@
+ }
+ 
+ HRESULT d3d_texture2d_create(struct d3d_device *device, const D3D11_TEXTURE2D_DESC *desc,
+-        struct wined3d_texture *wined3d_texture, const D3D11_SUBRESOURCE_DATA *data, struct d3d_texture2d **out)
++        struct wined3d_texture *wined3d_texture, const D3D11_SUBRESOURCE_DATA *data,
++        const DXGI_SHARED_RESOURCE *shared_resource, struct d3d_texture2d **out)
+ {
+     struct d3d_texture2d *texture;
+     BOOL needs_surface;
+@@ -1014,6 +1015,8 @@
+ 
+         levels = desc->MipLevels ? desc->MipLevels : wined3d_log2i(max(desc->Width, desc->Height)) + 1;
+ 
++        if (desc->MiscFlags & (D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX))
++            flags |= WINED3D_TEXTURE_CREATE_SHARED;
+         if (desc->MiscFlags & D3D11_RESOURCE_MISC_GDI_COMPATIBLE)
+             flags |= WINED3D_TEXTURE_CREATE_GET_DC;
+         if (desc->MiscFlags & D3D11_RESOURCE_MISC_GENERATE_MIPS)
+@@ -1036,7 +1039,7 @@
+     needs_surface = desc->MipLevels == 1 && desc->ArraySize == 1;
+     hr = d3d_device_create_dxgi_resource((IUnknown *)&device->ID3D10Device1_iface,
+             wined3d_texture_get_resource(texture->wined3d_texture), (IUnknown *)&texture->ID3D10Texture2D_iface,
+-            needs_surface, &texture->dxgi_resource);
++            needs_surface, shared_resource, &texture->dxgi_resource);
+     if (FAILED(hr))
+     {
+         ERR("Failed to create DXGI resource, returning %#.lx\n", hr);
+@@ -1495,7 +1498,7 @@
+ 
+     hr = d3d_device_create_dxgi_resource((IUnknown *)&device->ID3D10Device1_iface,
+             wined3d_texture_get_resource(texture->wined3d_texture), (IUnknown *)&texture->ID3D10Texture3D_iface,
+-            FALSE, &texture->dxgi_resource);
++            FALSE, NULL, &texture->dxgi_resource);
+     if (FAILED(hr))
+     {
+         ERR("Failed to create DXGI resource, returning %#.lx\n", hr);
+diff --git a/dlls/dxgi/device.c b/dlls/dxgi/device.c
+--- a/dlls/dxgi/device.c
++++ b/dlls/dxgi/device.c
+@@ -348,7 +348,7 @@
+     }
+ 
+     if (FAILED(hr = dxgi_resource_init(object, (IDXGIDevice *)iface, outer, needs_surface,
+-            wined3d_resource, NULL, 0)))
++            wined3d_resource, NULL, 0, shared_resource)))
+     {
+         WARN("Failed to initialize resource, hr %#lx.\n", hr);
+         free(object);
+diff --git a/dlls/dxgi/dxgi_private.h b/dlls/dxgi/dxgi_private.h
+--- a/dlls/dxgi/dxgi_private.h
++++ b/dlls/dxgi/dxgi_private.h
+@@ -36,6 +36,7 @@
+ #ifdef DXGI_INIT_GUID
+ #include "initguid.h"
+ #endif
++#include "ddk/d3dkmthk.h"
+ #include "wine/wined3d.h"
+ #include "wine/winedxgi.h"
+ 
+@@ -199,6 +200,8 @@
+ {
+     IDXGISurface2 IDXGISurface2_iface;
+     IDXGIResource1 IDXGIResource1_iface;
++    IDXGIKeyedMutex IDXGIKeyedMutex_iface;
++    D3DKMT_HANDLE keyed_mutex, shared_keyed_mutex;
+     IUnknown IUnknown_iface;
+     IUnknown *outer_unknown;
+     LONG refcount;
+@@ -212,6 +215,6 @@
+ 
+ HRESULT dxgi_resource_init(struct dxgi_resource *resource, IDXGIDevice *device,
+         IUnknown *outer, BOOL needs_surface, struct wined3d_resource *wined3d_resource,
+-        IDXGIResource1 *parent_resource, unsigned int subresource_index);
++        IDXGIResource1 *parent_resource, unsigned int subresource_index, const DXGI_SHARED_RESOURCE *shared_resource);
+ 
+ #endif /* __WINE_DXGI_PRIVATE_H */
+diff --git a/dlls/dxgi/resource.c b/dlls/dxgi/resource.c
+--- a/dlls/dxgi/resource.c
++++ b/dlls/dxgi/resource.c
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include "dxgi_private.h"
++#include "wine/dxgi_shared.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dxgi);
+ 
+@@ -34,6 +35,13 @@
+     bool is_subresource = !!resource->parent_resource;
+ 
+     TRACE("iface %p, riid %s, out %p.\n", iface, debugstr_guid(riid), out);
++
++    if (IsEqualGUID(riid, &IID_IDXGIKeyedMutex) && resource->keyed_mutex)
++    {
++        *out = &resource->IDXGIKeyedMutex_iface;
++        IDXGIKeyedMutex_AddRef(&resource->IDXGIKeyedMutex_iface);
++        return S_OK;
++    }
+ 
+     if ((IsEqualGUID(riid, &IID_IDXGISurface2)
+             || IsEqualGUID(riid, &IID_IDXGISurface1)
+@@ -81,6 +89,9 @@
+     {
+         if (resource->parent_resource)
+             IDXGIResource1_Release(resource->parent_resource);
++        if (resource->keyed_mutex)
++            wined3d_texture_destroy_keyed_mutex(wined3d_texture_from_resource(resource->wined3d_resource),
++                    resource->keyed_mutex);
+         wined3d_private_store_cleanup(&resource->private_store);
+         free(resource);
+     }
+@@ -383,11 +394,98 @@
+ }
+ 
+ /* IDXGIResource methods */
++static HRESULT dxgi_resource_publish_shared_texture(struct dxgi_resource *resource, HANDLE handle)
++{
++    struct dxgi_shared_texture_metadata metadata = {0}, observed = {0};
++    D3DKMT_OPENADAPTERFROMLUID open_adapter = {0};
++    D3DKMT_CREATEDEVICE create_device = {{0}};
++    D3DKMT_QUERYRESOURCEINFO query = {0};
++    D3DKMT_OPENRESOURCE open = {0};
++    D3DDDI_OPENALLOCATIONINFO allocation = {0};
++    D3DKMT_DESTROYALLOCATION destroy = {0};
++    D3DKMT_DESTROYDEVICE destroy_device = {0};
++    D3DKMT_CLOSEADAPTER close_adapter = {0};
++    D3DKMT_ESCAPE escape = {0};
++    ID3D11Texture2D *texture;
++    DXGI_ADAPTER_DESC adapter_desc;
++    IDXGIAdapter *adapter;
++    HRESULT hr;
++    NTSTATUS status;
++
++    if (FAILED(hr = IUnknown_QueryInterface(resource->outer_unknown, &IID_ID3D11Texture2D, (void **)&texture)))
++        return hr;
++    ID3D11Texture2D_GetDesc(texture, &metadata.texture);
++    ID3D11Texture2D_Release(texture);
++    metadata.size = sizeof(metadata);
++    metadata.version = 1;
++    metadata.width = metadata.texture.Width;
++    metadata.height = metadata.texture.Height;
++    metadata.format = metadata.texture.Format;
++    metadata.dimension = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
++    metadata.keyed_mutex = !!resource->keyed_mutex;
++    metadata.mutex_handle = resource->shared_keyed_mutex;
++
++    if (FAILED(hr = IDXGIDevice_GetAdapter(resource->device, &adapter))) return hr;
++    hr = IDXGIAdapter_GetDesc(adapter, &adapter_desc);
++    IDXGIAdapter_Release(adapter);
++    if (FAILED(hr)) return hr;
++    open_adapter.AdapterLuid = adapter_desc.AdapterLuid;
++    hr = E_FAIL;
++    if ((status = D3DKMTOpenAdapterFromLuid(&open_adapter))) goto done;
++    close_adapter.hAdapter = open_adapter.hAdapter;
++    create_device.hAdapter = open_adapter.hAdapter;
++    if ((status = D3DKMTCreateDevice(&create_device))) goto done;
++    destroy_device.hDevice = create_device.hDevice;
++    query.hDevice = create_device.hDevice;
++    query.hGlobalShare = (D3DKMT_HANDLE)(ULONG_PTR)handle;
++    if ((status = D3DKMTQueryResourceInfo(&query))) goto done;
++    if (query.PrivateRuntimeDataSize && query.PrivateRuntimeDataSize != sizeof(metadata)) goto done;
++    open.hDevice = create_device.hDevice;
++    open.hGlobalShare = query.hGlobalShare;
++    open.NumAllocations = 1;
++    open.pOpenAllocationInfo = &allocation;
++    open.pPrivateRuntimeData = &observed;
++    open.PrivateRuntimeDataSize = query.PrivateRuntimeDataSize;
++    if ((status = D3DKMTOpenResource(&open))) goto done;
++    destroy.hDevice = create_device.hDevice;
++    destroy.hResource = open.hResource;
++    if (query.PrivateRuntimeDataSize)
++    {
++        if (!memcmp(&metadata, &observed, sizeof(metadata))) hr = S_OK;
++        goto done;
++    }
++    escape.hAdapter = open_adapter.hAdapter;
++    escape.hDevice = create_device.hDevice;
++    escape.hContext = open.hResource;
++    escape.Type = D3DKMT_ESCAPE_UPDATE_RESOURCE_WINE;
++    escape.pPrivateDriverData = &metadata;
++    escape.PrivateDriverDataSize = sizeof(metadata);
++    if (!(status = D3DKMTEscape(&escape))) hr = S_OK;
++done:
++    if (destroy.hResource) D3DKMTDestroyAllocation(&destroy);
++    if (destroy_device.hDevice) D3DKMTDestroyDevice(&destroy_device);
++    if (close_adapter.hAdapter) D3DKMTCloseAdapter(&close_adapter);
++    if (FAILED(hr)) WARN("Failed to publish shared texture descriptor, status %#lx.\n", status);
++    return hr;
++}
++
+ static HRESULT STDMETHODCALLTYPE dxgi_resource_GetSharedHandle(IDXGIResource1 *iface, HANDLE *shared_handle)
+ {
+-    FIXME("iface %p, shared_handle %p stub!\n", iface, shared_handle);
+-
+-    return E_NOTIMPL;
++    struct dxgi_resource *resource = impl_from_IDXGIResource1(iface);
++    struct wined3d_resource_desc desc;
++    HANDLE handle;
++    HRESULT hr;
++
++    if (!shared_handle) return E_INVALIDARG;
++    *shared_handle = NULL;
++    wined3d_mutex_lock();
++    wined3d_resource_get_desc(resource->wined3d_resource, &desc);
++    if (desc.resource_type != WINED3D_RTYPE_TEXTURE_2D) hr = DXGI_ERROR_INVALID_CALL;
++    else hr = wined3d_texture_get_shared_handle(wined3d_texture_from_resource(resource->wined3d_resource), &handle);
++    wined3d_mutex_unlock();
++    if (SUCCEEDED(hr) && SUCCEEDED(hr = dxgi_resource_publish_shared_texture(resource, handle)))
++        *shared_handle = handle;
++    return hr == WINED3DERR_INVALIDCALL ? DXGI_ERROR_INVALID_CALL : hr;
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE dxgi_resource_GetUsage(IDXGIResource1 *iface, DXGI_USAGE *usage)
+@@ -464,7 +562,7 @@
+     }
+ 
+     if (FAILED(hr = dxgi_resource_init(subresource, resource->device, NULL, TRUE,
+-            resource->wined3d_resource, iface, index)))
++            resource->wined3d_resource, iface, index, NULL)))
+     {
+         WARN("Failed to initialise resource, hr %#lx.\n", hr);
+         free(subresource);
+@@ -515,9 +613,148 @@
+     dxgi_resource_inner_Release,
+ };
+ 
++static inline struct dxgi_resource *impl_from_IDXGIKeyedMutex(IDXGIKeyedMutex *iface)
++{
++    return CONTAINING_RECORD(iface, struct dxgi_resource, IDXGIKeyedMutex_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE dxgi_keyed_mutex_QueryInterface(IDXGIKeyedMutex *iface, REFIID iid, void **out)
++{
++    return IDXGIResource1_QueryInterface(&impl_from_IDXGIKeyedMutex(iface)->IDXGIResource1_iface, iid, out);
++}
++
++static ULONG STDMETHODCALLTYPE dxgi_keyed_mutex_AddRef(IDXGIKeyedMutex *iface)
++{
++    return IDXGIResource1_AddRef(&impl_from_IDXGIKeyedMutex(iface)->IDXGIResource1_iface);
++}
++
++static ULONG STDMETHODCALLTYPE dxgi_keyed_mutex_Release(IDXGIKeyedMutex *iface)
++{
++    return IDXGIResource1_Release(&impl_from_IDXGIKeyedMutex(iface)->IDXGIResource1_iface);
++}
++
++static HRESULT STDMETHODCALLTYPE dxgi_keyed_mutex_SetPrivateData(IDXGIKeyedMutex *iface,
++        REFGUID guid, UINT size, const void *data)
++{
++    return IDXGIResource1_SetPrivateData(&impl_from_IDXGIKeyedMutex(iface)->IDXGIResource1_iface, guid, size, data);
++}
++
++static HRESULT STDMETHODCALLTYPE dxgi_keyed_mutex_SetPrivateDataInterface(IDXGIKeyedMutex *iface,
++        REFGUID guid, const IUnknown *object)
++{
++    return IDXGIResource1_SetPrivateDataInterface(&impl_from_IDXGIKeyedMutex(iface)->IDXGIResource1_iface, guid, object);
++}
++
++static HRESULT STDMETHODCALLTYPE dxgi_keyed_mutex_GetPrivateData(IDXGIKeyedMutex *iface,
++        REFGUID guid, UINT *size, void *data)
++{
++    return IDXGIResource1_GetPrivateData(&impl_from_IDXGIKeyedMutex(iface)->IDXGIResource1_iface, guid, size, data);
++}
++
++static HRESULT STDMETHODCALLTYPE dxgi_keyed_mutex_GetParent(IDXGIKeyedMutex *iface, REFIID iid, void **parent)
++{
++    return IDXGIResource1_GetParent(&impl_from_IDXGIKeyedMutex(iface)->IDXGIResource1_iface, iid, parent);
++}
++
++static HRESULT STDMETHODCALLTYPE dxgi_keyed_mutex_GetDevice(IDXGIKeyedMutex *iface, REFIID iid, void **device)
++{
++    return IDXGIResource1_GetDevice(&impl_from_IDXGIKeyedMutex(iface)->IDXGIResource1_iface, iid, device);
++}
++
++static HRESULT STDMETHODCALLTYPE dxgi_keyed_mutex_AcquireSync(IDXGIKeyedMutex *iface, UINT64 key, DWORD timeout)
++{
++    struct dxgi_resource *resource = impl_from_IDXGIKeyedMutex(iface);
++
++    return wined3d_texture_acquire_keyed_mutex(wined3d_texture_from_resource(resource->wined3d_resource),
++            resource->keyed_mutex, resource->shared_keyed_mutex, key, timeout);
++}
++
++static HRESULT STDMETHODCALLTYPE dxgi_keyed_mutex_ReleaseSync(IDXGIKeyedMutex *iface, UINT64 key)
++{
++    struct dxgi_resource *resource = impl_from_IDXGIKeyedMutex(iface);
++
++    return wined3d_texture_release_keyed_mutex(wined3d_texture_from_resource(resource->wined3d_resource),
++            resource->keyed_mutex, resource->shared_keyed_mutex, key);
++}
++
++static const struct IDXGIKeyedMutexVtbl dxgi_keyed_mutex_vtbl =
++{
++    dxgi_keyed_mutex_QueryInterface,
++    dxgi_keyed_mutex_AddRef,
++    dxgi_keyed_mutex_Release,
++    dxgi_keyed_mutex_SetPrivateData,
++    dxgi_keyed_mutex_SetPrivateDataInterface,
++    dxgi_keyed_mutex_GetPrivateData,
++    dxgi_keyed_mutex_GetParent,
++    dxgi_keyed_mutex_GetDevice,
++    dxgi_keyed_mutex_AcquireSync,
++    dxgi_keyed_mutex_ReleaseSync,
++};
++
++static HRESULT dxgi_resource_init_keyed_mutex(struct dxgi_resource *resource, HANDLE shared_handle)
++{
++    D3DKMT_CREATEKEYEDMUTEX create = {0};
++    D3DKMT_OPENKEYEDMUTEX open_mutex = {0};
++    D3DKMT_OPENADAPTERFROMLUID adapter = {0};
++    D3DKMT_CREATEDEVICE device = {{0}};
++    D3DKMT_CLOSEADAPTER close_adapter = {0};
++    D3DKMT_DESTROYDEVICE destroy_device = {0};
++    D3DKMT_DESTROYALLOCATION destroy = {0};
++    D3DKMT_QUERYRESOURCEINFO query = {0};
++    D3DKMT_OPENRESOURCE open = {0};
++    D3DDDI_OPENALLOCATIONINFO allocation = {0};
++    struct dxgi_shared_texture_metadata metadata;
++    IDXGIAdapter *dxgi_adapter;
++    DXGI_ADAPTER_DESC desc;
++    HRESULT hr = E_FAIL;
++
++    if (!shared_handle)
++    {
++        if (D3DKMTCreateKeyedMutex(&create)) return E_FAIL;
++        resource->keyed_mutex = create.hKeyedMutex;
++        resource->shared_keyed_mutex = create.hSharedHandle;
++        return S_OK;
++    }
++    if (FAILED(IDXGIDevice_GetAdapter(resource->device, &dxgi_adapter))) return E_FAIL;
++    hr = IDXGIAdapter_GetDesc(dxgi_adapter, &desc);
++    IDXGIAdapter_Release(dxgi_adapter);
++    if (FAILED(hr)) return hr;
++    hr = E_FAIL;
++    adapter.AdapterLuid = desc.AdapterLuid;
++    if (D3DKMTOpenAdapterFromLuid(&adapter)) goto done;
++    close_adapter.hAdapter = adapter.hAdapter;
++    device.hAdapter = adapter.hAdapter;
++    if (D3DKMTCreateDevice(&device)) goto done;
++    destroy_device.hDevice = device.hDevice;
++    query.hDevice = device.hDevice;
++    query.hGlobalShare = (D3DKMT_HANDLE)(ULONG_PTR)shared_handle;
++    if (D3DKMTQueryResourceInfo(&query) || query.PrivateRuntimeDataSize != sizeof(metadata)) goto done;
++    open.hDevice = device.hDevice;
++    open.hGlobalShare = query.hGlobalShare;
++    open.NumAllocations = 1;
++    open.pOpenAllocationInfo = &allocation;
++    open.pPrivateRuntimeData = &metadata;
++    open.PrivateRuntimeDataSize = sizeof(metadata);
++    if (D3DKMTOpenResource(&open)) goto done;
++    destroy.hDevice = device.hDevice;
++    destroy.hResource = open.hResource;
++    if (metadata.size != sizeof(metadata) || metadata.version != 1 || !metadata.keyed_mutex
++            || !metadata.mutex_handle || metadata.nt_shared) goto done;
++    open_mutex.hSharedHandle = metadata.mutex_handle;
++    if (D3DKMTOpenKeyedMutex(&open_mutex)) goto done;
++    resource->keyed_mutex = open_mutex.hKeyedMutex;
++    resource->shared_keyed_mutex = metadata.mutex_handle;
++    hr = S_OK;
++done:
++    if (destroy.hResource) D3DKMTDestroyAllocation(&destroy);
++    if (destroy_device.hDevice) D3DKMTDestroyDevice(&destroy_device);
++    if (close_adapter.hAdapter) D3DKMTCloseAdapter(&close_adapter);
++    return hr;
++}
++
+ HRESULT dxgi_resource_init(struct dxgi_resource *resource, IDXGIDevice *device,
+         IUnknown *outer, BOOL needs_surface, struct wined3d_resource *wined3d_resource,
+-        IDXGIResource1 *parent_resource, unsigned int subresource_index)
++        IDXGIResource1 *parent_resource, unsigned int subresource_index, const DXGI_SHARED_RESOURCE *shared_resource)
+ {
+     struct wined3d_resource_desc desc;
+     bool is_subresource;
+@@ -551,5 +788,24 @@
+         resource->subresource_idx = 0;
+     }
+ 
++    resource->IDXGIKeyedMutex_iface.lpVtbl = &dxgi_keyed_mutex_vtbl;
++    resource->keyed_mutex = resource->shared_keyed_mutex = 0;
++    if (!is_subresource && outer && desc.resource_type == WINED3D_RTYPE_TEXTURE_2D)
++    {
++        ID3D11Texture2D *texture;
++        D3D11_TEXTURE2D_DESC texture_desc;
++        HRESULT hr;
++
++        if (SUCCEEDED(IUnknown_QueryInterface(outer, &IID_ID3D11Texture2D, (void **)&texture)))
++        {
++            ID3D11Texture2D_GetDesc(texture, &texture_desc);
++            ID3D11Texture2D_Release(texture);
++            if (texture_desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)
++            {
++                if (FAILED(hr = dxgi_resource_init_keyed_mutex(resource,
++                        shared_resource ? shared_resource->Handle : NULL))) return hr;
++            }
++        }
++    }
+     return S_OK;
+ }
+diff --git a/dlls/win32u/d3dkmt.c b/dlls/win32u/d3dkmt.c
+--- a/dlls/win32u/d3dkmt.c
++++ b/dlls/win32u/d3dkmt.c
+@@ -295,7 +295,7 @@
+ }
+ 
+ /* create a global D3DKMT object, either with a global handle or later shareable */
+-static NTSTATUS d3dkmt_object_create( struct d3dkmt_object *object, int fd, UINT value, BOOL shared,
++static NTSTATUS d3dkmt_object_create( struct d3dkmt_object *object, int fd, UINT64 value, BOOL shared,
+                                       const void *runtime, UINT runtime_size )
+ {
+     NTSTATUS status;
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -3205,13 +3205,16 @@
+     const struct opengl_funcs *funcs = &display_funcs;
+     D3DKMT_HANDLE local, mutex, sync;
+     GLenum err;
++    off_t allocation_size;
+     int fd;
+ 
+     switch (type)
+     {
++    case GL_HANDLE_TYPE_D3D11_IMAGE_EXT:
+     case GL_HANDLE_TYPE_OPAQUE_WIN32_EXT:
+         local = d3dkmt_open_resource( 0, handle, &mutex, &sync );
+         break;
++    case GL_HANDLE_TYPE_D3D11_IMAGE_KMT_EXT:
+     case GL_HANDLE_TYPE_OPAQUE_WIN32_KMT_EXT:
+         local = d3dkmt_open_resource( PtrToUlong( handle ), NULL, &mutex, &sync );
+         break;
+@@ -3222,6 +3225,17 @@
+     fd = d3dkmt_object_get_fd( local );
+     d3dkmt_destroy_resource( local );
+     if (fd < 0) return set_gl_error( GL_INVALID_VALUE );
++
++    if (type == GL_HANDLE_TYPE_D3D11_IMAGE_EXT || type == GL_HANDLE_TYPE_D3D11_IMAGE_KMT_EXT)
++    {
++        allocation_size = lseek( fd, 0, SEEK_END );
++        if (allocation_size <= 0 || lseek( fd, 0, SEEK_SET ) < 0)
++        {
++            close( fd );
++            return set_gl_error( GL_INVALID_VALUE );
++        }
++        size = allocation_size;
++    }
+ 
+     set_gl_error( funcs->p_glGetError() ); /* save the error in the wrapper so we can check for success */
+     funcs->p_glImportMemoryFdEXT( memory, size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd );
+diff --git a/dlls/wined3d/adapter_gl.c b/dlls/wined3d/adapter_gl.c
+--- a/dlls/wined3d/adapter_gl.c
++++ b/dlls/wined3d/adapter_gl.c
+@@ -187,6 +187,7 @@
+                                    EXT_FRAMEBUFFER_MULTISAMPLE_BLIT_SCALED},
+     {"GL_EXT_framebuffer_object",           EXT_FRAMEBUFFER_OBJECT        },
+     {"GL_EXT_memory_object",                EXT_MEMORY_OBJECT             },
++    {"GL_EXT_memory_object_win32",          EXT_MEMORY_OBJECT_WIN32       },
+     {"GL_EXT_gpu_program_parameters",       EXT_GPU_PROGRAM_PARAMETERS    },
+     {"GL_EXT_gpu_shader4",                  EXT_GPU_SHADER4               },
+     {"GL_EXT_packed_depth_stencil",         EXT_PACKED_DEPTH_STENCIL      },
+@@ -2497,8 +2498,14 @@
+     USE_GL_FUNC(glVertexAttribI4usvEXT)
+     USE_GL_FUNC(glVertexAttribIPointerEXT)
+     /* GL_EXT_memory_object */
++    USE_GL_FUNC(glCreateMemoryObjectsEXT)
++    USE_GL_FUNC(glDeleteMemoryObjectsEXT)
+     USE_GL_FUNC(glGetUnsignedBytei_vEXT)
+     USE_GL_FUNC(glGetUnsignedBytevEXT)
++    USE_GL_FUNC(glMemoryObjectParameterivEXT)
++    USE_GL_FUNC(glTexStorageMem2DEXT)
++    /* GL_EXT_memory_object_win32 */
++    USE_GL_FUNC(glImportMemoryWin32HandleEXT)
+     /* GL_EXT_point_parameters */
+     USE_GL_FUNC(glPointParameterfEXT)
+     USE_GL_FUNC(glPointParameterfvEXT)
+@@ -4112,6 +4119,14 @@
+     struct wined3d_device_gl *device_gl = wined3d_device_gl(device);
+ 
+     wined3d_device_cleanup(&device_gl->d);
++    wined3d_shared_allocator_vk_destroy(device_gl->shared_allocator);
++    if (device_gl->shared_kmt_device)
++    {
++        D3DKMT_DESTROYDEVICE destroy = {0};
++
++        destroy.hDevice = device_gl->shared_kmt_device;
++        D3DKMTDestroyDevice(&destroy);
++    }
+     wined3d_lock_cleanup(&device_gl->allocator_cs);
+ 
+     free(device_gl->retired_blocks);
+@@ -4533,6 +4548,22 @@
+     return hr;
+ }
+ 
++static void wined3d_texture_gl_destroy_shared_object(void *object)
++{
++    struct wined3d_texture_gl *texture_gl = object;
++
++    wined3d_shared_image_vk_destroy(texture_gl->shared_image);
++    if (texture_gl->shared_kmt_resource)
++    {
++        D3DKMT_DESTROYALLOCATION destroy = {0};
++
++        destroy.hDevice = wined3d_device_gl(texture_gl->t.resource.device)->shared_kmt_device;
++        destroy.hResource = texture_gl->shared_kmt_resource;
++        D3DKMTDestroyAllocation(&destroy);
++    }
++    free(texture_gl);
++}
++
+ static void adapter_gl_destroy_texture(struct wined3d_texture *texture)
+ {
+     struct wined3d_texture_gl *texture_gl = wined3d_texture_gl(texture);
+@@ -4552,7 +4583,7 @@
+     texture->resource.parent_ops->wined3d_object_destroyed(texture->resource.parent);
+ 
+     wined3d_texture_cleanup(&texture_gl->t);
+-    wined3d_cs_destroy_object(device->cs, free, texture_gl);
++    wined3d_cs_destroy_object(device->cs, wined3d_texture_gl_destroy_shared_object, texture_gl);
+ 
+     if (swapchain_count)
+         wined3d_device_decref(device);
+diff --git a/dlls/wined3d/adapter_vk.c b/dlls/wined3d/adapter_vk.c
+--- a/dlls/wined3d/adapter_vk.c
++++ b/dlls/wined3d/adapter_vk.c
+@@ -2100,6 +2100,264 @@
+     return FALSE;
+ }
+ 
++struct wined3d_shared_allocator_vk
++{
++    struct wined3d_vk_info vk_info;
++    VkPhysicalDevice physical_device;
++    VkPhysicalDeviceMemoryProperties memory_properties;
++    VkDevice device;
++    VkQueue queue;
++    uint32_t family;
++    VkCommandPool pool;
++};
++
++struct wined3d_shared_image_vk
++{
++    struct wined3d_shared_allocator_vk *allocator;
++    VkImage image;
++    VkDeviceMemory memory;
++};
++
++void wined3d_shared_allocator_vk_destroy(struct wined3d_shared_allocator_vk *allocator)
++{
++    const struct wined3d_vk_info *vk_info;
++
++    if (!allocator) return;
++    vk_info = &allocator->vk_info;
++    if (allocator->device)
++    {
++        if (allocator->pool) VK_CALL(vkDestroyCommandPool(allocator->device, allocator->pool, NULL));
++        VK_CALL(vkDestroyDevice(allocator->device, NULL));
++    }
++    VK_CALL(vkDestroyInstance(vk_info->instance, NULL));
++    wined3d_unload_vulkan(&allocator->vk_info);
++    free(allocator);
++}
++
++struct wined3d_shared_allocator_vk *wined3d_shared_allocator_vk_create(const GUID *device_uuid, const GUID *driver_uuid)
++{
++    struct wined3d_shared_allocator_vk *allocator;
++    struct wined3d_vk_info *vk_info;
++    VkPhysicalDeviceIDProperties ids = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
++    VkPhysicalDeviceProperties2 properties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &ids};
++    VkDeviceQueueCreateInfo queue_info = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
++    VkDeviceCreateInfo device_info = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
++    VkCommandPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
++    const char *extension = VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME;
++    VkQueueFamilyProperties *families = NULL;
++    VkPhysicalDevice *devices = NULL;
++    uint32_t count, i;
++    float priority = 1.0f;
++
++    if (!(allocator = calloc(1, sizeof(*allocator)))) return NULL;
++    vk_info = &allocator->vk_info;
++    if (!wined3d_init_vulkan(vk_info))
++    {
++        free(allocator);
++        return NULL;
++    }
++    if (vk_info->api_version < VK_API_VERSION_1_1 || !vk_info->vk_ops.vkGetPhysicalDeviceProperties2) goto fail;
++    if (VK_CALL(vkEnumeratePhysicalDevices(vk_info->instance, &count, NULL)) < 0 || !count) goto fail;
++    if (!(devices = calloc(count, sizeof(*devices)))) goto fail;
++    if (VK_CALL(vkEnumeratePhysicalDevices(vk_info->instance, &count, devices)) < 0) goto fail;
++    for (i = 0; i < count; ++i)
++    {
++        VK_CALL(vkGetPhysicalDeviceProperties2(devices[i], &properties));
++        if (!memcmp(device_uuid, ids.deviceUUID, sizeof(*device_uuid))
++                && !memcmp(driver_uuid, ids.driverUUID, sizeof(*driver_uuid)))
++        {
++            allocator->physical_device = devices[i];
++            break;
++        }
++    }
++    free(devices);
++    devices = NULL;
++    if (!allocator->physical_device) goto fail;
++    TRACE("Matched shared allocator device %s, driver %s.\n",
++            debugstr_guid(device_uuid), debugstr_guid(driver_uuid));
++    VK_CALL(vkGetPhysicalDeviceQueueFamilyProperties(allocator->physical_device, &count, NULL));
++    if (!(families = calloc(count, sizeof(*families)))) goto fail;
++    VK_CALL(vkGetPhysicalDeviceQueueFamilyProperties(allocator->physical_device, &count, families));
++    for (i = 0; i < count; ++i)
++        if (families[i].queueCount && (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) break;
++    free(families);
++    families = NULL;
++    if (i == count) goto fail;
++    allocator->family = i;
++    queue_info.queueFamilyIndex = i;
++    queue_info.queueCount = 1;
++    queue_info.pQueuePriorities = &priority;
++    device_info.queueCreateInfoCount = 1;
++    device_info.pQueueCreateInfos = &queue_info;
++    device_info.enabledExtensionCount = 1;
++    device_info.ppEnabledExtensionNames = &extension;
++    if (VK_CALL(vkCreateDevice(allocator->physical_device, &device_info, NULL, &allocator->device)) < 0)
++    {
++        allocator->device = VK_NULL_HANDLE;
++        goto fail;
++    }
++#define VK_DEVICE_PFN(name) \
++    if (!(vk_info->vk_ops.name = (void *)VK_CALL(vkGetDeviceProcAddr(allocator->device, #name)))) \
++    { \
++        WARN("Missing shared allocator device function " #name ".\n"); \
++        goto fail; \
++    }
++    VK_DEVICE_PFN(vkAllocateCommandBuffers)
++    VK_DEVICE_PFN(vkAllocateMemory)
++    VK_DEVICE_PFN(vkBeginCommandBuffer)
++    VK_DEVICE_PFN(vkBindImageMemory)
++    VK_DEVICE_PFN(vkCmdPipelineBarrier)
++    VK_DEVICE_PFN(vkCreateCommandPool)
++    VK_DEVICE_PFN(vkCreateImage)
++    VK_DEVICE_PFN(vkDestroyCommandPool)
++    VK_DEVICE_PFN(vkDestroyDevice)
++    VK_DEVICE_PFN(vkDestroyImage)
++    VK_DEVICE_PFN(vkEndCommandBuffer)
++    VK_DEVICE_PFN(vkFreeCommandBuffers)
++    VK_DEVICE_PFN(vkFreeMemory)
++    VK_DEVICE_PFN(vkGetDeviceQueue)
++    VK_DEVICE_PFN(vkGetImageMemoryRequirements)
++    VK_DEVICE_PFN(vkGetMemoryWin32HandleKHR)
++    VK_DEVICE_PFN(vkQueueSubmit)
++    VK_DEVICE_PFN(vkQueueWaitIdle)
++#undef VK_DEVICE_PFN
++    if (!vk_info->vk_ops.vkGetMemoryWin32HandleKHR)
++    {
++        WARN("Missing shared allocator Win32 memory export.\n");
++        goto fail;
++    }
++    VK_CALL(vkGetDeviceQueue(allocator->device, allocator->family, 0, &allocator->queue));
++    VK_CALL(vkGetPhysicalDeviceMemoryProperties(allocator->physical_device, &allocator->memory_properties));
++    pool_info.queueFamilyIndex = allocator->family;
++    if (VK_CALL(vkCreateCommandPool(allocator->device, &pool_info, NULL, &allocator->pool)) < 0) goto fail;
++    TRACE("Created shared allocator device %p.\n", allocator->device);
++    return allocator;
++
++fail:
++    WARN("Failed to initialize shared allocator.\n");
++    free(families);
++    free(devices);
++    wined3d_shared_allocator_vk_destroy(allocator);
++    return NULL;
++}
++
++void wined3d_shared_image_vk_destroy(struct wined3d_shared_image_vk *image)
++{
++    struct wined3d_shared_allocator_vk *allocator;
++    const struct wined3d_vk_info *vk_info;
++
++    if (!image) return;
++    allocator = image->allocator;
++    vk_info = &allocator->vk_info;
++    if (image->image) VK_CALL(vkDestroyImage(allocator->device, image->image, NULL));
++    if (image->memory) VK_CALL(vkFreeMemory(allocator->device, image->memory, NULL));
++    free(image);
++}
++
++struct wined3d_shared_image_vk *wined3d_shared_image_vk_create(struct wined3d_shared_allocator_vk *allocator,
++        unsigned int width, unsigned int height, enum wined3d_format_id format, HANDLE *handle)
++{
++    const struct wined3d_vk_info *vk_info = &allocator->vk_info;
++    VkExternalMemoryImageCreateInfo external = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
++    VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &external};
++    VkPhysicalDeviceExternalImageFormatInfo external_info = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO};
++    VkPhysicalDeviceImageFormatInfo2 format_info = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, &external_info};
++    VkExternalImageFormatProperties external_properties = {VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
++    VkImageFormatProperties2 properties = {VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, &external_properties};
++    PFN_vkGetPhysicalDeviceImageFormatProperties2 get_format;
++    VkMemoryDedicatedAllocateInfo dedicated = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
++    VkExportMemoryAllocateInfo export = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, &dedicated};
++    VkMemoryAllocateInfo allocation = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &export};
++    VkMemoryGetWin32HandleInfoKHR handle_info = {VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR};
++    VkCommandBufferAllocateInfo command_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
++    VkCommandBufferBeginInfo begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
++    VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
++    VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
++    struct wined3d_shared_image_vk *image;
++    VkMemoryRequirements requirements;
++    VkCommandBuffer command = VK_NULL_HANDLE;
++    unsigned int i;
++    VkResult vr;
++
++    *handle = NULL;
++    if (!(get_format = (void *)VK_CALL(vkGetInstanceProcAddr(vk_info->instance,
++            "vkGetPhysicalDeviceImageFormatProperties2")))) return NULL;
++    if (format != WINED3DFMT_R8G8B8A8_UNORM && format != WINED3DFMT_B8G8R8A8_UNORM) return NULL;
++    format_info.format = format == WINED3DFMT_B8G8R8A8_UNORM
++            ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
++    format_info.type = VK_IMAGE_TYPE_2D;
++    format_info.tiling = VK_IMAGE_TILING_OPTIMAL;
++    format_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
++            | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
++    external_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
++    vr = get_format(allocator->physical_device, &format_info, &properties);
++    if (vr < 0 || !(external_properties.externalMemoryProperties.externalMemoryFeatures
++            & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT))
++    {
++        WARN("Shared image format query failed, vr %s, features %#x.\n", wined3d_debug_vkresult(vr),
++                external_properties.externalMemoryProperties.externalMemoryFeatures);
++        return NULL;
++    }
++    if (!(image = calloc(1, sizeof(*image)))) return NULL;
++    image->allocator = allocator;
++    external.handleTypes = external_info.handleType;
++    info.imageType = format_info.type;
++    info.format = format_info.format;
++    info.extent.width = width;
++    info.extent.height = height;
++    info.extent.depth = 1;
++    info.mipLevels = info.arrayLayers = 1;
++    info.samples = VK_SAMPLE_COUNT_1_BIT;
++    info.tiling = format_info.tiling;
++    info.usage = format_info.usage;
++    if (VK_CALL(vkCreateImage(allocator->device, &info, NULL, &image->image)) < 0) goto fail;
++    VK_CALL(vkGetImageMemoryRequirements(allocator->device, image->image, &requirements));
++    for (i = 0; i < allocator->memory_properties.memoryTypeCount; ++i)
++        if ((requirements.memoryTypeBits & (1u << i))
++                && (allocator->memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) break;
++    if (i == allocator->memory_properties.memoryTypeCount) goto fail;
++    dedicated.image = image->image;
++    export.handleTypes = external.handleTypes;
++    allocation.allocationSize = requirements.size;
++    allocation.memoryTypeIndex = i;
++    if (VK_CALL(vkAllocateMemory(allocator->device, &allocation, NULL, &image->memory)) < 0
++            || VK_CALL(vkBindImageMemory(allocator->device, image->image, image->memory, 0)) < 0) goto fail;
++    command_info.commandPool = allocator->pool;
++    command_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
++    command_info.commandBufferCount = 1;
++    if (VK_CALL(vkAllocateCommandBuffers(allocator->device, &command_info, &command)) < 0) goto fail;
++    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
++    if (VK_CALL(vkBeginCommandBuffer(command, &begin)) < 0) goto fail;
++    barrier.image = image->image;
++    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
++    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
++    barrier.subresourceRange.levelCount = barrier.subresourceRange.layerCount = 1;
++    VK_CALL(vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
++            0, 0, NULL, 0, NULL, 1, &barrier));
++    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
++    barrier.srcQueueFamilyIndex = allocator->family;
++    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
++    VK_CALL(vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
++            0, 0, NULL, 0, NULL, 1, &barrier));
++    if (VK_CALL(vkEndCommandBuffer(command)) < 0) goto fail;
++    submit.commandBufferCount = 1;
++    submit.pCommandBuffers = &command;
++    if (VK_CALL(vkQueueSubmit(allocator->queue, 1, &submit, VK_NULL_HANDLE)) < 0
++            || VK_CALL(vkQueueWaitIdle(allocator->queue)) < 0) goto fail;
++    VK_CALL(vkFreeCommandBuffers(allocator->device, allocator->pool, 1, &command));
++    command = VK_NULL_HANDLE;
++    handle_info.memory = image->memory;
++    handle_info.handleType = external.handleTypes;
++    if (VK_CALL(vkGetMemoryWin32HandleKHR(allocator->device, &handle_info, handle)) < 0) goto fail;
++    return image;
++
++fail:
++    if (command) VK_CALL(vkFreeCommandBuffers(allocator->device, allocator->pool, 1, &command));
++    wined3d_shared_image_vk_destroy(image);
++    return NULL;
++}
++
+ static VkPhysicalDevice get_vulkan_physical_device(struct wined3d_vk_info *vk_info)
+ {
+     VkPhysicalDevice physical_devices[1];
+@@ -2411,6 +2669,7 @@
+         {VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME,       ~0u},
+         {VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME,          ~0u},
+         {VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME,    ~0u},
++        {VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,        ~0u},
+         {VK_KHR_MAINTENANCE1_EXTENSION_NAME,                VK_API_VERSION_1_1, true},
+         {VK_KHR_MAINTENANCE2_EXTENSION_NAME,                VK_API_VERSION_1_1},
+         {VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME,VK_API_VERSION_1_2},
+@@ -2439,6 +2698,7 @@
+         {VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME,        WINED3D_VK_EXT_SHADER_STENCIL_EXPORT},
+         {VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME,           WINED3D_VK_EXT_TRANSFORM_FEEDBACK},
+         {VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME,     WINED3D_VK_EXT_VERTEX_ATTRIBUTE_DIVISOR},
++        {VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,        WINED3D_VK_KHR_EXTERNAL_MEMORY_WIN32},
+         {VK_KHR_MAINTENANCE2_EXTENSION_NAME,                 WINED3D_VK_KHR_MAINTENANCE2},
+         {VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME, WINED3D_VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE},
+         {VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME,     WINED3D_VK_KHR_SAMPLER_YCBCR_CONVERSION},
+diff --git a/dlls/wined3d/context_vk.c b/dlls/wined3d/context_vk.c
+--- a/dlls/wined3d/context_vk.c
++++ b/dlls/wined3d/context_vk.c
+@@ -610,11 +610,18 @@
+ BOOL wined3d_context_vk_create_image(struct wined3d_context_vk *context_vk, VkImageType vk_image_type,
+         VkImageUsageFlags usage, VkFormat vk_format, unsigned int width, unsigned int height, unsigned int depth,
+         unsigned int sample_count, unsigned int mip_levels, unsigned int layer_count, unsigned int flags,
+-        const void *next, struct wined3d_image_vk *image)
++        const void *next, HANDLE shared_handle, struct wined3d_image_vk *image)
+ {
+     struct wined3d_adapter_vk *adapter_vk = wined3d_adapter_vk(context_vk->c.device->adapter);
+     struct wined3d_device_vk *device_vk = wined3d_device_vk(context_vk->c.device);
+     const struct wined3d_vk_info *vk_info = context_vk->vk_info;
++    const VkBaseInStructure *entry;
++    const VkExternalMemoryImageCreateInfo *external = NULL;
++    VkMemoryDedicatedAllocateInfo dedicated;
++    VkExportMemoryAllocateInfo export_info;
++    VkImportMemoryWin32HandleInfoKHR import_info;
++    VkMemoryWin32HandlePropertiesKHR properties = {VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR};
++    VkMemoryAllocateInfo allocate_info;
+     VkMemoryRequirements memory_requirements;
+     VkImageCreateInfo create_info;
+     unsigned int memory_type_idx;
+@@ -651,6 +658,19 @@
+     VK_CALL(vkGetImageMemoryRequirements(device_vk->vk_device, image->vk_image,
+             &memory_requirements));
+ 
++    if (shared_handle)
++    {
++        if (!device_vk->vk_info.vk_ops.vkGetMemoryWin32HandlePropertiesKHR
++                || (vr = device_vk->vk_info.vk_ops.vkGetMemoryWin32HandlePropertiesKHR(device_vk->vk_device,
++                VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT, shared_handle, &properties)) < 0)
++        {
++            VK_CALL(vkDestroyImage(device_vk->vk_device, image->vk_image, NULL));
++            image->vk_image = VK_NULL_HANDLE;
++            return FALSE;
++        }
++        memory_requirements.memoryTypeBits &= properties.memoryTypeBits;
++    }
++
+     memory_type_idx = wined3d_adapter_vk_get_memory_type_index(adapter_vk,
+             memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+     if (memory_type_idx == ~0u)
+@@ -661,8 +681,38 @@
+         return FALSE;
+     }
+ 
+-    image->memory = wined3d_context_vk_allocate_memory(context_vk, memory_type_idx,
+-            memory_requirements.size, &image->vk_memory);
++    for (entry = next; entry; entry = entry->pNext)
++        if (entry->sType == VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO)
++            external = (const VkExternalMemoryImageCreateInfo *)entry;
++
++    if (external && external->handleTypes)
++    {
++        dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
++        dedicated.pNext = NULL;
++        dedicated.image = image->vk_image;
++        dedicated.buffer = VK_NULL_HANDLE;
++        export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
++        export_info.pNext = &dedicated;
++        export_info.handleTypes = external->handleTypes;
++        allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
++        import_info.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR;
++        import_info.pNext = &dedicated;
++        import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
++        import_info.handle = shared_handle;
++        import_info.name = NULL;
++        allocate_info.pNext = shared_handle ? (const void *)&import_info : &export_info;
++        allocate_info.allocationSize = memory_requirements.size;
++        allocate_info.memoryTypeIndex = memory_type_idx;
++        image->memory = NULL;
++        image->vk_memory = VK_NULL_HANDLE;
++        if ((vr = VK_CALL(vkAllocateMemory(device_vk->vk_device, &allocate_info, NULL, &image->vk_memory))) < 0)
++            WARN("Failed to allocate shared image memory, vr %s.\n", wined3d_debug_vkresult(vr));
++    }
++    else
++    {
++        image->memory = wined3d_context_vk_allocate_memory(context_vk, memory_type_idx,
++                memory_requirements.size, &image->vk_memory);
++    }
+     if (!image->vk_memory)
+     {
+         ERR("Failed to allocate image memory.\n");
+diff --git a/dlls/wined3d/cs.c b/dlls/wined3d/cs.c
+--- a/dlls/wined3d/cs.c
++++ b/dlls/wined3d/cs.c
+@@ -3648,6 +3648,7 @@
+ 
+     cs->c.ops = &wined3d_cs_st_ops;
+     cs->c.device = device;
++    list_init(&cs->keyed_mutexes);
+     cs->serialize_commands = TRACE_ON(d3d_sync) || wined3d_settings.cs_multithreaded & WINED3D_CSMT_SERIALIZE;
+ 
+     if (cs->serialize_commands)
+diff --git a/dlls/wined3d/decoder.c b/dlls/wined3d/decoder.c
+--- a/dlls/wined3d/decoder.c
++++ b/dlls/wined3d/decoder.c
+@@ -368,7 +368,7 @@
+     fill_vk_profile_info(&profile, &decoder_vk->d.desc.codec, decoder_vk->d.desc.output_format);
+ 
+     if (!wined3d_context_vk_create_image(context_vk, VK_IMAGE_TYPE_2D, usage, vk_format,
+-            decoder_vk->d.desc.width, decoder_vk->d.desc.height, 1, 1, 1, layer_count, 0, &profile_list, image))
++            decoder_vk->d.desc.width, decoder_vk->d.desc.height, 1, 1, 1, layer_count, 0, &profile_list, NULL, image))
+     {
+         ERR("Failed to create output image.\n");
+         return false;
+diff --git a/dlls/wined3d/device.c b/dlls/wined3d/device.c
+--- a/dlls/wined3d/device.c
++++ b/dlls/wined3d/device.c
+@@ -809,7 +809,7 @@
+ 
+     if (!wined3d_context_vk_create_image(context_vk, type,
+             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_FORMAT_R8G8B8A8_UNORM,
+-            1, 1, 1, sample_count, 1, layer_count, flags, NULL, image))
++            1, 1, 1, sample_count, 1, layer_count, flags, NULL, NULL, image))
+     {
+         return false;
+     }
+diff --git a/dlls/wined3d/texture.c b/dlls/wined3d/texture.c
+--- a/dlls/wined3d/texture.c
++++ b/dlls/wined3d/texture.c
+@@ -1463,6 +1463,7 @@
+     wined3d_resource_update_draw_binding(&texture->resource);
+ 
+     texture->texture_ops = texture_ops;
++    texture->shared = !!(flags & WINED3D_TEXTURE_CREATE_SHARED);
+ 
+     texture->layer_count = layer_count;
+     texture->level_count = level_count;
+@@ -1796,6 +1797,204 @@
+     desc->size = texture->sub_resources[sub_resource_idx].size;
+ 
+     return WINED3D_OK;
++}
++
++enum wined3d_keyed_mutex_operation
++{
++    WINED3D_KEYED_MUTEX_ACQUIRE,
++    WINED3D_KEYED_MUTEX_RELEASE,
++    WINED3D_KEYED_MUTEX_DESTROY,
++};
++
++struct wined3d_keyed_mutex_query
++{
++    struct wined3d_texture *texture;
++    D3DKMT_HANDLE mutex, shared_mutex;
++    UINT64 key;
++    DWORD timeout;
++    enum wined3d_keyed_mutex_operation operation;
++    HRESULT hr;
++};
++
++static struct wined3d_texture *wined3d_cs_find_keyed_mutex_owner(struct wined3d_cs *cs,
++        D3DKMT_HANDLE shared_mutex)
++{
++    struct wined3d_texture *texture;
++
++    LIST_FOR_EACH_ENTRY(texture, &cs->keyed_mutexes, struct wined3d_texture, keyed_mutex_entry)
++    {
++        if (texture->shared_keyed_mutex == shared_mutex) return texture;
++    }
++    return NULL;
++}
++
++static void wined3d_texture_keyed_mutex_cs(void *object)
++{
++    struct wined3d_keyed_mutex_query *query = object;
++    struct wined3d_texture *texture = query->texture;
++    struct wined3d_cs *cs = texture->resource.device->cs;
++    D3DKMT_ACQUIREKEYEDMUTEX acquire = {0};
++    D3DKMT_RELEASEKEYEDMUTEX release = {0};
++    struct wined3d_context *context;
++    LARGE_INTEGER timeout;
++    NTSTATUS status;
++    HANDLE handle;
++    unsigned int i;
++
++    if (query->operation == WINED3D_KEYED_MUTEX_DESTROY)
++    {
++        D3DKMT_DESTROYKEYEDMUTEX destroy = {0};
++
++        if (texture->keyed_mutex_owned) list_remove(&texture->keyed_mutex_entry);
++        destroy.hKeyedMutex = query->mutex;
++        D3DKMTDestroyKeyedMutex(&destroy);
++        texture->keyed_mutex_owned = false;
++        query->hr = S_OK;
++        return;
++    }
++    if (!texture->resource.device->cs->thread || !texture->shared
++            || !texture->texture_ops->texture_get_shared_handle)
++    {
++        query->hr = E_NOTIMPL;
++        return;
++    }
++    release.hKeyedMutex = acquire.hKeyedMutex = query->mutex;
++    release.Key = acquire.Key = query->key;
++    if (query->operation == WINED3D_KEYED_MUTEX_ACQUIRE)
++    {
++        if (wined3d_cs_find_keyed_mutex_owner(cs, query->shared_mutex))
++        {
++            query->hr = E_FAIL;
++            return;
++        }
++        timeout.QuadPart = -(LONGLONG)query->timeout * 10000;
++        acquire.pTimeout = query->timeout == INFINITE ? NULL : &timeout;
++        status = D3DKMTAcquireKeyedMutex(&acquire);
++        if (status)
++        {
++            query->hr = status == STATUS_TIMEOUT ? WAIT_TIMEOUT
++                    : status == STATUS_ABANDONED ? WAIT_ABANDONED : E_FAIL;
++            return;
++        }
++        context = context_acquire(texture->resource.device, NULL, 0);
++        if (!wined3d_texture_load_location(texture, 0, context, WINED3D_LOCATION_TEXTURE_RGB)
++                || !texture->texture_ops->texture_prepare_location(texture, 0, context, WINED3D_LOCATION_TEXTURE_RGB)
++                || (texture->texture_ops->texture_acquire_shared
++                && !texture->texture_ops->texture_acquire_shared(texture, context)))
++        {
++            context_release(context);
++            D3DKMTReleaseKeyedMutex(&release);
++            query->hr = E_FAIL;
++            return;
++        }
++        for (i = 0; i < texture->level_count * texture->layer_count; ++i)
++        {
++            wined3d_texture_validate_location(texture, i, WINED3D_LOCATION_TEXTURE_RGB);
++            wined3d_texture_invalidate_location(texture, i, ~WINED3D_LOCATION_TEXTURE_RGB);
++        }
++        context_release(context);
++        texture->keyed_mutex = query->mutex;
++        texture->shared_keyed_mutex = query->shared_mutex;
++        texture->keyed_mutex_owned = true;
++        list_add_tail(&cs->keyed_mutexes, &texture->keyed_mutex_entry);
++        query->hr = S_OK;
++    }
++    else
++    {
++        if (!(texture = wined3d_cs_find_keyed_mutex_owner(cs, query->shared_mutex)))
++        {
++            query->hr = E_FAIL;
++            return;
++        }
++        if (FAILED(query->hr = texture->texture_ops->texture_get_shared_handle(texture, &handle))) return;
++        release.hKeyedMutex = texture->keyed_mutex;
++        status = D3DKMTReleaseKeyedMutex(&release);
++        query->hr = status ? E_FAIL : S_OK;
++        if (!status)
++        {
++            list_remove(&texture->keyed_mutex_entry);
++            texture->keyed_mutex_owned = false;
++        }
++    }
++}
++
++HRESULT CDECL wined3d_texture_acquire_keyed_mutex(struct wined3d_texture *texture,
++        unsigned int mutex, unsigned int shared_mutex, UINT64 key, DWORD timeout)
++{
++    struct wined3d_keyed_mutex_query query = {texture, mutex, shared_mutex, key, timeout, WINED3D_KEYED_MUTEX_ACQUIRE, E_FAIL};
++    struct wined3d_cs *cs = texture->resource.device->cs;
++
++    wined3d_cs_init_object(cs, wined3d_texture_keyed_mutex_cs, &query);
++    wined3d_cs_finish(cs, WINED3D_CS_QUEUE_DEFAULT);
++    return query.hr;
++}
++
++HRESULT CDECL wined3d_texture_release_keyed_mutex(struct wined3d_texture *texture,
++        unsigned int mutex, unsigned int shared_mutex, UINT64 key)
++{
++    struct wined3d_keyed_mutex_query query = {texture, mutex, shared_mutex, key, 0, WINED3D_KEYED_MUTEX_RELEASE, E_FAIL};
++    struct wined3d_cs *cs = texture->resource.device->cs;
++
++    wined3d_cs_init_object(cs, wined3d_texture_keyed_mutex_cs, &query);
++    wined3d_cs_finish(cs, WINED3D_CS_QUEUE_DEFAULT);
++    return query.hr;
++}
++
++void CDECL wined3d_texture_destroy_keyed_mutex(struct wined3d_texture *texture, unsigned int mutex)
++{
++    struct wined3d_keyed_mutex_query query = {texture, mutex, 0, 0, 0, WINED3D_KEYED_MUTEX_DESTROY, E_FAIL};
++    struct wined3d_cs *cs = texture->resource.device->cs;
++
++    wined3d_cs_init_object(cs, wined3d_texture_keyed_mutex_cs, &query);
++    wined3d_cs_finish(cs, WINED3D_CS_QUEUE_DEFAULT);
++}
++
++struct wined3d_shared_handle_query
++{
++    struct wined3d_texture *texture;
++    HANDLE handle;
++    HRESULT hr;
++};
++
++static void wined3d_texture_query_shared_handle(void *object)
++{
++    struct wined3d_shared_handle_query *query = object;
++
++    query->hr = query->texture->texture_ops->texture_get_shared_handle(query->texture, &query->handle);
++}
++
++static void wined3d_texture_import_shared_handle(void *object)
++{
++    struct wined3d_shared_handle_query *query = object;
++
++    query->hr = query->texture->texture_ops->texture_open_shared_handle(query->texture, query->handle);
++}
++
++HRESULT CDECL wined3d_texture_open_shared_handle(struct wined3d_texture *texture, HANDLE handle)
++{
++    struct wined3d_shared_handle_query query = {texture, handle, E_NOTIMPL};
++    struct wined3d_cs *cs = texture->resource.device->cs;
++
++    if (!handle || !texture->shared) return WINED3DERR_INVALIDCALL;
++    if (!texture->texture_ops->texture_open_shared_handle) return E_NOTIMPL;
++    wined3d_cs_init_object(cs, wined3d_texture_import_shared_handle, &query);
++    wined3d_cs_finish(cs, WINED3D_CS_QUEUE_DEFAULT);
++    return query.hr;
++}
++
++HRESULT CDECL wined3d_texture_get_shared_handle(struct wined3d_texture *texture, HANDLE *handle)
++{
++    struct wined3d_shared_handle_query query = {texture, NULL, E_NOTIMPL};
++    struct wined3d_cs *cs = texture->resource.device->cs;
++
++    if (!handle) return E_INVALIDARG;
++    *handle = NULL;
++    if (!texture->shared) return WINED3DERR_INVALIDCALL;
++    if (!texture->texture_ops->texture_get_shared_handle) return E_NOTIMPL;
++    wined3d_cs_init_object(cs, wined3d_texture_query_shared_handle, &query);
++    wined3d_cs_finish(cs, WINED3D_CS_QUEUE_DEFAULT);
++    if (SUCCEEDED(query.hr)) *handle = query.handle;
++    return query.hr;
+ }
+ 
+ HRESULT CDECL wined3d_texture_create(struct wined3d_device *device, const struct wined3d_resource_desc *desc,
+@@ -2205,6 +2404,9 @@
+ 
+ static const struct wined3d_texture_ops wined3d_texture_no3d_ops =
+ {
++    NULL,
++    NULL,
++    NULL,
+     wined3d_texture_no3d_prepare_location,
+     wined3d_texture_no3d_load_location,
+     wined3d_texture_no3d_unload_location,
+diff --git a/dlls/wined3d/texture_gl.c b/dlls/wined3d/texture_gl.c
+--- a/dlls/wined3d/texture_gl.c
++++ b/dlls/wined3d/texture_gl.c
+@@ -482,6 +482,11 @@
+     GLuint src_internal, dst_internal;
+     bool src_ds, dst_ds;
+ 
++    /* Shared BGRA storage has a different GL internal format than ordinary RGBA storage. */
++    if ((src_texture->shared && src_texture->resource.format->id == WINED3DFMT_B8G8R8A8_UNORM)
++            != (dst_texture->shared && dst_texture->resource.format->id == WINED3DFMT_B8G8R8A8_UNORM))
++        return false;
++
+     src_ds = src_texture->resource.format->depth_size || src_texture->resource.format->stencil_size;
+     dst_ds = dst_texture->resource.format->depth_size || dst_texture->resource.format->stencil_size;
+     if (src_ds == dst_ds)
+@@ -2228,6 +2233,71 @@
+             && !(texture->resource.format_attrs & WINED3D_FORMAT_ATTR_HEIGHT_SCALE);
+ }
+ 
++static bool wined3d_texture_gl_retain_shared_resource(struct wined3d_texture_gl *texture_gl)
++{
++    struct wined3d_device_gl *device_gl = wined3d_device_gl(texture_gl->t.resource.device);
++    D3DDDI_OPENALLOCATIONINFO allocation = {0};
++    D3DKMT_CREATEDEVICE device = {0};
++    D3DKMT_QUERYRESOURCEINFO query = {0};
++    D3DKMT_OPENRESOURCE open = {0};
++    void *metadata = NULL;
++    NTSTATUS status;
++
++    if (texture_gl->shared_kmt_resource) return true;
++    if (!device_gl->shared_kmt_device)
++    {
++        device.hAdapter = texture_gl->t.resource.device->adapter->kmt_adapter;
++        if ((status = D3DKMTCreateDevice(&device))) return false;
++        device_gl->shared_kmt_device = device.hDevice;
++    }
++    query.hDevice = device_gl->shared_kmt_device;
++    query.hGlobalShare = (D3DKMT_HANDLE)(ULONG_PTR)texture_gl->shared_handle;
++    if ((status = D3DKMTQueryResourceInfo(&query))) return false;
++    if (query.PrivateRuntimeDataSize && !(metadata = malloc(query.PrivateRuntimeDataSize))) return false;
++    open.hDevice = query.hDevice;
++    open.hGlobalShare = query.hGlobalShare;
++    open.NumAllocations = 1;
++    open.pOpenAllocationInfo = &allocation;
++    open.pPrivateRuntimeData = metadata;
++    open.PrivateRuntimeDataSize = query.PrivateRuntimeDataSize;
++    status = D3DKMTOpenResource(&open);
++    free(metadata);
++    if (status) return false;
++    texture_gl->shared_kmt_resource = open.hResource;
++    return true;
++}
++
++static bool wined3d_texture_gl_allocate_shared_storage(struct wined3d_texture_gl *texture_gl,
++        GLenum internal, const struct wined3d_gl_info *gl_info)
++{
++    struct wined3d_texture *texture = &texture_gl->t;
++    GLuint memory = 0;
++    GLint dedicated = GL_TRUE;
++    GLenum error;
++
++    if (texture->resource.format->id == WINED3DFMT_B8G8R8A8_UNORM)
++    {
++        if (internal != GL_RGBA8) return false;
++        internal = GL_BGRA8_EXT;
++    }
++    if (!wined3d_texture_gl_retain_shared_resource(texture_gl)) return false;
++    GL_EXTCALL(glCreateMemoryObjectsEXT(1, &memory));
++    if (!memory) return false;
++    GL_EXTCALL(glMemoryObjectParameterivEXT(memory, GL_DEDICATED_MEMORY_OBJECT_EXT, &dedicated));
++    GL_EXTCALL(glImportMemoryWin32HandleEXT(memory, 0, GL_HANDLE_TYPE_D3D11_IMAGE_KMT_EXT,
++            texture_gl->shared_handle));
++    if ((error = gl_info->gl_ops.gl.p_glGetError()) == GL_NO_ERROR)
++    {
++        gl_info->gl_ops.gl.p_glTexParameteri(texture_gl->target, GL_TEXTURE_TILING_EXT, GL_OPTIMAL_TILING_EXT);
++        GL_EXTCALL(glTexStorageMem2DEXT(texture_gl->target, texture->level_count, internal,
++                texture->resource.width, texture->resource.height, memory, 0));
++        error = gl_info->gl_ops.gl.p_glGetError();
++    }
++    GL_EXTCALL(glDeleteMemoryObjectsEXT(1, &memory));
++    if (error != GL_NO_ERROR) WARN("Failed to import shared texture storage, GL error %#x.\n", error);
++    return error == GL_NO_ERROR;
++}
++
+ void wined3d_texture_gl_prepare_texture(struct wined3d_texture_gl *texture_gl,
+         struct wined3d_context_gl *context_gl, bool srgb)
+ {
+@@ -2256,6 +2326,21 @@
+     }
+     format_gl = wined3d_format_gl(format);
+ 
++    if (texture_gl->t.shared && !texture_gl->shared_handle)
++    {
++        struct wined3d_device_gl *device_gl = wined3d_device_gl(resource->device);
++        const struct wined3d_adapter *adapter = resource->device->adapter;
++
++        if (!gl_info->supported[EXT_MEMORY_OBJECT] || !gl_info->supported[EXT_MEMORY_OBJECT_WIN32]
++                || texture_gl->target != GL_TEXTURE_2D || texture_gl->t.layer_count != 1
++                || texture_gl->t.level_count != 1
++                || (format->id != WINED3DFMT_R8G8B8A8_UNORM && format->id != WINED3DFMT_B8G8R8A8_UNORM)) return;
++        if (!device_gl->shared_allocator
++                && !(device_gl->shared_allocator = wined3d_shared_allocator_vk_create(
++                &adapter->device_uuid, &adapter->driver_uuid))) return;
++        if (!(texture_gl->shared_image = wined3d_shared_image_vk_create(device_gl->shared_allocator,
++                resource->width, resource->height, format->id, &texture_gl->shared_handle))) return;
++    }
+     wined3d_texture_gl_bind_and_dirtify(texture_gl, context_gl, srgb);
+ 
+     internal = wined3d_gl_get_internal_format(resource, format_gl, srgb);
+@@ -2264,7 +2349,11 @@
+ 
+     TRACE("internal %#x, format %#x, type %#x.\n", internal, format_gl->format, format_gl->type);
+ 
+-    if (wined3d_texture_use_immutable_storage(&texture_gl->t, gl_info))
++    if (texture_gl->shared_handle)
++    {
++        if (!wined3d_texture_gl_allocate_shared_storage(texture_gl, internal, gl_info)) return;
++    }
++    else if (wined3d_texture_use_immutable_storage(&texture_gl->t, gl_info))
+         wined3d_texture_gl_allocate_immutable_storage(texture_gl, internal, gl_info);
+     else
+         wined3d_texture_gl_allocate_mutable_storage(texture_gl, internal, format_gl, gl_info);
+@@ -2322,11 +2411,11 @@
+ 
+         case WINED3D_LOCATION_TEXTURE_RGB:
+             wined3d_texture_gl_prepare_texture(texture_gl, context_gl, false);
+-            return TRUE;
++            return !texture->shared || !!(texture->flags & WINED3D_TEXTURE_RGB_ALLOCATED);
+ 
+         case WINED3D_LOCATION_TEXTURE_SRGB:
+             wined3d_texture_gl_prepare_texture(texture_gl, context_gl, true);
+-            return TRUE;
++            return !texture->shared || !!(texture->flags & WINED3D_TEXTURE_SRGB_ALLOCATED);
+ 
+         case WINED3D_LOCATION_DRAWABLE:
+             if (!texture->swapchain)
+@@ -2576,8 +2665,70 @@
+     }
+ }
+ 
++static HRESULT wined3d_texture_gl_get_shared_handle(struct wined3d_texture *texture, HANDLE *handle)
++{
++    struct wined3d_texture_gl *texture_gl = wined3d_texture_gl(texture);
++    struct wined3d_context *context;
++    HRESULT hr = E_FAIL;
++
++    if (!texture->shared) return E_NOTIMPL;
++    context = context_acquire(texture->resource.device, NULL, 0);
++    if (wined3d_texture_load_location(texture, 0, context, WINED3D_LOCATION_TEXTURE_RGB)
++            && texture_gl->shared_handle)
++    {
++        wined3d_context_gl(context)->gl_info->gl_ops.gl.p_glFinish();
++        wined3d_texture_validate_location(texture, 0, WINED3D_LOCATION_TEXTURE_RGB);
++        wined3d_texture_invalidate_location(texture, 0, ~WINED3D_LOCATION_TEXTURE_RGB);
++        *handle = texture_gl->shared_handle;
++        hr = S_OK;
++    }
++    context_release(context);
++    return hr;
++}
++
++static HRESULT wined3d_texture_gl_open_shared_handle(struct wined3d_texture *texture, HANDLE handle)
++{
++    struct wined3d_texture_gl *texture_gl = wined3d_texture_gl(texture);
++    const struct wined3d_gl_info *gl_info = &wined3d_adapter_gl(texture->resource.device->adapter)->gl_info;
++    struct wined3d_context *context;
++    HRESULT hr = E_FAIL;
++
++    if (!gl_info->supported[EXT_MEMORY_OBJECT] || !gl_info->supported[EXT_MEMORY_OBJECT_WIN32]
++            || texture_gl->target != GL_TEXTURE_2D || texture->layer_count != 1 || texture->level_count != 1
++            || (texture->resource.format->id != WINED3DFMT_R8G8B8A8_UNORM
++            && texture->resource.format->id != WINED3DFMT_B8G8R8A8_UNORM))
++        return E_NOTIMPL;
++    if (texture_gl->texture_rgb.name || texture_gl->texture_srgb.name) return WINED3DERR_INVALIDCALL;
++    context = context_acquire(texture->resource.device, NULL, 0);
++    texture_gl->shared_handle = handle;
++    if (wined3d_texture_gl_prepare_location(texture, 0, context, WINED3D_LOCATION_TEXTURE_RGB))
++    {
++        wined3d_texture_validate_location(texture, 0, WINED3D_LOCATION_TEXTURE_RGB);
++        wined3d_texture_invalidate_location(texture, 0, ~WINED3D_LOCATION_TEXTURE_RGB);
++        hr = S_OK;
++    }
++    else
++    {
++        texture_gl->shared_handle = NULL;
++    }
++    context_release(context);
++    return hr;
++}
++
++static BOOL wined3d_texture_gl_acquire_shared(struct wined3d_texture *texture, struct wined3d_context *context)
++{
++    const struct wined3d_gl_info *gl_info = wined3d_context_gl(context)->gl_info;
++
++    if (!gl_info->gl_ops.ext.p_glMemoryBarrier) return FALSE;
++    GL_EXTCALL(glMemoryBarrier(GL_ALL_BARRIER_BITS));
++    return gl_info->gl_ops.gl.p_glGetError() == GL_NO_ERROR;
++}
++
+ static const struct wined3d_texture_ops texture_gl_ops =
+ {
++    wined3d_texture_gl_get_shared_handle,
++    wined3d_texture_gl_open_shared_handle,
++    wined3d_texture_gl_acquire_shared,
+     wined3d_texture_gl_prepare_location,
+     wined3d_texture_gl_load_location,
+     wined3d_texture_gl_unload_location,
+diff --git a/dlls/wined3d/texture_vk.c b/dlls/wined3d/texture_vk.c
+--- a/dlls/wined3d/texture_vk.c
++++ b/dlls/wined3d/texture_vk.c
+@@ -24,6 +24,10 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(d3d);
+ WINE_DECLARE_DEBUG_CHANNEL(d3d_perf);
++WINE_DECLARE_DEBUG_CHANNEL(d3d_shared);
++
++static void wined3d_texture_vk_shared_barrier(struct wined3d_texture_vk *texture_vk,
++        struct wined3d_context_vk *context_vk, bool acquire);
+ 
+ void wined3d_vk_swizzle_from_color_fixup(VkComponentMapping *mapping, struct color_fixup_desc fixup)
+ {
+@@ -318,6 +322,9 @@
+         return;
+     }
+ 
++    if (wined3d_texture_vk(dst_texture)->externally_owned)
++        wined3d_texture_vk_shared_barrier(wined3d_texture_vk(dst_texture), wined3d_context_vk(context), true);
++
+     aspect_mask = vk_aspect_mask_from_format(dst_texture->resource.format);
+     if (wined3d_popcount(aspect_mask) > 1)
+     {
+@@ -575,6 +582,8 @@
+         return;
+     }
+ 
++    if (wined3d_texture_vk(src_texture)->externally_owned)
++        wined3d_texture_vk_shared_barrier(wined3d_texture_vk(src_texture), wined3d_context_vk(context), true);
+     src_level = src_sub_resource_idx % src_texture->level_count;
+     src_width = wined3d_texture_get_level_width(src_texture, src_level);
+     src_height = wined3d_texture_get_level_height(src_texture, src_level);
+@@ -695,6 +704,9 @@
+         return false;
+     }
+ 
++    if (texture_vk->externally_owned)
++        wined3d_texture_vk_shared_barrier(texture_vk, context_vk, true);
++
+     aspect_mask = vk_aspect_mask_from_format(format);
+ 
+     vk_range.aspectMask = aspect_mask;
+@@ -795,6 +807,33 @@
+     return TRUE;
+ }
+ 
++static void wined3d_texture_vk_shared_barrier(struct wined3d_texture_vk *texture_vk,
++        struct wined3d_context_vk *context_vk, bool acquire)
++{
++    const struct wined3d_vk_info *vk_info = context_vk->vk_info;
++    struct wined3d_device_vk *device_vk = wined3d_device_vk(context_vk->c.device);
++    VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
++    VkCommandBuffer command_buffer;
++
++    command_buffer = wined3d_context_vk_get_command_buffer(context_vk);
++    wined3d_context_vk_end_current_render_pass(context_vk);
++    barrier.image = texture_vk->image.vk_image;
++    barrier.oldLayout = texture_vk->layout;
++    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
++    barrier.srcQueueFamilyIndex = acquire ? VK_QUEUE_FAMILY_EXTERNAL : device_vk->graphics_queue.vk_queue_family_index;
++    barrier.dstQueueFamilyIndex = acquire ? device_vk->graphics_queue.vk_queue_family_index : VK_QUEUE_FAMILY_EXTERNAL;
++    barrier.srcAccessMask = acquire ? 0 : VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
++    barrier.dstAccessMask = acquire ? VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT : 0;
++    barrier.subresourceRange.aspectMask = vk_aspect_mask_from_format(texture_vk->t.resource.format);
++    barrier.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
++    barrier.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
++    VK_CALL(vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
++            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &barrier));
++    texture_vk->layout = VK_IMAGE_LAYOUT_GENERAL;
++    texture_vk->externally_owned = !acquire;
++    TRACE_(d3d_shared)("texture %p, acquire %u.\n", texture_vk, acquire);
++}
++
+ BOOL wined3d_texture_vk_prepare_texture(struct wined3d_texture_vk *texture_vk,
+         struct wined3d_context_vk *context_vk)
+ {
+@@ -805,9 +844,13 @@
+     VkImageUsageFlags vk_usage;
+     VkImageType vk_image_type;
+     unsigned int flags = 0;
++    VkExternalMemoryImageCreateInfo external = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
+ 
+     if (texture_vk->t.flags & WINED3D_TEXTURE_RGB_ALLOCATED)
+         return TRUE;
++    if (texture_vk->t.shared && !context_vk->vk_info->supported[WINED3D_VK_KHR_EXTERNAL_MEMORY_WIN32])
++        return FALSE;
++    external.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
+ 
+     if (!(vk_command_buffer = wined3d_context_vk_get_command_buffer(context_vk)))
+     {
+@@ -876,7 +919,7 @@
+ 
+     if (!wined3d_context_vk_create_image(context_vk, vk_image_type, vk_usage, format_vk->vk_format,
+             resource->width, resource->height, resource->depth, max(1, wined3d_resource_get_sample_count(resource)),
+-            texture_vk->t.level_count, texture_vk->t.layer_count, flags, NULL, &texture_vk->image))
++            texture_vk->t.level_count, texture_vk->t.layer_count, flags, texture_vk->t.shared ? &external : NULL, texture_vk->import_handle, &texture_vk->image))
+     {
+         return FALSE;
+     }
+@@ -892,11 +935,19 @@
+     vk_range.layerCount = VK_REMAINING_ARRAY_LAYERS;
+ 
+     wined3d_context_vk_reference_texture(context_vk, texture_vk);
+-    wined3d_context_vk_image_barrier(context_vk, vk_command_buffer,
+-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+-            0, 0,
+-            VK_IMAGE_LAYOUT_UNDEFINED, texture_vk->layout,
+-            texture_vk->image.vk_image, &vk_range);
++    if (texture_vk->import_handle)
++    {
++        texture_vk->layout = VK_IMAGE_LAYOUT_GENERAL;
++        texture_vk->externally_owned = true;
++    }
++    else
++    {
++        wined3d_context_vk_image_barrier(context_vk, vk_command_buffer,
++                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
++                0, 0,
++                VK_IMAGE_LAYOUT_UNDEFINED, texture_vk->layout,
++                texture_vk->image.vk_image, &vk_range);
++    }
+ 
+     texture_vk->t.flags |= WINED3D_TEXTURE_RGB_ALLOCATED;
+ 
+@@ -998,7 +1049,11 @@
+             }
+ 
+             if (texture_vk->image.vk_image)
++            {
+                 wined3d_context_vk_destroy_image(context_vk, &texture_vk->image);
++                texture_vk->shared_handle = NULL;
++                texture_vk->externally_owned = false;
++            }
+             break;
+ 
+         case WINED3D_LOCATION_BUFFER:
+@@ -1029,8 +1084,75 @@
+     }
+ }
+ 
++static HRESULT wined3d_texture_vk_get_shared_handle(struct wined3d_texture *texture, HANDLE *handle)
++{
++    struct wined3d_texture_vk *texture_vk = wined3d_texture_vk(texture);
++    struct wined3d_device_vk *device_vk = wined3d_device_vk(texture->resource.device);
++    struct wined3d_context_vk *context_vk = &device_vk->context_vk;
++    const struct wined3d_vk_info *vk_info = &device_vk->vk_info;
++    VkMemoryGetWin32HandleInfoKHR info = {VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR};
++    VkResult vr;
++
++    TRACE("texture %p, handle %p, export function %p.\n", texture, handle, vk_info->vk_ops.vkGetMemoryWin32HandleKHR);
++
++    if (!vk_info->vk_ops.vkGetMemoryWin32HandleKHR) return E_NOTIMPL;
++    if (!wined3d_texture_load_location(texture, 0, &context_vk->c, WINED3D_LOCATION_TEXTURE_RGB)) return E_FAIL;
++    if (!texture_vk->externally_owned)
++    {
++        wined3d_texture_vk_shared_barrier(texture_vk, context_vk, false);
++        wined3d_context_vk_submit_command_buffer(context_vk, 0, NULL, NULL, 0, NULL);
++        if ((vr = VK_CALL(vkQueueWaitIdle(device_vk->graphics_queue.vk_queue))) < 0) return E_FAIL;
++    }
++    if (!texture_vk->shared_handle)
++    {
++        info.memory = texture_vk->image.vk_memory;
++        info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
++        if ((vr = VK_CALL(vkGetMemoryWin32HandleKHR(device_vk->vk_device, &info, &texture_vk->shared_handle))) < 0)
++            return E_FAIL;
++    }
++    wined3d_texture_validate_location(texture, 0, WINED3D_LOCATION_TEXTURE_RGB);
++    wined3d_texture_invalidate_location(texture, 0, ~WINED3D_LOCATION_TEXTURE_RGB);
++    *handle = texture_vk->shared_handle;
++    return S_OK;
++}
++
++static HRESULT wined3d_texture_vk_open_shared_handle(struct wined3d_texture *texture, HANDLE handle)
++{
++    struct wined3d_texture_vk *texture_vk = wined3d_texture_vk(texture);
++    struct wined3d_device_vk *device_vk = wined3d_device_vk(texture->resource.device);
++    struct wined3d_context_vk *context_vk = &device_vk->context_vk;
++    unsigned int i;
++
++    if (texture_vk->image.vk_image) return WINED3DERR_INVALIDCALL;
++    texture_vk->import_handle = handle;
++    if (!wined3d_texture_vk_prepare_texture(texture_vk, context_vk))
++    {
++        texture_vk->import_handle = NULL;
++        return E_FAIL;
++    }
++    texture_vk->shared_handle = handle;
++    for (i = 0; i < texture->level_count * texture->layer_count; ++i)
++    {
++        wined3d_texture_validate_location(texture, i, WINED3D_LOCATION_TEXTURE_RGB);
++        wined3d_texture_invalidate_location(texture, i, ~WINED3D_LOCATION_TEXTURE_RGB);
++    }
++    return S_OK;
++}
++
++static BOOL wined3d_texture_vk_acquire_shared(struct wined3d_texture *texture, struct wined3d_context *context)
++{
++    struct wined3d_texture_vk *texture_vk = wined3d_texture_vk(texture);
++
++    if (texture_vk->externally_owned)
++        wined3d_texture_vk_shared_barrier(texture_vk, wined3d_context_vk(context), true);
++    return TRUE;
++}
++
+ static const struct wined3d_texture_ops wined3d_texture_vk_ops =
+ {
++    wined3d_texture_vk_get_shared_handle,
++    wined3d_texture_vk_open_shared_handle,
++    wined3d_texture_vk_acquire_shared,
+     wined3d_texture_vk_prepare_location,
+     wined3d_texture_vk_load_location,
+     wined3d_texture_vk_unload_location,
+@@ -1087,6 +1209,7 @@
+     TRACE("texture_vk %p, context_vk %p, bind_mask %s.\n",
+             texture_vk, context_vk, wined3d_debug_bind_flags(bind_mask));
+ 
++    if (texture_vk->externally_owned) wined3d_texture_vk_shared_barrier(texture_vk, context_vk, true);
+     new_layout = wined3d_layout_from_bind_mask(texture_vk, bind_mask);
+ 
+     /* A layout transition is potentially a read-write operation, so even if we
+@@ -1635,6 +1758,11 @@
+         goto next;
+     }
+ 
++    if (src_texture_vk->externally_owned)
++        wined3d_texture_vk_shared_barrier(src_texture_vk, context_vk, true);
++    if (dst_texture_vk->externally_owned)
++        wined3d_texture_vk_shared_barrier(dst_texture_vk, context_vk, true);
++
+     if (src_texture_vk->layout == VK_IMAGE_LAYOUT_GENERAL)
+         src_layout = VK_IMAGE_LAYOUT_GENERAL;
+     else
+@@ -1719,7 +1847,7 @@
+ 
+             if (!wined3d_context_vk_create_image(context_vk, vk_image_type, usage, vk_format,
+                     resolve_region.extent.width, resolve_region.extent.height, 1,
+-                    src_sample_count, 1, 1, 0, NULL, &src_image))
++                    src_sample_count, 1, 1, 0, NULL, NULL, &src_image))
+                 goto barrier_next;
+ 
+             wined3d_context_vk_reference_image(context_vk, &src_image);
+@@ -1788,7 +1916,7 @@
+ 
+             if (!wined3d_context_vk_create_image(context_vk, vk_image_type, usage, vk_format,
+                     resolve_region.extent.width, resolve_region.extent.height, 1,
+-                    VK_SAMPLE_COUNT_1_BIT, 1, 1, 0, NULL, &dst_image))
++                    VK_SAMPLE_COUNT_1_BIT, 1, 1, 0, NULL, NULL, &dst_image))
+                 goto barrier_next;
+ 
+             wined3d_context_vk_reference_image(context_vk, &dst_image);
+diff --git a/dlls/wined3d/view.c b/dlls/wined3d/view.c
+--- a/dlls/wined3d/view.c
++++ b/dlls/wined3d/view.c
+@@ -2392,6 +2392,9 @@
+     vk_command_buffer = wined3d_context_vk_get_command_buffer(context_vk);
+     wined3d_context_vk_end_current_render_pass(context_vk);
+ 
++    if (texture_vk && texture_vk->externally_owned)
++        wined3d_resource_vk_barrier(resource, context_vk, WINED3D_BIND_UNORDERED_ACCESS);
++
+     wined3d_context_vk_reference_unordered_access_view(context_vk, view_vk);
+     wined3d_context_vk_reference_bo(context_vk, &constants_bo);
+     wined3d_context_vk_destroy_bo(context_vk, &constants_bo);
+diff --git a/dlls/wined3d/wined3d.spec b/dlls/wined3d/wined3d.spec
+--- a/dlls/wined3d/wined3d.spec
++++ b/dlls/wined3d/wined3d.spec
+@@ -326,6 +326,8 @@
+ @ cdecl wined3d_texture_decref(ptr)
+ @ cdecl wined3d_texture_from_resource(ptr)
+ @ cdecl wined3d_texture_get_dc(ptr long ptr)
++@ cdecl wined3d_texture_get_shared_handle(ptr ptr)
++@ cdecl wined3d_texture_open_shared_handle(ptr ptr)
+ @ cdecl wined3d_texture_get_level_count(ptr)
+ @ cdecl wined3d_texture_get_lod(ptr)
+ @ cdecl wined3d_texture_get_overlay_position(ptr long ptr ptr)
+@@ -400,3 +402,7 @@
+ @ cdecl vkd3d_shader_scan(ptr ptr)
+ @ cdecl vkd3d_shader_serialize_dxbc(long ptr ptr ptr)
+ @ cdecl vkd3d_shader_serialize_root_signature(ptr ptr ptr)
++
++@ cdecl wined3d_texture_acquire_keyed_mutex(ptr long long int64 long)
++@ cdecl wined3d_texture_release_keyed_mutex(ptr long long int64)
++@ cdecl wined3d_texture_destroy_keyed_mutex(ptr long)
+diff --git a/dlls/wined3d/wined3d_gl.h b/dlls/wined3d/wined3d_gl.h
+--- a/dlls/wined3d/wined3d_gl.h
++++ b/dlls/wined3d/wined3d_gl.h
+@@ -179,6 +179,7 @@
+     EXT_GPU_PROGRAM_PARAMETERS,
+     EXT_GPU_SHADER4,
+     EXT_MEMORY_OBJECT,
++    EXT_MEMORY_OBJECT_WIN32,
+     EXT_PACKED_DEPTH_STENCIL,
+     EXT_PACKED_FLOAT,
+     EXT_POINT_PARAMETERS,
+@@ -861,6 +862,8 @@
+ struct wined3d_device_gl
+ {
+     struct wined3d_device d;
++    struct wined3d_shared_allocator_vk *shared_allocator;
++    D3DKMT_HANDLE shared_kmt_device;
+ 
+     /* Textures for when no other textures are bound. */
+     struct wined3d_dummy_textures dummy_textures;
+@@ -958,6 +961,9 @@
+     struct wined3d_texture t;
+ 
+     struct gl_texture texture_rgb, texture_srgb;
++    HANDLE shared_handle;
++    struct wined3d_shared_image_vk *shared_image;
++    D3DKMT_HANDLE shared_kmt_resource;
+ 
+     GLenum target;
+ 
+diff --git a/dlls/wined3d/wined3d_private.h b/dlls/wined3d/wined3d_private.h
+--- a/dlls/wined3d/wined3d_private.h
++++ b/dlls/wined3d/wined3d_private.h
+@@ -3365,6 +3365,9 @@
+ 
+ struct wined3d_texture_ops
+ {
++    HRESULT (*texture_get_shared_handle)(struct wined3d_texture *texture, HANDLE *handle);
++    HRESULT (*texture_open_shared_handle)(struct wined3d_texture *texture, HANDLE handle);
++    BOOL (*texture_acquire_shared)(struct wined3d_texture *texture, struct wined3d_context *context);
+     BOOL (*texture_prepare_location)(struct wined3d_texture *texture, unsigned int sub_resource_idx,
+             struct wined3d_context *context, unsigned int location);
+     BOOL (*texture_load_location)(struct wined3d_texture *texture, unsigned int sub_resource_idx,
+@@ -3402,6 +3405,10 @@
+ {
+     struct wined3d_resource resource;
+     const struct wined3d_texture_ops *texture_ops;
++    bool shared;
++    bool keyed_mutex_owned;
++    D3DKMT_HANDLE keyed_mutex, shared_keyed_mutex;
++    struct list keyed_mutex_entry;
+     struct wined3d_swapchain *swapchain;
+     UINT layer_count;
+     unsigned int level_count;
+@@ -3705,6 +3712,7 @@
+     size_t data_size, start, end;
+     void *data;
+     struct list query_poll_list;
++    struct list keyed_mutexes;
+     BOOL queries_flushed;
+ 
+     HANDLE event, present_event;
+@@ -5109,4 +5117,12 @@
+ 
+ extern CRITICAL_SECTION wined3d_command_cs;
+ 
++struct wined3d_shared_allocator_vk;
++struct wined3d_shared_image_vk;
++struct wined3d_shared_allocator_vk *wined3d_shared_allocator_vk_create(const GUID *device_uuid, const GUID *driver_uuid);
++void wined3d_shared_allocator_vk_destroy(struct wined3d_shared_allocator_vk *allocator);
++struct wined3d_shared_image_vk *wined3d_shared_image_vk_create(struct wined3d_shared_allocator_vk *allocator,
++        unsigned int width, unsigned int height, enum wined3d_format_id format, HANDLE *handle);
++void wined3d_shared_image_vk_destroy(struct wined3d_shared_image_vk *image);
++
+ #endif
+diff --git a/dlls/wined3d/wined3d_vk.h b/dlls/wined3d/wined3d_vk.h
+--- a/dlls/wined3d/wined3d_vk.h
++++ b/dlls/wined3d/wined3d_vk.h
+@@ -215,6 +215,9 @@
+     VK_DEVICE_PFN(vkDestroySwapchainKHR) \
+     VK_DEVICE_PFN(vkGetSwapchainImagesKHR) \
+     VK_DEVICE_PFN(vkQueuePresentKHR) \
++    /* VK_KHR_external_memory_win32 */ \
++    VK_DEVICE_EXT_PFN(vkGetMemoryWin32HandleKHR) \
++    VK_DEVICE_EXT_PFN(vkGetMemoryWin32HandlePropertiesKHR) \
+     /* VK_KHR_video_decode_queue */ \
+     VK_DEVICE_EXT_PFN(vkCmdDecodeVideoKHR) \
+     /* VK_KHR_video_queue */ \
+@@ -259,6 +262,7 @@
+     WINED3D_VK_EXT_SHADER_STENCIL_EXPORT,
+     WINED3D_VK_EXT_TRANSFORM_FEEDBACK,
+     WINED3D_VK_EXT_VERTEX_ATTRIBUTE_DIVISOR,
++    WINED3D_VK_KHR_EXTERNAL_MEMORY_WIN32,
+     WINED3D_VK_KHR_MAINTENANCE2,
+     WINED3D_VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE,
+     WINED3D_VK_KHR_SAMPLER_YCBCR_CONVERSION,
+@@ -748,7 +752,7 @@
+ BOOL wined3d_context_vk_create_image(struct wined3d_context_vk *context_vk, VkImageType vk_image_type,
+         VkImageUsageFlags usage, VkFormat vk_format, unsigned int width, unsigned int height, unsigned int depth,
+         unsigned int sample_count, unsigned int mip_levels, unsigned int layer_count, unsigned int flags,
+-        const void *next, struct wined3d_image_vk *image);
++        const void *next, HANDLE shared_handle, struct wined3d_image_vk *image);
+ void wined3d_context_vk_destroy_allocator_block(struct wined3d_context_vk *context_vk,
+         struct wined3d_allocator_block *block, uint64_t command_buffer_id);
+ void wined3d_context_vk_destroy_bo(struct wined3d_context_vk *context_vk,
+@@ -954,6 +958,9 @@
+     struct wined3d_texture t;
+ 
+     struct wined3d_image_vk image;
++    HANDLE shared_handle;
++    HANDLE import_handle;
++    bool externally_owned;
+     enum VkImageLayout layout;
+     uint32_t bind_mask;
+ 
+diff --git a/include/Makefile.in b/include/Makefile.in
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -974,6 +974,7 @@
+ 	wine/dcetypes.idl \
+ 	wine/debug.h \
+ 	wine/dplaysp.h \
++	wine/dxgi_shared.h \
+ 	wine/epm.idl \
+ 	wine/exception.h \
+ 	wine/fil_data.idl \
+diff --git a/include/wine/dxgi_shared.h b/include/wine/dxgi_shared.h
+new file mode 100644
+--- /dev/null
++++ b/include/wine/dxgi_shared.h
+@@ -0,0 +1,38 @@
++/*
++ * Copyright 2009 Henri Verbeet for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ *
++ */
++
++#ifndef __WINE_DXGI_SHARED_H
++#define __WINE_DXGI_SHARED_H
++
++#include "d3d11.h"
++#include "ddk/d3dkmthk.h"
++
++struct dxgi_shared_texture_metadata
++{
++    UINT size, version, width, height;
++    DXGI_FORMAT format;
++    UINT unknown_0, unknown_1, keyed_mutex;
++    D3DKMT_HANDLE mutex_handle, sync_handle;
++    UINT nt_shared, unknown_2, unknown_3, unknown_4;
++    D3D11_RESOURCE_DIMENSION dimension;
++    D3D11_TEXTURE2D_DESC texture;
++};
++C_ASSERT(sizeof(struct dxgi_shared_texture_metadata) == 0x68);
++
++#endif
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -977,6 +977,12 @@
+ #define WH_WINEVENT      (WH_MAXHOOK + 1)
+ #define NB_HOOKS         (WH_WINEVENT - WH_MINHOOK + 1)
+ 
++struct directory_file_entry
++{
++    data_size_t name_len;
++
++};
++
+ struct shared_cursor
+ {
+     int                  x;
+@@ -1148,6 +1154,13 @@
+ };
+ 
+ 
++struct cpu_topology_override
++{
++    unsigned int cpu_count;
++    unsigned char host_cpu_id[64];
++};
++
++
+ 
+ struct init_process_done_request
+ {
+@@ -1155,6 +1168,7 @@
+     char __pad_12[4];
+     client_ptr_t teb;
+     client_ptr_t peb;
++    client_ptr_t ldt_copy;
+ };
+ struct init_process_done_reply
+ {
+@@ -1173,6 +1187,7 @@
+     int          debug_level;
+     int          reply_fd;
+     int          wait_fd;
++    /* VARARG(cpu_override,cpu_topology_override); */
+ };
+ struct init_first_thread_reply
+ {
+@@ -1417,12 +1432,14 @@
+ {
+     struct request_header __header;
+     obj_handle_t handle;
++    obj_handle_t waited_handle;
++    char __pad_20[4];
+ };
+ struct suspend_thread_reply
+ {
+     struct reply_header __header;
+     int          count;
+-    char __pad_12[4];
++    obj_handle_t wait_handle;
+ };
+ 
+ 
+@@ -2606,6 +2623,25 @@
+     obj_handle_t hkey;
+ };
+ struct flush_key_reply
++{
++    struct reply_header __header;
++    abstime_t   timestamp_counter;
++    data_size_t total;
++    int         branch_count;
++    /* VARARG(data,bytes); */
++};
++
++
++
++struct flush_key_done_request
++{
++    struct request_header __header;
++    char __pad_12[4];
++    abstime_t    timestamp_counter;
++    int          branch;
++    char __pad_28[4];
++};
++struct flush_key_done_reply
+ {
+     struct reply_header __header;
+ };
+@@ -2734,12 +2770,19 @@
+ {
+     struct request_header __header;
+     obj_handle_t hkey;
+-    obj_handle_t file;
+-    char __pad_20[4];
+ };
+ struct save_registry_reply
+ {
+     struct reply_header __header;
++    data_size_t  total;
++    /* VARARG(data,bytes); */
++    char __pad_12[4];
++};
++enum prefix_type
++{
++    PREFIX_UNKNOWN,
++    PREFIX_32BIT,
++    PREFIX_64BIT,
+ };
+ 
+ 
+@@ -3125,7 +3168,22 @@
+     int             new_y;
+     char __pad_28[4];
+ };
+-#define SEND_HWMSG_INJECTED    0x01
++
++
++
++struct track_mouse_from_pointer_request
++{
++    struct request_header __header;
++    user_handle_t   win;
++    unsigned int    msg;
++    unsigned int    pointer_id;
++};
++struct track_mouse_from_pointer_reply
++{
++    struct reply_header __header;
++    int             cursor_pos_updated;
++    char __pad_12[4];
++};
+ 
+ 
+ 
+@@ -4168,6 +4226,7 @@
+     obj_handle_t handle;
+     unsigned int flags;
+     unsigned int obj_flags;
++    timeout_t    close_timeout;
+ };
+ struct set_user_object_info_reply
+ {
+@@ -4178,6 +4237,7 @@
+ };
+ #define SET_USER_OBJECT_SET_FLAGS       1
+ #define SET_USER_OBJECT_GET_FULL_NAME   2
++#define SET_USER_OBJECT_SET_CLOSE_TIMEOUT 4
+ 
+ 
+ 
+@@ -4244,12 +4304,12 @@
+ 
+ 
+ 
+-struct get_last_input_time_request
+-{
+-    struct request_header __header;
+-    char __pad_12[4];
+-};
+-struct get_last_input_time_reply
++struct set_user_input_time_request
++{
++    struct request_header __header;
++    int          set;
++};
++struct set_user_input_time_reply
+ {
+     struct reply_header __header;
+     unsigned int time;
+@@ -4994,11 +5054,13 @@
+ 
+ struct handle_info
+ {
++    client_ptr_t object;
+     process_id_t owner;
+     obj_handle_t handle;
+     unsigned int access;
+     unsigned int attributes;
+     unsigned int type;
++    unsigned int __pad;
+ };
+ 
+ 
+@@ -5133,6 +5195,20 @@
+     /* VARARG(entries,directory_entries); */
+ };
+ 
++struct query_directory_file_request
++{
++    struct request_header __header;
++    obj_handle_t   handle;
++    unsigned int   restart_scan;
++    char __pad_20[4];
++};
++struct query_directory_file_reply
++{
++    struct reply_header __header;
++    data_size_t    total_len;
++    /* VARARG(entries,directory_file_entries); */
++    char __pad_12[4];
++};
+ 
+ 
+ struct create_symlink_request
+@@ -5404,6 +5480,7 @@
+ {
+     struct request_header __header;
+     obj_handle_t handle;
++    timeout_t    desktop_close_timeout;
+ };
+ struct make_process_system_reply
+ {
+@@ -6000,6 +6077,8 @@
+     struct reply_header __header;
+     int           type;
+     unsigned int access;
++    unsigned int fsync_shm_idx;
++    char __pad_20[4];
+ };
+ 
+ 
+@@ -6013,7 +6092,7 @@
+ {
+     struct reply_header __header;
+     obj_handle_t handle;
+-    char __pad_12[4];
++    unsigned int fsync_shm_idx;
+ };
+ 
+ 
+@@ -6023,7 +6102,8 @@
+     struct request_header __header;
+     unsigned int        type;
+     int                 fd;
+-    unsigned int        value;
++    char __pad_20[4];
++    unsigned __int64    value;
+     /* VARARG(runtime,bytes); */
+ };
+ struct d3dkmt_object_create_reply
+@@ -6127,10 +6207,9 @@
+ {
+     struct request_header __header;
+     d3dkmt_handle_t     mutex;
+-    unsigned int        key_value;
++    unsigned __int64    key_value;
+     obj_handle_t        wait_handle;
+     unsigned int        wait_status;
+-    char __pad_28[4];
+ };
+ struct d3dkmt_mutex_acquire_reply
+ {
+@@ -6148,13 +6227,39 @@
+     struct request_header __header;
+     d3dkmt_handle_t     mutex;
+     int                 abandon;
+-    unsigned int        key_value;
++    char __pad_20[4];
++    unsigned __int64    key_value;
+     unsigned __int64    fence_value;
+     data_size_t         runtime_size;
+     /* VARARG(runtime,bytes); */
+-    char __pad_36[4];
++    char __pad_44[4];
+ };
+ struct d3dkmt_mutex_release_reply
++{
++    struct reply_header __header;
++};
++
++
++#define FSYNC_SHM_PAGE_SIZE 0x10000
++#define FSYNC_USED_BY_SERVER 0x7eadfeef
++
++enum fsync_type
++{
++    FSYNC_SEMAPHORE = 1,
++    FSYNC_AUTO_EVENT,
++    FSYNC_MANUAL_EVENT,
++    FSYNC_MUTEX,
++    FSYNC_AUTO_SERVER,
++    FSYNC_MANUAL_SERVER,
++    FSYNC_QUEUE,
++};
++
++struct fsync_free_shm_idx_request
++{
++    struct request_header __header;
++    unsigned int shm_idx;
++};
++struct fsync_free_shm_idx_reply
+ {
+     struct reply_header __header;
+ };
+@@ -6252,6 +6357,7 @@
+     REQ_open_key,
+     REQ_delete_key,
+     REQ_flush_key,
++    REQ_flush_key_done,
+     REQ_enum_key,
+     REQ_set_key_value,
+     REQ_get_key_value,
+@@ -6284,6 +6390,7 @@
+     REQ_send_message,
+     REQ_post_quit_message,
+     REQ_send_hardware_message,
++    REQ_track_mouse_from_pointer,
+     REQ_get_message,
+     REQ_reply_message,
+     REQ_accept_hardware_message,
+@@ -6351,7 +6458,7 @@
+     REQ_unregister_hotkey,
+     REQ_attach_thread_input,
+     REQ_get_thread_input,
+-    REQ_get_last_input_time,
++    REQ_set_user_input_time,
+     REQ_get_key_state,
+     REQ_set_key_state,
+     REQ_set_foreground_window,
+@@ -6404,6 +6511,7 @@
+     REQ_create_directory,
+     REQ_open_directory,
+     REQ_get_directory_entries,
++    REQ_query_directory_file,
+     REQ_create_symlink,
+     REQ_open_symlink,
+     REQ_query_symlink,
+@@ -6468,6 +6576,7 @@
+     REQ_d3dkmt_object_open_name,
+     REQ_d3dkmt_mutex_acquire,
+     REQ_d3dkmt_mutex_release,
++    REQ_fsync_free_shm_idx,
+     REQ_NB_REQUESTS
+ };
+ 
+@@ -6565,6 +6674,7 @@
+     struct open_key_request open_key_request;
+     struct delete_key_request delete_key_request;
+     struct flush_key_request flush_key_request;
++    struct flush_key_done_request flush_key_done_request;
+     struct enum_key_request enum_key_request;
+     struct set_key_value_request set_key_value_request;
+     struct get_key_value_request get_key_value_request;
+@@ -6597,6 +6707,7 @@
+     struct send_message_request send_message_request;
+     struct post_quit_message_request post_quit_message_request;
+     struct send_hardware_message_request send_hardware_message_request;
++    struct track_mouse_from_pointer_request track_mouse_from_pointer_request;
+     struct get_message_request get_message_request;
+     struct reply_message_request reply_message_request;
+     struct accept_hardware_message_request accept_hardware_message_request;
+@@ -6664,7 +6775,7 @@
+     struct unregister_hotkey_request unregister_hotkey_request;
+     struct attach_thread_input_request attach_thread_input_request;
+     struct get_thread_input_request get_thread_input_request;
+-    struct get_last_input_time_request get_last_input_time_request;
++    struct set_user_input_time_request set_user_input_time_request;
+     struct get_key_state_request get_key_state_request;
+     struct set_key_state_request set_key_state_request;
+     struct set_foreground_window_request set_foreground_window_request;
+@@ -6717,6 +6828,7 @@
+     struct create_directory_request create_directory_request;
+     struct open_directory_request open_directory_request;
+     struct get_directory_entries_request get_directory_entries_request;
++    struct query_directory_file_request query_directory_file_request;
+     struct create_symlink_request create_symlink_request;
+     struct open_symlink_request open_symlink_request;
+     struct query_symlink_request query_symlink_request;
+@@ -6781,6 +6893,7 @@
+     struct d3dkmt_object_open_name_request d3dkmt_object_open_name_request;
+     struct d3dkmt_mutex_acquire_request d3dkmt_mutex_acquire_request;
+     struct d3dkmt_mutex_release_request d3dkmt_mutex_release_request;
++    struct fsync_free_shm_idx_request fsync_free_shm_idx_request;
+ };
+ union generic_reply
+ {
+@@ -6876,6 +6989,7 @@
+     struct open_key_reply open_key_reply;
+     struct delete_key_reply delete_key_reply;
+     struct flush_key_reply flush_key_reply;
++    struct flush_key_done_reply flush_key_done_reply;
+     struct enum_key_reply enum_key_reply;
+     struct set_key_value_reply set_key_value_reply;
+     struct get_key_value_reply get_key_value_reply;
+@@ -6908,6 +7022,7 @@
+     struct send_message_reply send_message_reply;
+     struct post_quit_message_reply post_quit_message_reply;
+     struct send_hardware_message_reply send_hardware_message_reply;
++    struct track_mouse_from_pointer_reply track_mouse_from_pointer_reply;
+     struct get_message_reply get_message_reply;
+     struct reply_message_reply reply_message_reply;
+     struct accept_hardware_message_reply accept_hardware_message_reply;
+@@ -6975,7 +7090,7 @@
+     struct unregister_hotkey_reply unregister_hotkey_reply;
+     struct attach_thread_input_reply attach_thread_input_reply;
+     struct get_thread_input_reply get_thread_input_reply;
+-    struct get_last_input_time_reply get_last_input_time_reply;
++    struct set_user_input_time_reply set_user_input_time_reply;
+     struct get_key_state_reply get_key_state_reply;
+     struct set_key_state_reply set_key_state_reply;
+     struct set_foreground_window_reply set_foreground_window_reply;
+@@ -7028,6 +7143,7 @@
+     struct create_directory_reply create_directory_reply;
+     struct open_directory_reply open_directory_reply;
+     struct get_directory_entries_reply get_directory_entries_reply;
++    struct query_directory_file_reply query_directory_file_reply;
+     struct create_symlink_reply create_symlink_reply;
+     struct open_symlink_reply open_symlink_reply;
+     struct query_symlink_reply query_symlink_reply;
+@@ -7092,8 +7208,9 @@
+     struct d3dkmt_object_open_name_reply d3dkmt_object_open_name_reply;
+     struct d3dkmt_mutex_acquire_reply d3dkmt_mutex_acquire_reply;
+     struct d3dkmt_mutex_release_reply d3dkmt_mutex_release_reply;
+-};
+-
+-#define SERVER_PROTOCOL_VERSION 930
++    struct fsync_free_shm_idx_reply fsync_free_shm_idx_reply;
++};
++
++#define SERVER_PROTOCOL_VERSION 932
+ 
+ #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
+diff --git a/include/wine/wined3d.h b/include/wine/wined3d.h
+--- a/include/wine/wined3d.h
++++ b/include/wine/wined3d.h
+@@ -1582,6 +1582,7 @@
+ #define WINED3D_PALETTE_ALLOW_256                               0x00000002
+ #define WINED3D_PALETTE_ALPHA                                   0x00000004
+ 
++#define WINED3D_TEXTURE_CREATE_SHARED                           0x00000040
+ #define WINED3D_TEXTURE_CREATE_DISCARD                          0x00000002
+ #define WINED3D_TEXTURE_CREATE_GET_DC_LENIENT                   0x00000004
+ #define WINED3D_TEXTURE_CREATE_GET_DC                           0x00000008
+@@ -2944,6 +2945,12 @@
+         void *parent, const struct wined3d_parent_ops *parent_ops, struct wined3d_texture **texture);
+ struct wined3d_texture * __cdecl wined3d_texture_from_resource(struct wined3d_resource *resource);
+ ULONG __cdecl wined3d_texture_decref(struct wined3d_texture *texture);
++HRESULT __cdecl wined3d_texture_get_shared_handle(struct wined3d_texture *texture, HANDLE *handle);
++HRESULT __cdecl wined3d_texture_acquire_keyed_mutex(struct wined3d_texture *texture,
++        unsigned int mutex, unsigned int shared_mutex, UINT64 key, DWORD timeout);
++HRESULT __cdecl wined3d_texture_release_keyed_mutex(struct wined3d_texture *texture, unsigned int mutex, unsigned int shared_mutex, UINT64 key);
++void __cdecl wined3d_texture_destroy_keyed_mutex(struct wined3d_texture *texture, unsigned int mutex);
++HRESULT __cdecl wined3d_texture_open_shared_handle(struct wined3d_texture *texture, HANDLE handle);
+ HRESULT __cdecl wined3d_texture_get_dc(struct wined3d_texture *texture, unsigned int sub_resource_idx, HDC *dc);
+ unsigned int __cdecl wined3d_texture_get_level_count(const struct wined3d_texture *texture);
+ unsigned int __cdecl wined3d_texture_get_lod(const struct wined3d_texture *texture);
+diff --git a/server/d3dkmt.c b/server/d3dkmt.c
+--- a/server/d3dkmt.c
++++ b/server/d3dkmt.c
+@@ -98,7 +98,7 @@
+ struct keyed_wait
+ {
+     struct list     entry;
+-    int             key;
++    unsigned __int64 key;
+     int             waiters;
+     struct object  *sync;
+ };
+@@ -106,7 +106,7 @@
+ struct d3dkmt_mutex
+ {
+     struct d3dkmt_object base;
+-    unsigned int         key_value;      /* last released key value */
++    unsigned __int64     key_value;      /* last released key value */
+     unsigned __int64     fence_value;    /* last released fence value */
+     bool                 abandoned;      /* mutex has been abandonned */
+     struct thread       *owner;          /* current owner thread */
+@@ -443,7 +443,7 @@
+     free( mutex->base.runtime );
+ }
+ 
+-static struct d3dkmt_object *d3dkmt_mutex_create( unsigned int key_value, data_size_t runtime_size, const void *runtime )
++static struct d3dkmt_object *d3dkmt_mutex_create( unsigned __int64 key_value, data_size_t runtime_size, const void *runtime )
+ {
+     struct d3dkmt_mutex *object;
+ 
+@@ -468,7 +468,7 @@
+     return &object->base;
+ }
+ 
+-static struct object *keyed_wait_grab( struct d3dkmt_mutex *mutex, int key )
++static struct object *keyed_wait_grab( struct d3dkmt_mutex *mutex, unsigned __int64 key )
+ {
+     struct keyed_wait *wait;
+ 
+@@ -492,7 +492,7 @@
+     return grab_object( wait->sync );
+ }
+ 
+-static void keyed_wait_release( struct d3dkmt_mutex *mutex, int key )
++static void keyed_wait_release( struct d3dkmt_mutex *mutex, unsigned __int64 key )
+ {
+     struct keyed_wait *wait;
+ 
+diff --git a/server/protocol.def b/server/protocol.def
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -4247,7 +4247,7 @@
+ @REQ(d3dkmt_object_create)
+     unsigned int        type;           /* d3dkmt object type */
+     int                 fd;             /* host specific fd */
+-    unsigned int        value;          /* initial value for keyed mutex */
++    unsigned __int64    value;          /* initial value for keyed mutex */
+     VARARG(runtime,bytes);              /* client runtime data */
+ @REPLY
+     d3dkmt_handle_t     global;         /* global d3dkmt handle */
+@@ -4313,7 +4313,7 @@
+ /* Acquire a global d3dkmt keyed mutex */
+ @REQ(d3dkmt_mutex_acquire)
+     d3dkmt_handle_t     mutex;          /* mutex global handle */
+-    unsigned int        key_value;      /* the key to acquire/wait for */
++    unsigned __int64    key_value;      /* the key to acquire/wait for */
+     obj_handle_t        wait_handle;    /* previously returned wait handle */
+     unsigned int        wait_status;    /* status returned from previous wait */
+ @REPLY
+@@ -4328,7 +4328,7 @@
+ @REQ(d3dkmt_mutex_release)
+     d3dkmt_handle_t     mutex;          /* mutex global handle */
+     int                 abandon;        /* mutex is being abandonned */
+-    unsigned int        key_value;      /* the key to release */
++    unsigned __int64    key_value;      /* the key to release */
+     unsigned __int64    fence_value;    /* semaphore fence value */
+     data_size_t         runtime_size;   /* size of client runtime data */
+     VARARG(runtime,bytes);              /* client runtime data */
+diff --git a/server/thread.c b/server/thread.c
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -1657,6 +1657,7 @@
+     }
+     kill_console_processes( thread, 0 );
+     abandon_mutexes( thread );
++    abandon_d3dkmt_mutexes( thread );
+     signal_sync( thread->sync );
+     if (violent_death) send_thread_signal( thread, SIGQUIT );
+     cleanup_thread( thread );
