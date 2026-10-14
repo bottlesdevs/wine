@@ -572,6 +572,35 @@ jobs:
           done
           "$runner_dir/bin/wineserver" -w
 
+      - name: verify CoreInk host objects
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          for bits in 64 32; do
+            if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
+            for probe in source input drying; do
+              "$compiler" "$GITHUB_WORKSPACE/.github/soda-ink-core-$probe.c" \
+                -I"$runner_dir/include/wine/windows" -D__WINESRC__ \
+                -O2 -Wall -Wextra -Wno-unused-parameter -Werror -lole32 -lruntimeobject -luuid \
+                -o "$RUNNER_TEMP/soda-ink-core-$probe$bits.exe"
+            done
+          done
+          export WINEDEBUG=-all
+          export WINEPREFIX="$RUNNER_TEMP/soda-ink-core-prefix"
+          export WINEARCH=win64
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          for bits in 64 32; do
+            for apartment in sta mta; do
+              for probe in source input drying; do
+                xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-ink-core-$probe$bits.exe" "$apartment" \
+                  | tr -d '\r' | tee "$RUNNER_TEMP/soda-ink-core-$probe$bits-$apartment.log"
+                grep -E "^INK_${probe^^}_RESULT checks=[1-9][0-9]* failures=0$" "$RUNNER_TEMP/soda-ink-core-$probe$bits-$apartment.log"
+              done
+            done
+          done
+          "$runner_dir/bin/wineserver" -w
+
       - name: verify Direct2D Flush presentation
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
@@ -1300,6 +1329,15 @@ jobs:
             -I"$wine_headers" -D__WINESRC__ \
             -O2 -Wall -Wextra -Wno-unused-parameter -Werror -lole32 -lruntimeobject -luuid \
             -o "$RUNNER_TEMP/soda-office-winrt/ink-values32.exe"
+          for bits in 64 32; do
+            if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
+            for probe in source input drying; do
+              "$compiler" ".github/soda-ink-core-$probe.c" \
+                -I"$wine_headers" -D__WINESRC__ \
+                -O2 -Wall -Wextra -Wno-unused-parameter -Werror -lole32 -lruntimeobject -luuid \
+                -o "$RUNNER_TEMP/soda-office-winrt/ink-core-$probe$bits.exe"
+            done
+          done
           export TZ=America/Denver
           export WINEDEBUG=-all
           "$runner_dir/bin/wine" /tmp/soda-icu/smoke64.exe \
@@ -1324,6 +1362,11 @@ jobs:
               "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/ink-values$arch.exe" "$apartment" \
                 | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/ink-values$arch-$apartment.log"
               grep -E '^INK_VALUE_RESULT checks=[1-9][0-9]* failures=0$' "$RUNNER_TEMP/soda-office-winrt/ink-values$arch-$apartment.log"
+              for probe in source input drying; do
+                "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/ink-core-$probe$arch.exe" "$apartment" \
+                  | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/ink-core-$probe$arch-$apartment.log"
+                grep -E "^INK_${probe^^}_RESULT checks=[1-9][0-9]* failures=0$" "$RUNNER_TEMP/soda-office-winrt/ink-core-$probe$arch-$apartment.log"
+              done
             done
             "$runner_dir/bin/wine" reg add \
               "HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\ldap$arch.exe" \

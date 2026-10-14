@@ -1,0 +1,2633 @@
+diff --git a/dlls/inkobjcore/Makefile.in b/dlls/inkobjcore/Makefile.in
+--- a/dlls/inkobjcore/Makefile.in
++++ b/dlls/inkobjcore/Makefile.in
+@@ -3,8 +3,15 @@
+ 
+ SOURCES = \
+ 	classes.idl \
++	configuration.c \
++	core_host.c \
+ 	drawing.c \
++	events.c \
+ 	factory.c \
+ 	inkobjcore.rc \
+ 	main.c \
+-	point.c
++	point.c \
++	presenter.c \
++	source.c \
++	stroke_view.c \
++	synchronizer.c
+diff --git a/dlls/inkobjcore/classes.idl b/dlls/inkobjcore/classes.idl
+--- a/dlls/inkobjcore/classes.idl
++++ b/dlls/inkobjcore/classes.idl
+@@ -19,9 +19,15 @@
+ #pragma makedep register
+ #pragma winrt ns_prefix
+ 
+-import "windows.ui.input.inking.idl";
++import "windows.ui.input.inking.core.idl";
+ 
+ namespace Windows.UI.Input.Inking {
+     runtimeclass InkPoint;
+     runtimeclass InkDrawingAttributes;
+ }
++
++namespace Windows.UI.Input.Inking.Core {
++    runtimeclass CoreInkPresenterHost;
++    runtimeclass CoreWetStrokeUpdateSource;
++    runtimeclass CoreInkIndependentInputSource;
++}
+diff --git a/dlls/inkobjcore/configuration.c b/dlls/inkobjcore/configuration.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/configuration.c
+@@ -0,0 +1,148 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++
++struct input_configuration
++{
++    IInkInputProcessingConfiguration IInkInputProcessingConfiguration_iface;
++    LONG ref, mode, right_drag;
++    IUnknown *marshaler;
++};
++
++static struct input_configuration *impl_from_IInkInputProcessingConfiguration(IInkInputProcessingConfiguration *iface)
++{
++    return CONTAINING_RECORD(iface, struct input_configuration, IInkInputProcessingConfiguration_iface);
++}
++
++static HRESULT WINAPI configuration_QueryInterface(IInkInputProcessingConfiguration *iface, REFIID iid, void **out)
++{
++    struct input_configuration *impl = impl_from_IInkInputProcessingConfiguration(iface);
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable)
++            || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_IInkInputProcessingConfiguration))
++    {
++        *out = iface;
++        IInkInputProcessingConfiguration_AddRef(iface);
++        return S_OK;
++    }
++    if (IsEqualGUID(iid, &IID_IMarshal)) return IUnknown_QueryInterface(impl->marshaler, iid, out);
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI configuration_AddRef(IInkInputProcessingConfiguration *iface)
++{
++    return InterlockedIncrement(&impl_from_IInkInputProcessingConfiguration(iface)->ref);
++}
++
++static ULONG WINAPI configuration_Release(IInkInputProcessingConfiguration *iface)
++{
++    struct input_configuration *impl = impl_from_IInkInputProcessingConfiguration(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++
++    if (!ref)
++    {
++        if (impl->marshaler) IUnknown_Release(impl->marshaler);
++        free(impl);
++        InterlockedDecrement(&ink_object_count);
++    }
++    return ref;
++}
++
++static HRESULT WINAPI configuration_GetIids(IInkInputProcessingConfiguration *iface, ULONG *count, IID **iids)
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = NULL;
++    if (!(*iids = CoTaskMemAlloc(sizeof(**iids)))) return E_OUTOFMEMORY;
++    **iids = IID_IInkInputProcessingConfiguration;
++    *count = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI configuration_GetRuntimeClassName(IInkInputProcessingConfiguration *iface, HSTRING *name)
++{
++    const WCHAR *class = RuntimeClass_Windows_UI_Input_Inking_InkInputProcessingConfiguration;
++    if (!name) return E_POINTER;
++    return WindowsCreateString(class, wcslen(class), name);
++}
++
++static HRESULT WINAPI configuration_GetTrustLevel(IInkInputProcessingConfiguration *iface, TrustLevel *level)
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI configuration_get_Mode(IInkInputProcessingConfiguration *iface, enum InkInputProcessingMode *value)
++{
++    if (!value) return E_POINTER;
++    *value = InterlockedCompareExchange(&impl_from_IInkInputProcessingConfiguration(iface)->mode, 0, 0);
++    return S_OK;
++}
++
++static HRESULT WINAPI configuration_put_Mode(IInkInputProcessingConfiguration *iface, enum InkInputProcessingMode value)
++{
++    if (value < InkInputProcessingMode_None || value > InkInputProcessingMode_Erasing) return E_INVALIDARG;
++    InterlockedExchange(&impl_from_IInkInputProcessingConfiguration(iface)->mode, value);
++    return S_OK;
++}
++
++static HRESULT WINAPI configuration_get_RightDragAction(IInkInputProcessingConfiguration *iface, enum InkInputRightDragAction *value)
++{
++    if (!value) return E_POINTER;
++    *value = InterlockedCompareExchange(&impl_from_IInkInputProcessingConfiguration(iface)->right_drag, 0, 0);
++    return S_OK;
++}
++
++static HRESULT WINAPI configuration_put_RightDragAction(IInkInputProcessingConfiguration *iface, enum InkInputRightDragAction value)
++{
++    if (value != InkInputRightDragAction_LeaveUnprocessed && value != InkInputRightDragAction_AllowProcessing)
++        return E_INVALIDARG;
++    InterlockedExchange(&impl_from_IInkInputProcessingConfiguration(iface)->right_drag, value);
++    return S_OK;
++}
++
++static const IInkInputProcessingConfigurationVtbl configuration_vtbl =
++{
++    configuration_QueryInterface, configuration_AddRef, configuration_Release,
++    configuration_GetIids, configuration_GetRuntimeClassName, configuration_GetTrustLevel,
++    configuration_get_Mode, configuration_put_Mode,
++    configuration_get_RightDragAction, configuration_put_RightDragAction,
++};
++
++HRESULT ink_input_configuration_create(IInkInputProcessingConfiguration **out)
++{
++    struct input_configuration *impl;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->IInkInputProcessingConfiguration_iface.lpVtbl = &configuration_vtbl;
++    impl->ref = 1;
++    impl->mode = InkInputProcessingMode_Inking;
++    impl->right_drag = InkInputRightDragAction_AllowProcessing;
++    InterlockedIncrement(&ink_object_count);
++    hr = CoCreateFreeThreadedMarshaler((IUnknown *)&impl->IInkInputProcessingConfiguration_iface, &impl->marshaler);
++    if (FAILED(hr)) IInkInputProcessingConfiguration_Release(&impl->IInkInputProcessingConfiguration_iface);
++    else *out = &impl->IInkInputProcessingConfiguration_iface;
++    return hr;
++}
+diff --git a/dlls/inkobjcore/core_host.c b/dlls/inkobjcore/core_host.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/core_host.c
+@@ -0,0 +1,188 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++
++struct root_reference
++{
++    LONG ref;
++    IContainerVisual *visual;
++};
++
++struct core_host
++{
++    ICoreInkPresenterHost ICoreInkPresenterHost_iface;
++    LONG ref;
++    IUnknown *marshaler;
++    IInkPresenter *presenter;
++    CRITICAL_SECTION lock;
++    struct root_reference *root;
++};
++
++static struct core_host *impl_from_ICoreInkPresenterHost(ICoreInkPresenterHost *iface)
++{
++    return CONTAINING_RECORD(iface, struct core_host, ICoreInkPresenterHost_iface);
++}
++
++static void root_release(struct root_reference *root)
++{
++    if (root && !InterlockedDecrement(&root->ref))
++    {
++        IContainerVisual_Release(root->visual);
++        free(root);
++    }
++}
++
++static HRESULT WINAPI host_QueryInterface(ICoreInkPresenterHost *iface, REFIID iid, void **out)
++{
++    struct core_host *impl = impl_from_ICoreInkPresenterHost(iface);
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable)
++            || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_ICoreInkPresenterHost))
++    {
++        *out = iface;
++        ICoreInkPresenterHost_AddRef(iface);
++        return S_OK;
++    }
++    if (IsEqualGUID(iid, &IID_IMarshal)) return IUnknown_QueryInterface(impl->marshaler, iid, out);
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI host_AddRef(ICoreInkPresenterHost *iface)
++{
++    return InterlockedIncrement(&impl_from_ICoreInkPresenterHost(iface)->ref);
++}
++
++static ULONG WINAPI host_Release(ICoreInkPresenterHost *iface)
++{
++    struct core_host *impl = impl_from_ICoreInkPresenterHost(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++
++    if (!ref)
++    {
++        struct root_reference *root = impl->root;
++        impl->root = NULL;
++        root_release(root);
++        if (impl->presenter) IInkPresenter_Release(impl->presenter);
++        if (impl->marshaler) IUnknown_Release(impl->marshaler);
++        DeleteCriticalSection(&impl->lock);
++        free(impl);
++        InterlockedDecrement(&ink_object_count);
++    }
++    return ref;
++}
++
++static HRESULT WINAPI host_GetIids(ICoreInkPresenterHost *iface, ULONG *count, IID **iids)
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = NULL;
++    if (!(*iids = CoTaskMemAlloc(sizeof(**iids)))) return E_OUTOFMEMORY;
++    **iids = IID_ICoreInkPresenterHost;
++    *count = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI host_GetRuntimeClassName(ICoreInkPresenterHost *iface, HSTRING *name)
++{
++    const WCHAR *class = RuntimeClass_Windows_UI_Input_Inking_Core_CoreInkPresenterHost;
++    if (!name) return E_POINTER;
++    return WindowsCreateString(class, wcslen(class), name);
++}
++
++static HRESULT WINAPI host_GetTrustLevel(ICoreInkPresenterHost *iface, TrustLevel *level)
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI host_get_InkPresenter(ICoreInkPresenterHost *iface, IInkPresenter **value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_ICoreInkPresenterHost(iface)->presenter;
++    IInkPresenter_AddRef(*value);
++    return S_OK;
++}
++
++static HRESULT WINAPI host_get_RootVisual(ICoreInkPresenterHost *iface, IContainerVisual **value)
++{
++    struct core_host *impl = impl_from_ICoreInkPresenterHost(iface);
++    struct root_reference *root;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection(&impl->lock);
++    if ((root = impl->root)) InterlockedIncrement(&root->ref);
++    LeaveCriticalSection(&impl->lock);
++    if (root)
++    {
++        *value = root->visual;
++        IContainerVisual_AddRef(*value);
++        root_release(root);
++    }
++    return S_OK;
++}
++
++static HRESULT WINAPI host_put_RootVisual(ICoreInkPresenterHost *iface, IContainerVisual *value)
++{
++    struct core_host *impl = impl_from_ICoreInkPresenterHost(iface);
++    struct root_reference *root = NULL, *old;
++
++    if (value)
++    {
++        if (!(root = malloc(sizeof(*root)))) return E_OUTOFMEMORY;
++        root->ref = 1;
++        root->visual = value;
++        IContainerVisual_AddRef(value);
++    }
++    EnterCriticalSection(&impl->lock);
++    old = impl->root;
++    impl->root = root;
++    LeaveCriticalSection(&impl->lock);
++    root_release(old);
++    return S_OK;
++}
++
++static const ICoreInkPresenterHostVtbl host_vtbl =
++{
++    host_QueryInterface, host_AddRef, host_Release,
++    host_GetIids, host_GetRuntimeClassName, host_GetTrustLevel,
++    host_get_InkPresenter, host_get_RootVisual, host_put_RootVisual,
++};
++
++HRESULT ink_core_host_create(IInspectable **out)
++{
++    struct core_host *impl;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->ICoreInkPresenterHost_iface.lpVtbl = &host_vtbl;
++    impl->ref = 1;
++    InitializeCriticalSection(&impl->lock);
++    InterlockedIncrement(&ink_object_count);
++    hr = CoCreateFreeThreadedMarshaler((IUnknown *)&impl->ICoreInkPresenterHost_iface, &impl->marshaler);
++    if (SUCCEEDED(hr)) hr = ink_presenter_create(&impl->presenter);
++    if (FAILED(hr)) ICoreInkPresenterHost_Release(&impl->ICoreInkPresenterHost_iface);
++    else *out = (IInspectable *)&impl->ICoreInkPresenterHost_iface;
++    return hr;
++}
+diff --git a/dlls/inkobjcore/drawing.c b/dlls/inkobjcore/drawing.c
+--- a/dlls/inkobjcore/drawing.c
++++ b/dlls/inkobjcore/drawing.c
+@@ -229,3 +229,82 @@
+     else *out = &impl->IInkDrawingAttributes_iface;
+     return hr;
+ }
++
++HRESULT ink_drawing_attributes_clone(IInkDrawingAttributes *source, IInkDrawingAttributes **out)
++{
++    IInkDrawingAttributes2 *source2 = NULL, *copy2 = NULL;
++    IInkDrawingAttributes4 *source4 = NULL, *copy4 = NULL;
++    struct drawing_attributes *input, *copy;
++    struct Matrix3x2 transform;
++    struct Color color;
++    struct Size size;
++    enum PenTipShape tip;
++    boolean value;
++    HRESULT hr, query;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!source) return E_POINTER;
++    if (FAILED(hr = ink_drawing_attributes_create(out))) return hr;
++    if (source->lpVtbl == &drawing_vtbl)
++    {
++        input = impl_from_IInkDrawingAttributes(source);
++        copy = impl_from_IInkDrawingAttributes(*out);
++        EnterCriticalSection(&input->lock);
++        copy->color = input->color;
++        copy->size = input->size;
++        copy->pen_tip = input->pen_tip;
++        copy->transform = input->transform;
++        copy->ignore_pressure = input->ignore_pressure;
++        copy->fit_to_curve = input->fit_to_curve;
++        copy->highlighter = input->highlighter;
++        copy->ignore_tilt = input->ignore_tilt;
++        LeaveCriticalSection(&input->lock);
++        return S_OK;
++    }
++
++    hr = IInkDrawingAttributes_get_Color(source, &color);
++    if (SUCCEEDED(hr)) hr = IInkDrawingAttributes_put_Color(*out, color);
++    if (SUCCEEDED(hr)) hr = IInkDrawingAttributes_get_PenTip(source, &tip);
++    if (SUCCEEDED(hr)) hr = IInkDrawingAttributes_put_PenTip(*out, tip);
++    if (SUCCEEDED(hr)) hr = IInkDrawingAttributes_get_Size(source, &size);
++    if (SUCCEEDED(hr)) hr = IInkDrawingAttributes_put_Size(*out, size);
++    if (SUCCEEDED(hr)) hr = IInkDrawingAttributes_get_IgnorePressure(source, &value);
++    if (SUCCEEDED(hr)) hr = IInkDrawingAttributes_put_IgnorePressure(*out, value);
++    if (SUCCEEDED(hr)) hr = IInkDrawingAttributes_get_FitToCurve(source, &value);
++    if (SUCCEEDED(hr)) hr = IInkDrawingAttributes_put_FitToCurve(*out, value);
++    if (SUCCEEDED(hr))
++    {
++        query = IInkDrawingAttributes_QueryInterface(source, &IID_IInkDrawingAttributes2, (void **)&source2);
++        if (SUCCEEDED(query))
++        {
++            hr = IInkDrawingAttributes_QueryInterface(*out, &IID_IInkDrawingAttributes2, (void **)&copy2);
++            if (SUCCEEDED(hr)) hr = IInkDrawingAttributes2_get_PenTipTransform(source2, &transform);
++            if (SUCCEEDED(hr)) hr = IInkDrawingAttributes2_put_PenTipTransform(copy2, transform);
++            if (SUCCEEDED(hr)) hr = IInkDrawingAttributes2_get_DrawAsHighlighter(source2, &value);
++            if (SUCCEEDED(hr)) hr = IInkDrawingAttributes2_put_DrawAsHighlighter(copy2, value);
++        }
++        else if (query != E_NOINTERFACE) hr = query;
++    }
++    if (SUCCEEDED(hr))
++    {
++        query = IInkDrawingAttributes_QueryInterface(source, &IID_IInkDrawingAttributes4, (void **)&source4);
++        if (SUCCEEDED(query))
++        {
++            hr = IInkDrawingAttributes_QueryInterface(*out, &IID_IInkDrawingAttributes4, (void **)&copy4);
++            if (SUCCEEDED(hr)) hr = IInkDrawingAttributes4_get_IgnoreTilt(source4, &value);
++            if (SUCCEEDED(hr)) hr = IInkDrawingAttributes4_put_IgnoreTilt(copy4, value);
++        }
++        else if (query != E_NOINTERFACE) hr = query;
++    }
++    if (source2) IInkDrawingAttributes2_Release(source2);
++    if (copy2) IInkDrawingAttributes2_Release(copy2);
++    if (source4) IInkDrawingAttributes4_Release(source4);
++    if (copy4) IInkDrawingAttributes4_Release(copy4);
++    if (FAILED(hr))
++    {
++        IInkDrawingAttributes_Release(*out);
++        *out = NULL;
++    }
++    return hr;
++}
+diff --git a/dlls/inkobjcore/events.c b/dlls/inkobjcore/events.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/events.c
+@@ -0,0 +1,141 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++
++struct ink_handler
++{
++    struct list entry;
++    LONG ref;
++    UINT id;
++    EventRegistrationToken token;
++    IUnknown *handler;
++};
++
++static void handler_release(struct ink_handler *handler)
++{
++    if (!InterlockedDecrement(&handler->ref))
++    {
++        IUnknown_Release(handler->handler);
++        free(handler);
++    }
++}
++
++void ink_events_init(struct ink_events *events)
++{
++    InitializeCriticalSection(&events->lock);
++    list_init(&events->handlers);
++    events->next_token = 0;
++    events->closed = FALSE;
++}
++
++void ink_events_clear(struct ink_events *events)
++{
++    struct list handlers = LIST_INIT(handlers);
++    struct ink_handler *handler, *next;
++
++    EnterCriticalSection(&events->lock);
++    events->closed = TRUE;
++    list_move_tail(&handlers, &events->handlers);
++    LeaveCriticalSection(&events->lock);
++    LIST_FOR_EACH_ENTRY_SAFE(handler, next, &handlers, struct ink_handler, entry)
++    {
++        list_remove(&handler->entry);
++        handler_release(handler);
++    }
++}
++
++HRESULT ink_event_add(struct ink_events *events, UINT id, IUnknown *handler, EventRegistrationToken *token)
++{
++    struct ink_handler *entry;
++    HRESULT hr = S_OK;
++
++    if (!token) return E_POINTER;
++    token->value = 0;
++    if (!handler) return E_POINTER;
++    if (!(entry = malloc(sizeof(*entry)))) return E_OUTOFMEMORY;
++    entry->ref = 1;
++    entry->id = id;
++    entry->handler = handler;
++    IUnknown_AddRef(handler);
++    EnterCriticalSection(&events->lock);
++    if (events->closed) hr = RO_E_CLOSED;
++    else if (events->next_token == MAXLONGLONG) hr = E_UNEXPECTED;
++    else
++    {
++        entry->token.value = ++events->next_token;
++        list_add_tail(&events->handlers, &entry->entry);
++        *token = entry->token;
++    }
++    LeaveCriticalSection(&events->lock);
++    if (FAILED(hr)) handler_release(entry);
++    return hr;
++}
++
++HRESULT ink_event_remove(struct ink_events *events, UINT id, EventRegistrationToken token)
++{
++    struct ink_handler *handler, *found = NULL;
++
++    EnterCriticalSection(&events->lock);
++    LIST_FOR_EACH_ENTRY(handler, &events->handlers, struct ink_handler, entry)
++    {
++        if (handler->id != id || handler->token.value != token.value) continue;
++        list_remove(&handler->entry);
++        found = handler;
++        break;
++    }
++    LeaveCriticalSection(&events->lock);
++    if (found) handler_release(found);
++    return S_OK;
++}
++
++HRESULT ink_event_notify(struct ink_events *events, UINT id, void *sender, void *args, ink_event_callback invoke)
++{
++    struct ink_handler *handler, **snapshot = NULL;
++    size_t count = 0, i = 0;
++    HRESULT hr = S_OK, result;
++
++    EnterCriticalSection(&events->lock);
++    if (events->closed)
++    {
++        LeaveCriticalSection(&events->lock);
++        return RO_E_CLOSED;
++    }
++    LIST_FOR_EACH_ENTRY(handler, &events->handlers, struct ink_handler, entry)
++        if (handler->id == id) ++count;
++    if (count && !(snapshot = malloc(count * sizeof(*snapshot))))
++    {
++        LeaveCriticalSection(&events->lock);
++        return E_OUTOFMEMORY;
++    }
++    LIST_FOR_EACH_ENTRY(handler, &events->handlers, struct ink_handler, entry)
++    {
++        if (handler->id != id) continue;
++        InterlockedIncrement(&handler->ref);
++        snapshot[i++] = handler;
++    }
++    LeaveCriticalSection(&events->lock);
++    for (i = 0; i < count; ++i)
++    {
++        result = invoke(snapshot[i]->handler, sender, args);
++        if (SUCCEEDED(hr) && FAILED(result)) hr = result;
++        handler_release(snapshot[i]);
++    }
++    free(snapshot);
++    return hr;
++}
+diff --git a/dlls/inkobjcore/factory.c b/dlls/inkobjcore/factory.c
+--- a/dlls/inkobjcore/factory.c
++++ b/dlls/inkobjcore/factory.c
+@@ -17,8 +17,6 @@
+  */
+ 
+ #include "private.h"
+-#include "initguid.h"
+-#include "activation.h"
+ 
+ struct ink_factory
+ {
+@@ -26,7 +24,7 @@
+     IInkPointFactory IInkPointFactory_iface;
+     IInkPointFactory2 IInkPointFactory2_iface;
+     LONG ref;
+-    BOOL point;
++    enum { FACTORY_DRAWING, FACTORY_POINT, FACTORY_HOST } kind;
+ };
+ 
+ static struct ink_factory *impl_from_IActivationFactory(IActivationFactory *iface)
+@@ -43,9 +41,9 @@
+     if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable)
+             || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_IActivationFactory))
+         *out = &impl->IActivationFactory_iface;
+-    else if (impl->point && IsEqualGUID(iid, &IID_IInkPointFactory))
++    else if (impl->kind == FACTORY_POINT && IsEqualGUID(iid, &IID_IInkPointFactory))
+         *out = &impl->IInkPointFactory_iface;
+-    else if (impl->point && IsEqualGUID(iid, &IID_IInkPointFactory2))
++    else if (impl->kind == FACTORY_POINT && IsEqualGUID(iid, &IID_IInkPointFactory2))
+         *out = &impl->IInkPointFactory2_iface;
+     else return E_NOINTERFACE;
+     IActivationFactory_AddRef(iface);
+@@ -68,14 +66,14 @@
+ static HRESULT WINAPI factory_GetIids(IActivationFactory *iface, ULONG *count, IID **iids)
+ {
+     struct ink_factory *impl = impl_from_IActivationFactory(iface);
+-    ULONG size = impl->point ? 3 : 1;
++    ULONG size = impl->kind == FACTORY_POINT ? 3 : 1;
+ 
+     if (!count || !iids) return E_POINTER;
+     *count = 0;
+     *iids = NULL;
+     if (!(*iids = CoTaskMemAlloc(size * sizeof(**iids)))) return E_OUTOFMEMORY;
+     (*iids)[0] = IID_IActivationFactory;
+-    if (impl->point)
++    if (impl->kind == FACTORY_POINT)
+     {
+         (*iids)[1] = IID_IInkPointFactory;
+         (*iids)[2] = IID_IInkPointFactory2;
+@@ -87,9 +85,10 @@
+ static HRESULT WINAPI factory_GetRuntimeClassName(IActivationFactory *iface, HSTRING *name)
+ {
+     struct ink_factory *impl = impl_from_IActivationFactory(iface);
+-    const WCHAR *class = impl->point ? RuntimeClass_Windows_UI_Input_Inking_InkPoint
++    const WCHAR *class = impl->kind == FACTORY_POINT ? RuntimeClass_Windows_UI_Input_Inking_InkPoint
+             : RuntimeClass_Windows_UI_Input_Inking_InkDrawingAttributes;
+ 
++    if (impl->kind == FACTORY_HOST) class = RuntimeClass_Windows_UI_Input_Inking_Core_CoreInkPresenterHost;
+     if (!name) return E_POINTER;
+     return WindowsCreateString(class, wcslen(class), name);
+ }
+@@ -105,7 +104,8 @@
+ {
+     if (!out) return E_POINTER;
+     *out = NULL;
+-    if (impl_from_IActivationFactory(iface)->point) return E_NOTIMPL;
++    if (impl_from_IActivationFactory(iface)->kind == FACTORY_POINT) return E_NOTIMPL;
++    if (impl_from_IActivationFactory(iface)->kind == FACTORY_HOST) return ink_core_host_create(out);
+     return ink_drawing_attributes_create((IInkDrawingAttributes **)out);
+ }
+ 
+@@ -147,9 +147,10 @@
+ 
+ static struct ink_factory point_factory =
+ {
+-    {&factory_vtbl}, {&point_factory_vtbl}, {&point_factory2_vtbl}, 0, TRUE,
++    {&factory_vtbl}, {&point_factory_vtbl}, {&point_factory2_vtbl}, 0, FACTORY_POINT,
+ };
+ static struct ink_factory drawing_factory = {{&factory_vtbl}};
++static struct ink_factory host_factory = {{&factory_vtbl}, {0}, {0}, 0, FACTORY_HOST};
+ 
+ HRESULT WINAPI DllGetActivationFactory(HSTRING name, IActivationFactory **out)
+ {
+@@ -163,5 +164,12 @@
+     if (!wcscmp(class, RuntimeClass_Windows_UI_Input_Inking_InkDrawingAttributes))
+         return IActivationFactory_QueryInterface(&drawing_factory.IActivationFactory_iface,
+                 &IID_IActivationFactory, (void **)out);
++    if (!wcscmp(class, RuntimeClass_Windows_UI_Input_Inking_Core_CoreInkPresenterHost))
++        return IActivationFactory_QueryInterface(&host_factory.IActivationFactory_iface,
++                &IID_IActivationFactory, (void **)out);
++    if (!wcscmp(class, RuntimeClass_Windows_UI_Input_Inking_Core_CoreWetStrokeUpdateSource))
++        return ink_source_get_factory(TRUE, out);
++    if (!wcscmp(class, RuntimeClass_Windows_UI_Input_Inking_Core_CoreInkIndependentInputSource))
++        return ink_source_get_factory(FALSE, out);
+     return CLASS_E_CLASSNOTAVAILABLE;
+ }
+diff --git a/dlls/inkobjcore/presenter.c b/dlls/inkobjcore/presenter.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/presenter.c
+@@ -0,0 +1,425 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(ink);
++
++struct ink_presenter;
++
++struct stroke_input
++{
++    IInkStrokeInput IInkStrokeInput_iface;
++    struct ink_presenter *owner;
++    IUnknown *marshaler;
++};
++
++struct unprocessed_input
++{
++    IInkUnprocessedInput IInkUnprocessedInput_iface;
++    struct ink_presenter *owner;
++    IUnknown *marshaler;
++};
++
++struct ink_presenter
++{
++    IInkPresenter IInkPresenter_iface;
++    LONG ref, input_enabled, device_types;
++    IUnknown *marshaler;
++    IInkInputProcessingConfiguration *configuration;
++    CRITICAL_SECTION lock;
++    IInkDrawingAttributes *attributes;
++    IInkSynchronizer *synchronizer;
++    struct stroke_input stroke;
++    struct unprocessed_input unprocessed;
++    struct ink_events events;
++};
++
++static struct ink_presenter *impl_from_IInkPresenter(IInkPresenter *iface)
++{
++    return CONTAINING_RECORD(iface, struct ink_presenter, IInkPresenter_iface);
++}
++
++static HRESULT WINAPI presenter_QueryInterface(IInkPresenter *iface, REFIID iid, void **out)
++{
++    struct ink_presenter *impl = impl_from_IInkPresenter(iface);
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable)
++            || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_IInkPresenter))
++    {
++        *out = iface;
++        IInkPresenter_AddRef(iface);
++        return S_OK;
++    }
++    if (IsEqualGUID(iid, &IID_IMarshal)) return IUnknown_QueryInterface(impl->marshaler, iid, out);
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI presenter_AddRef(IInkPresenter *iface)
++{
++    return InterlockedIncrement(&impl_from_IInkPresenter(iface)->ref);
++}
++
++static ULONG WINAPI presenter_Release(IInkPresenter *iface)
++{
++    struct ink_presenter *impl = impl_from_IInkPresenter(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++
++    if (!ref)
++    {
++        ink_events_clear(&impl->events);
++        DeleteCriticalSection(&impl->events.lock);
++        if (impl->stroke.marshaler) IUnknown_Release(impl->stroke.marshaler);
++        if (impl->unprocessed.marshaler) IUnknown_Release(impl->unprocessed.marshaler);
++        if (impl->attributes) IInkDrawingAttributes_Release(impl->attributes);
++        if (impl->synchronizer) IInkSynchronizer_Release(impl->synchronizer);
++        if (impl->configuration) IInkInputProcessingConfiguration_Release(impl->configuration);
++        if (impl->marshaler) IUnknown_Release(impl->marshaler);
++        DeleteCriticalSection(&impl->lock);
++        free(impl);
++        InterlockedDecrement(&ink_object_count);
++    }
++    return ref;
++}
++
++static HRESULT WINAPI presenter_GetIids(IInkPresenter *iface, ULONG *count, IID **iids)
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = NULL;
++    if (!(*iids = CoTaskMemAlloc(sizeof(**iids)))) return E_OUTOFMEMORY;
++    **iids = IID_IInkPresenter;
++    *count = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI presenter_GetRuntimeClassName(IInkPresenter *iface, HSTRING *name)
++{
++    const WCHAR *class = RuntimeClass_Windows_UI_Input_Inking_InkPresenter;
++    if (!name) return E_POINTER;
++    return WindowsCreateString(class, wcslen(class), name);
++}
++
++static HRESULT WINAPI presenter_GetTrustLevel(IInkPresenter *iface, TrustLevel *level)
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI presenter_get_IsInputEnabled(IInkPresenter *iface, boolean *value)
++{
++    if (!value) return E_POINTER;
++    *value = InterlockedCompareExchange(&impl_from_IInkPresenter(iface)->input_enabled, 0, 0);
++    return S_OK;
++}
++
++static HRESULT WINAPI presenter_put_IsInputEnabled(IInkPresenter *iface, boolean value)
++{
++    InterlockedExchange(&impl_from_IInkPresenter(iface)->input_enabled, !!value);
++    return S_OK;
++}
++
++static HRESULT WINAPI presenter_get_InputDeviceTypes(IInkPresenter *iface, enum CoreInputDeviceTypes *value)
++{
++    if (!value) return E_POINTER;
++    *value = InterlockedCompareExchange(&impl_from_IInkPresenter(iface)->device_types, 0, 0);
++    return S_OK;
++}
++
++static HRESULT WINAPI presenter_put_InputDeviceTypes(IInkPresenter *iface, enum CoreInputDeviceTypes value)
++{
++    if (value & ~(CoreInputDeviceTypes_Touch | CoreInputDeviceTypes_Pen | CoreInputDeviceTypes_Mouse))
++        return E_INVALIDARG;
++    InterlockedExchange(&impl_from_IInkPresenter(iface)->device_types, value);
++    return S_OK;
++}
++
++static HRESULT unsupported_output(const char *method, void **value)
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    FIXME("%s is not implemented\n", method);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI presenter_get_UnprocessedInput(IInkPresenter *iface, IInkUnprocessedInput **value)
++{
++    struct ink_presenter *impl = impl_from_IInkPresenter(iface);
++    if (!value) return E_POINTER;
++    *value = &impl->unprocessed.IInkUnprocessedInput_iface;
++    IInkUnprocessedInput_AddRef(*value);
++    return S_OK;
++}
++
++static HRESULT WINAPI presenter_get_StrokeInput(IInkPresenter *iface, IInkStrokeInput **value)
++{
++    struct ink_presenter *impl = impl_from_IInkPresenter(iface);
++    if (!value) return E_POINTER;
++    *value = &impl->stroke.IInkStrokeInput_iface;
++    IInkStrokeInput_AddRef(*value);
++    return S_OK;
++}
++
++static HRESULT WINAPI presenter_get_InputProcessingConfiguration(IInkPresenter *iface, IInkInputProcessingConfiguration **value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IInkPresenter(iface)->configuration;
++    IInkInputProcessingConfiguration_AddRef(*value);
++    return S_OK;
++}
++
++static HRESULT WINAPI presenter_get_StrokeContainer(IInkPresenter *iface, IInkStrokeContainer **value)
++{
++    return unsupported_output(__func__, (void **)value);
++}
++
++static HRESULT WINAPI presenter_put_StrokeContainer(IInkPresenter *iface, IInkStrokeContainer *value)
++{
++    FIXME("stroke storage is not implemented\n");
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI presenter_CopyDefaultDrawingAttributes(IInkPresenter *iface, IInkDrawingAttributes **value)
++{
++    struct ink_presenter *impl = impl_from_IInkPresenter(iface);
++    IInkDrawingAttributes *snapshot;
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection(&impl->lock);
++    snapshot = impl->attributes;
++    IInkDrawingAttributes_AddRef(snapshot);
++    LeaveCriticalSection(&impl->lock);
++    hr = ink_drawing_attributes_clone(snapshot, value);
++    IInkDrawingAttributes_Release(snapshot);
++    return hr;
++}
++
++static HRESULT WINAPI presenter_UpdateDefaultDrawingAttributes(IInkPresenter *iface, IInkDrawingAttributes *value)
++{
++    struct ink_presenter *impl = impl_from_IInkPresenter(iface);
++    IInkDrawingAttributes *copy, *old;
++    HRESULT hr;
++
++    if (FAILED(hr = ink_drawing_attributes_clone(value, &copy))) return hr;
++    EnterCriticalSection(&impl->lock);
++    old = impl->attributes;
++    impl->attributes = copy;
++    LeaveCriticalSection(&impl->lock);
++    IInkDrawingAttributes_Release(old);
++    return S_OK;
++}
++
++static HRESULT WINAPI presenter_ActivateCustomDrying(IInkPresenter *iface, IInkSynchronizer **value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IInkPresenter(iface)->synchronizer;
++    IInkSynchronizer_AddRef(*value);
++    return S_OK;
++}
++
++static HRESULT WINAPI presenter_SetPredefinedConfiguration(IInkPresenter *iface, enum InkPresenterPredefinedConfiguration value)
++{
++    FIXME("predefined configuration %u is not implemented\n", value);
++    return E_NOTIMPL;
++}
++
++#define PRESENTER_EVENT(name, handler_type, event_id) \
++static HRESULT WINAPI presenter_add_##name(IInkPresenter *iface, handler_type *handler, EventRegistrationToken *token) \
++{ \
++    return ink_event_add(&impl_from_IInkPresenter(iface)->events, event_id, (IUnknown *)handler, token); \
++} \
++static HRESULT WINAPI presenter_remove_##name(IInkPresenter *iface, EventRegistrationToken token) \
++{ \
++    return ink_event_remove(&impl_from_IInkPresenter(iface)->events, event_id, token); \
++}
++
++PRESENTER_EVENT(StrokesCollected, ITypedEventHandler_InkPresenter_InkStrokesCollectedEventArgs, 0)
++PRESENTER_EVENT(StrokesErased, ITypedEventHandler_InkPresenter_InkStrokesErasedEventArgs, 1)
++
++static const IInkPresenterVtbl presenter_vtbl =
++{
++    presenter_QueryInterface, presenter_AddRef, presenter_Release,
++    presenter_GetIids, presenter_GetRuntimeClassName, presenter_GetTrustLevel,
++    presenter_get_IsInputEnabled, presenter_put_IsInputEnabled,
++    presenter_get_InputDeviceTypes, presenter_put_InputDeviceTypes,
++    presenter_get_UnprocessedInput, presenter_get_StrokeInput,
++    presenter_get_InputProcessingConfiguration, presenter_get_StrokeContainer, presenter_put_StrokeContainer,
++    presenter_CopyDefaultDrawingAttributes, presenter_UpdateDefaultDrawingAttributes,
++    presenter_ActivateCustomDrying, presenter_SetPredefinedConfiguration,
++    presenter_add_StrokesCollected, presenter_remove_StrokesCollected,
++    presenter_add_StrokesErased, presenter_remove_StrokesErased,
++};
++
++#define INPUT_INSPECTABLE(prefix, type, impl_type, class_name) \
++static impl_type *prefix##_impl(type *iface) \
++{ return CONTAINING_RECORD(iface, impl_type, type##_iface); } \
++static HRESULT WINAPI prefix##_QueryInterface(type *iface, REFIID iid, void **out) \
++{ \
++    impl_type *impl = prefix##_impl(iface); \
++    if (!out) return E_POINTER; \
++    *out = NULL; \
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable) \
++            || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_##type)) \
++    { \
++        *out = iface; \
++        IInkPresenter_AddRef(&impl->owner->IInkPresenter_iface); \
++        return S_OK; \
++    } \
++    if (IsEqualGUID(iid, &IID_IMarshal)) return IUnknown_QueryInterface(impl->marshaler, iid, out); \
++    return E_NOINTERFACE; \
++} \
++static ULONG WINAPI prefix##_AddRef(type *iface) \
++{ return IInkPresenter_AddRef(&prefix##_impl(iface)->owner->IInkPresenter_iface); } \
++static ULONG WINAPI prefix##_Release(type *iface) \
++{ return IInkPresenter_Release(&prefix##_impl(iface)->owner->IInkPresenter_iface); } \
++static HRESULT WINAPI prefix##_GetIids(type *iface, ULONG *count, IID **iids) \
++{ \
++    if (!count || !iids) return E_POINTER; \
++    *count = 0; \
++    *iids = NULL; \
++    if (!(*iids = CoTaskMemAlloc(sizeof(**iids)))) return E_OUTOFMEMORY; \
++    **iids = IID_##type; \
++    *count = 1; \
++    return S_OK; \
++} \
++static HRESULT WINAPI prefix##_GetRuntimeClassName(type *iface, HSTRING *name) \
++{ \
++    const WCHAR *class = class_name; \
++    if (!name) return E_POINTER; \
++    return WindowsCreateString(class, wcslen(class), name); \
++} \
++static HRESULT WINAPI prefix##_GetTrustLevel(type *iface, TrustLevel *level) \
++{ \
++    if (!level) return E_POINTER; \
++    *level = BaseTrust; \
++    return S_OK; \
++} \
++static HRESULT WINAPI prefix##_get_InkPresenter(type *iface, IInkPresenter **value) \
++{ \
++    if (!value) return E_POINTER; \
++    *value = &prefix##_impl(iface)->owner->IInkPresenter_iface; \
++    IInkPresenter_AddRef(*value); \
++    return S_OK; \
++}
++
++INPUT_INSPECTABLE(stroke, IInkStrokeInput, struct stroke_input, RuntimeClass_Windows_UI_Input_Inking_InkStrokeInput)
++INPUT_INSPECTABLE(unprocessed, IInkUnprocessedInput, struct unprocessed_input, RuntimeClass_Windows_UI_Input_Inking_InkUnprocessedInput)
++
++#define INPUT_EVENT(prefix, type, handler_type, name, id) \
++static HRESULT WINAPI prefix##_add_##name(type *iface, handler_type *handler, EventRegistrationToken *token) \
++{ return ink_event_add(&prefix##_impl(iface)->owner->events, id, (IUnknown *)handler, token); } \
++static HRESULT WINAPI prefix##_remove_##name(type *iface, EventRegistrationToken token) \
++{ return ink_event_remove(&prefix##_impl(iface)->owner->events, id, token); }
++
++INPUT_EVENT(stroke, IInkStrokeInput, ITypedEventHandler_InkStrokeInput_PointerEventArgs, StrokeStarted, INK_STROKE_STARTED)
++INPUT_EVENT(stroke, IInkStrokeInput, ITypedEventHandler_InkStrokeInput_PointerEventArgs, StrokeContinued, INK_STROKE_CONTINUED)
++INPUT_EVENT(stroke, IInkStrokeInput, ITypedEventHandler_InkStrokeInput_PointerEventArgs, StrokeEnded, INK_STROKE_ENDED)
++INPUT_EVENT(stroke, IInkStrokeInput, ITypedEventHandler_InkStrokeInput_PointerEventArgs, StrokeCanceled, INK_STROKE_CANCELED)
++INPUT_EVENT(unprocessed, IInkUnprocessedInput, ITypedEventHandler_InkUnprocessedInput_PointerEventArgs, PointerEntered, INK_POINTER_ENTERED)
++INPUT_EVENT(unprocessed, IInkUnprocessedInput, ITypedEventHandler_InkUnprocessedInput_PointerEventArgs, PointerHovered, INK_POINTER_HOVERED)
++INPUT_EVENT(unprocessed, IInkUnprocessedInput, ITypedEventHandler_InkUnprocessedInput_PointerEventArgs, PointerExited, INK_POINTER_EXITED)
++INPUT_EVENT(unprocessed, IInkUnprocessedInput, ITypedEventHandler_InkUnprocessedInput_PointerEventArgs, PointerPressed, INK_POINTER_PRESSED)
++INPUT_EVENT(unprocessed, IInkUnprocessedInput, ITypedEventHandler_InkUnprocessedInput_PointerEventArgs, PointerMoved, INK_POINTER_MOVED)
++INPUT_EVENT(unprocessed, IInkUnprocessedInput, ITypedEventHandler_InkUnprocessedInput_PointerEventArgs, PointerReleased, INK_POINTER_RELEASED)
++INPUT_EVENT(unprocessed, IInkUnprocessedInput, ITypedEventHandler_InkUnprocessedInput_PointerEventArgs, PointerLost, INK_POINTER_LOST)
++
++static const IInkStrokeInputVtbl stroke_vtbl =
++{
++    stroke_QueryInterface, stroke_AddRef, stroke_Release,
++    stroke_GetIids, stroke_GetRuntimeClassName, stroke_GetTrustLevel,
++    stroke_add_StrokeStarted, stroke_remove_StrokeStarted,
++    stroke_add_StrokeContinued, stroke_remove_StrokeContinued,
++    stroke_add_StrokeEnded, stroke_remove_StrokeEnded,
++    stroke_add_StrokeCanceled, stroke_remove_StrokeCanceled, stroke_get_InkPresenter,
++};
++
++static const IInkUnprocessedInputVtbl unprocessed_vtbl =
++{
++    unprocessed_QueryInterface, unprocessed_AddRef, unprocessed_Release,
++    unprocessed_GetIids, unprocessed_GetRuntimeClassName, unprocessed_GetTrustLevel,
++    unprocessed_add_PointerEntered, unprocessed_remove_PointerEntered,
++    unprocessed_add_PointerHovered, unprocessed_remove_PointerHovered,
++    unprocessed_add_PointerExited, unprocessed_remove_PointerExited,
++    unprocessed_add_PointerPressed, unprocessed_remove_PointerPressed,
++    unprocessed_add_PointerMoved, unprocessed_remove_PointerMoved,
++    unprocessed_add_PointerReleased, unprocessed_remove_PointerReleased,
++    unprocessed_add_PointerLost, unprocessed_remove_PointerLost, unprocessed_get_InkPresenter,
++};
++
++static HRESULT invoke_stroke(IUnknown *handler, void *sender, void *args)
++{
++    return ITypedEventHandler_InkStrokeInput_PointerEventArgs_Invoke(
++            (ITypedEventHandler_InkStrokeInput_PointerEventArgs *)handler, sender, args);
++}
++
++static HRESULT invoke_unprocessed(IUnknown *handler, void *sender, void *args)
++{
++    return ITypedEventHandler_InkUnprocessedInput_PointerEventArgs_Invoke(
++            (ITypedEventHandler_InkUnprocessedInput_PointerEventArgs *)handler, sender, args);
++}
++
++HRESULT ink_presenter_notify_pointer(IInkPresenter *iface, enum ink_pointer_event id, IPointerEventArgs *args)
++{
++    struct ink_presenter *impl = impl_from_IInkPresenter(iface);
++    HRESULT hr;
++
++    IInkPresenter_AddRef(iface);
++    if (id >= INK_STROKE_STARTED && id <= INK_STROKE_CANCELED)
++        hr = ink_event_notify(&impl->events, id, &impl->stroke.IInkStrokeInput_iface, args, invoke_stroke);
++    else if (id >= INK_POINTER_ENTERED && id <= INK_POINTER_LOST)
++        hr = ink_event_notify(&impl->events, id, &impl->unprocessed.IInkUnprocessedInput_iface, args, invoke_unprocessed);
++    else hr = E_INVALIDARG;
++    IInkPresenter_Release(iface);
++    return hr;
++}
++
++HRESULT ink_presenter_create(IInkPresenter **out)
++{
++    struct ink_presenter *impl;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->IInkPresenter_iface.lpVtbl = &presenter_vtbl;
++    impl->ref = 1;
++    impl->input_enabled = TRUE;
++    impl->device_types = CoreInputDeviceTypes_Pen;
++    InitializeCriticalSection(&impl->lock);
++    ink_events_init(&impl->events);
++    impl->stroke.IInkStrokeInput_iface.lpVtbl = &stroke_vtbl;
++    impl->stroke.owner = impl;
++    impl->unprocessed.IInkUnprocessedInput_iface.lpVtbl = &unprocessed_vtbl;
++    impl->unprocessed.owner = impl;
++    InterlockedIncrement(&ink_object_count);
++    hr = CoCreateFreeThreadedMarshaler((IUnknown *)&impl->IInkPresenter_iface, &impl->marshaler);
++    if (SUCCEEDED(hr)) hr = ink_input_configuration_create(&impl->configuration);
++    if (SUCCEEDED(hr)) hr = ink_drawing_attributes_create(&impl->attributes);
++    if (SUCCEEDED(hr)) hr = ink_synchronizer_create(&impl->synchronizer);
++    if (SUCCEEDED(hr)) hr = CoCreateFreeThreadedMarshaler((IUnknown *)&impl->stroke.IInkStrokeInput_iface, &impl->stroke.marshaler);
++    if (SUCCEEDED(hr)) hr = CoCreateFreeThreadedMarshaler((IUnknown *)&impl->unprocessed.IInkUnprocessedInput_iface, &impl->unprocessed.marshaler);
++    if (FAILED(hr)) IInkPresenter_Release(&impl->IInkPresenter_iface);
++    else *out = &impl->IInkPresenter_iface;
++    return hr;
++}
+diff --git a/dlls/inkobjcore/private.h b/dlls/inkobjcore/private.h
+--- a/dlls/inkobjcore/private.h
++++ b/dlls/inkobjcore/private.h
+@@ -28,15 +28,68 @@
+ #include "objbase.h"
+ #include "winstring.h"
+ #define WIDL_using_Windows_Foundation
++#define WIDL_using_Windows_Foundation_Collections
+ #define WIDL_using_Windows_Foundation_Numerics
+ #define WIDL_using_Windows_UI
+ #define WIDL_using_Windows_UI_Input_Inking
++#define WIDL_using_Windows_UI_Core
++#define WIDL_using_Windows_UI_Composition
++#define WIDL_using_Windows_UI_Input_Inking_Core
+ #include "windows.ui.input.inking.h"
++#include "windows.ui.input.inking.core.h"
++#include "activation.h"
++
++#include "wine/list.h"
++
++struct ink_events
++{
++    CRITICAL_SECTION lock;
++    struct list handlers;
++    LONGLONG next_token;
++    BOOL closed;
++};
++
++typedef HRESULT (*ink_event_callback)(IUnknown *handler, void *sender, void *args);
++enum ink_pointer_event
++{
++    INK_STROKE_STARTED = 16,
++    INK_STROKE_CONTINUED,
++    INK_STROKE_ENDED,
++    INK_STROKE_CANCELED,
++    INK_POINTER_ENTERED = 32,
++    INK_POINTER_HOVERED,
++    INK_POINTER_EXITED,
++    INK_POINTER_PRESSED,
++    INK_POINTER_MOVED,
++    INK_POINTER_RELEASED,
++    INK_POINTER_LOST
++};
++void ink_events_init(struct ink_events *events);
++void ink_events_clear(struct ink_events *events);
++HRESULT ink_event_add(struct ink_events *events, UINT id, IUnknown *handler, EventRegistrationToken *token);
++HRESULT ink_event_remove(struct ink_events *events, UINT id, EventRegistrationToken token);
++HRESULT ink_event_notify(struct ink_events *events, UINT id, void *sender, void *args, ink_event_callback invoke);
++
++struct ink_pending_stroke
++{
++    struct list entry;
++    IInkStroke *stroke;
++};
++
++HRESULT ink_stroke_view_take(struct list *strokes, IVectorView_InkStroke **out);
++HRESULT ink_synchronizer_create(IInkSynchronizer **out);
++HRESULT ink_synchronizer_queue(IInkSynchronizer *iface, IInkStroke *stroke);
+ 
+ extern LONG ink_object_count, ink_factory_refs;
+ HRESULT ink_point_create(struct Point position, float pressure, float tilt_x, float tilt_y,
+         UINT64 timestamp, IInkPoint **out);
+ HRESULT ink_drawing_attributes_create(IInkDrawingAttributes **out);
++HRESULT ink_drawing_attributes_clone(IInkDrawingAttributes *source, IInkDrawingAttributes **out);
++HRESULT ink_input_configuration_create(IInkInputProcessingConfiguration **out);
++HRESULT ink_presenter_create(IInkPresenter **out);
++HRESULT ink_presenter_notify_pointer(IInkPresenter *iface, enum ink_pointer_event id, IPointerEventArgs *args);
++HRESULT ink_core_host_create(IInspectable **out);
++HRESULT ink_source_get_factory(BOOL wet, IActivationFactory **out);
+ 
+ #define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
+     static inline impl_type *impl_from( iface_type *iface )                                        \
+diff --git a/dlls/inkobjcore/source.c b/dlls/inkobjcore/source.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/source.c
+@@ -0,0 +1,306 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++
++struct core_source
++{
++    ICoreWetStrokeUpdateSource ICoreWetStrokeUpdateSource_iface;
++    ICoreInkIndependentInputSource ICoreInkIndependentInputSource_iface;
++    LONG ref;
++    BOOL wet;
++    IUnknown *marshaler;
++    IInkPresenter *presenter;
++    struct ink_events events;
++};
++
++static IUnknown *source_identity(struct core_source *source)
++{
++    if (source->wet) return (IUnknown *)&source->ICoreWetStrokeUpdateSource_iface;
++    return (IUnknown *)&source->ICoreInkIndependentInputSource_iface;
++}
++
++static const WCHAR *source_name(BOOL wet)
++{
++    return wet ? RuntimeClass_Windows_UI_Input_Inking_Core_CoreWetStrokeUpdateSource
++            : RuntimeClass_Windows_UI_Input_Inking_Core_CoreInkIndependentInputSource;
++}
++
++static HRESULT source_query(struct core_source *source, REFIID iid, void **out)
++{
++    const IID *type = source->wet ? &IID_ICoreWetStrokeUpdateSource : &IID_ICoreInkIndependentInputSource;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable)
++            || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, type))
++    {
++        *out = source_identity(source);
++        InterlockedIncrement(&source->ref);
++        return S_OK;
++    }
++    if (IsEqualGUID(iid, &IID_IMarshal)) return IUnknown_QueryInterface(source->marshaler, iid, out);
++    return E_NOINTERFACE;
++}
++
++static ULONG source_release(struct core_source *source)
++{
++    ULONG ref = InterlockedDecrement(&source->ref);
++
++    if (!ref)
++    {
++        ink_events_clear(&source->events);
++        DeleteCriticalSection(&source->events.lock);
++        if (source->presenter) IInkPresenter_Release(source->presenter);
++        if (source->marshaler) IUnknown_Release(source->marshaler);
++        free(source);
++        InterlockedDecrement(&ink_object_count);
++    }
++    return ref;
++}
++
++#define SOURCE_INSPECTABLE(prefix, type) \
++static struct core_source *prefix##_impl(type *iface) \
++{ return CONTAINING_RECORD(iface, struct core_source, type##_iface); } \
++static HRESULT WINAPI prefix##_QueryInterface(type *iface, REFIID iid, void **out) \
++{ return source_query(prefix##_impl(iface), iid, out); } \
++static ULONG WINAPI prefix##_AddRef(type *iface) { return InterlockedIncrement(&prefix##_impl(iface)->ref); } \
++static ULONG WINAPI prefix##_Release(type *iface) { return source_release(prefix##_impl(iface)); } \
++static HRESULT WINAPI prefix##_GetIids(type *iface, ULONG *count, IID **iids) \
++{ \
++    if (!count || !iids) return E_POINTER; \
++    *count = 0; \
++    *iids = NULL; \
++    if (!(*iids = CoTaskMemAlloc(sizeof(**iids)))) return E_OUTOFMEMORY; \
++    **iids = IID_##type; \
++    *count = 1; \
++    return S_OK; \
++} \
++static HRESULT WINAPI prefix##_GetRuntimeClassName(type *iface, HSTRING *name) \
++{ \
++    const WCHAR *class = source_name(prefix##_impl(iface)->wet); \
++    if (!name) return E_POINTER; \
++    return WindowsCreateString(class, wcslen(class), name); \
++} \
++static HRESULT WINAPI prefix##_GetTrustLevel(type *iface, TrustLevel *level) \
++{ \
++    if (!level) return E_POINTER; \
++    *level = BaseTrust; \
++    return S_OK; \
++} \
++static HRESULT WINAPI prefix##_get_InkPresenter(type *iface, IInkPresenter **value) \
++{ \
++    if (!value) return E_POINTER; \
++    *value = prefix##_impl(iface)->presenter; \
++    IInkPresenter_AddRef(*value); \
++    return S_OK; \
++}
++
++SOURCE_INSPECTABLE(wet, ICoreWetStrokeUpdateSource)
++SOURCE_INSPECTABLE(independent, ICoreInkIndependentInputSource)
++
++#define SOURCE_EVENT(prefix, type, handler_type, name, id) \
++static HRESULT WINAPI prefix##_add_##name(type *iface, handler_type *handler, EventRegistrationToken *token) \
++{ return ink_event_add(&prefix##_impl(iface)->events, id, (IUnknown *)handler, token); } \
++static HRESULT WINAPI prefix##_remove_##name(type *iface, EventRegistrationToken token) \
++{ return ink_event_remove(&prefix##_impl(iface)->events, id, token); }
++
++#define WET_EVENT(name, id) SOURCE_EVENT(wet, ICoreWetStrokeUpdateSource, ITypedEventHandler_CoreWetStrokeUpdateSource_CoreWetStrokeUpdateEventArgs, name, id)
++#define POINTER_EVENT(name, id) SOURCE_EVENT(independent, ICoreInkIndependentInputSource, ITypedEventHandler_CoreInkIndependentInputSource_PointerEventArgs, name, id)
++WET_EVENT(WetStrokeStarting, 0)
++WET_EVENT(WetStrokeContinuing, 1)
++WET_EVENT(WetStrokeStopping, 2)
++WET_EVENT(WetStrokeCompleted, 3)
++WET_EVENT(WetStrokeCanceled, 4)
++POINTER_EVENT(PointerEntering, 0)
++POINTER_EVENT(PointerHovering, 1)
++POINTER_EVENT(PointerExiting, 2)
++POINTER_EVENT(PointerPressing, 3)
++POINTER_EVENT(PointerMoving, 4)
++POINTER_EVENT(PointerReleasing, 5)
++POINTER_EVENT(PointerLost, 6)
++
++static const ICoreWetStrokeUpdateSourceVtbl wet_vtbl =
++{
++    wet_QueryInterface, wet_AddRef, wet_Release, wet_GetIids, wet_GetRuntimeClassName, wet_GetTrustLevel,
++    wet_add_WetStrokeStarting, wet_remove_WetStrokeStarting,
++    wet_add_WetStrokeContinuing, wet_remove_WetStrokeContinuing,
++    wet_add_WetStrokeStopping, wet_remove_WetStrokeStopping,
++    wet_add_WetStrokeCompleted, wet_remove_WetStrokeCompleted,
++    wet_add_WetStrokeCanceled, wet_remove_WetStrokeCanceled, wet_get_InkPresenter,
++};
++
++static const ICoreInkIndependentInputSourceVtbl independent_vtbl =
++{
++    independent_QueryInterface, independent_AddRef, independent_Release,
++    independent_GetIids, independent_GetRuntimeClassName, independent_GetTrustLevel,
++    independent_add_PointerEntering, independent_remove_PointerEntering,
++    independent_add_PointerHovering, independent_remove_PointerHovering,
++    independent_add_PointerExiting, independent_remove_PointerExiting,
++    independent_add_PointerPressing, independent_remove_PointerPressing,
++    independent_add_PointerMoving, independent_remove_PointerMoving,
++    independent_add_PointerReleasing, independent_remove_PointerReleasing,
++    independent_add_PointerLost, independent_remove_PointerLost, independent_get_InkPresenter,
++};
++
++static HRESULT source_create(BOOL wet, IInkPresenter *presenter, void **out)
++{
++    struct core_source *source;
++    IInkPresenter *retained;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!presenter) return E_POINTER;
++    hr = IInkPresenter_QueryInterface(presenter, &IID_IInkPresenter, (void **)&retained);
++    if (FAILED(hr)) return hr;
++    if (!(source = calloc(1, sizeof(*source))))
++    {
++        IInkPresenter_Release(retained);
++        return E_OUTOFMEMORY;
++    }
++    source->ICoreWetStrokeUpdateSource_iface.lpVtbl = &wet_vtbl;
++    source->ICoreInkIndependentInputSource_iface.lpVtbl = &independent_vtbl;
++    source->ref = 1;
++    source->wet = wet;
++    source->presenter = retained;
++    ink_events_init(&source->events);
++    InterlockedIncrement(&ink_object_count);
++    hr = CoCreateFreeThreadedMarshaler(source_identity(source), &source->marshaler);
++    if (FAILED(hr)) source_release(source);
++    else *out = source_identity(source);
++    return hr;
++}
++
++struct source_factory
++{
++    IActivationFactory IActivationFactory_iface;
++    ICoreWetStrokeUpdateSourceStatics ICoreWetStrokeUpdateSourceStatics_iface;
++    ICoreInkIndependentInputSourceStatics ICoreInkIndependentInputSourceStatics_iface;
++    LONG ref;
++    BOOL wet;
++};
++
++static struct source_factory *impl_from_IActivationFactory(IActivationFactory *iface)
++{
++    return CONTAINING_RECORD(iface, struct source_factory, IActivationFactory_iface);
++}
++
++static HRESULT WINAPI factory_QueryInterface(IActivationFactory *iface, REFIID iid, void **out)
++{
++    struct source_factory *factory = impl_from_IActivationFactory(iface);
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable)
++            || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_IActivationFactory)) *out = iface;
++    else if (factory->wet && IsEqualGUID(iid, &IID_ICoreWetStrokeUpdateSourceStatics))
++        *out = &factory->ICoreWetStrokeUpdateSourceStatics_iface;
++    else if (!factory->wet && IsEqualGUID(iid, &IID_ICoreInkIndependentInputSourceStatics))
++        *out = &factory->ICoreInkIndependentInputSourceStatics_iface;
++    else return E_NOINTERFACE;
++    IActivationFactory_AddRef(iface);
++    return S_OK;
++}
++
++static ULONG WINAPI factory_AddRef(IActivationFactory *iface)
++{
++    InterlockedIncrement(&ink_factory_refs);
++    return InterlockedIncrement(&impl_from_IActivationFactory(iface)->ref);
++}
++
++static ULONG WINAPI factory_Release(IActivationFactory *iface)
++{
++    ULONG ref = InterlockedDecrement(&impl_from_IActivationFactory(iface)->ref);
++    InterlockedDecrement(&ink_factory_refs);
++    return ref;
++}
++
++static HRESULT WINAPI factory_GetIids(IActivationFactory *iface, ULONG *count, IID **iids)
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = NULL;
++    if (!(*iids = CoTaskMemAlloc(2 * sizeof(**iids)))) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_IActivationFactory;
++    (*iids)[1] = impl_from_IActivationFactory(iface)->wet ? IID_ICoreWetStrokeUpdateSourceStatics
++            : IID_ICoreInkIndependentInputSourceStatics;
++    *count = 2;
++    return S_OK;
++}
++
++static HRESULT WINAPI factory_GetRuntimeClassName(IActivationFactory *iface, HSTRING *name)
++{
++    const WCHAR *class = source_name(impl_from_IActivationFactory(iface)->wet);
++    if (!name) return E_POINTER;
++    return WindowsCreateString(class, wcslen(class), name);
++}
++
++static HRESULT WINAPI factory_GetTrustLevel(IActivationFactory *iface, TrustLevel *level)
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI factory_ActivateInstance(IActivationFactory *iface, IInspectable **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    return E_NOTIMPL;
++}
++
++static const IActivationFactoryVtbl factory_vtbl =
++{
++    factory_QueryInterface, factory_AddRef, factory_Release,
++    factory_GetIids, factory_GetRuntimeClassName, factory_GetTrustLevel, factory_ActivateInstance,
++};
++
++DEFINE_IINSPECTABLE(wet_factory, ICoreWetStrokeUpdateSourceStatics, struct source_factory, IActivationFactory_iface)
++DEFINE_IINSPECTABLE(independent_factory, ICoreInkIndependentInputSourceStatics, struct source_factory, IActivationFactory_iface)
++
++static HRESULT WINAPI wet_factory_Create(ICoreWetStrokeUpdateSourceStatics *iface, IInkPresenter *presenter, ICoreWetStrokeUpdateSource **out)
++{
++    return source_create(TRUE, presenter, (void **)out);
++}
++
++static HRESULT WINAPI independent_factory_Create(ICoreInkIndependentInputSourceStatics *iface, IInkPresenter *presenter, ICoreInkIndependentInputSource **out)
++{
++    return source_create(FALSE, presenter, (void **)out);
++}
++
++static const ICoreWetStrokeUpdateSourceStaticsVtbl wet_factory_vtbl =
++{
++    wet_factory_QueryInterface, wet_factory_AddRef, wet_factory_Release,
++    wet_factory_GetIids, wet_factory_GetRuntimeClassName, wet_factory_GetTrustLevel, wet_factory_Create,
++};
++
++static const ICoreInkIndependentInputSourceStaticsVtbl independent_factory_vtbl =
++{
++    independent_factory_QueryInterface, independent_factory_AddRef, independent_factory_Release,
++    independent_factory_GetIids, independent_factory_GetRuntimeClassName, independent_factory_GetTrustLevel, independent_factory_Create,
++};
++
++static struct source_factory wet_factory = {{&factory_vtbl}, {&wet_factory_vtbl}, {0}, 0, TRUE};
++static struct source_factory independent_factory = {{&factory_vtbl}, {0}, {&independent_factory_vtbl}, 0, FALSE};
++
++HRESULT ink_source_get_factory(BOOL wet, IActivationFactory **out)
++{
++    return IActivationFactory_QueryInterface(wet ? &wet_factory.IActivationFactory_iface
++            : &independent_factory.IActivationFactory_iface, &IID_IActivationFactory, (void **)out);
++}
+diff --git a/dlls/inkobjcore/stroke_view.c b/dlls/inkobjcore/stroke_view.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/stroke_view.c
+@@ -0,0 +1,379 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++
++struct stroke_view
++{
++    IVectorView_InkStroke IVectorView_InkStroke_iface;
++    IIterable_InkStroke IIterable_InkStroke_iface;
++    LONG ref;
++    IUnknown *marshaler;
++    UINT32 count;
++    IInkStroke **items;
++};
++
++struct stroke_iterator
++{
++    IIterator_InkStroke IIterator_InkStroke_iface;
++    LONG ref;
++    IUnknown *marshaler;
++    CRITICAL_SECTION lock;
++    struct stroke_view *view;
++    UINT32 index;
++};
++
++static struct stroke_view *impl_from_IVectorView_InkStroke(IVectorView_InkStroke *iface)
++{
++    return CONTAINING_RECORD(iface, struct stroke_view, IVectorView_InkStroke_iface);
++}
++
++static HRESULT WINAPI view_QueryInterface(IVectorView_InkStroke *iface, REFIID iid, void **out)
++{
++    struct stroke_view *view = impl_from_IVectorView_InkStroke(iface);
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable)
++            || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_IVectorView_InkStroke)) *out = iface;
++    else if (IsEqualGUID(iid, &IID_IIterable_InkStroke)) *out = &view->IIterable_InkStroke_iface;
++    else if (IsEqualGUID(iid, &IID_IMarshal)) return IUnknown_QueryInterface(view->marshaler, iid, out);
++    else return E_NOINTERFACE;
++    IVectorView_InkStroke_AddRef(iface);
++    return S_OK;
++}
++
++static ULONG WINAPI view_AddRef(IVectorView_InkStroke *iface)
++{
++    return InterlockedIncrement(&impl_from_IVectorView_InkStroke(iface)->ref);
++}
++
++static ULONG WINAPI view_Release(IVectorView_InkStroke *iface)
++{
++    struct stroke_view *view = impl_from_IVectorView_InkStroke(iface);
++    ULONG ref = InterlockedDecrement(&view->ref);
++    UINT32 i;
++
++    if (!ref)
++    {
++        for (i = 0; i < view->count; ++i) IInkStroke_Release(view->items[i]);
++        if (view->marshaler) IUnknown_Release(view->marshaler);
++        free(view->items);
++        free(view);
++        InterlockedDecrement(&ink_object_count);
++    }
++    return ref;
++}
++
++static HRESULT WINAPI view_GetIids(IVectorView_InkStroke *iface, ULONG *count, IID **iids)
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = NULL;
++    if (!(*iids = CoTaskMemAlloc(2 * sizeof(**iids)))) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_IVectorView_InkStroke;
++    (*iids)[1] = IID_IIterable_InkStroke;
++    *count = 2;
++    return S_OK;
++}
++
++static HRESULT WINAPI view_GetRuntimeClassName(IVectorView_InkStroke *iface, HSTRING *name)
++{
++    const WCHAR *class = L"Windows.Foundation.Collections.IVectorView`1<Windows.UI.Input.Inking.InkStroke>";
++    if (!name) return E_POINTER;
++    return WindowsCreateString(class, wcslen(class), name);
++}
++
++static HRESULT WINAPI view_GetTrustLevel(IVectorView_InkStroke *iface, TrustLevel *level)
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI view_GetAt(IVectorView_InkStroke *iface, UINT32 index, IInkStroke **out)
++{
++    struct stroke_view *view = impl_from_IVectorView_InkStroke(iface);
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (index >= view->count) return E_BOUNDS;
++    *out = view->items[index];
++    IInkStroke_AddRef(*out);
++    return S_OK;
++}
++
++static HRESULT WINAPI view_get_Size(IVectorView_InkStroke *iface, UINT32 *value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IVectorView_InkStroke(iface)->count;
++    return S_OK;
++}
++
++static HRESULT WINAPI view_IndexOf(IVectorView_InkStroke *iface, IInkStroke *item, UINT32 *index, boolean *found)
++{
++    struct stroke_view *view = impl_from_IVectorView_InkStroke(iface);
++    IUnknown *identity, *current;
++    HRESULT hr;
++    UINT32 i;
++
++    if (!index || !found) return E_POINTER;
++    *index = 0;
++    *found = FALSE;
++    if (!item) return S_OK;
++    IVectorView_InkStroke_AddRef(iface);
++    hr = IInkStroke_QueryInterface(item, &IID_IUnknown, (void **)&identity);
++    if (SUCCEEDED(hr))
++    {
++        for (i = 0; i < view->count; ++i)
++        {
++            hr = IInkStroke_QueryInterface(view->items[i], &IID_IUnknown, (void **)&current);
++            if (FAILED(hr)) break;
++            *found = current == identity;
++            IUnknown_Release(current);
++            if (*found)
++            {
++                *index = i;
++                break;
++            }
++        }
++        IUnknown_Release(identity);
++    }
++    IVectorView_InkStroke_Release(iface);
++    return hr;
++}
++
++static HRESULT WINAPI view_GetMany(IVectorView_InkStroke *iface, UINT32 start, UINT32 capacity, IInkStroke **items, UINT32 *count)
++{
++    struct stroke_view *view = impl_from_IVectorView_InkStroke(iface);
++    UINT32 i, actual;
++
++    if (!count || (capacity && !items)) return E_POINTER;
++    *count = 0;
++    if (start > view->count) return E_BOUNDS;
++    IVectorView_InkStroke_AddRef(iface);
++    actual = min(capacity, view->count - start);
++    *count = actual;
++    for (i = 0; i < actual; ++i)
++    {
++        items[i] = view->items[start + i];
++        IInkStroke_AddRef(items[i]);
++    }
++    IVectorView_InkStroke_Release(iface);
++    return S_OK;
++}
++
++static const IVectorView_InkStrokeVtbl view_vtbl =
++{
++    view_QueryInterface, view_AddRef, view_Release, view_GetIids, view_GetRuntimeClassName, view_GetTrustLevel,
++    view_GetAt, view_get_Size, view_IndexOf, view_GetMany,
++};
++
++static struct stroke_iterator *impl_from_IIterator_InkStroke(IIterator_InkStroke *iface)
++{
++    return CONTAINING_RECORD(iface, struct stroke_iterator, IIterator_InkStroke_iface);
++}
++
++static HRESULT WINAPI iterator_QueryInterface(IIterator_InkStroke *iface, REFIID iid, void **out)
++{
++    struct stroke_iterator *iterator = impl_from_IIterator_InkStroke(iface);
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable)
++            || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_IIterator_InkStroke))
++    {
++        *out = iface;
++        IIterator_InkStroke_AddRef(iface);
++        return S_OK;
++    }
++    if (IsEqualGUID(iid, &IID_IMarshal)) return IUnknown_QueryInterface(iterator->marshaler, iid, out);
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI iterator_AddRef(IIterator_InkStroke *iface)
++{
++    return InterlockedIncrement(&impl_from_IIterator_InkStroke(iface)->ref);
++}
++
++static ULONG WINAPI iterator_Release(IIterator_InkStroke *iface)
++{
++    struct stroke_iterator *iterator = impl_from_IIterator_InkStroke(iface);
++    ULONG ref = InterlockedDecrement(&iterator->ref);
++
++    if (!ref)
++    {
++        IVectorView_InkStroke_Release(&iterator->view->IVectorView_InkStroke_iface);
++        if (iterator->marshaler) IUnknown_Release(iterator->marshaler);
++        DeleteCriticalSection(&iterator->lock);
++        free(iterator);
++        InterlockedDecrement(&ink_object_count);
++    }
++    return ref;
++}
++
++static HRESULT WINAPI iterator_GetIids(IIterator_InkStroke *iface, ULONG *count, IID **iids)
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = NULL;
++    if (!(*iids = CoTaskMemAlloc(sizeof(**iids)))) return E_OUTOFMEMORY;
++    **iids = IID_IIterator_InkStroke;
++    *count = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI iterator_GetRuntimeClassName(IIterator_InkStroke *iface, HSTRING *name)
++{
++    const WCHAR *class = L"Windows.Foundation.Collections.IIterator`1<Windows.UI.Input.Inking.InkStroke>";
++    if (!name) return E_POINTER;
++    return WindowsCreateString(class, wcslen(class), name);
++}
++
++static HRESULT WINAPI iterator_GetTrustLevel(IIterator_InkStroke *iface, TrustLevel *level)
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI iterator_get_Current(IIterator_InkStroke *iface, IInkStroke **out)
++{
++    struct stroke_iterator *iterator = impl_from_IIterator_InkStroke(iface);
++    UINT32 index;
++    HRESULT hr;
++
++    IIterator_InkStroke_AddRef(iface);
++    EnterCriticalSection(&iterator->lock);
++    index = iterator->index;
++    LeaveCriticalSection(&iterator->lock);
++    hr = IVectorView_InkStroke_GetAt(&iterator->view->IVectorView_InkStroke_iface, index, out);
++    IIterator_InkStroke_Release(iface);
++    return hr;
++}
++
++static HRESULT WINAPI iterator_get_HasCurrent(IIterator_InkStroke *iface, boolean *value)
++{
++    struct stroke_iterator *iterator = impl_from_IIterator_InkStroke(iface);
++    if (!value) return E_POINTER;
++    EnterCriticalSection(&iterator->lock);
++    *value = iterator->index < iterator->view->count;
++    LeaveCriticalSection(&iterator->lock);
++    return S_OK;
++}
++
++static HRESULT WINAPI iterator_MoveNext(IIterator_InkStroke *iface, boolean *value)
++{
++    struct stroke_iterator *iterator = impl_from_IIterator_InkStroke(iface);
++    if (!value) return E_POINTER;
++    EnterCriticalSection(&iterator->lock);
++    if (iterator->index < iterator->view->count) ++iterator->index;
++    *value = iterator->index < iterator->view->count;
++    LeaveCriticalSection(&iterator->lock);
++    return S_OK;
++}
++
++static HRESULT WINAPI iterator_GetMany(IIterator_InkStroke *iface, UINT32 capacity, IInkStroke **items, UINT32 *count)
++{
++    struct stroke_iterator *iterator = impl_from_IIterator_InkStroke(iface);
++    UINT32 start;
++    HRESULT hr;
++
++    if (!count || (capacity && !items)) return E_POINTER;
++    IIterator_InkStroke_AddRef(iface);
++    EnterCriticalSection(&iterator->lock);
++    start = iterator->index;
++    iterator->index += min(capacity, iterator->view->count - start);
++    LeaveCriticalSection(&iterator->lock);
++    hr = IVectorView_InkStroke_GetMany(&iterator->view->IVectorView_InkStroke_iface, start, capacity, items, count);
++    IIterator_InkStroke_Release(iface);
++    return hr;
++}
++
++static const IIterator_InkStrokeVtbl iterator_vtbl =
++{
++    iterator_QueryInterface, iterator_AddRef, iterator_Release,
++    iterator_GetIids, iterator_GetRuntimeClassName, iterator_GetTrustLevel,
++    iterator_get_Current, iterator_get_HasCurrent, iterator_MoveNext, iterator_GetMany,
++};
++
++DEFINE_IINSPECTABLE(iterable, IIterable_InkStroke, struct stroke_view, IVectorView_InkStroke_iface)
++
++static HRESULT WINAPI iterable_First(IIterable_InkStroke *iface, IIterator_InkStroke **out)
++{
++    struct stroke_view *view = impl_from_IIterable_InkStroke(iface);
++    struct stroke_iterator *iterator;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(iterator = calloc(1, sizeof(*iterator)))) return E_OUTOFMEMORY;
++    iterator->IIterator_InkStroke_iface.lpVtbl = &iterator_vtbl;
++    iterator->ref = 1;
++    iterator->view = view;
++    IVectorView_InkStroke_AddRef(&view->IVectorView_InkStroke_iface);
++    InitializeCriticalSection(&iterator->lock);
++    InterlockedIncrement(&ink_object_count);
++    hr = CoCreateFreeThreadedMarshaler((IUnknown *)&iterator->IIterator_InkStroke_iface, &iterator->marshaler);
++    if (FAILED(hr)) IIterator_InkStroke_Release(&iterator->IIterator_InkStroke_iface);
++    else *out = &iterator->IIterator_InkStroke_iface;
++    return hr;
++}
++
++static const IIterable_InkStrokeVtbl iterable_vtbl =
++{
++    iterable_QueryInterface, iterable_AddRef, iterable_Release,
++    iterable_GetIids, iterable_GetRuntimeClassName, iterable_GetTrustLevel, iterable_First,
++};
++
++HRESULT ink_stroke_view_take(struct list *strokes, IVectorView_InkStroke **out)
++{
++    struct stroke_view *view;
++    struct ink_pending_stroke *stroke, *next;
++    UINT32 count, i = 0;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    count = list_count(strokes);
++    if (!(view = calloc(1, sizeof(*view)))) return E_OUTOFMEMORY;
++    if (count && !(view->items = calloc(count, sizeof(*view->items))))
++    {
++        free(view);
++        return E_OUTOFMEMORY;
++    }
++    view->IVectorView_InkStroke_iface.lpVtbl = &view_vtbl;
++    view->IIterable_InkStroke_iface.lpVtbl = &iterable_vtbl;
++    view->ref = 1;
++    InterlockedIncrement(&ink_object_count);
++    hr = CoCreateFreeThreadedMarshaler((IUnknown *)&view->IVectorView_InkStroke_iface, &view->marshaler);
++    if (FAILED(hr))
++    {
++        IVectorView_InkStroke_Release(&view->IVectorView_InkStroke_iface);
++        return hr;
++    }
++    LIST_FOR_EACH_ENTRY_SAFE(stroke, next, strokes, struct ink_pending_stroke, entry)
++    {
++        list_remove(&stroke->entry);
++        view->items[i++] = stroke->stroke;
++        free(stroke);
++    }
++    view->count = count;
++    *out = &view->IVectorView_InkStroke_iface;
++    return S_OK;
++}
+diff --git a/dlls/inkobjcore/synchronizer.c b/dlls/inkobjcore/synchronizer.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/synchronizer.c
+@@ -0,0 +1,207 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++
++struct ink_synchronizer
++{
++    IInkSynchronizer IInkSynchronizer_iface;
++    LONG ref;
++    IUnknown *marshaler;
++    CRITICAL_SECTION lock;
++    struct list pending;
++    IVectorView_InkStroke *batch;
++    enum { DRY_IDLE, DRY_PREPARING, DRY_ACTIVE } phase;
++};
++
++static struct ink_synchronizer *impl_from_IInkSynchronizer(IInkSynchronizer *iface)
++{
++    return CONTAINING_RECORD(iface, struct ink_synchronizer, IInkSynchronizer_iface);
++}
++
++static HRESULT WINAPI synchronizer_QueryInterface(IInkSynchronizer *iface, REFIID iid, void **out)
++{
++    struct ink_synchronizer *impl = impl_from_IInkSynchronizer(iface);
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable)
++            || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_IInkSynchronizer))
++    {
++        *out = iface;
++        IInkSynchronizer_AddRef(iface);
++        return S_OK;
++    }
++    if (IsEqualGUID(iid, &IID_IMarshal)) return IUnknown_QueryInterface(impl->marshaler, iid, out);
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI synchronizer_AddRef(IInkSynchronizer *iface)
++{
++    return InterlockedIncrement(&impl_from_IInkSynchronizer(iface)->ref);
++}
++
++static ULONG WINAPI synchronizer_Release(IInkSynchronizer *iface)
++{
++    struct ink_synchronizer *impl = impl_from_IInkSynchronizer(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++    struct ink_pending_stroke *stroke, *next;
++
++    if (!ref)
++    {
++        LIST_FOR_EACH_ENTRY_SAFE(stroke, next, &impl->pending, struct ink_pending_stroke, entry)
++        {
++            list_remove(&stroke->entry);
++            IInkStroke_Release(stroke->stroke);
++            free(stroke);
++        }
++        if (impl->batch) IVectorView_InkStroke_Release(impl->batch);
++        if (impl->marshaler) IUnknown_Release(impl->marshaler);
++        DeleteCriticalSection(&impl->lock);
++        free(impl);
++        InterlockedDecrement(&ink_object_count);
++    }
++    return ref;
++}
++
++static HRESULT WINAPI synchronizer_GetIids(IInkSynchronizer *iface, ULONG *count, IID **iids)
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = NULL;
++    if (!(*iids = CoTaskMemAlloc(sizeof(**iids)))) return E_OUTOFMEMORY;
++    **iids = IID_IInkSynchronizer;
++    *count = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI synchronizer_GetRuntimeClassName(IInkSynchronizer *iface, HSTRING *name)
++{
++    const WCHAR *class = RuntimeClass_Windows_UI_Input_Inking_InkSynchronizer;
++    if (!name) return E_POINTER;
++    return WindowsCreateString(class, wcslen(class), name);
++}
++
++static HRESULT WINAPI synchronizer_GetTrustLevel(IInkSynchronizer *iface, TrustLevel *level)
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI synchronizer_BeginDry(IInkSynchronizer *iface, IVectorView_InkStroke **out)
++{
++    struct ink_synchronizer *impl = impl_from_IInkSynchronizer(iface);
++    struct list batch = LIST_INIT(batch);
++    IVectorView_InkStroke *view;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    EnterCriticalSection(&impl->lock);
++    if (impl->phase != DRY_IDLE)
++    {
++        LeaveCriticalSection(&impl->lock);
++        return E_ILLEGAL_METHOD_CALL;
++    }
++    impl->phase = DRY_PREPARING;
++    list_move_tail(&batch, &impl->pending);
++    LeaveCriticalSection(&impl->lock);
++    hr = ink_stroke_view_take(&batch, &view);
++    EnterCriticalSection(&impl->lock);
++    if (FAILED(hr))
++    {
++        list_move_head(&impl->pending, &batch);
++        impl->phase = DRY_IDLE;
++    }
++    else
++    {
++        impl->batch = view;
++        impl->phase = DRY_ACTIVE;
++        IVectorView_InkStroke_AddRef(view);
++        *out = view;
++    }
++    LeaveCriticalSection(&impl->lock);
++    return hr;
++}
++
++static HRESULT WINAPI synchronizer_EndDry(IInkSynchronizer *iface)
++{
++    struct ink_synchronizer *impl = impl_from_IInkSynchronizer(iface);
++    IVectorView_InkStroke *batch;
++
++    EnterCriticalSection(&impl->lock);
++    if (impl->phase == DRY_PREPARING)
++    {
++        LeaveCriticalSection(&impl->lock);
++        return E_ILLEGAL_METHOD_CALL;
++    }
++    batch = impl->batch;
++    impl->batch = NULL;
++    impl->phase = DRY_IDLE;
++    LeaveCriticalSection(&impl->lock);
++    if (batch) IVectorView_InkStroke_Release(batch);
++    return S_OK;
++}
++
++static const IInkSynchronizerVtbl synchronizer_vtbl =
++{
++    synchronizer_QueryInterface, synchronizer_AddRef, synchronizer_Release,
++    synchronizer_GetIids, synchronizer_GetRuntimeClassName, synchronizer_GetTrustLevel,
++    synchronizer_BeginDry, synchronizer_EndDry,
++};
++
++HRESULT ink_synchronizer_create(IInkSynchronizer **out)
++{
++    struct ink_synchronizer *impl;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->IInkSynchronizer_iface.lpVtbl = &synchronizer_vtbl;
++    impl->ref = 1;
++    InitializeCriticalSection(&impl->lock);
++    list_init(&impl->pending);
++    InterlockedIncrement(&ink_object_count);
++    hr = CoCreateFreeThreadedMarshaler((IUnknown *)&impl->IInkSynchronizer_iface, &impl->marshaler);
++    if (FAILED(hr)) IInkSynchronizer_Release(&impl->IInkSynchronizer_iface);
++    else *out = &impl->IInkSynchronizer_iface;
++    return hr;
++}
++
++HRESULT ink_synchronizer_queue(IInkSynchronizer *iface, IInkStroke *stroke)
++{
++    struct ink_synchronizer *impl;
++    struct ink_pending_stroke *pending;
++    HRESULT hr;
++
++    if (!iface || !stroke) return E_POINTER;
++    if (iface->lpVtbl != &synchronizer_vtbl) return E_INVALIDARG;
++    impl = impl_from_IInkSynchronizer(iface);
++    if (!(pending = malloc(sizeof(*pending)))) return E_OUTOFMEMORY;
++    hr = IInkStroke_QueryInterface(stroke, &IID_IInkStroke, (void **)&pending->stroke);
++    if (FAILED(hr))
++    {
++        free(pending);
++        return hr;
++    }
++    EnterCriticalSection(&impl->lock);
++    list_add_tail(&impl->pending, &pending->entry);
++    LeaveCriticalSection(&impl->lock);
++    return S_OK;
++}
+diff --git a/include/Makefile.in b/include/Makefile.in
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -1095,6 +1095,7 @@
+ 	windows.ui.idl \
+ 	windows.ui.input.idl \
+ 	windows.ui.input.inking.idl \
++	windows.ui.input.inking.core.idl \
+ 	windows.ui.notifications.idl \
+ 	windows.ui.viewmanagement.core.idl \
+ 	windows.ui.viewmanagement.idl \
+diff --git a/include/windows.ui.core.idl b/include/windows.ui.core.idl
+--- a/include/windows.ui.core.idl
++++ b/include/windows.ui.core.idl
+@@ -43,6 +43,17 @@
+ }
+ 
+ namespace Windows.UI.Core {
++    typedef enum CoreInputDeviceTypes CoreInputDeviceTypes;
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), flags]
++    enum CoreInputDeviceTypes
++    {
++        None = 0,
++        Touch = 1,
++        Pen = 2,
++        Mouse = 4
++    };
++
+     typedef enum CoreAcceleratorKeyEventType CoreAcceleratorKeyEventType;
+     typedef enum CoreCursorType CoreCursorType;
+     typedef enum CoreDispatcherPriority CoreDispatcherPriority;
+diff --git a/include/windows.ui.input.inking.core.idl b/include/windows.ui.input.inking.core.idl
+new file mode 100644
+--- /dev/null
++++ b/include/windows.ui.input.inking.core.idl
+@@ -0,0 +1,151 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifdef __WIDL__
++#pragma winrt ns_prefix
++#endif
++
++import "windows.ui.input.inking.idl";
++import "windows.ui.composition.idl";
++
++namespace Windows.UI.Input.Inking.Core {
++    interface ICoreInkPresenterHost;
++    interface ICoreWetStrokeUpdateSource;
++    interface ICoreWetStrokeUpdateSourceStatics;
++    interface ICoreWetStrokeUpdateEventArgs;
++    interface ICoreInkIndependentInputSource;
++    interface ICoreInkIndependentInputSourceStatics;
++    runtimeclass CoreInkPresenterHost;
++    runtimeclass CoreWetStrokeUpdateSource;
++    runtimeclass CoreWetStrokeUpdateEventArgs;
++    runtimeclass CoreInkIndependentInputSource;
++    typedef enum CoreWetStrokeDisposition CoreWetStrokeDisposition;
++
++    declare {
++        interface Windows.Foundation.Collections.IIterable<Windows.UI.Input.Inking.InkPoint *>;
++        interface Windows.Foundation.Collections.IIterator<Windows.UI.Input.Inking.InkPoint *>;
++        interface Windows.Foundation.Collections.IVector<Windows.UI.Input.Inking.InkPoint *>;
++        interface Windows.Foundation.Collections.IVectorView<Windows.UI.Input.Inking.InkPoint *>;
++        interface Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreInkIndependentInputSource *, Windows.UI.Core.PointerEventArgs *>;
++        interface Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateSource *, Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateEventArgs *>;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 3.0)]
++    enum CoreWetStrokeDisposition
++    {
++        Inking = 0,
++        Completed = 1,
++        Canceled = 2
++    };
++
++    [contract(Windows.Foundation.UniversalApiContract, 5.0),
++     uuid(396e89e6-7d55-4617-9e58-68c70c9169b9)]
++    interface ICoreInkPresenterHost : IInspectable
++    {
++        [propget] HRESULT InkPresenter([out, retval] Windows.UI.Input.Inking.InkPresenter **value);
++        [propget] HRESULT RootVisual([out, retval] Windows.UI.Composition.IContainerVisual **value);
++        [propput] HRESULT RootVisual([in] Windows.UI.Composition.IContainerVisual *value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 3.0),
++     uuid(1f718e22-ee52-4e00-8209-4c3e5b21a3cc)]
++    interface ICoreWetStrokeUpdateSource : IInspectable
++    {
++        [eventadd] HRESULT WetStrokeStarting([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateSource *, Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT WetStrokeStarting([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT WetStrokeContinuing([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateSource *, Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT WetStrokeContinuing([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT WetStrokeStopping([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateSource *, Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT WetStrokeStopping([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT WetStrokeCompleted([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateSource *, Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT WetStrokeCompleted([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT WetStrokeCanceled([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateSource *, Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT WetStrokeCanceled([in] EventRegistrationToken cookie);
++        [propget] HRESULT InkPresenter([out, retval] Windows.UI.Input.Inking.InkPresenter **value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 3.0),
++     uuid(3dad9cba-1d3d-46ae-ab9d-8647486c6f90)]
++    interface ICoreWetStrokeUpdateSourceStatics : IInspectable
++    {
++        HRESULT Create([in] Windows.UI.Input.Inking.InkPresenter *inkPresenter, [out, retval] Windows.UI.Input.Inking.Core.CoreWetStrokeUpdateSource **WetStrokeUpdateSource);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 3.0),
++     uuid(fb07d14c-3380-457a-a987-991357896c1b)]
++    interface ICoreWetStrokeUpdateEventArgs : IInspectable
++    {
++        [propget] HRESULT NewInkPoints([out, retval] Windows.Foundation.Collections.IVector<Windows.UI.Input.Inking.InkPoint *> **value);
++        [propget] HRESULT PointerId([out, retval] UINT32 *value);
++        [propget] HRESULT Disposition([out, retval] Windows.UI.Input.Inking.Core.CoreWetStrokeDisposition *value);
++        [propput] HRESULT Disposition([in] Windows.UI.Input.Inking.Core.CoreWetStrokeDisposition value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(39b38da9-7639-4499-a5b5-191d00e35b16)]
++    interface ICoreInkIndependentInputSource : IInspectable
++    {
++        [eventadd] HRESULT PointerEntering([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreInkIndependentInputSource *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerEntering([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT PointerHovering([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreInkIndependentInputSource *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerHovering([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT PointerExiting([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreInkIndependentInputSource *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerExiting([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT PointerPressing([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreInkIndependentInputSource *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerPressing([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT PointerMoving([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreInkIndependentInputSource *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerMoving([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT PointerReleasing([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreInkIndependentInputSource *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerReleasing([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT PointerLost([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.Core.CoreInkIndependentInputSource *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerLost([in] EventRegistrationToken cookie);
++        [propget] HRESULT InkPresenter([out, retval] Windows.UI.Input.Inking.InkPresenter **value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(73e6011b-80c0-4dfb-9b66-10ba7f3f9c84)]
++    interface ICoreInkIndependentInputSourceStatics : IInspectable
++    {
++        HRESULT Create([in] Windows.UI.Input.Inking.InkPresenter *inkPresenter, [out, retval] Windows.UI.Input.Inking.Core.CoreInkIndependentInputSource **inkIndependentInputSource);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 5.0), marshaling_behavior(agile), threading(both), activatable(Windows.Foundation.UniversalApiContract, 5.0)]
++    runtimeclass CoreInkPresenterHost
++    {
++        [default] interface Windows.UI.Input.Inking.Core.ICoreInkPresenterHost;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 3.0), marshaling_behavior(agile), static(Windows.UI.Input.Inking.Core.ICoreWetStrokeUpdateSourceStatics, Windows.Foundation.UniversalApiContract, 3.0)]
++    runtimeclass CoreWetStrokeUpdateSource
++    {
++        [default] interface Windows.UI.Input.Inking.Core.ICoreWetStrokeUpdateSource;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 3.0), marshaling_behavior(agile)]
++    runtimeclass CoreWetStrokeUpdateEventArgs
++    {
++        [default] interface Windows.UI.Input.Inking.Core.ICoreWetStrokeUpdateEventArgs;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile), static(Windows.UI.Input.Inking.Core.ICoreInkIndependentInputSourceStatics, Windows.Foundation.UniversalApiContract, 1.0)]
++    runtimeclass CoreInkIndependentInputSource
++    {
++        [default] interface Windows.UI.Input.Inking.Core.ICoreInkIndependentInputSource;
++    }
++
++}
+diff --git a/include/windows.ui.input.inking.idl b/include/windows.ui.input.inking.idl
+--- a/include/windows.ui.input.inking.idl
++++ b/include/windows.ui.input.inking.idl
+@@ -25,6 +25,8 @@
+ import "windows.foundation.idl";
+ import "windows.foundation.numerics.idl";
+ import "windows.ui.idl";
++import "windows.ui.core.idl";
++import "windows.storage.streams.idl";
+ 
+ namespace Windows.UI.Input.Inking {
+     typedef enum PenTipShape PenTipShape;
+@@ -131,3 +133,295 @@
+         [contract(Windows.Foundation.UniversalApiContract, 4.0)] interface Windows.UI.Input.Inking.IInkDrawingAttributes4;
+     }
+ }
++
++namespace Windows.UI.Input.Inking {
++    interface IInkPresenter;
++    interface IInkInputProcessingConfiguration;
++    interface IInkSynchronizer;
++    interface IInkStrokeInput;
++    interface IInkUnprocessedInput;
++    interface IInkStroke;
++    interface IInkStrokeContainer;
++    interface IInkStrokeRenderingSegment;
++    interface IInkRecognitionResult;
++    interface IInkStrokesCollectedEventArgs;
++    interface IInkStrokesErasedEventArgs;
++    runtimeclass InkPresenter;
++    runtimeclass InkInputProcessingConfiguration;
++    runtimeclass InkSynchronizer;
++    runtimeclass InkStrokeInput;
++    runtimeclass InkUnprocessedInput;
++    runtimeclass InkStroke;
++    runtimeclass InkStrokeContainer;
++    runtimeclass InkStrokeRenderingSegment;
++    runtimeclass InkRecognitionResult;
++    runtimeclass InkStrokesCollectedEventArgs;
++    runtimeclass InkStrokesErasedEventArgs;
++    typedef enum InkInputProcessingMode InkInputProcessingMode;
++    typedef enum InkInputRightDragAction InkInputRightDragAction;
++    typedef enum InkPresenterPredefinedConfiguration InkPresenterPredefinedConfiguration;
++
++    declare {
++        interface Windows.Foundation.AsyncActionProgressHandler<UINT64>;
++        interface Windows.Foundation.AsyncActionWithProgressCompletedHandler<UINT64>;
++        interface Windows.Foundation.AsyncOperationProgressHandler<UINT32, UINT32>;
++        interface Windows.Foundation.AsyncOperationWithProgressCompletedHandler<UINT32, UINT32>;
++        interface Windows.Foundation.Collections.IIterable<HSTRING>;
++        interface Windows.Foundation.Collections.IIterable<Windows.Foundation.Point>;
++        interface Windows.Foundation.Collections.IIterable<Windows.UI.Input.Inking.InkRecognitionResult *>;
++        interface Windows.Foundation.Collections.IIterable<Windows.UI.Input.Inking.InkStroke *>;
++        interface Windows.Foundation.Collections.IIterable<Windows.UI.Input.Inking.InkStrokeRenderingSegment *>;
++        interface Windows.Foundation.Collections.IIterator<HSTRING>;
++        interface Windows.Foundation.Collections.IIterator<Windows.Foundation.Point>;
++        interface Windows.Foundation.Collections.IIterator<Windows.UI.Input.Inking.InkRecognitionResult *>;
++        interface Windows.Foundation.Collections.IIterator<Windows.UI.Input.Inking.InkStroke *>;
++        interface Windows.Foundation.Collections.IIterator<Windows.UI.Input.Inking.InkStrokeRenderingSegment *>;
++        interface Windows.Foundation.Collections.IVectorView<HSTRING>;
++        interface Windows.Foundation.Collections.IVectorView<Windows.Foundation.Point>;
++        interface Windows.Foundation.Collections.IVectorView<Windows.UI.Input.Inking.InkRecognitionResult *>;
++        interface Windows.Foundation.Collections.IVectorView<Windows.UI.Input.Inking.InkStroke *>;
++        interface Windows.Foundation.Collections.IVectorView<Windows.UI.Input.Inking.InkStrokeRenderingSegment *>;
++        interface Windows.Foundation.IAsyncActionWithProgress<UINT64>;
++        interface Windows.Foundation.IAsyncOperationWithProgress<UINT32, UINT32>;
++        interface Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkPresenter *, Windows.UI.Input.Inking.InkStrokesCollectedEventArgs *>;
++        interface Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkPresenter *, Windows.UI.Input.Inking.InkStrokesErasedEventArgs *>;
++        interface Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkStrokeInput *, Windows.UI.Core.PointerEventArgs *>;
++        interface Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkUnprocessedInput *, Windows.UI.Core.PointerEventArgs *>;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
++    enum InkInputProcessingMode
++    {
++        None = 0,
++        Inking = 1,
++        Erasing = 2
++    };
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
++    enum InkInputRightDragAction
++    {
++        LeaveUnprocessed = 0,
++        AllowProcessing = 1
++    };
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
++    enum InkPresenterPredefinedConfiguration
++    {
++        SimpleSinglePointer = 0,
++        SimpleMultiplePointer = 1
++    };
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(a69b70e2-887b-458f-b173-4fe4438930a3)]
++    interface IInkPresenter : IInspectable
++    {
++        [propget] HRESULT IsInputEnabled([out, retval] boolean *value);
++        [propput] HRESULT IsInputEnabled([in] boolean value);
++        [propget] HRESULT InputDeviceTypes([out, retval] Windows.UI.Core.CoreInputDeviceTypes *value);
++        [propput] HRESULT InputDeviceTypes([in] Windows.UI.Core.CoreInputDeviceTypes value);
++        [propget] HRESULT UnprocessedInput([out, retval] Windows.UI.Input.Inking.InkUnprocessedInput **value);
++        [propget] HRESULT StrokeInput([out, retval] Windows.UI.Input.Inking.InkStrokeInput **value);
++        [propget] HRESULT InputProcessingConfiguration([out, retval] Windows.UI.Input.Inking.InkInputProcessingConfiguration **value);
++        [propget] HRESULT StrokeContainer([out, retval] Windows.UI.Input.Inking.InkStrokeContainer **value);
++        [propput] HRESULT StrokeContainer([in] Windows.UI.Input.Inking.InkStrokeContainer *value);
++        HRESULT CopyDefaultDrawingAttributes([out, retval] Windows.UI.Input.Inking.IInkDrawingAttributes **value);
++        HRESULT UpdateDefaultDrawingAttributes([in] Windows.UI.Input.Inking.IInkDrawingAttributes *value);
++        HRESULT ActivateCustomDrying([out, retval] Windows.UI.Input.Inking.InkSynchronizer **inkSynchronizer);
++        HRESULT SetPredefinedConfiguration([in] Windows.UI.Input.Inking.InkPresenterPredefinedConfiguration value);
++        [eventadd] HRESULT StrokesCollected([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkPresenter *, Windows.UI.Input.Inking.InkStrokesCollectedEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT StrokesCollected([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT StrokesErased([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkPresenter *, Windows.UI.Input.Inking.InkStrokesErasedEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT StrokesErased([in] EventRegistrationToken cookie);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(2778d85e-33ca-4b06-a6d3-ac3945116d37)]
++    interface IInkInputProcessingConfiguration : IInspectable
++    {
++        [propget] HRESULT Mode([out, retval] Windows.UI.Input.Inking.InkInputProcessingMode *value);
++        [propput] HRESULT Mode([in] Windows.UI.Input.Inking.InkInputProcessingMode value);
++        [propget] HRESULT RightDragAction([out, retval] Windows.UI.Input.Inking.InkInputRightDragAction *value);
++        [propput] HRESULT RightDragAction([in] Windows.UI.Input.Inking.InkInputRightDragAction value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(9b9ea160-ae9b-45f9-8407-4b493b163661)]
++    interface IInkSynchronizer : IInspectable
++    {
++        HRESULT BeginDry([out, retval] Windows.Foundation.Collections.IVectorView<Windows.UI.Input.Inking.InkStroke *> **inkStrokes);
++        HRESULT EndDry();
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(cf2ffe7b-5e10-43c6-a080-88f26e1dc67d)]
++    interface IInkStrokeInput : IInspectable
++    {
++        [eventadd] HRESULT StrokeStarted([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkStrokeInput *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT StrokeStarted([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT StrokeContinued([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkStrokeInput *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT StrokeContinued([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT StrokeEnded([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkStrokeInput *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT StrokeEnded([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT StrokeCanceled([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkStrokeInput *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT StrokeCanceled([in] EventRegistrationToken cookie);
++        [propget] HRESULT InkPresenter([out, retval] Windows.UI.Input.Inking.InkPresenter **value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(db4445e0-8398-4921-ac3b-ab978c5ba256)]
++    interface IInkUnprocessedInput : IInspectable
++    {
++        [eventadd] HRESULT PointerEntered([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkUnprocessedInput *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerEntered([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT PointerHovered([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkUnprocessedInput *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerHovered([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT PointerExited([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkUnprocessedInput *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerExited([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT PointerPressed([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkUnprocessedInput *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerPressed([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT PointerMoved([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkUnprocessedInput *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerMoved([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT PointerReleased([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkUnprocessedInput *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerReleased([in] EventRegistrationToken cookie);
++        [eventadd] HRESULT PointerLost([in] Windows.Foundation.TypedEventHandler<Windows.UI.Input.Inking.InkUnprocessedInput *, Windows.UI.Core.PointerEventArgs *> *handler, [out, retval] EventRegistrationToken *cookie);
++        [eventremove] HRESULT PointerLost([in] EventRegistrationToken cookie);
++        [propget] HRESULT InkPresenter([out, retval] Windows.UI.Input.Inking.InkPresenter **value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(15144d60-cce3-4fcf-9d52-11518ab6afd4)]
++    interface IInkStroke : IInspectable
++    {
++        [propget] HRESULT DrawingAttributes([out, retval] Windows.UI.Input.Inking.IInkDrawingAttributes **value);
++        [propput] HRESULT DrawingAttributes([in] Windows.UI.Input.Inking.IInkDrawingAttributes *value);
++        [propget] HRESULT BoundingRect([out, retval] Windows.Foundation.Rect *value);
++        [propget] HRESULT Selected([out, retval] boolean *value);
++        [propput] HRESULT Selected([in] boolean value);
++        [propget] HRESULT Recognized([out, retval] boolean *value);
++        HRESULT GetRenderingSegments([out, retval] Windows.Foundation.Collections.IVectorView<Windows.UI.Input.Inking.InkStrokeRenderingSegment *> **renderingSegments);
++        HRESULT Clone([out, retval] Windows.UI.Input.Inking.InkStroke **clonedStroke);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(22accbc6-faa9-4f14-b68c-f6cee670ae16)]
++    interface IInkStrokeContainer : IInspectable
++    {
++        [propget] HRESULT BoundingRect([out, retval] Windows.Foundation.Rect *value);
++        HRESULT AddStroke([in] Windows.UI.Input.Inking.InkStroke *stroke);
++        HRESULT DeleteSelected([out, retval] Windows.Foundation.Rect *invalidatedRect);
++        HRESULT MoveSelected([in] Windows.Foundation.Point translation, [out, retval] Windows.Foundation.Rect *invalidatedRectangle);
++        HRESULT SelectWithPolyLine([in] Windows.Foundation.Collections.IIterable<Windows.Foundation.Point> *polyline, [out, retval] Windows.Foundation.Rect *invalidatedRectangle);
++        HRESULT SelectWithLine([in] Windows.Foundation.Point from, [in] Windows.Foundation.Point to, [out, retval] Windows.Foundation.Rect *invalidatedRectangle);
++        HRESULT CopySelectedToClipboard();
++        HRESULT PasteFromClipboard([in] Windows.Foundation.Point position, [out, retval] Windows.Foundation.Rect *invalidatedRectangle);
++        HRESULT CanPasteFromClipboard([out, retval] boolean *canPaste);
++        HRESULT LoadAsync([in] Windows.Storage.Streams.IInputStream *inputStream, [out, retval] Windows.Foundation.IAsyncActionWithProgress<UINT64> **loadAction);
++        HRESULT SaveAsync([in] Windows.Storage.Streams.IOutputStream *outputStream, [out, retval] Windows.Foundation.IAsyncOperationWithProgress<UINT32, UINT32> **outputStreamOperation);
++        HRESULT UpdateRecognitionResults([in] Windows.Foundation.Collections.IVectorView<Windows.UI.Input.Inking.InkRecognitionResult *> *recognitionResults);
++        HRESULT GetStrokes([out, retval] Windows.Foundation.Collections.IVectorView<Windows.UI.Input.Inking.InkStroke *> **strokeView);
++        HRESULT GetRecognitionResults([out, retval] Windows.Foundation.Collections.IVectorView<Windows.UI.Input.Inking.InkRecognitionResult *> **recognitionResults);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(68510f1f-88e3-477a-a2fa-569f5f1f9bd5)]
++    interface IInkStrokeRenderingSegment : IInspectable
++    {
++        [propget] HRESULT Position([out, retval] Windows.Foundation.Point *value);
++        [propget] HRESULT BezierControlPoint1([out, retval] Windows.Foundation.Point *value);
++        [propget] HRESULT BezierControlPoint2([out, retval] Windows.Foundation.Point *value);
++        [propget] HRESULT Pressure([out, retval] FLOAT *value);
++        [propget] HRESULT TiltX([out, retval] FLOAT *value);
++        [propget] HRESULT TiltY([out, retval] FLOAT *value);
++        [propget] HRESULT Twist([out, retval] FLOAT *value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(36461a94-5068-40ef-8a05-2c2fb60908a2)]
++    interface IInkRecognitionResult : IInspectable
++    {
++        [propget] HRESULT BoundingRect([out, retval] Windows.Foundation.Rect *boundingRect);
++        HRESULT GetTextCandidates([out, retval] Windows.Foundation.Collections.IVectorView<HSTRING> **textCandidates);
++        HRESULT GetStrokes([out, retval] Windows.Foundation.Collections.IVectorView<Windows.UI.Input.Inking.InkStroke *> **strokes);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(c4f3f229-1938-495c-b4d9-6de4b08d4811)]
++    interface IInkStrokesCollectedEventArgs : IInspectable
++    {
++        [propget] HRESULT Strokes([out, retval] Windows.Foundation.Collections.IVectorView<Windows.UI.Input.Inking.InkStroke *> **value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     uuid(a4216a22-1503-4ebf-8ff5-2de84584a8aa)]
++    interface IInkStrokesErasedEventArgs : IInspectable
++    {
++        [propget] HRESULT Strokes([out, retval] Windows.Foundation.Collections.IVectorView<Windows.UI.Input.Inking.InkStroke *> **value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass InkPresenter
++    {
++        [default] interface Windows.UI.Input.Inking.IInkPresenter;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass InkInputProcessingConfiguration
++    {
++        [default] interface Windows.UI.Input.Inking.IInkInputProcessingConfiguration;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass InkSynchronizer
++    {
++        [default] interface Windows.UI.Input.Inking.IInkSynchronizer;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass InkStrokeInput
++    {
++        [default] interface Windows.UI.Input.Inking.IInkStrokeInput;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass InkUnprocessedInput
++    {
++        [default] interface Windows.UI.Input.Inking.IInkUnprocessedInput;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass InkStroke
++    {
++        [default] interface Windows.UI.Input.Inking.IInkStroke;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass InkStrokeContainer
++    {
++        [default] interface Windows.UI.Input.Inking.IInkStrokeContainer;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass InkStrokeRenderingSegment
++    {
++        [default] interface Windows.UI.Input.Inking.IInkStrokeRenderingSegment;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass InkRecognitionResult
++    {
++        [default] interface Windows.UI.Input.Inking.IInkRecognitionResult;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass InkStrokesCollectedEventArgs
++    {
++        [default] interface Windows.UI.Input.Inking.IInkStrokesCollectedEventArgs;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile)]
++    runtimeclass InkStrokesErasedEventArgs
++    {
++        [default] interface Windows.UI.Input.Inking.IInkStrokesErasedEventArgs;
++    }
++
++}
+diff --git a/libs/uuid/uuid.c b/libs/uuid/uuid.c
+--- a/libs/uuid/uuid.c
++++ b/libs/uuid/uuid.c
+@@ -68,7 +68,9 @@
+ #include "objsel.h"
+ #include "hlink.h"
+ #include "inkpresenterdesktop.h"
++#include "activation.h"
+ #include "windows.ui.input.inking.h"
++#include "windows.ui.input.inking.core.h"
+ #include "optary.h"
+ #include "indexsrv.h"
+ #include "htiface.h"
