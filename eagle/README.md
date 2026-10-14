@@ -72,6 +72,11 @@ WinRT, DirectWrite, COM and mutex waits on x86 and x64. `WORK` must be a new
 persistent build directory. `build-debugger.sh DESTINATION` builds the package
 separately.
 
+`sh build-analysis.sh DESTINATION` builds and tests the native analysis and
+Intel helpers separately, using static json-c, GLib and SQLite libraries.
+These helpers support the analyzer port still in development. The complete
+file/archive analysis driver remains to be integrated.
+
 The debugger regression suite is `tests/integration.py`. Session/export
 controls are in `tests/test_session_contract.py`; automatic per-launch logging
 is in `tests/test_tracing.py`. Their environment variables select an immutable
