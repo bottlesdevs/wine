@@ -1,0 +1,449 @@
+{
+  "compilers": {
+    "260": "VS 2017",
+    "261": "VS 2017",
+    "262": "VS 2017",
+    "266": "VS 2019",
+    "267": "VS 2019",
+    "268": "VS 2019",
+    "269": "VS 2019",
+    "270": "VS 2019",
+    "271": "VS 2019",
+    "276": "VS 2022",
+    "277": "VS 2022",
+    "278": "VS 2022",
+    "279": "VS 2022",
+    "280": "VS 2022",
+    "281": "VS 2022",
+    "255": "VS 2015",
+    "235": "VS 2013",
+    "217": "VS 2012",
+    "199": "VS 2010",
+    "131": "VS 2008",
+    "109": "VS 2005"
+  },
+  "packers": {
+    "UPX0": "UPX",
+    "UPX1": "UPX",
+    ".upx": "UPX",
+    ".vmp0": "VMProtect",
+    ".vmp1": "VMProtect",
+    "VMP0": "VMProtect",
+    ".themida": "Themida",
+    ".enigma": "Enigma"
+  },
+  "mapping": {
+    "d3d8.dll": [
+      "DirectX 8",
+      "Graphics"
+    ],
+    "d3d9.dll": [
+      "DirectX 9",
+      "Graphics"
+    ],
+    "d3d10.dll": [
+      "DirectX 10",
+      "Graphics"
+    ],
+    "d3d11.dll": [
+      "DirectX 11",
+      "Graphics"
+    ],
+    "d3d12.dll": [
+      "DirectX 12",
+      "Graphics"
+    ],
+    "dxgi.dll": [
+      "DXGI",
+      "Graphics"
+    ],
+    "d3dcompiler_47.dll": [
+      "D3D Compiler",
+      "Graphics"
+    ],
+    "opengl32.dll": [
+      "OpenGL",
+      "Graphics"
+    ],
+    "vulkan-1.dll": [
+      "Vulkan",
+      "Graphics"
+    ],
+    "nvapi.dll": [
+      "NVAPI",
+      "Graphics"
+    ],
+    "nvapi64.dll": [
+      "NVAPI",
+      "Graphics"
+    ],
+    "amd_ags_x64.dll": [
+      "AMD AGS",
+      "Graphics"
+    ],
+    "physx_loader.dll": [
+      "PhysX",
+      "Graphics"
+    ],
+    "physx3_x64.dll": [
+      "PhysX",
+      "Graphics"
+    ],
+    "d3dx9_43.dll": [
+      "D3DX9",
+      "Graphics"
+    ],
+    "d3dx11_43.dll": [
+      "D3DX11",
+      "Graphics"
+    ],
+    "nvngx_dlss.dll": [
+      "DLSS",
+      "Upscaling"
+    ],
+    "nvngx_dlssg.dll": [
+      "DLSS 3 Frame Gen",
+      "Upscaling"
+    ],
+    "libxess.dll": [
+      "Intel XeSS",
+      "Upscaling"
+    ],
+    "ffx_fsr2_api_x64.dll": [
+      "AMD FSR 2",
+      "Upscaling"
+    ],
+    "amd_fidelityfx_dx12.dll": [
+      "AMD FSR",
+      "Upscaling"
+    ],
+    "amd_fidelityfx_vk.dll": [
+      "AMD FSR",
+      "Upscaling"
+    ],
+    "xaudio2_7.dll": [
+      "XAudio 2.7",
+      "Audio"
+    ],
+    "xaudio2_9.dll": [
+      "XAudio 2.9",
+      "Audio"
+    ],
+    "x3daudio1_7.dll": [
+      "X3DAudio",
+      "Audio"
+    ],
+    "fmod.dll": [
+      "FMOD",
+      "Audio"
+    ],
+    "fmod64.dll": [
+      "FMOD",
+      "Audio"
+    ],
+    "fmodstudio.dll": [
+      "FMOD Studio",
+      "Audio"
+    ],
+    "wwise.dll": [
+      "Wwise",
+      "Audio"
+    ],
+    "binkw32.dll": [
+      "Bink",
+      "Audio"
+    ],
+    "binkw64.dll": [
+      "Bink",
+      "Audio"
+    ],
+    "openal32.dll": [
+      "OpenAL",
+      "Audio"
+    ],
+    "dsound.dll": [
+      "DirectSound",
+      "Audio"
+    ],
+    "miles32.dll": [
+      "Miles",
+      "Audio"
+    ],
+    "mss32.dll": [
+      "Miles",
+      "Audio"
+    ],
+    "mscoree.dll": [
+      ".NET Framework",
+      "Runtimes"
+    ],
+    "clr.dll": [
+      ".NET CLR",
+      "Runtimes"
+    ],
+    "hostfxr.dll": [
+      ".NET Core/5+",
+      "Runtimes"
+    ],
+    "coreclr.dll": [
+      ".NET Core CLR",
+      "Runtimes"
+    ],
+    "msvcp100.dll": [
+      "VC++ 2010",
+      "Runtimes"
+    ],
+    "msvcr100.dll": [
+      "VC++ 2010",
+      "Runtimes"
+    ],
+    "msvcp110.dll": [
+      "VC++ 2012",
+      "Runtimes"
+    ],
+    "msvcr110.dll": [
+      "VC++ 2012",
+      "Runtimes"
+    ],
+    "msvcp120.dll": [
+      "VC++ 2013",
+      "Runtimes"
+    ],
+    "msvcr120.dll": [
+      "VC++ 2013",
+      "Runtimes"
+    ],
+    "msvcp140.dll": [
+      "VC++ 2015-22",
+      "Runtimes"
+    ],
+    "vcruntime140.dll": [
+      "VC++ 2015-22",
+      "Runtimes"
+    ],
+    "vcruntime140_1.dll": [
+      "VC++ 2015-22",
+      "Runtimes"
+    ],
+    "ucrtbase.dll": [
+      "UCRT",
+      "Runtimes"
+    ],
+    "mono-2.0-bdwgc.dll": [
+      "Mono",
+      "Runtimes"
+    ],
+    "jvm.dll": [
+      "Java",
+      "Runtimes"
+    ],
+    "python3.dll": [
+      "Python",
+      "Runtimes"
+    ],
+    "python311.dll": [
+      "Python 3.11",
+      "Runtimes"
+    ],
+    "lua54.dll": [
+      "Lua 5.4",
+      "Runtimes"
+    ],
+    "xinput1_3.dll": [
+      "XInput 1.3",
+      "Input"
+    ],
+    "xinput1_4.dll": [
+      "XInput 1.4",
+      "Input"
+    ],
+    "dinput8.dll": [
+      "DirectInput",
+      "Input"
+    ],
+    "sdl2.dll": [
+      "SDL2",
+      "Input"
+    ],
+    "steam_api.dll": [
+      "Steamworks",
+      "Social/DRM"
+    ],
+    "steam_api64.dll": [
+      "Steamworks",
+      "Social/DRM"
+    ],
+    "galaxy.dll": [
+      "GOG Galaxy",
+      "Social/DRM"
+    ],
+    "galaxy64.dll": [
+      "GOG Galaxy",
+      "Social/DRM"
+    ],
+    "eossdk-win64-shipping.dll": [
+      "Epic",
+      "Social/DRM"
+    ],
+    "discord_game_sdk.dll": [
+      "Discord",
+      "Social/DRM"
+    ],
+    "uplay_r1_loader64.dll": [
+      "Ubisoft",
+      "Social/DRM"
+    ],
+    "unityplayer.dll": [
+      "Unity",
+      "Engines"
+    ],
+    "gameassembly.dll": [
+      "Unity IL2CPP",
+      "Engines"
+    ],
+    "libcef.dll": [
+      "CEF",
+      "Engines"
+    ],
+    "tier0.dll": [
+      "Source",
+      "Engines"
+    ],
+    "vstdlib.dll": [
+      "Source",
+      "Engines"
+    ],
+    "cryrenderd3d11.dll": [
+      "CryEngine",
+      "Engines"
+    ],
+    "qt5core.dll": [
+      "Qt 5",
+      "Frameworks"
+    ],
+    "qt6core.dll": [
+      "Qt 6",
+      "Frameworks"
+    ],
+    "electron.dll": [
+      "Electron",
+      "Frameworks"
+    ],
+    "easyanticheat.dll": [
+      "EAC",
+      "Protection"
+    ],
+    "easyanticheat_x64.dll": [
+      "EAC",
+      "Protection"
+    ],
+    "battleye.dll": [
+      "BattlEye",
+      "Protection"
+    ],
+    "beclient_x64.dll": [
+      "BattlEye",
+      "Protection"
+    ],
+    "vmprotectsdk64.dll": [
+      "VMProtect",
+      "Protection"
+    ],
+    "denuvo64.dll": [
+      "Denuvo",
+      "Protection"
+    ]
+  },
+  "intel": {
+    "sources": {
+      "protondb": {
+        "name": "ProtonDB",
+        "dataset": "protondb-data",
+        "url": "https://github.com/bdefore/protondb-data",
+        "licenses": [
+          {
+            "name": "ODbL 1.0",
+            "url": "https://opendatacommons.org/licenses/odbl/1-0/"
+          },
+          {
+            "name": "DbCL 1.0",
+            "url": "https://opendatacommons.org/licenses/dbcl/1-0/"
+          }
+        ]
+      },
+      "winetricks": {
+        "name": "winetricks",
+        "dataset": "application verb metadata",
+        "url": "https://github.com/Winetricks/winetricks",
+        "licenses": [
+          {
+            "name": "LGPL-2.1-or-later",
+            "url": "https://github.com/Winetricks/winetricks/blob/master/COPYING"
+          }
+        ]
+      },
+      "bottles_dependencies": {
+        "name": "Bottles dependencies",
+        "dataset": "dependency name mapping",
+        "url": "https://github.com/bottlesdevs/dependencies",
+        "licenses": []
+      }
+    },
+    "launch_flags": {
+      "enableNvapi": [
+        "dxvk_nvapi",
+        true,
+        "community enables NVAPI"
+      ],
+      "useWineD9vk": [
+        "dxvk",
+        true,
+        "community uses D9VK/DXVK for d3d9"
+      ],
+      "useWineD3d11": [
+        "dxvk",
+        false,
+        "community falls back to WineD3D"
+      ],
+      "disableEsync": [
+        "sync",
+        "wine",
+        "community disables esync"
+      ],
+      "disableFsync": [
+        "sync",
+        "wine",
+        "community disables fsync"
+      ]
+    },
+    "proton_env": {
+      "PROTON_ENABLE_NVAPI": [
+        "dxvk_nvapi",
+        true,
+        "community enables NVAPI"
+      ],
+      "PROTON_USE_WINED3D": [
+        "dxvk",
+        false,
+        "community falls back to WineD3D"
+      ],
+      "PROTON_NO_ESYNC": [
+        "sync",
+        "wine",
+        "community disables esync"
+      ],
+      "PROTON_NO_FSYNC": [
+        "sync",
+        "wine",
+        "community disables fsync"
+      ]
+    },
+    "override_modes": {
+      "native": "n",
+      "builtin": "b",
+      "native,builtin": "n,b",
+      "builtin,native": "b,n",
+      "disabled": "d"
+    }
+  }
+}

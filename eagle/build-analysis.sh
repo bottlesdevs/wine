@@ -12,7 +12,10 @@ if test -e "$destination"; then
 fi
 pkg-config --exists json-c glib-2.0 sqlite3
 mkdir -p "$destination/lib/eagle/native"
-for module in analysis intel; do
+g++ -std=c++17 -O2 -g -Wall -Wextra -Werror -static \
+    -ffile-prefix-map="$root"=/usr/src/soda/eagle \
+    "$root/native/pe.cpp" -o "$destination/lib/eagle/native/eagle-pe"
+for module in analysis intel driver; do
     libraries='json-c glib-2.0'
     if test "$module" = intel; then libraries="$libraries sqlite3"; fi
     g++ -std=c++17 -O2 -g -Wall -Wextra -Werror -static \
@@ -21,4 +24,6 @@ for module in analysis intel; do
         $(pkg-config --libs --static $libraries) \
         -o "$destination/lib/eagle/native/eagle-$module"
 done
+cp "$root/analysis.json" "$destination/lib/eagle/"
 EAGLE_PACKAGE="$destination" python3 -S "$root/tests/test_analysis_helpers.py"
+EAGLE_PACKAGE="$destination" python3 -S "$root/tests/test_analysis_driver.py"
