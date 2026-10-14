@@ -71,5 +71,6 @@ python3 -S "$root/eagle/tests/test_session_compare.py" > "$work/tests/e/comparis
 python3 -S "$root/eagle/tests/test_symbols_offline.py" > "$work/tests/e/symbols-offline.log" 2>&1
 python3 -S "$root/eagle/tests/test_symbols_pdb.py" > "$work/tests/e/symbols-pdb.log" 2>&1
 python3 -S "$root/eagle/tests/test_split_dwarf.py" > "$work/tests/e/split-dwarf.log" 2>&1
+python3 -S "$root/eagle/tests/test_provenance.py" > "$work/tests/e/provenance.log" 2>&1
 python3 -S "$root/eagle/tests/test_debugger_package.py" > "$work/tests/e/package.log" 2>&1
 printf '%s\n' 'Eagle package, debugger, automatic tracing and x86/x64 provider controls passed'

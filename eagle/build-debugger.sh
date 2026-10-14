@@ -21,9 +21,9 @@ for architecture in x86_64 i686; do
     if test "$architecture" = x86_64; then bits=64; else bits=32; fi
     "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
         -ffile-prefix-map="$root"=/usr/src/soda/eagle \
-        "$root/native/debugger.c" -ldbghelp -o "$destination/lib/eagle/native/eagle-debug$bits.exe"
+        "$root/native/debugger.c" -ldbghelp -Wl,--no-insert-timestamp -o "$destination/lib/eagle/native/eagle-debug$bits.exe"
 done
-for module in cli session protocol symbols dwarf dap errors waits tracing analysis; do
+for module in cli session protocol symbols dwarf provenance dap errors waits tracing analysis; do
     cp "$root/$module.py" "$destination/lib/eagle/"
 done
 cp "$root/eagle" "$root/COPYING.md" "$destination/lib/eagle/"
@@ -31,3 +31,4 @@ cp "$root/native/vendor/PEFILE-COPYING" "$destination/share/eagle/licenses/"
 cp "$root/README.md" "$destination/share/eagle/"
 printf '%s\n' '#!/bin/sh' 'root=$(CDPATH= cd -- "$(dirname -- "$0")/../lib/eagle" && pwd)' 'exec python3 "$root/eagle" "$@"' > "$destination/bin/eagle"
 chmod 755 "$destination/bin/eagle"
+python3 -S "$root/provenance.py" "$root" "$destination" g++ x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc

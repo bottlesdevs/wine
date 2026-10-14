@@ -289,12 +289,21 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
     manifest['target_cwd'] = str(target_cwd) if target_cwd else None
     manifest['unix_modules'] = {}
     manifest['unix_inventory'] = {'mode': 'sampled module identities', 'host_stacks_captured': False}
+    from provenance import capture_identity
+    manifest['build'] = capture_identity(Path(__file__).resolve().parents[2], wine, collector)
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (root / 'events.jsonl').touch(mode=0o600, exist_ok=False)
     control = socket.socket(socket.AF_UNIX)
     selector = selectors.DefaultSelector()
-    if control_enabled:
-        control.bind(str(root / "control.sock")); os.chmod(root / "control.sock", 0o600); control.listen(4)
-    process = subprocess.Popen([str(wine), str(collector), mode, argument, "interactive" if manifest["interactive"] else "auto"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root / "dumps", env=env)
+    try:
+        if control_enabled:
+            control.bind(str(root / "control.sock")); os.chmod(root / "control.sock", 0o600); control.listen(4)
+        process = subprocess.Popen([str(wine), str(collector), mode, argument, "interactive" if manifest["interactive"] else "auto"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root / "dumps", env=env)
+    except BaseException as error:
+        selector.close(); control.close(); (root / 'control.sock').unlink(missing_ok=True)
+        manifest.update(ended=time.time(), setup_error=str(error))
+        (root / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        raise
     for stream in (process.stdout, process.stderr):
         os.set_blocking(stream.fileno(), False)
         selector.register(stream, selectors.EVENT_READ, "stdout" if stream is process.stdout else "stderr")

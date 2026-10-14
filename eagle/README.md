@@ -112,6 +112,21 @@ Split-DWARF fixture tests require GCC and LLVM's dumper/packager tools. Set
 `EAGLE_TEST_DWARFDUMP` and `EAGLE_TEST_DWP` for version-suffixed executables;
 the tests report a skip when the tools are absent.
 
+## Build identities
+
+Package builds write `share/eagle/build.json` with the Eagle source revision,
+dirty state, source-file hashes, compiler versions, packaged-file hashes and
+native symbol identities. Source archives without Git metadata retain a source
+tree hash and report no revision. The manifest describes Eagle package assembly;
+it does not attest the full Wine build or every upstream source.
+
+Each capture records the Wine launcher and collector SHA256 values plus the
+manifest digest and source identity. A collector mismatch is explicit. Older
+packages without build metadata remain usable and report that it is unavailable.
+Capture checks the collector digest rather than hashing the entire installed
+runner on every launch. A process-creation failure preserves the manifest and
+empty event history for inspection/export and closes its control socket.
+
 ## Build and verification
 
 `.github/build-eagle.sh RUNNER WORK` builds and installs the debugger/tracing

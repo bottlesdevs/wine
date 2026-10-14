@@ -46,4 +46,5 @@ cp "$root/engine/eagle.yar" "$root/engine/eagle-intel.sqlite" \
     "$root/engine/eagle-intel-data-license.txt" "$destination/lib/eagle/engine/"
 cp "$root/native/vendor/YARA-COPYING" "$destination/share/eagle/licenses/"
 cp "$root/sources.json" "$destination/share/eagle/"
+python3 -S "$root/provenance.py" "$root" "$destination" g++ x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc
 EAGLE_PACKAGE="$destination" python3 -S "$root/tests/test_native_package.py"
