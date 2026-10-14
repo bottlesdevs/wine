@@ -93,6 +93,16 @@ to the driver on cancellation. Incomplete packages do not advertise analysis.
 This adapter does not certify full feature parity or enable the analyzer in
 the debugger-only runner package.
 
+`sh build-native.sh DESTINATION YARA_SOURCE WORK` builds an optional development
+package containing the debugger and native analyzer. `YARA_SOURCE` must be a
+local checkout at the revision in `sources.json`; `DESTINATION` and `WORK` must
+not exist, and `WORK` must be outside `DESTINATION`. The build exports that
+revision into its own tree, builds a static
+scanner with two jobs by default, checks the bundled data hashes and includes
+the database notices and scanner license. It neither downloads dependencies
+nor installs libraries on the host. The package contains no Python analysis
+engine. Full parity, ARM and portability checks remain separate requirements.
+
 The debugger regression suite is `tests/integration.py`. Session/export
 controls are in `tests/test_session_contract.py`; automatic per-launch logging
 is in `tests/test_tracing.py`. Their environment variables select an immutable

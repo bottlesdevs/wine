@@ -12,6 +12,7 @@ if test -e "$destination"; then
 fi
 pkg-config --exists json-c glib-2.0 sqlite3
 mkdir -p "$destination/lib/eagle/native"
+cd "$root"
 g++ -std=c++17 -O2 -g -Wall -Wextra -Werror -static \
     -ffile-prefix-map="$root"=/usr/src/soda/eagle \
     "$root/native/pe.cpp" -o "$destination/lib/eagle/native/eagle-pe"

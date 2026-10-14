@@ -1,0 +1,15 @@
+{
+  "rules_repository": "bottlesdevs/Bottles",
+  "rules_revision": "41e363c7f8dba418f0b7b6f09fa787ca5aa8ff48",
+  "yara_revision": "f44a8958e88daa75d765a52a68876f2286d57a51",
+  "yara_version": "4.5.5",
+  "intel_schema_version": "1",
+  "intel_generated_at": "2026-06-10T14:00:13Z",
+  "assets": {
+    "native/yara.cpp": "69db30bb231e37371f5f750a762686b65406d177ed10a3ea8f926c9cc2713214",
+    "native/vendor/YARA-COPYING": "efdabc1c1f655528b8c3a59b03668d446746d87273fab76f8af800b6e8891bd2",
+    "engine/eagle.yar": "ef6fab33f115fb3a0e0539c681cd1e477fb827dcdbb605bb283563e1f4c38d98",
+    "engine/eagle-intel.sqlite": "35c764619d911f996632d73a8a793b9f800a55839caf5a2696d65f2885dee661",
+    "engine/eagle-intel-data-license.txt": "073cd81d398881e64f49d8893e63b9f0a94ab703cd804524ab364a53b56e6a37"
+  }
+}
