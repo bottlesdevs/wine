@@ -120,6 +120,11 @@ Inspect split-DWARF companion identities separately from address lookup:
 eagle symbols ./module --artifacts --debug-file ./symbols/module.dwp
 ```
 
+Inspection follows a separate GNU debug image only after its debug-link CRC
+matches. The report includes that file's SHA-256 and checks DWO/DWP identities
+against its skeleton units. It also searches for `<debug-image>.dwp` beside the
+separate debug file. Missing or changed debug images remain unavailable.
+
 The stdio method accepts `artifacts: true` and optional `debug_files` paths.
 The report compares skeleton DWO IDs with DWO units or DWP CU indexes and
 includes companion SHA256 values. Missing, mismatched and invalid candidates
