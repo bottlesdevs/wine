@@ -1,0 +1,216 @@
+diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -546,6 +546,7 @@
+ {
+     ICompositionGraphicsDevice ICompositionGraphicsDevice_iface;
+     ICompositionGraphicsDevice2 ICompositionGraphicsDevice2_iface;
++    ICompositor *compositor;
+     IUnknown *device;
+     LONG ref;
+ };
+@@ -563,6 +564,7 @@
+     ICompositionDrawingSurface ICompositionDrawingSurface_iface;
+     ICompositionVirtualDrawingSurface ICompositionVirtualDrawingSurface_iface;
+     ICompositionDrawingSurfaceInterop ICompositionDrawingSurfaceInterop_iface;
++    ICompositor *compositor;
+     ID2D1Device *device;
+     ID2D1DeviceContext *context;
+     ID2D1Bitmap1 *bitmap;
+@@ -10429,6 +10431,7 @@
+         if (impl->committed_bitmap) ID2D1Bitmap1_Release( impl->committed_bitmap );
+         if (impl->context) ID2D1DeviceContext_Release( impl->context );
+         ID2D1Device_Release( impl->device );
++        ICompositor_Release( impl->compositor );
+         free( impl );
+     }
+     return ref;
+@@ -11555,8 +11558,10 @@
+         impl->suspended = FALSE;
+     }
+     if (!impl->bitmap) return S_OK;
+-    if (impl->virtual) return drawing_surface_update_tiles( impl );
+-    return drawing_surface_publish_bitmap( impl );
++    if (impl->virtual) hr = drawing_surface_update_tiles( impl );
++    else hr = drawing_surface_publish_bitmap( impl );
++    if (SUCCEEDED(hr)) compositor_notify_commit_needed( impl_from_ICompositor( impl->compositor ) );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI composition_drawing_surface_interop_Resize( ICompositionDrawingSurfaceInterop *iface,
+@@ -11680,6 +11685,7 @@
+     if (!ref)
+     {
+         IUnknown_Release( impl->device );
++        ICompositor_Release( impl->compositor );
+         free( impl );
+     }
+     return ref;
+@@ -11732,6 +11738,8 @@
+         free( impl );
+         return E_NOINTERFACE;
+     }
++    impl->compositor = impl_from_ICompositionGraphicsDevice( iface )->compositor;
++    ICompositor_AddRef( impl->compositor );
+     list_init( &impl->tiles );
+     impl->size = pixels;
+     impl->format = format;
+@@ -11845,6 +11853,8 @@
+         free( impl );
+         return E_NOINTERFACE;
+     }
++    impl->compositor = device->compositor;
++    ICompositor_AddRef( impl->compositor );
+     list_init( &impl->tiles );
+     impl->size.Width = pixels.Width;
+     impl->size.Height = pixels.Height;
+@@ -11896,6 +11906,8 @@
+     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+     impl->ICompositionGraphicsDevice_iface.lpVtbl = &composition_graphics_device_vtbl;
+     impl->ICompositionGraphicsDevice2_iface.lpVtbl = &composition_graphics_device2_vtbl;
++    impl->compositor = &compositor_from_ICompositorInterop( iface )->ICompositor_iface;
++    ICompositor_AddRef( impl->compositor );
+     impl->device = device;
+     IUnknown_AddRef( device );
+     impl->ref = 1;
+@@ -11956,7 +11968,26 @@
+     struct list entry;
+     ITypedEventHandler_CompositorController_IInspectable *handler;
+     EventRegistrationToken token;
+-};
++    LONG ref;
++};
++
++static CRITICAL_SECTION controller_cs;
++static CRITICAL_SECTION_DEBUG controller_cs_debug =
++{
++    0, 0, &controller_cs,
++    { &controller_cs_debug.ProcessLocksList, &controller_cs_debug.ProcessLocksList },
++    0, 0, { (DWORD_PTR)(__FILE__ ": controller_cs") }
++};
++static CRITICAL_SECTION controller_cs = { &controller_cs_debug, -1, 0, 0, 0, 0 };
++
++static void compositor_commit_handler_release( struct compositor_commit_handler *handler )
++{
++    if (!InterlockedDecrement( &handler->ref ))
++    {
++        ITypedEventHandler_CompositorController_IInspectable_Release( handler->handler );
++        free( handler );
++    }
++}
+ 
+ static inline struct compositor_controller *impl_from_ICompositorController( ICompositorController *iface )
+ {
+@@ -11997,19 +12028,20 @@
+ static ULONG WINAPI compositor_controller_Release( ICompositorController *iface )
+ {
+     struct compositor_controller *impl = impl_from_ICompositorController( iface );
+-    ULONG ref = InterlockedDecrement( &impl->ref );
+-
++    struct compositor_commit_handler *handler, *next;
++    ULONG ref;
++
++    EnterCriticalSection( &controller_cs );
++    ref = InterlockedDecrement( &impl->ref );
++    if (!ref) impl_from_ICompositor( impl->compositor )->controller = NULL;
++    LeaveCriticalSection( &controller_cs );
+     if (!ref)
+     {
+-        struct compositor_commit_handler *handler, *next;
+-
+-        impl_from_ICompositor( impl->compositor )->controller = NULL;
+         LIST_FOR_EACH_ENTRY_SAFE( handler, next, &impl->commit_handlers,
+                 struct compositor_commit_handler, entry )
+         {
+             list_remove( &handler->entry );
+-            ITypedEventHandler_CompositorController_IInspectable_Release( handler->handler );
+-            free( handler );
++            compositor_commit_handler_release( handler );
+         }
+         ICompositor_Release( impl->compositor );
+         free( impl );
+@@ -12394,9 +12426,12 @@
+     if (!(entry = calloc( 1, sizeof(*entry) ))) return E_OUTOFMEMORY;
+     entry->handler = handler;
+     entry->token.value = InterlockedIncrement( &next_token );
++    entry->ref = 1;
+     ITypedEventHandler_CompositorController_IInspectable_AddRef( handler );
++    EnterCriticalSection( &controller_cs );
+     list_add_tail( &impl->commit_handlers, &entry->entry );
+     *token = entry->token;
++    LeaveCriticalSection( &controller_cs );
+     return S_OK;
+ }
+ 
+@@ -12404,51 +12439,59 @@
+         EventRegistrationToken token )
+ {
+     struct compositor_controller *impl = impl_from_ICompositorController( iface );
+-    struct compositor_commit_handler *handler;
++    struct compositor_commit_handler *handler, *found = NULL;
+ 
+     TRACE( "iface %p, token %s.\n", iface, wine_dbgstr_longlong( token.value ) );
++    EnterCriticalSection( &controller_cs );
+     LIST_FOR_EACH_ENTRY( handler, &impl->commit_handlers, struct compositor_commit_handler, entry )
+     {
+         if (handler->token.value != token.value) continue;
+         list_remove( &handler->entry );
+-        ITypedEventHandler_CompositorController_IInspectable_Release( handler->handler );
+-        free( handler );
++        found = handler;
+         break;
+     }
++    LeaveCriticalSection( &controller_cs );
++    if (found) compositor_commit_handler_release( found );
+     return S_OK;
+ }
+ 
+ static void compositor_notify_commit_needed( struct compositor *compositor )
+ {
+-    struct compositor_controller *controller = compositor->controller;
+-    struct compositor_commit_handler *entry;
+-    ITypedEventHandler_CompositorController_IInspectable **handlers;
++    struct compositor_controller *controller;
++    struct compositor_commit_handler *entry, **handlers;
+     unsigned int count = 0, i = 0;
+     HRESULT hr;
+ 
+-    if (!controller) return;
++    EnterCriticalSection( &controller_cs );
++    if (!(controller = compositor->controller))
++    {
++        LeaveCriticalSection( &controller_cs );
++        return;
++    }
+     ICompositorController_AddRef( &controller->ICompositorController_iface );
+     LIST_FOR_EACH_ENTRY( entry, &controller->commit_handlers,
+             struct compositor_commit_handler, entry ) ++count;
+     if (!count || !(handlers = malloc( count * sizeof(*handlers) )))
+     {
++        LeaveCriticalSection( &controller_cs );
+         ICompositorController_Release( &controller->ICompositorController_iface );
+         return;
+     }
+     LIST_FOR_EACH_ENTRY( entry, &controller->commit_handlers,
+             struct compositor_commit_handler, entry )
+     {
+-        handlers[i] = entry->handler;
+-        ITypedEventHandler_CompositorController_IInspectable_AddRef( handlers[i++] );
+-    }
++        InterlockedIncrement( &entry->ref );
++        handlers[i++] = entry;
++    }
++    LeaveCriticalSection( &controller_cs );
+     for (i = 0; i < count; ++i)
+     {
+         TRACE( "controller %p CommitNeeded handler %u/%u begin.\n", controller, i, count );
+         hr = ITypedEventHandler_CompositorController_IInspectable_Invoke(
+-                handlers[i], &controller->ICompositorController_iface, NULL );
++                handlers[i]->handler, &controller->ICompositorController_iface, NULL );
+         TRACE( "controller %p CommitNeeded handler %u/%u end hr %#lx.\n", controller, i, count, hr );
+         if (FAILED(hr)) WARN( "CommitNeeded handler returned %#lx.\n", hr );
+-        ITypedEventHandler_CompositorController_IInspectable_Release( handlers[i] );
++        compositor_commit_handler_release( handlers[i] );
+     }
+     free( handlers );
+     ICompositorController_Release( &controller->ICompositorController_iface );
