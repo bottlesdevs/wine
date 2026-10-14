@@ -113,6 +113,9 @@ manifest schema. See the [Microsoft manifest reference](https://learn.microsoft.
 
 Runtime dependency suggestions use a stable order by label.
 
+Unreal shipping suggestions ignore matching directories and broken links.
+Links to regular files remain accepted.
+
 The PE helper exposes ordered `version_tables` alongside the flattened
 `version` dictionary. Product and publisher selection uses the last nonempty
 value across those tables, matching the existing Bottles analyzer.

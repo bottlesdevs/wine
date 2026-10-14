@@ -48,6 +48,30 @@ class AnalysisHelpers(unittest.TestCase):
             self.assertEqual(self.analysis(operation='asar', path=str(archive), output=str(output)), [str(output / 'app.js')])
             self.assertEqual((output / 'app.js').read_bytes(), payload)
 
+    def test_shipping_candidates_must_be_regular_files(self):
+        for kind in ('directory', 'broken-link'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                target = root / 'launcher.exe'
+                target.write_bytes(b'fixture')
+                (root / 'Engine').mkdir()
+                binaries = root / 'Game/Binaries/Win64'
+                binaries.mkdir(parents=True)
+                ignored = binaries / 'Ignored-Win64-Shipping.exe'
+                if kind == 'directory':
+                    ignored.mkdir()
+                else:
+                    ignored.symlink_to(root / 'missing.exe')
+                details = {name: [] for name in ('Runtimes', 'Engines', 'Frameworks', 'Analysed Files')}
+                self.assertEqual(self.analysis(operation='discover', path=str(target), details=details)['ue_shipping_exe'], '')
+                valid = binaries / 'Game-Win64-Shipping.exe'
+                valid.write_bytes(b'fixture')
+                self.assertEqual(self.analysis(operation='discover', path=str(target), details=details)['ue_shipping_exe'], str(valid))
+                valid.unlink()
+                (root / 'payload.exe').write_bytes(b'fixture')
+                valid.symlink_to(root / 'payload.exe')
+                self.assertEqual(self.analysis(operation='discover', path=str(target), details=details)['ue_shipping_exe'], str(valid))
+
     def test_empty_suggestions_and_rule_results(self):
         self.assertEqual(self.analysis(operation='merge', suggestions=[], intel=None), [])
         details = {name: [] for name in ('Graphics', 'Upscaling', 'Engines', 'Runtimes', 'Physics', 'Protection', 'Frameworks', 'Warning')}

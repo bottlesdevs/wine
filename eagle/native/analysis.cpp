@@ -687,7 +687,8 @@ static json_object *discover(json_object *request)
                     {
                         auto name = binary->path().filename().string(), folded = lower(name);
                         auto suffix = "-" + lower(architecture) + "-shipping.exe";
-                        if (folded.size() >= suffix.size() && folded.compare(folded.size()-suffix.size(), suffix.size(), suffix) == 0)
+                        std::error_code status;
+                        if (folded.size() >= suffix.size() && folded.compare(folded.size()-suffix.size(), suffix.size(), suffix) == 0 && binary->is_regular_file(status))
                         { shipping = binary->path().string(); step("[Engines] Shipping binary found: " + name); break; }
                     }
                     if (!shipping.empty()) break;
