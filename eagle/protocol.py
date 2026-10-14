@@ -4,7 +4,7 @@ import threading
 import subprocess
 from pathlib import Path
 
-from session import compare, export, identity, send_command, summary
+from session import compare, export, send_command, summary
 from errors import Cancelled
 
 MAX_MESSAGE = 1024 * 1024
@@ -14,6 +14,7 @@ def capabilities():
     analyzer = available()
     return {
         "schema": 1,
+        "symbol_queries": {"maximum": 256, "addresses": "RVA", "resolver": "requires host binutils", "pdb": "GUID/age verification only"},
         "debug_architectures": ["x86", "x86_64"],
         "static_analyzer": "Soda Eagle native analysis" if analyzer else None,
         "native_static_analyzer": analyzer,
@@ -150,7 +151,9 @@ def serve():
                 result = {"requested": True}
             elif method == "capabilities": result = capabilities()
             elif method == "inspect": result = summary(params["session"])
-            elif method == "symbols": result = identity(params["path"])
+            elif method == "symbols":
+                from symbols import query
+                result = query(params["path"], params.get("pdb"), params.get("rvas"))
             elif method == "compare": result = compare(params["baseline"], params["candidate"])
             elif method == "export": result = export(params["session"], params["output"])
             elif method == "control": result = send_command(params["session"], params["command"])

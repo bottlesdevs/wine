@@ -1,3 +1,5 @@
+import os
+import stat
 import shutil
 import subprocess
 import struct
@@ -89,15 +91,57 @@ def resolve(image, rvas):
         output.append(value)
     return output
 
+def query(image, pdb=None, rvas=None):
+    if rvas is not None:
+        if not isinstance(rvas, list) or len(rvas) > 256:
+            raise ValueError("rvas must be a list of at most 256 addresses")
+        offsets = []
+        for value in rvas:
+            if type(value) not in (str, int):
+                raise ValueError("RVA must be an integer or numeric string")
+            offset = int(value, 0) if isinstance(value, str) else value
+            if offset < 0:
+                raise ValueError("symbol address is outside the image")
+            offsets.append(offset)
+    from session import identity
+    result = identity(image)
+    if pdb:
+        if result.get('format') == 'ELF':
+            raise ValueError('PDB matching requires a PE image')
+        found = pdb_identity(pdb)
+        result['pdb_identity'] = found
+        result['pdb_matches'] = any(entry['guid'] == found['guid'] and entry['age'] == found['age'] for entry in result['codeview'])
+        if not result['pdb_matches']:
+            raise ValueError('PDB GUID or age does not match the PE image')
+    if rvas is not None:
+        if any(offset >= result['size'] for offset in offsets):
+            raise ValueError('symbol address is outside the image')
+        frames = resolve(image, [hex(offset) for offset in offsets])
+        if len(frames) != len(offsets):
+            raise ValueError('symbol resolver unavailable or failed')
+        result['resolved'] = []
+        for offset, frame in zip(offsets, frames):
+            status = 'source-resolved' if frame.get('file') and frame.get('line') else 'symbol-only' if frame.get('symbol') else 'unresolved'
+            result['resolved'].append(dict(frame, rva=hex(offset), status=status))
+    return result
+
 def pdb_identity(path):
-    with Path(path).open("rb") as file:
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("PDB must be a regular file")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    with os.fdopen(descriptor, "rb") as file:
         header = file.read(56)
         if len(header) != 56:
             raise ValueError("truncated PDB header")
         if not header.startswith(b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\0\0\0"):
             raise ValueError("unsupported PDB container")
         block_size, free_map, blocks, directory_size, reserved, map_block = struct.unpack("<6I", header[32:56])
-        length = Path(path).stat().st_size
+        length = info.st_size
         if block_size not in (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536) or blocks * block_size > length or directory_size > 16 * 1024 * 1024:
             raise ValueError("invalid PDB directory bounds")
         def block(number):

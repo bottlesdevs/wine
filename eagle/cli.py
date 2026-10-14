@@ -5,7 +5,7 @@ import subprocess
 import signal
 from pathlib import Path
 
-from session import capture, compare, export, identity, send_command, summary
+from session import capture, compare, export, send_command, summary
 from errors import Cancelled
 
 def main():
@@ -47,7 +47,9 @@ def main():
     for name in ("inspect", "symbols"):
         item = commands.add_parser(name)
         item.add_argument("path")
-        if name == "symbols": item.add_argument("--pdb")
+        if name == "symbols":
+            item.add_argument("--pdb")
+            item.add_argument("--rva", action="append", help="resolve an RVA with host binutils; repeat for multiple addresses")
     comparison = commands.add_parser("compare")
     comparison.add_argument("baseline"); comparison.add_argument("candidate")
     report = commands.add_parser("export")
@@ -84,15 +86,8 @@ def main():
             result = capture(args.wine, args.prefix, args.session, target=getattr(args, "target", None), arguments=getattr(args, "arguments", []), pid=getattr(args, "pid", None), interactive=args.interactive, timeout=args.timeout, profile=args.profile, breakpoint=args.breakpoint, architecture=getattr(args, "arch", "x86_64"), on_hresult=args.on_hresult, trigger_action=args.trigger_action, observer=lambda event: print(json.dumps({"event": "debug", "data": event}), file=sys.stderr, flush=True))
         elif args.command == "inspect": result = summary(args.path)
         elif args.command == "symbols":
-            result = identity(args.path)
-            if args.pdb:
-                if result.get('format') == 'ELF':
-                    raise ValueError('PDB matching requires a PE image')
-                from symbols import pdb_identity
-                found = pdb_identity(args.pdb)
-                result["pdb_identity"] = found
-                result["pdb_matches"] = any(entry["guid"] == found["guid"] and entry["age"] == found["age"] for entry in result["codeview"])
-                if not result["pdb_matches"]: raise ValueError("PDB GUID or age does not match the PE image")
+            from symbols import query
+            result = query(args.path, args.pdb, args.rva)
         elif args.command == "compare": result = compare(args.baseline, args.candidate)
         elif args.command == "export": result = export(args.session, args.output)
         elif args.command == "control": result = send_command(args.session, " ".join(args.action))

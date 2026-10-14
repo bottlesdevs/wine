@@ -64,6 +64,24 @@ within each process. A cycle is evidence of an observed wait relationship,
 not proof of a permanent deadlock. Missing symbols stay marked unavailable.
 Caller frames can report function and source line when matching symbols exist.
 
+## Offline symbols (development)
+
+Look up function names and source lines by RVA without launching the target:
+
+```sh
+eagle symbols ./module --rva 0x1120 --rva 0x1140
+```
+
+The stdio `symbols` method accepts `path`, optional `pdb` and an optional `rvas`
+array of integer addresses or numeric strings. Queries accept up to 256 RVAs
+inside the image. Each result reports `source-resolved`, `symbol-only` or
+`unresolved`; a missing resolver returns an error. Omitting RVAs keeps the
+existing identity response.
+
+Address lookup uses host binutils and its DWARF/symbol-table support. PDB input
+checks GUID and age only. Source lines available in split-DWARF skeletons do
+not establish that the complete companion debug information is available.
+
 ## Build and verification
 
 `.github/build-eagle.sh RUNNER WORK` builds and installs the debugger/tracing
