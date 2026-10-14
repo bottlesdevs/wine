@@ -735,6 +735,7 @@ static json_object *discover(json_object *request)
             for (fs::directory_iterator it(location, fs::directory_options::skip_permission_denied, failure), end; !failure && it != end; it.increment(failure))
             {
                 if (++entries > 65536) throw std::runtime_error("plugin directory exceeds traversal limit");
+                if (it->path().filename().string().front() == '.') continue;
                 children.push_back(*it);
                 if (it->path().extension() == ".dll") json_object_array_add(neighbors, json_object_new_string(it->path().c_str()));
             }

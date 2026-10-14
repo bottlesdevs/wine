@@ -1,4 +1,5 @@
 import hashlib
+from glob import glob
 import json
 import os
 from pathlib import Path
@@ -71,6 +72,23 @@ class AnalysisHelpers(unittest.TestCase):
                 (root / 'payload.exe').write_bytes(b'fixture')
                 valid.symlink_to(root / 'payload.exe')
                 self.assertEqual(self.analysis(operation='discover', path=str(target), details=details)['ue_shipping_exe'], str(valid))
+
+    def test_plugin_discovery_skips_hidden_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'app.exe'
+            target.write_bytes(b'fixture')
+            (root / '.root.dll').write_bytes(b'fixture')
+            plugins = root / 'app_Data/Plugins'
+            for name in ('visible.dll', '.hidden.dll', 'nested/visible.dll',
+                         '.hidden/inside.dll', 'nested/.hidden.dll', 'upper.DLL'):
+                path = plugins / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'fixture')
+            details = {name: [] for name in ('Runtimes', 'Engines', 'Frameworks', 'Analysed Files')}
+            result = self.analysis(operation='discover', path=str(target), details=details)
+            expected = [str(root / '.root.dll')] + glob(str(plugins / '**/*.dll'), recursive=True)
+            self.assertEqual(result['neighbors'], expected)
 
     def test_context_root_filter_uses_unicode_case(self):
         for encoding in ('utf-8', 'utf-16le'):
