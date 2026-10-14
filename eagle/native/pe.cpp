@@ -27,6 +27,32 @@ static void quote(const std::string &value)
     putchar('"');
 }
 
+static std::string section_name(const uint8_t *data)
+{
+    std::string result;
+    for (size_t index = 0; index < 8;)
+    {
+        unsigned char ch = data[index];
+        size_t width = ch < 0x80 ? 1 : ch >= 0xc2 && ch <= 0xdf ? 2 :
+                       ch >= 0xe0 && ch <= 0xef ? 3 : ch >= 0xf0 && ch <= 0xf4 ? 4 : 0;
+        bool valid = width && width <= 8 - index;
+        for (size_t next = 1; valid && next < width; next++)
+            valid = data[index+next] >= 0x80 && data[index+next] <= 0xbf;
+        if (valid && width > 2)
+        {
+            unsigned char second = data[index+1];
+            if ((ch == 0xe0 && second < 0xa0) || (ch == 0xed && second >= 0xa0) ||
+                (ch == 0xf0 && second < 0x90) || (ch == 0xf4 && second >= 0x90)) valid = false;
+        }
+        if (!valid) { index++; continue; }
+        result.append(reinterpret_cast<const char *>(data+index), width);
+        index += width;
+    }
+    size_t first = result.find_first_not_of('\0');
+    if (first == std::string::npos) return "";
+    return result.substr(first, result.find_last_not_of('\0') - first + 1);
+}
+
 class image
 {
     int descriptor;
@@ -191,7 +217,7 @@ public:
         {
             size_t offset = optional + optional_size + index * 40;
             bounds(offset, 40);
-            std::string name(reinterpret_cast<const char *>(data + offset), strnlen(reinterpret_cast<const char *>(data+offset), 8));
+            std::string name = section_name(data + offset);
             sections.push_back({dword(offset+12), dword(offset+8), dword(offset+20), dword(offset+16), name});
         }
         auto directory = [&](unsigned index) -> uint32_t { return index < directory_count ? dword(directory_start + index * 8) : 0; };

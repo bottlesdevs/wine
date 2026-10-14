@@ -498,7 +498,9 @@ static json_object *pe_insights(json_object *request)
     auto *sections = member(structure, "sections");
     for (size_t i = 0; i < json_object_array_length(sections); i++)
     {
-        auto name = text(json_object_array_get_idx(sections, i), "name");
+        auto *entry = json_object_array_get_idx(sections, i);
+        auto name = text(entry, "name");
+        if (name.size() != static_cast<size_t>(json_object_get_string_len(member(entry, "name")))) continue;
         if (member(packers, name.c_str())) { auto packer = text(packers, name.c_str()); flag("is_packed", true); string(metadata, "packer", packer); step("[!] Packer detected: " + packer); break; }
     }
     step("Extracting version info...");
