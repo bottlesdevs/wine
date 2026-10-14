@@ -28,7 +28,7 @@ static std::string text(json_object *object, const char *name)
 {
     auto *value = member(object, name);
     if (!value || !json_object_is_type(value, json_type_string)) throw std::runtime_error("expected string field");
-    return json_object_get_string(value);
+    return std::string(json_object_get_string(value), json_object_get_string_len(value));
 }
 
 static std::string count(json_object *object)
@@ -57,7 +57,7 @@ static json_object *merge(json_object *request)
 {
     auto *suggestions = member(request, "suggestions"), *plan = member(request, "intel");
     if (!suggestions || !json_object_is_type(suggestions, json_type_array)) throw std::runtime_error("suggestions must be an array");
-    if (!plan) return json_object_get(suggestions);
+    if (!plan || (json_object_is_type(plan, json_type_object) && !json_object_object_length(plan))) return json_object_get(suggestions);
     if (!json_object_is_type(plan, json_type_object)) throw std::runtime_error("intel plan must be an object");
     for (const char *name : {"parameters", "env", "dll_overrides"})
         if (!json_object_is_type(member(plan, name), json_type_object)) throw std::runtime_error("intel mappings are missing");
@@ -502,7 +502,7 @@ static json_object *pe_insights(json_object *request)
     {
         auto *entry = json_object_array_get_idx(sections, i);
         auto name = text(entry, "name");
-        if (name.size() != static_cast<size_t>(json_object_get_string_len(member(entry, "name")))) continue;
+        if (name.find('\0') != std::string::npos) continue;
         if (member(packers, name.c_str())) { auto packer = text(packers, name.c_str()); flag("is_packed", true); string(metadata, "packer", packer); step("[!] Packer detected: " + packer); break; }
     }
     step("Extracting version info...");

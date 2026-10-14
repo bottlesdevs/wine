@@ -309,6 +309,25 @@ class AnalysisHelpers(unittest.TestCase):
                     self.assertIn('DLL override names must be strings', result.stderr)
                     self.assertEqual(path.read_bytes(), before)
 
+    def test_empty_intel_plan_preserves_suggestions(self):
+        suggestions = [dict(key='dxvk', value=True, label='Enable DXVK')]
+        self.assertEqual(self.analysis(operation='merge', suggestions=suggestions, intel={}), suggestions)
+
+    def test_intel_labels_preserve_complete_strings(self):
+        plan = dict(parameters={'dxvk': dict(value=False, evidence=7, reason='fixture\0suffix')},
+                    dependencies=[dict(name='fixture\0runtime', reason='reason\0suffix', evidence=6)],
+                    env={'DXVK_CONFIG': dict(value='fixture\0suffix', evidence=5)},
+                    dll_overrides={}, args=[dict(value='--fixture\0suffix', evidence=4)])
+        result = self.analysis(operation='merge', suggestions=[], intel=plan)
+        self.assertEqual(result, [
+            dict(key='dxvk', value=False, label='fixture\0suffix (x7)', apply=False),
+            dict(key='dep_fixture\0runtime', value=False, label='fixture\0runtime (reason\0suffix, x6)'),
+            dict(key='intel_env:DXVK_CONFIG', value='fixture\0suffix',
+                 label='Set DXVK_CONFIG=fixture\0suffix (community evidence x5)', apply=False),
+            dict(key='intel_arg:--fixture\0suffix', value='--fixture\0suffix',
+                 label='Add launch argument --fixture\0suffix (community evidence x4)', apply=False),
+        ])
+
     def test_invalid_requests_return_errors(self):
         for request in ('[]', '{}', '{', '{"operation":"unknown"}', '{"operation":"merge","suggestions":{}}'):
             with self.subTest(request=request):
