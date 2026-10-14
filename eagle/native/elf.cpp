@@ -118,7 +118,7 @@ class image
 public:
     explicit image(const char *path)
     {
-        descriptor = open(path, O_RDONLY);
+        descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
         struct stat status;
         if (descriptor < 0 || fstat(descriptor, &status) || !S_ISREG(status.st_mode) || status.st_size < EI_NIDENT)
         { if (descriptor >= 0) close(descriptor); throw std::runtime_error("cannot read ELF image"); }

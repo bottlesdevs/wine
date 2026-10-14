@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import selectors
 import socket
+import stat
 import subprocess
 import time
 import re
@@ -83,7 +84,9 @@ def mapped_image(pid, address):
 def identity(path):
     path = Path(path).resolve(strict=True)
     digest = hashlib.sha256()
-    with path.open("rb") as file:
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK), "rb") as file:
+        if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+            raise ValueError("image must be a regular file")
         magic = file.read(4)
         digest.update(magic)
         for block in iter(lambda: file.read(1024 * 1024), b""):

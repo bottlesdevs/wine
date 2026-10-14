@@ -41,9 +41,9 @@ public:
     explicit image(const char *path)
     {
         struct stat info;
-        descriptor = open(path, O_RDONLY | O_CLOEXEC);
+        descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
         if (descriptor < 0) throw std::runtime_error("cannot open PE image");
-        if (fstat(descriptor, &info) || info.st_size < 64)
+        if (fstat(descriptor, &info) || !S_ISREG(info.st_mode) || info.st_size < 64)
         {
             close(descriptor); throw std::runtime_error("PE image is truncated");
         }
