@@ -303,8 +303,9 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
     manifest['target_cwd'] = str(target_cwd) if target_cwd else None
     manifest['unix_modules'] = {}
     manifest['unix_inventory'] = {'mode': 'sampled module identities', 'host_stacks_captured': False}
-    from provenance import capture_identity
+    from provenance import capture_identity, runner_identity
     manifest['build'] = capture_identity(Path(__file__).resolve().parents[2], wine, collector)
+    manifest['runner_build'] = runner_identity(wine, manifest['build'].get('wine_sha256'))
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (root / 'events.jsonl').touch(mode=0o600, exist_ok=False)
     control = socket.socket(socket.AF_UNIX)

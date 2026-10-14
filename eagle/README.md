@@ -127,6 +127,20 @@ Capture checks the collector digest rather than hashing the entire installed
 runner on every launch. A process-creation failure preserves the manifest and
 empty event history for inspection/export and closes its control socket.
 
+Soda builds also write `share/soda/build.json`, `files.json` and `sources.json`.
+The summary ties the launcher and file index to the supplied source revisions,
+source-tree hashes, patch-file inventory and configuration hashes. Binary entries
+retain ELF build IDs and PE CodeView identities through the native parsers.
+Symlink targets are recorded without being followed. Patch inventory does not
+attest application order or replace a snapshot of the patched Wine tree.
+
+The workflow saves compilation provenance before pre-test upload, then refreshes
+the file index after Eagle is installed. Refresh preserves compilation sources
+and records the packaging source separately. Old recovered artifacts without
+source metadata report it as unavailable. Captures include `runner_build` with
+the observed launcher digest and recorded source identities; full inventories
+are not rehashed on each launch.
+
 ## Build and verification
 
 `.github/build-eagle.sh RUNNER WORK` builds and installs the debugger/tracing

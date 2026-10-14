@@ -401,6 +401,25 @@ jobs:
           echo "$WINE_MONO_SHA256  /tmp/$mono_file" | sha256sum --check -
           install -Dm644 "/tmp/$mono_file" "$runner_dir/share/wine/mono/$mono_file"
 
+      - name: record Wine build provenance
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        env:
+          COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
+        run: |
+          runner="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner"
+          sh "$GITHUB_WORKSPACE/.github/soda-provenance.sh" "$runner" \
+            "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-source-provenance" \
+            --name "$COMPONENT_NAME" \
+            --source "recipe=$GITHUB_WORKSPACE" --expect-source "recipe=$GITHUB_SHA" \
+            --source "wine=$PWD/src/ValveSoftware-winegit" --expect-source "wine=$VALVE_WINE_COMMIT" \
+            --source "tkg=$PWD" --expect-source "tkg=$WINE_TKG_COMMIT" \
+            --source proton=/tmp/proton --expect-source "proton=$PROTON_COMMIT" \
+            --source openxr=/tmp/proton/OpenXR-SDK --expect-source "openxr=$OPENXR_SDK_COMMIT" \
+            --source build_tools=/tmp/build-tools --expect-source "build_tools=$BUILD_TOOLS_COMMIT" \
+            --patch-dir "$GITHUB_WORKSPACE/wine-tkg-userpatches" \
+            --input recipe=/home/runner/.config/frogminer/wine-tkg.cfg --config-root "$PWD/src"
+
       - name: upload pre-test runner
         if: steps.identity.outputs.prerelease == 'true' || steps.identity.outputs.publish == 'false'
         uses: actions/upload-artifact@v7
@@ -1082,6 +1101,9 @@ jobs:
           test -f "$runner_dir/lib/wine/x86_64-unix/wineopenxr.so"
           install -Dm644 /tmp/proton/wineopenxr/wineopenxr64.json "$runner_dir/share/openxr/wineopenxr64.json"
           xvfb-run -a sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner_dir" "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          sh "$GITHUB_WORKSPACE/.github/soda-provenance.sh" "$runner_dir" \
+            "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-package-provenance" \
+            --name "$COMPONENT_NAME" --refresh --assembly-source "$GITHUB_WORKSPACE"
           mv "$runner_dir" "$COMPONENT_NAME"
           tar cJvf "$ARCHIVE_NAME" "$COMPONENT_NAME"
           mv "$ARCHIVE_NAME" "/tmp/$ARCHIVE_NAME"
@@ -1272,6 +1294,18 @@ jobs:
           if ldd "$runner_dir/bin/wine" | grep -F 'not found'; then
             exit 1
           fi
+          sh "$GITHUB_WORKSPACE/.github/soda-provenance.sh" "$runner_dir" \
+            "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64-provenance" \
+            --name "$COMPONENT_NAME" \
+            --source "recipe=$GITHUB_WORKSPACE" --expect-source "recipe=$GITHUB_SHA" \
+            --source wine=/tmp/proton/wine --expect-source "wine=$VALVE_WINE_COMMIT" \
+            --source proton=/tmp/proton --expect-source "proton=$PROTON_COMMIT" \
+            --source openxr=/tmp/proton/OpenXR-SDK --expect-source "openxr=$OPENXR_SDK_COMMIT" \
+            --source fex=/tmp/proton/FEX --expect-source "fex=$FEX_COMMIT" \
+            --source wineopenxr=/tmp/proton/wineopenxr --expect-source "wineopenxr=$PROTON_COMMIT" \
+            --patch-dir "$GITHUB_WORKSPACE/wine-tkg-userpatches" \
+            --input "openxr_patch=$GITHUB_WORKSPACE/.github/wineopenxr-host-runtime-proton.mypatch" \
+            --config-root /tmp/proton-build --assembly-source "$GITHUB_WORKSPACE"
           tar -C /tmp -cJf "/tmp/$ARCHIVE_NAME" "$COMPONENT_NAME"
 
       - name: upload
@@ -1543,6 +1577,8 @@ jobs:
           done
           test -f "$runner/lib/wine/x86_64-unix/wineopenxr.so"
           xvfb-run -a sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner" "$work/eagle"
+          sh "$GITHUB_WORKSPACE/.github/soda-provenance.sh" "$runner" "$work/provenance" \
+            --name "$component-x86_64" --refresh --prebuilt --assembly-source "$GITHUB_WORKSPACE"
           mv "$runner" "$work/release/$component-x86_64"
           tar -C "$work/release" -cJf "$work/release/$component-x86_64.tar.xz" "$component-x86_64"
           gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \

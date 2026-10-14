@@ -52,6 +52,21 @@ class BuildProvenance(unittest.TestCase):
         self.assertIsNone(identity['dirty'])
         self.assertEqual(identity['files']['fixture.c'], provenance.digest(self.source / 'fixture.c'))
 
+    def test_source_symlinks_record_targets_without_reading_them(self):
+        outside = self.root / 'outside'
+        outside.write_bytes(b'owned external fixture')
+        link = self.source / 'fixture-link'
+        link.symlink_to(outside)
+        before = provenance.source_identity(self.source)
+        outside.write_bytes(b'changed external fixture')
+        after = provenance.source_identity(self.source)
+        self.assertEqual(before['tree_sha256'], after['tree_sha256'])
+        self.assertEqual(before['symlinks'], {'fixture-link': str(outside)})
+        self.assertNotIn('fixture-link', before['files'])
+        link.unlink()
+        link.symlink_to('missing fixture')
+        self.assertNotEqual(before['tree_sha256'], provenance.source_identity(self.source)['tree_sha256'])
+
     def test_manifest_write_is_deterministic_and_does_not_hash_itself(self):
         first = provenance.write(self.source, self.package)
         manifest = self.package / 'share/eagle/build.json'
