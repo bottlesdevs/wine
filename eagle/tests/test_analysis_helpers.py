@@ -202,6 +202,23 @@ class AnalysisHelpers(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), {'available': True, 'has_artifacts': False, 'schema_version': '1'})
             self.assertEqual(path.read_bytes(), before)
 
+    def test_winetricks_note_omits_missing_verb(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'intel.sqlite'
+            with sqlite3.connect(path) as connection:
+                connection.execute('CREATE TABLE trick (name TEXT, kind TEXT, title TEXT, '
+                                   'files_json TEXT, overrides_json TEXT, winver TEXT, bottles_dep TEXT)')
+            constants = json.loads((NATIVE.parent / 'analysis.json').read_text())['intel']
+            for verb in (None, '', 'example'):
+                with self.subTest(verb=verb):
+                    hit = dict(match='name', tweaks=[], software=dict(name='Example', source='winetricks', trick_name=verb))
+                    request = dict(operation='plan', hit=hit, constants=constants)
+                    result = subprocess.run([str(NATIVE / 'eagle-intel'), str(path)],
+                                            input=json.dumps(request), capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    expected = "Known application: Example (winetricks verb 'example')" if verb else 'Known application: Example'
+                    self.assertEqual(json.loads(result.stdout)['notes'], [expected])
+
     def test_invalid_requests_return_errors(self):
         for request in ('[]', '{}', '{', '{"operation":"unknown"}', '{"operation":"merge","suggestions":{}}'):
             with self.subTest(request=request):

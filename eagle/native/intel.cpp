@@ -353,7 +353,9 @@ static json_object *plan(database &db, json_object *request)
         if (items) json_object_put(items);
         auto dep = field(verb, "bottles_dep");
         if (!dep.empty()) { dependency(dep, 0, "winetricks " + field(verb, "name") + " maps to this dependency"); credit("bottles_dependencies"); }
-        note("Known application: " + field(software, "name") + " (winetricks verb '" + field(software, "trick_name") + "')");
+        auto application = "Known application: " + field(software, "name");
+        if (!field(software, "trick_name").empty()) application += " (winetricks verb '" + field(software, "trick_name") + "')";
+        note(application);
         if (!field(verb, "winver").empty()) note("winetricks sets Windows version to " + field(verb, "winver") + " for it");
         if (verb) json_object_put(verb);
         return result;
