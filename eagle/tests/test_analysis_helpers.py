@@ -243,6 +243,72 @@ class AnalysisHelpers(unittest.TestCase):
                     self.assertEqual(json.loads(result.stdout)['dll_overrides'], expected)
                     self.assertEqual(path.read_bytes(), before)
 
+    def test_intel_hint_names_preserve_embedded_nuls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'intel.sqlite'
+            with sqlite3.connect(path) as connection:
+                connection.execute('CREATE TABLE trick (name TEXT, kind TEXT, title TEXT, '
+                                   'files_json TEXT, overrides_json TEXT, winver TEXT, bottles_dep TEXT)')
+                connection.execute("INSERT INTO trick (name, kind) VALUES ('example', 'apps')")
+            constants = json.loads((NATIVE.parent / 'analysis.json').read_text())['intel']
+            cases = [('launch_flag', 'disableEsync')]
+            cases.extend(('launch_token', name + '=true') for name in constants['proton_env'])
+            cases.extend(('launch_token', name + '=true\0tail') for name in constants['proton_env'])
+            cases.extend([('launch_token', 'WINEDLLOVERRIDES=example=native'),
+                          ('launch_token', 'WINEDLLOVERRIDES=example=n')])
+            for kind, value in cases:
+                altered = value.replace('=true', '\0tail=true') if value.endswith('=true') else value + '\0tail'
+                if value == 'WINEDLLOVERRIDES=example=n':
+                    altered = 'WINEDLLOVERRIDES=example\0tail=n'
+                with self.subTest(kind=kind, value=value):
+                    hit = dict(match='name', software=dict(name='Example', source='protondb', reports=50),
+                               tweaks=[dict(kind=kind, value=altered, evidence=5)])
+                    result = subprocess.run([str(NATIVE / 'eagle-intel'), str(path)],
+                        input=json.dumps(dict(operation='plan', hit=hit, constants=constants)),
+                        capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    plan = json.loads(result.stdout)
+                    for key in ('parameters', 'dll_overrides', 'env'):
+                        self.assertEqual(plan[key], {})
+            for mode, dll in [('native', 'example\0tail'), ('native\0tail', 'example')]:
+                with self.subTest(mode=mode, dll=dll):
+                    with sqlite3.connect(path) as connection:
+                        connection.execute('UPDATE trick SET overrides_json = ?',
+                                           (json.dumps([dict(mode=mode, dlls=[dll])]),))
+                    before = path.read_bytes()
+                    hit = dict(match='name', tweaks=[], software=dict(
+                        name='Example', source='winetricks', trick_name='example'))
+                    result = subprocess.run([str(NATIVE / 'eagle-intel'), str(path)],
+                        input=json.dumps(dict(operation='plan', hit=hit, constants=constants)),
+                        capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout)['dll_overrides'], {})
+                    self.assertEqual(path.read_bytes(), before)
+
+    def test_winetricks_override_names_require_strings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'intel.sqlite'
+            with sqlite3.connect(path) as connection:
+                connection.execute('CREATE TABLE trick (name TEXT, kind TEXT, title TEXT, '
+                                   'files_json TEXT, overrides_json TEXT, winver TEXT, bottles_dep TEXT)')
+                connection.execute("INSERT INTO trick (name, kind) VALUES ('example', 'apps')")
+            constants = json.loads((NATIVE.parent / 'analysis.json').read_text())['intel']
+            for dll in (None, 12, False, {}, []):
+                with self.subTest(dll=dll):
+                    with sqlite3.connect(path) as connection:
+                        connection.execute('UPDATE trick SET overrides_json = ?',
+                                           (json.dumps([dict(mode='native', dlls=[dll])]),))
+                    before = path.read_bytes()
+                    hit = dict(match='name', tweaks=[], software=dict(
+                        name='Example', source='winetricks', trick_name='example'))
+                    result = subprocess.run([str(NATIVE / 'eagle-intel'), str(path)],
+                        input=json.dumps(dict(operation='plan', hit=hit, constants=constants)),
+                        capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertEqual(result.stdout, '')
+                    self.assertIn('DLL override names must be strings', result.stderr)
+                    self.assertEqual(path.read_bytes(), before)
+
     def test_invalid_requests_return_errors(self):
         for request in ('[]', '{}', '{', '{"operation":"unknown"}', '{"operation":"merge","suggestions":{}}'):
             with self.subTest(request=request):

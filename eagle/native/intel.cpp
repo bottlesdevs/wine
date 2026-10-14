@@ -259,6 +259,11 @@ static json_object *member(json_object *object, const char *name)
     return value;
 }
 
+static json_object *member(json_object *object, const std::string &name)
+{
+    return name.find('\0') == std::string::npos ? member(object, name.c_str()) : nullptr;
+}
+
 static void copy(json_object *destination, const char *key, json_object *value)
 {
     json_object_object_add(destination, key, json_object_get(value));
@@ -319,7 +324,7 @@ static json_object *plan(database &db, json_object *request)
     };
     auto mode = [&](const std::string &value)
     {
-        auto *found = member(member(constants, "override_modes"), value.c_str());
+        auto *found = member(member(constants, "override_modes"), value);
         return found ? std::string(json_object_get_string(found)) : value;
     };
     const std::regex dll_name("^[A-Za-z0-9_.-]+$"), env_name("^[A-Z_][A-Z0-9_]*$"), env_value("^[A-Za-z0-9_.,:+/@% -]*$"), argument("^--?[A-Za-z0-9][A-Za-z0-9._:+/@,-]*(?:=[A-Za-z0-9._:+/@,-]+)?$");
@@ -348,13 +353,15 @@ static json_object *plan(database &db, json_object *request)
         if (items && json_object_is_type(items, json_type_array)) for (size_t i = 0; i < json_object_array_length(items); i++)
         {
             auto *item = json_object_array_get_idx(items, i);
-            auto *mapped = member(member(constants, "override_modes"), field(item, "mode").c_str());
+            auto *mapped = member(member(constants, "override_modes"), field(item, "mode"));
             if (!mapped) continue;
             auto *dlls = member(item, "dlls");
             if (!dlls || !json_object_is_type(dlls, json_type_array)) continue;
             for (size_t j = 0; j < json_object_array_length(dlls); j++)
             {
-                std::string dll = json_object_get_string(json_object_array_get_idx(dlls, j));
+                auto *entry = json_object_array_get_idx(dlls, j);
+                if (!entry || !json_object_is_type(entry, json_type_string)) throw std::runtime_error("DLL override names must be strings");
+                std::string dll(json_object_get_string(entry), json_object_get_string_len(entry));
                 if (std::regex_match(dll, dll_name)) override(fold(dll), json_object_get_string(mapped), 0);
             }
         }
@@ -388,13 +395,13 @@ static json_object *plan(database &db, json_object *request)
         std::string kind = field(item, "kind"), value = field(item, "value");
         int64_t evidence = json_object_get_int64(member(item, "evidence"));
         if (evidence < threshold) continue;
-        if (kind == "launch_flag" && propose(member(member(constants, "launch_flags"), value.c_str()), evidence)) continue;
+        if (kind == "launch_flag" && propose(member(member(constants, "launch_flags"), value), evidence)) continue;
         size_t equal = value.find('=');
         if (kind == "launch_token" && equal != std::string::npos)
         {
             auto name = value.substr(0, equal), target = trim_quotes(value.substr(equal+1));
-            auto *mapping = member(member(constants, "proton_env"), name.c_str());
-            if (mapping && (fold(target) == "1" || fold(target) == "true")) { propose(mapping, evidence); continue; }
+            auto *mapping = member(member(constants, "proton_env"), name);
+            if (mapping && target.find('\0') == std::string::npos && (fold(target) == "1" || fold(target) == "true")) { propose(mapping, evidence); continue; }
             if (name == "WINEDLLOVERRIDES")
             {
                 target.erase(std::remove(target.begin(), target.end(), '\\'), target.end());
@@ -403,7 +410,11 @@ static json_object *plan(database &db, json_object *request)
                     auto delimiter = pair.find('='); if (delimiter == std::string::npos) continue;
                     auto selected = mode(pair.substr(delimiter+1));
                     if (selected != "n" && selected != "b" && selected != "n,b" && selected != "b,n" && selected != "d") continue;
-                    for (const auto &dll : split(pair.substr(0, delimiter), ',')) override(fold(trim_quotes(dll)), selected, evidence);
+                    for (const auto &dll : split(pair.substr(0, delimiter), ','))
+                    {
+                        auto name = trim_quotes(dll);
+                        if (std::regex_match(name, dll_name)) override(fold(name), selected, evidence);
+                    }
                 }
                 continue;
             }
