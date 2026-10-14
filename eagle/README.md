@@ -76,8 +76,11 @@ separately.
 Intel helpers and the developing native driver, using static json-c, GLib
 and SQLite libraries. The driver reads one JSON request on standard input
 and emits JSON lines for progress followed by the report. PE, directory,
-neighbor and ASAR analysis are under comparison with the existing backend.
-Installer extraction, cancellation and complete runtime packaging remain open.
+neighbor, ASAR and installer analysis are under comparison with the existing
+backend. Installer extraction uses an available 7z, 7za or 7zr command, with
+the existing optional patool module as an external fallback. A caller can
+pass its Python executable through `extractor_python` for that fallback.
+Cancellation and complete runtime packaging remain open.
 The driver requires the native rule scanner and its data alongside these helpers.
 
 The debugger regression suite is `tests/integration.py`. Session/export

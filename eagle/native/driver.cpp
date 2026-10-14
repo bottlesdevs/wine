@@ -1,4 +1,5 @@
 #include <json-c/json.h>
+#include <glib.h>
 #include <algorithm>
 #include <chrono>
 #include <cctype>
@@ -7,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -86,7 +88,12 @@ struct process
     void close_fd(int &descriptor) { if (descriptor >= 0) close(descriptor); descriptor = -1; }
 };
 
-static json tool(const std::vector<std::string> &arguments, const std::string &input = "", unsigned timeout = 30)
+struct tool_failure : std::runtime_error
+{
+    using std::runtime_error::runtime_error;
+};
+
+static std::string run_tool(const std::vector<std::string> &arguments, const std::string &input = "", unsigned timeout = 30)
 {
     process child;
     for (auto &pipe : child.pipes) if (pipe2(pipe, O_CLOEXEC)) throw std::runtime_error("cannot create helper pipes");
@@ -147,13 +154,25 @@ static json tool(const std::vector<std::string> &arguments, const std::string &i
             else if (ended < 0 && errno != EINTR) throw std::runtime_error("cannot wait for analysis helper");
         }
     }
-    if (!WIFEXITED(status) || WEXITSTATUS(status)) throw std::runtime_error(errors.empty() ? "analysis helper failed" : errors);
-    return parse(output);
+    if (!WIFEXITED(status) || WEXITSTATUS(status)) throw tool_failure(errors.empty() ? "analysis helper failed" : errors);
+    return output;
+}
+
+static json tool(const std::vector<std::string> &arguments, const std::string &input = "", unsigned timeout = 30)
+{
+    return parse(run_tool(arguments, input, timeout));
+}
+
+static std::string program(const char *name)
+{
+    gchar *path = g_find_program_in_path(name);
+    std::string result = path ? path : ""; g_free(path); return result;
 }
 
 class analyzer
 {
     fs::path native, target, rules, workspace;
+    std::string extractor_python;
     size_t scan_limit = 50;
     std::vector<fs::path> databases;
     json config, details = object();
@@ -185,6 +204,62 @@ class analyzer
             return json_object_array_length(get(result.get(), "matches"));
         }
         catch (const std::exception &error) { fprintf(stderr, "Eagle pattern scan failed: %s\n", error.what()); return 0; }
+    }
+    std::vector<fs::path> installer(const std::string &type, const fs::path &output)
+    {
+        std::vector<fs::path> files;
+        try
+        {
+            step("Extracting " + type + " installer...");
+            std::string extractor;
+            for (const char *name : {"7z", "7za", "7zr"}) if ((extractor = program(name)) != "") break;
+            bool extracted = false;
+            if (!extractor.empty())
+            {
+                std::vector<std::string> arguments = {extractor, "x", "-y", "-o" + output.string(), target.string()};
+                for (const char *filter : {"*.exe", "*.dll", "*.msi", "*.json", "*.xml", "*.config", "*.manifest", "*.ini", "*.js", "*.vdf", "*.reg"})
+                { arguments.push_back(std::string("-i!") + filter); arguments.push_back(std::string("-i!**/") + filter); }
+                try { run_tool(arguments, "", 120); extracted = true; }
+                catch (const tool_failure &) {}
+            }
+            if (!extracted)
+            {
+                auto python = extractor_python.empty() ? program("python3") : extractor_python;
+                if (python.empty()) throw std::runtime_error("no extraction tool available");
+                // Keep the existing optional extractor without invoking the Python analyzer.
+                run_tool({python, "-c", "import patoolib,sys; patoolib.extract_archive(sys.argv[1], outdir=sys.argv[2], verbosity=-1)", target.string(), output.string()}, "", 120);
+            }
+            for (const char *extension : {".exe", ".dll"})
+            {
+                std::function<void(const fs::path &, unsigned)> collect = [&](const fs::path &directory, unsigned depth) {
+                    if (depth > 64 || files.size() > 100000) throw std::runtime_error("installer traversal exceeds limit");
+                    std::vector<fs::directory_entry> entries;
+                    for (const auto &entry : fs::directory_iterator(directory)) if (entry.path().filename().string().front() != '.') entries.push_back(entry);
+                    for (const auto &entry : entries) if (entry.path().extension() == extension && entry.is_regular_file()) files.push_back(entry.path());
+                    for (const auto &entry : entries) if (!entry.is_symlink() && entry.is_directory()) collect(entry.path(), depth + 1);
+                };
+                collect(output, 0);
+            }
+            step("Found " + std::to_string(files.size()) + " binaries in installer");
+        }
+        catch (const std::exception &error)
+        {
+            fprintf(stderr, "Eagle extraction failed: %s\n", error.what());
+            step("Extraction skipped (not supported)");
+        }
+        return files;
+    }
+    void scan_installer(const std::vector<fs::path> &files, bool record)
+    {
+        size_t count = std::min(scan_limit, files.size());
+        for (size_t index = 0; index < count; index++)
+        {
+            if (!fs::exists(files[index])) continue;
+            auto name = files[index].filename().string();
+            if (record) json_object_array_add(get(details.get(), "Analysed Files"), json_object_new_string(name.c_str()));
+            step("[" + std::to_string(index + 1) + "/" + std::to_string(count) + "] Scanning: " + name);
+            scan(files[index], name);
+        }
     }
     json intelligence(json_object *structure, const std::string &product)
     {
@@ -237,6 +312,7 @@ public:
         rules = get(request, "rules") ? fs::path(text(get(request, "rules"))) : native.parent_path() / "engine/eagle.yar";
         if (auto *work = get(request, "work")) workspace = text(work);
         else if (const char *work = getenv("TMPDIR")) workspace = work;
+        if (auto *python = get(request, "extractor_python")) extractor_python = text(python);
         if (auto *database = get(request, "database")) databases.emplace_back(text(database));
         else if (const char *database = getenv("EAGLE_INTEL_DB")) databases.emplace_back(database);
         else
@@ -251,11 +327,24 @@ public:
         auto basename = target.filename().string();
         std::string extension = target.extension().string();
         std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) { return std::tolower(ch); });
-        if (extension == ".msi") throw std::runtime_error("native installer orchestration is not yet integrated");
-        step("Initialising Eagle..."); step("Target: " + basename); step("Loading PE structure (Could take a while)...");
-        auto structure = tool({(native / "eagle-pe").string(), target.string()});
+        step("Initialising Eagle..."); step("Target: " + basename);
         for (const char *name : {"Graphics", "Audio", "Runtimes", "Input", "Social/DRM", "Engines", "Frameworks", "Protection", "Packers", "Physics", "Media", "Crypto", "Upscaling", "Installer", "Warning", "Registry", "Analysed Files"}) json_object_object_add(details.get(), name, json_object_new_array());
         json_object_array_add(get(details.get(), "Analysed Files"), json_object_new_string(basename.c_str()));
+        if (extension == ".msi")
+        {
+            step("MSI package detected - extracting for analysis...");
+            auto value = object(); string(value.get(), "name", "MSI"); string(value.get(), "source", "File Extension"); json_object_array_add(get(details.get(), "Installer"), value.release());
+            extraction output(workspace); auto files = installer("MSI", output.path); scan_installer(files, false);
+            step("Querying community intelligence..."); auto product = target.stem().string(); auto plan = intelligence(nullptr, product);
+            auto request = object(); json_object_object_add(request.get(), "suggestions", json_object_new_array()); set(request.get(), "intel", plan.get()); auto suggestions = call("merge", std::move(request));
+            auto report = object(); string(report.get(), "name", basename); string(report.get(), "product_name", product);
+            for (const char *key : {"publisher", "arch", "min_os"}) string(report.get(), key, "Unknown");
+            json_object_object_add(report.get(), "admin", json_object_new_boolean(false)); json_object_object_add(report.get(), "frameworks", json_object_new_array());
+            set(report.get(), "suggestions", suggestions.get()); set(report.get(), "details", details.get()); json_object_object_add(report.get(), "metadata", json_object_new_object()); set(report.get(), "intel", plan.get());
+            step("MSI analysis complete."); return report;
+        }
+        step("Loading PE structure (Could take a while)...");
+        auto structure = tool({(native / "eagle-pe").string(), target.string()});
         auto metadata = object();
         for (const char *key : {"compiler", "build_date", "packer"}) set(metadata.get(), key, nullptr);
         for (const char *key : {"is_packed", "large_address_aware", "dep_enabled", "aslr_enabled", "is_debug"}) json_object_object_add(metadata.get(), key, json_object_new_boolean(false));
@@ -310,7 +399,26 @@ public:
             }
             json_object_array_add(get(details.get(), "Analysed Files"), json_object_new_string(name.c_str()));
         }
-        if (json_object_array_length(get(details.get(), "Installer"))) throw std::runtime_error("native installer orchestration is not yet integrated");
+        if (json_object_array_length(get(details.get(), "Installer")))
+        {
+            auto *item = json_object_array_get_idx(get(details.get(), "Installer"), 0);
+            auto type = json_object_is_type(item, json_type_object) ? text(get(item, "name")) : text(item);
+            step("Installer detected (" + type + "), performing deep scan...");
+            extraction output(workspace);
+            try
+            {
+                auto files = installer(type, output.path);
+                fs::path largest;
+                for (const auto &file : files)
+                {
+                    auto extension = file.extension().string();
+                    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) { return std::tolower(ch); });
+                    if (extension == ".exe" && (largest.empty() || fs::file_size(file) > fs::file_size(largest))) largest = file;
+                }
+                if (!largest.empty()) { step("Scanning main binary: " + largest.filename().string()); scan_installer(files, true); }
+            }
+            catch (const std::exception &error) { fprintf(stderr, "Eagle deep scan failed: %s\n", error.what()); step("Deep scan failed, continuing with surface analysis"); }
+        }
         step("Querying community intelligence..."); auto plan = intelligence(structure.get(), text(get(interpreted.get(), "product_name")));
         step("Generating optimisation suggestions..."); request = object(); set(request.get(), "details", details.get()); set(request.get(), "metadata", metadata.get());
         for (const char *key : {"is_net", "dpi_aware"}) set(request.get(), key, get(interpreted.get(), key));
