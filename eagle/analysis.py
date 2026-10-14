@@ -89,10 +89,12 @@ def analyze(path, progress=None, limit=50, cancel=None):
                             message = json.loads(line)
                             if not isinstance(message, dict):
                                 raise ValueError('invalid analysis response')
+                            if result is not None:
+                                raise ValueError('unexpected analysis response')
                             if message.get('event') == 'step' and isinstance(message.get('data'), str):
                                 if progress:
                                     progress(message['data'])
-                            elif isinstance(message.get('status'), bool) and result is None:
+                            elif 'event' not in message and isinstance(message.get('status'), bool):
                                 result = message
                             else:
                                 raise ValueError('unexpected analysis response')

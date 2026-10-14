@@ -33,6 +33,8 @@ def read_message(stream):
         line = stream.readline(8193)
         total += len(line)
         if not line:
+            if headers:
+                raise ValueError("truncated message headers")
             return None
         if total > 8192:
             raise ValueError("message headers exceed size limit")

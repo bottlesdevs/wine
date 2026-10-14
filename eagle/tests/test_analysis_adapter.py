@@ -1,3 +1,4 @@
+import io
 import json
 import os
 from pathlib import Path
@@ -64,6 +65,34 @@ class AnalysisAdapter(unittest.TestCase):
         self.assertEqual(progress.returncode, 0, progress.stderr)
         self.assertEqual([json.loads(line) for line in progress.stdout.splitlines()], expected)
         self.assertEqual(list(self.work.iterdir()), [])
+
+    def test_cli_rejects_events_after_report_and_unknown_events(self):
+        report = dict(status=True, data={'name': 'fixture'})
+        for messages in ([report, dict(event='step', data='late step')],
+                         [dict(report, event='unknown')]):
+            with self.subTest(messages=messages):
+                output = ''.join(json.dumps(message) + '\n' for message in messages)
+                driver = self.native / 'eagle-driver'
+                driver.write_text('#!' + sys.executable + '\nimport sys\n'
+                                  'sys.stdout.write(' + repr(output) + ')\n')
+                driver.chmod(0o755)
+                result = self.cli('analyze', str(self.target), '--progress')
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertEqual(result.stdout, '')
+                self.assertIn('unexpected analysis response', result.stderr)
+
+    def test_stdio_rejects_truncated_headers(self):
+        self.assertIsNone(read_message(io.BytesIO(b'')))
+        for fragment in (b'Content-Length: 2', b'Content-Length: 2\r\n',
+                         b'Content-Length: 2\r\nContent-Type: application/json\r\n'):
+            with self.subTest(fragment=fragment):
+                result = subprocess.run([sys.executable, str(self.root / 'eagle'), 'serve'],
+                                        input=fragment, capture_output=True, env=self.env, timeout=7)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                response = read_message(io.BytesIO(result.stdout))
+                self.assertIsNotNone(response)
+                self.assertEqual(response['error']['code'], -32700)
+                self.assertIn('truncated message headers', response['error']['message'])
 
     def test_incomplete_package_hides_analysis(self):
         for missing in ('native/eagle-driver', 'analysis.json', 'engine/eagle.yar', 'engine/eagle-intel.sqlite'):
