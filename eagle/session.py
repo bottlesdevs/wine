@@ -118,17 +118,47 @@ def identity(path):
     finally:
         pe.close()
 
+def module_records(inventory, name):
+    if not isinstance(inventory, dict) or any(not isinstance(record, dict) or not isinstance(record.get("sha256"), str) or not record["sha256"] for record in inventory.values()):
+        raise ValueError("invalid session module inventory: " + name)
+    return inventory.values()
+
 def read_bundle(root):
     root = Path(root)
     manifest = json.loads((root / "manifest.json").read_text())
-    if manifest.get("schema") != SCHEMA:
+    if not isinstance(manifest, dict):
+        raise ValueError("session manifest must be an object")
+    if type(manifest.get("schema")) is not int or manifest["schema"] != SCHEMA:
         raise ValueError("unsupported session schema")
+    for name in ("modules", "unix_modules"):
+        module_records(manifest.get(name, {}), name)
     events = []
     with (root / "events.jsonl").open() as file:
-        for line in file:
+        for number, line in enumerate(file, 1):
             if len(line) > 2 * 1024 * 1024:
                 raise ValueError("session event exceeds size limit")
-            events.append(json.loads(line))
+            event = json.loads(line)
+            error = f"invalid session event at line {number}"
+            if not isinstance(event, dict) or not isinstance(event.get("kind"), str) or not event["kind"]:
+                raise ValueError(error)
+            if event["kind"] == "process_exit" and any(key not in event for key in ("pid", "code")):
+                raise ValueError(error + ": incomplete process exit")
+            if event["kind"] == "exception" and not isinstance(event.get("first_chance"), bool):
+                raise ValueError(error + ": missing exception chance")
+            for key, expected in (("path", str), ("code", (str, int)), ("first_chance", bool)):
+                if key in event and not isinstance(event[key], expected):
+                    raise ValueError(error + ": " + key)
+            frame = event.get("frame")
+            if frame is not None:
+                if not isinstance(frame, dict) or not isinstance(frame.get("module"), (str, type(None))) or not isinstance(frame.get("rva"), (str, int, type(None))):
+                    raise ValueError(error + ": invalid frame")
+            if event["kind"] == "provider":
+                data = event.get("data")
+                if not isinstance(data, dict) or ("provider" in data and type(data["provider"]) not in (str, int)):
+                    raise ValueError(error + ": invalid provider data")
+            if "wait_graph" in event and not isinstance(event["wait_graph"], dict):
+                raise ValueError(error + ": invalid wait graph")
+            events.append(event)
     return manifest, events
 
 def summary(root):
@@ -174,7 +204,7 @@ def redact(value, key=""):
     if key in path_keys:
         return "[redacted]"
     if key in ('modules', 'unix_modules'):
-        return {record["sha256"]: redact(record) for record in value.values()}
+        return {record["sha256"]: redact(record) for record in module_records(value, key)}
     if isinstance(value, dict):
         return {name: redact(item, name) for name, item in value.items()}
     if isinstance(value, list):

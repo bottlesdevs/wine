@@ -1,4 +1,5 @@
 import copy
+import io
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,8 @@ import unittest
 
 PACKAGE = Path(os.environ['EAGLE_PACKAGE']) / 'lib/eagle'
 sys.path.insert(0, str(PACKAGE))
-from session import compare
+from session import compare, export, read_bundle, summary
+from protocol import read_message, write_message
 
 
 class SessionComparison(unittest.TestCase):
@@ -110,6 +112,105 @@ class SessionComparison(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['data'], compare(baseline, candidate))
         self.assertEqual(len(json.loads(result.stdout)['data']['added']), 1)
+
+
+    def test_manifest_containers_and_versions_are_rejected(self):
+        for index, manifest in enumerate([[], None, 1, "fixture", {"schema": True}, {"schema": 999}]):
+            with self.subTest(manifest=manifest):
+                root = self.bundle('manifest-' + str(index), [])
+                (root / 'manifest.json').write_text(json.dumps(manifest))
+                with self.assertRaises(ValueError):
+                    read_bundle(root)
+
+    def test_invalid_module_inventories_are_rejected(self):
+        for index, value in enumerate([[], None, {'module': None}, {'module': {}}, {'module': {'sha256': []}}]):
+            for name in ['modules', 'unix_modules']:
+                with self.subTest(name=name, value=value):
+                    root = self.bundle(name + str(index), [], **{name: value})
+                    with self.assertRaises(ValueError):
+                        read_bundle(root)
+
+    def test_invalid_event_structures_are_rejected(self):
+        records = [[], None, "fixture", {}, {'kind': []}, {'kind': 'process_exit'},
+                   {'kind': 'exception'}, {'kind': 'exception', 'first_chance': 1},
+                   {'kind': 'provider', 'data': []}, {'kind': 'provider', 'data': None},
+                   {'kind': 'provider', 'data': {'provider': []}},
+                   {'kind': 'fixture', 'frame': []}, {'kind': 'fixture', 'frame': {'module': []}},
+                   {'kind': 'fixture', 'frame': {'rva': []}}, {'kind': 'fixture', 'path': []},
+                   {'kind': 'fixture', 'code': []},
+                   {'kind': 'provider', 'data': {}, 'wait_graph': []}]
+        for index, event in enumerate(records):
+            with self.subTest(event=event):
+                root = self.bundle('event-' + str(index), [event])
+                with self.assertRaises(ValueError):
+                    read_bundle(root)
+
+    def test_partial_sessions_keep_optional_records(self):
+        events = [{'kind': 'fixture', 'frame': None}, {'kind': 'memory', 'data': 'own fixture'},
+                  {'kind': 'provider', 'data': {}}, {'kind': 'exception', 'first_chance': True},
+                  {'kind': 'process_exit', 'pid': 1, 'code': 0}]
+        root = self.bundle('partial', events)
+        (root / 'manifest.json').write_text('{"schema":1}')
+        manifest, parsed = read_bundle(root)
+        self.assertEqual(manifest, {'schema': 1})
+        self.assertEqual(parsed, events)
+        self.assertEqual(summary(root)['counts']['fixture'], 1)
+        self.assertTrue(export(root, self.root / 'partial.json')['export']['review_required'])
+
+    def test_cli_returns_structured_errors_without_creating_exports(self):
+        valid = self.bundle('valid', [])
+        bad_manifest = self.bundle('bad-manifest', [])
+        (bad_manifest / 'manifest.json').write_text('[]')
+        bad_event = self.bundle('bad-event', [{'kind': 'process_exit'}])
+        bad_inventory = self.bundle('bad-inventory', [], modules={'module': {}})
+        for index, root in enumerate([bad_manifest, bad_event, bad_inventory]):
+            destination = self.root / ('export-' + str(index) + '.json')
+            for args in [('inspect', str(root)), ('compare', str(valid), str(root)),
+                         ('export', str(root), str(destination))]:
+                with self.subTest(arguments=args):
+                    result = subprocess.run([sys.executable, '-S', str(PACKAGE / 'eagle'), *args],
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(result.stdout, '')
+                    self.assertFalse(json.loads(result.stderr)['status'])
+                    self.assertNotIn('Traceback', result.stderr)
+                    self.assertFalse(destination.exists())
+
+    def test_nested_module_maps_fail_before_export_creation(self):
+        root = self.bundle('nested-module-map', [{'kind': 'fixture', 'data': {'modules': []}}])
+        destination = self.root / 'nested-export.json'
+        with self.assertRaises(ValueError):
+            export(root, destination)
+        self.assertFalse(destination.exists())
+
+    def test_stdio_keeps_serving_after_invalid_sessions(self):
+        valid = self.bundle('valid', [])
+        bad_manifest = self.bundle('bad-manifest', [])
+        (bad_manifest / 'manifest.json').write_text('[]')
+        bad_event = self.bundle('bad-event', [None])
+        bad_inventory = self.bundle('bad-inventory', [], metadata={'modules': []})
+        destination = self.root / 'invalid-export.json'
+        requests = [(1, 'initialize', {'schema': 1}),
+                    (2, 'inspect', {'session': str(bad_manifest)}),
+                    (3, 'compare', {'baseline': str(valid), 'candidate': str(bad_event)}),
+                    (4, 'export', {'session': str(bad_inventory), 'output': str(destination)}),
+                    (5, 'capabilities', {}), (6, 'inspect', {'session': str(valid)}),
+                    (7, 'shutdown', {})]
+        stream = io.BytesIO()
+        for request_id, method, params in requests:
+            write_message(stream, dict(id=request_id, method=method, params=params))
+        result = subprocess.run([sys.executable, '-S', str(PACKAGE / 'eagle'), 'serve'],
+                                input=stream.getvalue(), capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        messages = io.BytesIO(result.stdout)
+        responses = [read_message(messages) for _ in requests]
+        self.assertEqual([item['id'] for item in responses], list(range(1, 8)))
+        for item in responses[1:4]:
+            self.assertEqual(item['error']['code'], -32602)
+        self.assertEqual(responses[4]['result']['schema'], 1)
+        self.assertEqual(responses[5]['result']['counts'], {})
+        self.assertIsNone(responses[6]['result'])
+        self.assertFalse(destination.exists())
 
 
 if __name__ == '__main__':
