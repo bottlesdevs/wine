@@ -78,9 +78,17 @@ inside the image. Each result reports `source-resolved`, `symbol-only` or
 `unresolved`; a missing resolver returns an error. Omitting RVAs keeps the
 existing identity response.
 
-Address lookup uses host binutils and its DWARF/symbol-table support. PDB input
-checks GUID and age only. Source lines available in split-DWARF skeletons do
-not establish that the complete companion debug information is available.
+DWARF/symbol-table lookup uses host binutils. With `--pdb ./module.pdb`, source
+lookup uses a host `llvm-symbolizer` (including version-suffixed executables).
+The selected PDB must match the PE GUID and age. Temporary links select that
+file even when it was moved or another PDB sits beside the image; the files
+are not copied or modified. Omitting RVAs still checks identity without LLVM.
+Source lines available in split-DWARF skeletons do not establish that the
+complete companion debug information is available.
+
+The offline PDB fixture tests require `clang-cl`, `lld-link` and
+`llvm-symbolizer`. They report a skip if these optional host tools are absent;
+`EAGLE_TEST_LLD_LINK` can select a linker executable for the tests.
 
 ## Build and verification
 

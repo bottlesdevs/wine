@@ -14,7 +14,7 @@ def capabilities():
     analyzer = available()
     return {
         "schema": 1,
-        "symbol_queries": {"maximum": 256, "addresses": "RVA", "resolver": "requires host binutils", "pdb": "GUID/age verification only"},
+        "symbol_queries": {"maximum": 256, "addresses": "RVA", "resolver": "requires host binutils", "pdb": "GUID/age verification; source lookup requires host llvm-symbolizer"},
         "debug_architectures": ["x86", "x86_64"],
         "static_analyzer": "Soda Eagle native analysis" if analyzer else None,
         "native_static_analyzer": analyzer,

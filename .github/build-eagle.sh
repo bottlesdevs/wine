@@ -69,5 +69,6 @@ export EAGLE_TRACE_EXPORT_ROOT="$work/tests/e"
 python3 -S "$root/eagle/tests/test_trace_export.py" > "$work/tests/e/integration.log" 2>&1
 python3 -S "$root/eagle/tests/test_session_compare.py" > "$work/tests/e/comparison.log" 2>&1
 python3 -S "$root/eagle/tests/test_symbols_offline.py" > "$work/tests/e/symbols-offline.log" 2>&1
+python3 -S "$root/eagle/tests/test_symbols_pdb.py" > "$work/tests/e/symbols-pdb.log" 2>&1
 python3 -S "$root/eagle/tests/test_debugger_package.py" > "$work/tests/e/package.log" 2>&1
 printf '%s\n' 'Eagle package, debugger, automatic tracing and x86/x64 provider controls passed'

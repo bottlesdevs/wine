@@ -6,7 +6,8 @@ import struct
 import uuid
 import json
 import re
-from pathlib import Path
+import tempfile
+from pathlib import Path, PureWindowsPath
 
 def host_path(value, prefix):
     value = value.removeprefix("\\\\?\\")
@@ -91,6 +92,57 @@ def resolve(image, rvas):
         output.append(value)
     return output
 
+def pdb_resolver():
+    tool = shutil.which('llvm-symbolizer')
+    if tool:
+        return tool
+    versions = []
+    for directory in os.get_exec_path():
+        for path in Path(directory).glob('llvm-symbolizer-[0-9]*'):
+            match = re.fullmatch(r'llvm-symbolizer-([0-9]+)', path.name)
+            if match and path.is_file() and os.access(path, os.X_OK):
+                versions.append((int(match[1]), str(path)))
+    return max(versions, default=(0, None))[1]
+
+def resolve_pdb(image, pdb, names, rvas):
+    if not rvas:
+        return []
+    tool = pdb_resolver()
+    if not tool:
+        raise ValueError('PDB source resolver unavailable (requires llvm-symbolizer)')
+    if not names or any(not name or name in ('.', '..') for name in names):
+        raise ValueError('PDB debug filename is missing')
+    with tempfile.TemporaryDirectory(prefix='eagle-symbols-') as directory:
+        root = Path(directory)
+        image_name = next('module-' + str(index) + '.exe' for index in range(len(names) + 1)
+                          if 'module-' + str(index) + '.exe' not in names)
+        selected = root / image_name
+        selected.symlink_to(Path(image).resolve(strict=True))
+        for name in set(names):
+            (root / name).symlink_to(Path(pdb).resolve(strict=True))
+        result = subprocess.run([tool, '--obj=' + str(selected), '--relative-address',
+                                 '--output-style=JSON', '--no-inlines', '--no-debuginfod', *rvas],
+                                capture_output=True, text=True, timeout=10,
+                                env={key: value for key, value in os.environ.items() if key != 'LLVM_SYMBOLIZER_OPTS'})
+    try:
+        values = json.loads(result.stdout)
+        if result.returncode or not isinstance(values, list) or len(values) != len(rvas):
+            raise ValueError('invalid resolver response')
+        output = []
+        for address, value in zip(rvas, values):
+            if int(value['Address'], 0) != int(address, 0) or 'Error' in value:
+                raise ValueError('invalid resolver address')
+            frame, = value['Symbol']
+            name = frame['FunctionName']
+            filename, line = frame['FileName'], frame['Line']
+            item = {'symbol': None if name in ('', '??') else name, 'source': None, 'resolver': 'llvm-matched-pdb'}
+            if filename and filename != '??' and type(line) is int and line > 0:
+                item.update(file=filename, line=line, source=filename + ':' + str(line))
+            output.append(item)
+        return output
+    except (ValueError, KeyError, TypeError) as error:
+        raise ValueError('PDB source resolver failed') from error
+
 def query(image, pdb=None, rvas=None):
     if rvas is not None:
         if not isinstance(rvas, list) or len(rvas) > 256:
@@ -116,7 +168,15 @@ def query(image, pdb=None, rvas=None):
     if rvas is not None:
         if any(offset >= result['size'] for offset in offsets):
             raise ValueError('symbol address is outside the image')
-        frames = resolve(image, [hex(offset) for offset in offsets])
+        addresses = [hex(offset) for offset in offsets]
+        if pdb:
+            if any(entry['guid'] != found['guid'] or entry['age'] != found['age'] for entry in result['codeview']):
+                raise ValueError('ambiguous PDB identities in the PE image')
+            names = [Path(entry['pdb']).name if entry['pdb'].startswith('/') else PureWindowsPath(entry['pdb']).name
+                     for entry in result['codeview']]
+            frames = resolve_pdb(image, pdb, names, addresses)
+        else:
+            frames = resolve(image, addresses)
         if len(frames) != len(offsets):
             raise ValueError('symbol resolver unavailable or failed')
         result['resolved'] = []
