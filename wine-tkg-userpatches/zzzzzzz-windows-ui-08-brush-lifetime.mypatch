@@ -1,0 +1,994 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -2277,6 +2277,8 @@
+     ICompositor *compositor;
+     struct Color color;
+     LONG ref;
++    LONG closed;
++    CRITICAL_SECTION lock;
+ };
+ 
+ static inline struct color_brush *impl_from_ICompositionColorBrush( ICompositionColorBrush *iface )
+@@ -2332,7 +2334,8 @@
+ 
+     if (!ref)
+     {
+-        ICompositor_Release( impl->compositor );
++        if (impl->compositor) ICompositor_Release( impl->compositor );
++        DeleteCriticalSection( &impl->lock );
+         free( impl );
+     }
+     return ref;
+@@ -2401,15 +2404,27 @@
+ 
+ static HRESULT WINAPI color_brush_get_Color( ICompositionColorBrush *iface, struct Color *value )
+ {
++    struct color_brush *impl = impl_from_ICompositionColorBrush( iface );
++    HRESULT hr = S_OK;
++
+     if (!value) return E_POINTER;
+-    *value = impl_from_ICompositionColorBrush( iface )->color;
+-    return S_OK;
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else *value = impl->color;
++    LeaveCriticalSection( &impl->lock );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI color_brush_put_Color( ICompositionColorBrush *iface, struct Color value )
+ {
+-    impl_from_ICompositionColorBrush( iface )->color = value;
+-    return S_OK;
++    struct color_brush *impl = impl_from_ICompositionColorBrush( iface );
++    HRESULT hr = S_OK;
++
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else impl->color = value;
++    LeaveCriticalSection( &impl->lock );
++    return hr;
+ }
+ 
+ static const ICompositionColorBrushVtbl color_brush_vtbl =
+@@ -2439,10 +2454,19 @@
+ {
+     struct color_brush *impl = color_brush_from_ICompositionObject( iface );
+ 
++    HRESULT hr = S_OK;
++
+     if (!value) return E_POINTER;
+-    ICompositor_AddRef( impl->compositor );
+-    *value = impl->compositor;
+-    return S_OK;
++    *value = NULL;
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else
++    {
++        ICompositor_AddRef( impl->compositor );
++        *value = impl->compositor;
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI brush_composition_object_get_Dispatcher( ICompositionObject *iface,
+@@ -2450,7 +2474,8 @@
+ {
+     if (!value) return E_POINTER;
+     *value = NULL;
+-    return S_OK;
++    return InterlockedCompareExchange( &color_brush_from_ICompositionObject( iface )->closed, 0, 0 )
++            ? RO_E_CLOSED : S_OK;
+ }
+ 
+ static HRESULT WINAPI brush_composition_object_get_Properties( ICompositionObject *iface,
+@@ -2458,20 +2483,23 @@
+ {
+     if (!value) return E_POINTER;
+     *value = NULL;
+-    return S_OK;
++    return InterlockedCompareExchange( &color_brush_from_ICompositionObject( iface )->closed, 0, 0 )
++            ? RO_E_CLOSED : S_OK;
+ }
+ 
+ static HRESULT WINAPI brush_composition_object_StartAnimation( ICompositionObject *iface,
+         HSTRING name, ICompositionAnimation *animation )
+ {
+     TRACE( "iface %p, name %s, animation %p.\n", iface, debugstr_hstring( name ), animation );
+-    return S_OK;
++    return InterlockedCompareExchange( &color_brush_from_ICompositionObject( iface )->closed, 0, 0 )
++            ? RO_E_CLOSED : S_OK;
+ }
+ 
+ static HRESULT WINAPI brush_composition_object_StopAnimation( ICompositionObject *iface, HSTRING name )
+ {
+     TRACE( "iface %p, name %s.\n", iface, debugstr_hstring( name ) );
+-    return S_OK;
++    return InterlockedCompareExchange( &color_brush_from_ICompositionObject( iface )->closed, 0, 0 )
++            ? RO_E_CLOSED : S_OK;
+ }
+ 
+ static const ICompositionObjectVtbl brush_composition_object_vtbl =
+@@ -2491,7 +2519,15 @@
+ 
+ static HRESULT WINAPI brush_closable_Close( IClosable *iface )
+ {
+-    TRACE( "iface %p.\n", iface );
++    struct color_brush *impl = color_brush_from_IClosable( iface );
++    ICompositor *compositor;
++
++    EnterCriticalSection( &impl->lock );
++    InterlockedExchange( &impl->closed, TRUE );
++    compositor = impl->compositor;
++    impl->compositor = NULL;
++    LeaveCriticalSection( &impl->lock );
++    if (compositor) ICompositor_Release( compositor );
+     return S_OK;
+ }
+ 
+@@ -2521,6 +2557,7 @@
+     impl->compositor = compositor;
+     impl->color = color;
+     impl->ref = 1;
++    InitializeCriticalSection( &impl->lock );
+     ICompositor_AddRef( compositor );
+     *result = &impl->ICompositionColorBrush_iface;
+     return S_OK;
+@@ -2531,6 +2568,9 @@
+     ICompositionSurfaceBrush ICompositionSurfaceBrush_iface;
+     ICompositionSurfaceBrush3 ICompositionSurfaceBrush3_iface;
+     ICompositionBrush ICompositionBrush_iface;
++    ICompositionObject ICompositionObject_iface;
++    IClosable IClosable_iface;
++    ICompositor *compositor;
+     IDCompositionVisual *dcomp_visual;
+     ICompositionSurface *surface;
+     enum CompositionBitmapInterpolationMode interpolation_mode;
+@@ -2539,6 +2579,8 @@
+     FLOAT vertical_alignment_ratio;
+     boolean snap_to_pixels;
+     LONG ref;
++    LONG closed;
++    CRITICAL_SECTION lock;
+ };
+ 
+ static inline struct surface_brush *impl_from_ICompositionSurfaceBrush( ICompositionSurfaceBrush *iface )
+@@ -2555,15 +2597,46 @@
+ {
+     struct surface_brush *impl = impl_from_ICompositionSurfaceBrush( iface );
+ 
+-    impl->dcomp_visual = visual;
+-    if (visual) IDCompositionVisual_SetContent( visual, (IUnknown *)impl->surface );
+-    FIXME( "iface %p, visual %p, surface %p.\n", iface, visual, impl->surface );
++    EnterCriticalSection( &impl->lock );
++    if (!impl->closed)
++    {
++        impl->dcomp_visual = visual;
++        if (visual) IDCompositionVisual_SetContent( visual, (IUnknown *)impl->surface );
++    }
++    LeaveCriticalSection( &impl->lock );
+ }
+ 
+ static inline struct surface_brush *surface_brush_from_ICompositionSurfaceBrush3(
+         ICompositionSurfaceBrush3 *iface )
+ {
+     return CONTAINING_RECORD( iface, struct surface_brush, ICompositionSurfaceBrush3_iface );
++}
++
++static inline struct surface_brush *surface_brush_from_ICompositionObject( ICompositionObject *iface )
++{
++    return CONTAINING_RECORD( iface, struct surface_brush, ICompositionObject_iface );
++}
++
++static inline struct surface_brush *surface_brush_from_IClosable( IClosable *iface )
++{
++    return CONTAINING_RECORD( iface, struct surface_brush, IClosable_iface );
++}
++
++static BOOL surface_brush_snapshot( struct surface_brush *brush, struct surface_brush *snapshot )
++{
++    EnterCriticalSection( &brush->lock );
++    if (!brush->closed && brush->surface)
++    {
++        snapshot->surface = brush->surface;
++        ICompositionSurface_AddRef( snapshot->surface );
++        snapshot->stretch = brush->stretch;
++        snapshot->interpolation_mode = brush->interpolation_mode;
++        snapshot->horizontal_alignment_ratio = brush->horizontal_alignment_ratio;
++        snapshot->vertical_alignment_ratio = brush->vertical_alignment_ratio;
++        snapshot->snap_to_pixels = brush->snap_to_pixels;
++    }
++    LeaveCriticalSection( &brush->lock );
++    return snapshot->surface != NULL;
+ }
+ 
+ static HRESULT surface_brush_query_interface( struct surface_brush *impl, REFIID iid, void **out )
+@@ -2577,6 +2650,10 @@
+         *out = &impl->ICompositionBrush_iface;
+     else if (IsEqualGUID( iid, &IID_ICompositionSurfaceBrush3 ))
+         *out = &impl->ICompositionSurfaceBrush3_iface;
++    else if (IsEqualGUID( iid, &IID_ICompositionObject ))
++        *out = &impl->ICompositionObject_iface;
++    else if (IsEqualGUID( iid, &IID_IClosable ))
++        *out = &impl->IClosable_iface;
+     else
+     {
+         *out = NULL;
+@@ -2598,6 +2675,8 @@
+     if (!ref)
+     {
+         if (impl->surface) ICompositionSurface_Release( impl->surface );
++        if (impl->compositor) ICompositor_Release( impl->compositor );
++        DeleteCriticalSection( &impl->lock );
+         free( impl );
+     }
+     return ref;
+@@ -2620,11 +2699,13 @@
+     { \
+         IID *values; \
+         if (!count || !iids) return E_POINTER; \
+-        if (!(values = CoTaskMemAlloc( 3 * sizeof(*values) ))) return E_OUTOFMEMORY; \
++        if (!(values = CoTaskMemAlloc( 5 * sizeof(*values) ))) return E_OUTOFMEMORY; \
+         values[0] = IID_ICompositionSurfaceBrush; \
+         values[1] = IID_ICompositionBrush; \
+         values[2] = IID_ICompositionSurfaceBrush3; \
+-        *count = 3; \
++        values[3] = IID_ICompositionObject; \
++        values[4] = IID_IClosable; \
++        *count = 5; \
+         *iids = values; \
+         return S_OK; \
+     } \
+@@ -2648,17 +2729,30 @@
+ SURFACE_BRUSH_FORWARD( surface_brush3, ICompositionSurfaceBrush3,
+                        surface_brush_from_ICompositionSurfaceBrush3 )
+ 
++SURFACE_BRUSH_FORWARD( surface_object, ICompositionObject, surface_brush_from_ICompositionObject )
++SURFACE_BRUSH_FORWARD( surface_closable, IClosable, surface_brush_from_IClosable )
++
+ #define SURFACE_BRUSH_PROPERTY(name, type, field) \
+     static HRESULT WINAPI surface_brush_get_##name( ICompositionSurfaceBrush *iface, type *value ) \
+     { \
++        struct surface_brush *impl = impl_from_ICompositionSurfaceBrush( iface ); \
++        HRESULT hr = S_OK; \
+         if (!value) return E_POINTER; \
+-        *value = impl_from_ICompositionSurfaceBrush( iface )->field; \
+-        return S_OK; \
++        EnterCriticalSection( &impl->lock ); \
++        if (impl->closed) hr = RO_E_CLOSED; \
++        else *value = impl->field; \
++        LeaveCriticalSection( &impl->lock ); \
++        return hr; \
+     } \
+     static HRESULT WINAPI surface_brush_put_##name( ICompositionSurfaceBrush *iface, type value ) \
+     { \
+-        impl_from_ICompositionSurfaceBrush( iface )->field = value; \
+-        return S_OK; \
++        struct surface_brush *impl = impl_from_ICompositionSurfaceBrush( iface ); \
++        HRESULT hr = S_OK; \
++        EnterCriticalSection( &impl->lock ); \
++        if (impl->closed) hr = RO_E_CLOSED; \
++        else impl->field = value; \
++        LeaveCriticalSection( &impl->lock ); \
++        return hr; \
+     }
+ 
+ SURFACE_BRUSH_PROPERTY( BitmapInterpolationMode, enum CompositionBitmapInterpolationMode,
+@@ -2672,10 +2766,19 @@
+ {
+     struct surface_brush *impl = impl_from_ICompositionSurfaceBrush( iface );
+ 
++    HRESULT hr = S_OK;
++
+     if (!value) return E_POINTER;
+-    if (impl->surface) ICompositionSurface_AddRef( impl->surface );
+-    *value = impl->surface;
+-    return S_OK;
++    *value = NULL;
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else
++    {
++        if (impl->surface) ICompositionSurface_AddRef( impl->surface );
++        *value = impl->surface;
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI surface_brush_put_Surface( ICompositionSurfaceBrush *iface,
+@@ -2683,12 +2786,21 @@
+ {
+     struct surface_brush *impl = impl_from_ICompositionSurfaceBrush( iface );
+ 
+-    if (value) ICompositionSurface_AddRef( value );
+-    if (impl->surface) ICompositionSurface_Release( impl->surface );
+-    impl->surface = value;
+-    if (impl->dcomp_visual) IDCompositionVisual_SetContent( impl->dcomp_visual, (IUnknown *)value );
+-    FIXME( "iface %p, surface %p, visual %p.\n", iface, value, impl->dcomp_visual );
+-    return S_OK;
++    ICompositionSurface *old = NULL;
++    HRESULT hr = S_OK;
++
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else
++    {
++        if (value) ICompositionSurface_AddRef( value );
++        old = impl->surface;
++        impl->surface = value;
++        if (impl->dcomp_visual) IDCompositionVisual_SetContent( impl->dcomp_visual, (IUnknown *)value );
++    }
++    LeaveCriticalSection( &impl->lock );
++    if (old) ICompositionSurface_Release( old );
++    return hr;
+ }
+ 
+ static const ICompositionSurfaceBrushVtbl surface_brush_vtbl =
+@@ -2724,16 +2836,28 @@
+ static HRESULT WINAPI surface_brush3_get_SnapToPixels( ICompositionSurfaceBrush3 *iface,
+         boolean *value )
+ {
++    struct surface_brush *impl = surface_brush_from_ICompositionSurfaceBrush3( iface );
++    HRESULT hr = S_OK;
++
+     if (!value) return E_POINTER;
+-    *value = surface_brush_from_ICompositionSurfaceBrush3( iface )->snap_to_pixels;
+-    return S_OK;
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else *value = impl->snap_to_pixels;
++    LeaveCriticalSection( &impl->lock );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI surface_brush3_put_SnapToPixels( ICompositionSurfaceBrush3 *iface,
+         boolean value )
+ {
+-    surface_brush_from_ICompositionSurfaceBrush3( iface )->snap_to_pixels = value;
+-    return S_OK;
++    struct surface_brush *impl = surface_brush_from_ICompositionSurfaceBrush3( iface );
++    HRESULT hr = S_OK;
++
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else impl->snap_to_pixels = value;
++    LeaveCriticalSection( &impl->lock );
++    return hr;
+ }
+ 
+ static const ICompositionSurfaceBrush3Vtbl surface_brush3_vtbl =
+@@ -2748,7 +2872,106 @@
+     surface_brush3_put_SnapToPixels,
+ };
+ 
+-static HRESULT surface_brush_create( ICompositionSurface *surface,
++static HRESULT WINAPI surface_object_get_Compositor( ICompositionObject *iface,
++        ICompositor **value )
++{
++    struct surface_brush *impl = surface_brush_from_ICompositionObject( iface );
++
++    HRESULT hr = S_OK;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else
++    {
++        ICompositor_AddRef( impl->compositor );
++        *value = impl->compositor;
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI surface_object_get_Dispatcher( ICompositionObject *iface,
++        ICoreDispatcher **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return InterlockedCompareExchange( &surface_brush_from_ICompositionObject( iface )->closed, 0, 0 )
++            ? RO_E_CLOSED : S_OK;
++}
++
++static HRESULT WINAPI surface_object_get_Properties( ICompositionObject *iface,
++        ICompositionPropertySet **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return InterlockedCompareExchange( &surface_brush_from_ICompositionObject( iface )->closed, 0, 0 )
++            ? RO_E_CLOSED : E_NOTIMPL;
++}
++
++static HRESULT WINAPI surface_object_StartAnimation( ICompositionObject *iface,
++        HSTRING name, ICompositionAnimation *animation )
++{
++    TRACE( "iface %p, name %s, animation %p.\n", iface, debugstr_hstring( name ), animation );
++    return InterlockedCompareExchange( &surface_brush_from_ICompositionObject( iface )->closed, 0, 0 )
++            ? RO_E_CLOSED : E_NOTIMPL;
++}
++
++static HRESULT WINAPI surface_object_StopAnimation( ICompositionObject *iface, HSTRING name )
++{
++    TRACE( "iface %p, name %s.\n", iface, debugstr_hstring( name ) );
++    return InterlockedCompareExchange( &surface_brush_from_ICompositionObject( iface )->closed, 0, 0 )
++            ? RO_E_CLOSED : E_NOTIMPL;
++}
++
++static const ICompositionObjectVtbl surface_object_vtbl =
++{
++    surface_object_QueryInterface,
++    surface_object_AddRef,
++    surface_object_Release,
++    surface_object_GetIids,
++    surface_object_GetRuntimeClassName,
++    surface_object_GetTrustLevel,
++    surface_object_get_Compositor,
++    surface_object_get_Dispatcher,
++    surface_object_get_Properties,
++    surface_object_StartAnimation,
++    surface_object_StopAnimation,
++};
++
++static HRESULT WINAPI surface_closable_Close( IClosable *iface )
++{
++    struct surface_brush *impl = surface_brush_from_IClosable( iface );
++    ICompositor *compositor;
++    ICompositionSurface *surface;
++
++    EnterCriticalSection( &impl->lock );
++    InterlockedExchange( &impl->closed, TRUE );
++    if (impl->dcomp_visual) IDCompositionVisual_SetContent( impl->dcomp_visual, NULL );
++    impl->dcomp_visual = NULL;
++    surface = impl->surface;
++    impl->surface = NULL;
++    compositor = impl->compositor;
++    impl->compositor = NULL;
++    LeaveCriticalSection( &impl->lock );
++    if (surface) ICompositionSurface_Release( surface );
++    if (compositor) ICompositor_Release( compositor );
++    return S_OK;
++}
++
++static const IClosableVtbl surface_closable_vtbl =
++{
++    surface_closable_QueryInterface,
++    surface_closable_AddRef,
++    surface_closable_Release,
++    surface_closable_GetIids,
++    surface_closable_GetRuntimeClassName,
++    surface_closable_GetTrustLevel,
++    surface_closable_Close,
++};
++
++static HRESULT surface_brush_create( ICompositor *compositor, ICompositionSurface *surface,
+         ICompositionSurfaceBrush **result )
+ {
+     struct surface_brush *impl;
+@@ -2759,10 +2982,15 @@
+     impl->ICompositionSurfaceBrush_iface.lpVtbl = &surface_brush_vtbl;
+     impl->ICompositionSurfaceBrush3_iface.lpVtbl = &surface_brush3_vtbl;
+     impl->ICompositionBrush_iface.lpVtbl = &surface_composition_brush_vtbl;
++    impl->ICompositionObject_iface.lpVtbl = &surface_object_vtbl;
++    impl->IClosable_iface.lpVtbl = &surface_closable_vtbl;
++    impl->compositor = compositor;
+     impl->surface = surface;
+     impl->horizontal_alignment_ratio = 0.5f;
+     impl->vertical_alignment_ratio = 0.5f;
+     impl->ref = 1;
++    InitializeCriticalSection( &impl->lock );
++    ICompositor_AddRef( compositor );
+     if (surface) ICompositionSurface_AddRef( surface );
+     *result = &impl->ICompositionSurfaceBrush_iface;
+     return S_OK;
+@@ -2787,6 +3015,8 @@
+     FLOAT top_inset_scale;
+     boolean center_hollow;
+     LONG ref;
++    LONG closed;
++    CRITICAL_SECTION lock;
+ };
+ 
+ static inline struct nine_grid_brush *impl_from_nine_grid_brush( struct nine_grid_brush_iface *iface )
+@@ -2843,7 +3073,8 @@
+     if (!ref)
+     {
+         if (impl->source) ICompositionBrush_Release( impl->source );
+-        ICompositor_Release( impl->compositor );
++        if (impl->compositor) ICompositor_Release( impl->compositor );
++        DeleteCriticalSection( &impl->lock );
+         free( impl );
+     }
+     return ref;
+@@ -2917,14 +3148,24 @@
+ #define NINE_GRID_BRUSH_FLOAT_PROPERTY(name, field) \
+     static HRESULT WINAPI nine_grid_brush_get_##name( struct nine_grid_brush_iface *iface, FLOAT *value ) \
+     { \
++        struct nine_grid_brush *impl = impl_from_nine_grid_brush( iface ); \
++        HRESULT hr = S_OK; \
+         if (!value) return E_POINTER; \
+-        *value = impl_from_nine_grid_brush( iface )->field; \
+-        return S_OK; \
++        EnterCriticalSection( &impl->lock ); \
++        if (impl->closed) hr = RO_E_CLOSED; \
++        else *value = impl->field; \
++        LeaveCriticalSection( &impl->lock ); \
++        return hr; \
+     } \
+     static HRESULT WINAPI nine_grid_brush_put_##name( struct nine_grid_brush_iface *iface, FLOAT value ) \
+     { \
+-        impl_from_nine_grid_brush( iface )->field = value; \
+-        return S_OK; \
++        struct nine_grid_brush *impl = impl_from_nine_grid_brush( iface ); \
++        HRESULT hr = S_OK; \
++        EnterCriticalSection( &impl->lock ); \
++        if (impl->closed) hr = RO_E_CLOSED; \
++        else impl->field = value; \
++        LeaveCriticalSection( &impl->lock ); \
++        return hr; \
+     }
+ 
+ NINE_GRID_BRUSH_FLOAT_PROPERTY( BottomInset, bottom_inset )
+@@ -2941,16 +3182,28 @@
+ static HRESULT WINAPI nine_grid_brush_get_IsCenterHollow( struct nine_grid_brush_iface *iface,
+         boolean *value )
+ {
++    struct nine_grid_brush *impl = impl_from_nine_grid_brush( iface );
++    HRESULT hr = S_OK;
++
+     if (!value) return E_POINTER;
+-    *value = impl_from_nine_grid_brush( iface )->center_hollow;
+-    return S_OK;
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else *value = impl->center_hollow;
++    LeaveCriticalSection( &impl->lock );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI nine_grid_brush_put_IsCenterHollow( struct nine_grid_brush_iface *iface,
+         boolean value )
+ {
+-    impl_from_nine_grid_brush( iface )->center_hollow = value;
+-    return S_OK;
++    struct nine_grid_brush *impl = impl_from_nine_grid_brush( iface );
++    HRESULT hr = S_OK;
++
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else impl->center_hollow = value;
++    LeaveCriticalSection( &impl->lock );
++    return hr;
+ }
+ 
+ static void nine_grid_brush_bind( struct nine_grid_brush_iface *iface, IDCompositionVisual *visual )
+@@ -2958,6 +3211,12 @@
+     struct nine_grid_brush *impl = impl_from_nine_grid_brush( iface );
+     ICompositionSurfaceBrush *surface_brush;
+ 
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed)
++    {
++        LeaveCriticalSection( &impl->lock );
++        return;
++    }
+     impl->dcomp_visual = visual;
+     if (impl->source && SUCCEEDED(ICompositionBrush_QueryInterface( impl->source,
+             &IID_ICompositionSurfaceBrush, (void **)&surface_brush )))
+@@ -2966,6 +3225,7 @@
+         ICompositionSurfaceBrush_Release( surface_brush );
+     }
+     else if (visual) IDCompositionVisual_SetContent( visual, NULL );
++    LeaveCriticalSection( &impl->lock );
+ }
+ 
+ static HRESULT WINAPI nine_grid_brush_get_Source( struct nine_grid_brush_iface *iface,
+@@ -2973,24 +3233,45 @@
+ {
+     struct nine_grid_brush *impl = impl_from_nine_grid_brush( iface );
+ 
++    HRESULT hr = S_OK;
++
+     if (!value) return E_POINTER;
+-    if (impl->source) ICompositionBrush_AddRef( impl->source );
+-    *value = impl->source;
+-    return S_OK;
++    *value = NULL;
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else
++    {
++        if (impl->source) ICompositionBrush_AddRef( impl->source );
++        *value = impl->source;
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI nine_grid_brush_put_Source( struct nine_grid_brush_iface *iface,
+         ICompositionBrush *value )
+ {
+     struct nine_grid_brush *impl = impl_from_nine_grid_brush( iface );
+-    IDCompositionVisual *visual = impl->dcomp_visual;
+-
++    ICompositionBrush *previous;
++    IDCompositionVisual *visual;
++
++    if (InterlockedCompareExchange( &impl->closed, 0, 0 )) return RO_E_CLOSED;
+     if (value && composition_brush_contains( value, &impl->ICompositionBrush_iface, 0 )) return E_INVALIDARG;
+     if (value) ICompositionBrush_AddRef( value );
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed)
++    {
++        LeaveCriticalSection( &impl->lock );
++        if (value) ICompositionBrush_Release( value );
++        return RO_E_CLOSED;
++    }
++    visual = impl->dcomp_visual;
+     nine_grid_brush_bind( iface, NULL );
+-    if (impl->source) ICompositionBrush_Release( impl->source );
++    previous = impl->source;
+     impl->source = value;
+     nine_grid_brush_bind( iface, visual );
++    LeaveCriticalSection( &impl->lock );
++    if (previous) ICompositionBrush_Release( previous );
+     return S_OK;
+ }
+ 
+@@ -2998,7 +3279,14 @@
+ {
+     struct nine_grid_brush *impl = impl_from_nine_grid_brush( iface );
+ 
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed)
++    {
++        LeaveCriticalSection( &impl->lock );
++        return RO_E_CLOSED;
++    }
+     impl->left_inset = impl->top_inset = impl->right_inset = impl->bottom_inset = inset;
++    LeaveCriticalSection( &impl->lock );
+     return S_OK;
+ }
+ 
+@@ -3007,10 +3295,17 @@
+ {
+     struct nine_grid_brush *impl = impl_from_nine_grid_brush( iface );
+ 
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed)
++    {
++        LeaveCriticalSection( &impl->lock );
++        return RO_E_CLOSED;
++    }
+     impl->left_inset = left;
+     impl->top_inset = top;
+     impl->right_inset = right;
+     impl->bottom_inset = bottom;
++    LeaveCriticalSection( &impl->lock );
+     return S_OK;
+ }
+ 
+@@ -3018,8 +3313,15 @@
+ {
+     struct nine_grid_brush *impl = impl_from_nine_grid_brush( iface );
+ 
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed)
++    {
++        LeaveCriticalSection( &impl->lock );
++        return RO_E_CLOSED;
++    }
+     impl->left_inset_scale = impl->top_inset_scale = impl->right_inset_scale =
+             impl->bottom_inset_scale = scale;
++    LeaveCriticalSection( &impl->lock );
+     return S_OK;
+ }
+ 
+@@ -3028,10 +3330,17 @@
+ {
+     struct nine_grid_brush *impl = impl_from_nine_grid_brush( iface );
+ 
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed)
++    {
++        LeaveCriticalSection( &impl->lock );
++        return RO_E_CLOSED;
++    }
+     impl->left_inset_scale = left;
+     impl->top_inset_scale = top;
+     impl->right_inset_scale = right;
+     impl->bottom_inset_scale = bottom;
++    LeaveCriticalSection( &impl->lock );
+     return S_OK;
+ }
+ 
+@@ -3084,10 +3393,19 @@
+ {
+     struct nine_grid_brush *impl = nine_grid_brush_from_ICompositionObject( iface );
+ 
++    HRESULT hr = S_OK;
++
+     if (!value) return E_POINTER;
+-    ICompositor_AddRef( impl->compositor );
+-    *value = impl->compositor;
+-    return S_OK;
++    *value = NULL;
++    EnterCriticalSection( &impl->lock );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else
++    {
++        ICompositor_AddRef( impl->compositor );
++        *value = impl->compositor;
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI nine_grid_composition_object_get_Dispatcher( ICompositionObject *iface,
+@@ -3095,7 +3413,8 @@
+ {
+     if (!value) return E_POINTER;
+     *value = NULL;
+-    return S_OK;
++    return InterlockedCompareExchange( &nine_grid_brush_from_ICompositionObject( iface )->closed, 0, 0 )
++            ? RO_E_CLOSED : S_OK;
+ }
+ 
+ static HRESULT WINAPI nine_grid_composition_object_get_Properties( ICompositionObject *iface,
+@@ -3103,21 +3422,24 @@
+ {
+     if (!value) return E_POINTER;
+     *value = NULL;
+-    return S_OK;
++    return InterlockedCompareExchange( &nine_grid_brush_from_ICompositionObject( iface )->closed, 0, 0 )
++            ? RO_E_CLOSED : S_OK;
+ }
+ 
+ static HRESULT WINAPI nine_grid_composition_object_StartAnimation( ICompositionObject *iface,
+         HSTRING name, ICompositionAnimation *animation )
+ {
+     TRACE( "iface %p, name %s, animation %p.\n", iface, debugstr_hstring( name ), animation );
+-    return S_OK;
++    return InterlockedCompareExchange( &nine_grid_brush_from_ICompositionObject( iface )->closed, 0, 0 )
++            ? RO_E_CLOSED : S_OK;
+ }
+ 
+ static HRESULT WINAPI nine_grid_composition_object_StopAnimation( ICompositionObject *iface,
+         HSTRING name )
+ {
+     TRACE( "iface %p, name %s.\n", iface, debugstr_hstring( name ) );
+-    return S_OK;
++    return InterlockedCompareExchange( &nine_grid_brush_from_ICompositionObject( iface )->closed, 0, 0 )
++            ? RO_E_CLOSED : S_OK;
+ }
+ 
+ static const ICompositionObjectVtbl nine_grid_composition_object_vtbl =
+@@ -3137,7 +3459,21 @@
+ 
+ static HRESULT WINAPI nine_grid_closable_Close( IClosable *iface )
+ {
+-    TRACE( "iface %p.\n", iface );
++    struct nine_grid_brush *impl = nine_grid_brush_from_IClosable( iface );
++    ICompositionBrush *source;
++    ICompositor *compositor;
++
++    EnterCriticalSection( &impl->lock );
++    if (impl->dcomp_visual) IDCompositionVisual_SetContent( impl->dcomp_visual, NULL );
++    nine_grid_brush_bind( &impl->ICompositionNineGridBrush_iface, NULL );
++    InterlockedExchange( &impl->closed, TRUE );
++    source = impl->source;
++    compositor = impl->compositor;
++    impl->source = NULL;
++    impl->compositor = NULL;
++    LeaveCriticalSection( &impl->lock );
++    if (source) ICompositionBrush_Release( source );
++    if (compositor) ICompositor_Release( compositor );
+     return S_OK;
+ }
+ 
+@@ -3169,6 +3505,7 @@
+     impl->right_inset_scale = 1.0f;
+     impl->top_inset_scale = 1.0f;
+     impl->ref = 1;
++    InitializeCriticalSection( &impl->lock );
+     ICompositor_AddRef( compositor );
+     *result = (IInspectable *)&impl->ICompositionNineGridBrush_iface;
+     return S_OK;
+@@ -5649,7 +5986,6 @@
+     }
+ 
+ COMPOSITOR_STUB( CreateColorKeyFrameAnimation, IColorKeyFrameAnimation )
+-COMPOSITOR_STUB( CreateColorBrush, ICompositionColorBrush )
+ COMPOSITOR_STUB( CreateQuaternionKeyFrameAnimation, IQuaternionKeyFrameAnimation )
+ COMPOSITOR_STUB( CreateTargetForCurrentView, ICompositionTarget )
+ COMPOSITOR_STUB( CreateVector2KeyFrameAnimation, IVector2KeyFrameAnimation )
+@@ -5687,6 +6023,15 @@
+ {
+     TRACE( "iface %p, result %p.\n", iface, result );
+     return composition_property_set_create( iface, result );
++}
++
++static HRESULT WINAPI compositor_CreateColorBrush( ICompositor *iface,
++        ICompositionColorBrush **result )
++{
++    struct Color color = {0};
++
++    TRACE( "iface %p, result %p.\n", iface, result );
++    return color_brush_create( iface, color, result );
+ }
+ 
+ static HRESULT WINAPI compositor_CreateColorBrushWithColor( ICompositor *iface, struct Color color,
+@@ -5775,8 +6120,13 @@
+     if (!brush) return FALSE;
+     if (brush == target || depth > 64) return TRUE;
+     if (brush->lpVtbl == &nine_grid_composition_brush_vtbl)
+-        return composition_brush_contains( nine_grid_brush_from_ICompositionBrush( brush )->source,
+-                target, depth + 1 );
++    {
++        if (FAILED(nine_grid_brush_get_Source( &nine_grid_brush_from_ICompositionBrush( brush )->
++                ICompositionNineGridBrush_iface, &source ))) return FALSE;
++        found = composition_brush_contains( source, target, depth + 1 );
++        if (source) ICompositionBrush_Release( source );
++        return found;
++    }
+     if (brush->lpVtbl != &effect_composition_brush_vtbl) return FALSE;
+     effect = effect_from_ICompositionBrush( brush );
+     for (i = 0, binding = effect->bindings; binding; binding = binding->next, ++i)
+@@ -6452,14 +6802,14 @@
+         ICompositionSurface *surface, ICompositionSurfaceBrush **result )
+ {
+     TRACE( "iface %p, surface %p, result %p.\n", iface, surface, result );
+-    return surface_brush_create( surface, result );
++    return surface_brush_create( iface, surface, result );
+ }
+ 
+ static HRESULT WINAPI compositor_CreateSurfaceBrush( ICompositor *iface,
+         ICompositionSurfaceBrush **result )
+ {
+     TRACE( "iface %p, result %p.\n", iface, result );
+-    return surface_brush_create( NULL, result );
++    return surface_brush_create( iface, NULL, result );
+ }
+ 
+ DEFINE_IINSPECTABLE_(redirect_visual, struct redirect_visual_iface, struct sprite_visual,
+@@ -10372,7 +10722,7 @@
+     return drawing_surface_from_composition_surface( brush->surface );
+ }
+ 
+-static void draw_surface_brush( ID2D1DeviceContext *context, struct surface_brush *brush,
++static void draw_surface_brush_content( ID2D1DeviceContext *context, struct surface_brush *brush,
+         const D2D1_RECT_F *bounds, FLOAT opacity )
+ {
+     struct composition_drawing_surface *surface = drawing_surface_from_surface_brush( brush );
+@@ -10456,10 +10806,20 @@
+     ID2D1DeviceContext_PopAxisAlignedClip( context );
+ }
+ 
+-static void draw_nine_grid_brush( ID2D1DeviceContext *context, struct nine_grid_brush *brush,
++static void draw_surface_brush( ID2D1DeviceContext *context, struct surface_brush *brush,
+         const D2D1_RECT_F *bounds, FLOAT opacity )
+ {
+-    struct surface_brush *source_brush;
++    struct surface_brush snapshot = {0};
++
++    if (!surface_brush_snapshot( brush, &snapshot )) return;
++    draw_surface_brush_content( context, &snapshot, bounds, opacity );
++    ICompositionSurface_Release( snapshot.surface );
++}
++
++static void draw_nine_grid_brush_content( ID2D1DeviceContext *context, struct nine_grid_brush *brush,
++        const D2D1_RECT_F *bounds, FLOAT opacity )
++{
++    struct surface_brush *source_brush, snapshot = {0};
+     struct composition_drawing_surface *surface;
+     D2D1_INTERPOLATION_MODE interpolation;
+     ID2D1Bitmap1 *bitmap;
+@@ -10470,12 +10830,13 @@
+     UINT x, y;
+ 
+     if (!brush->source || brush->source->lpVtbl != &surface_composition_brush_vtbl) return;
+-    source_brush = surface_brush_from_ICompositionBrush( brush->source );
+-    if (!(surface = drawing_surface_from_surface_brush( source_brush ))) return;
++    if (!surface_brush_snapshot( surface_brush_from_ICompositionBrush( brush->source ), &snapshot )) return;
++    source_brush = &snapshot;
++    if (!(surface = drawing_surface_from_surface_brush( source_brush ))) goto done;
+     bitmap = surface->virtual ? surface->bitmap : surface->committed_bitmap;
+-    if (!bitmap) return;
++    if (!bitmap) goto done;
+     size = ID2D1Bitmap1_GetSize( bitmap );
+-    if (size.width <= 0.0f || size.height <= 0.0f) return;
++    if (size.width <= 0.0f || size.height <= 0.0f) goto done;
+ 
+     left = min( max( brush->left_inset, 0.0f ), size.width );
+     right = min( max( brush->right_inset, 0.0f ), size.width - left );
+@@ -10521,6 +10882,34 @@
+         }
+     }
+     ID2D1DeviceContext_PopAxisAlignedClip( context );
++done:
++    ICompositionSurface_Release( snapshot.surface );
++}
++
++static void draw_nine_grid_brush( ID2D1DeviceContext *context, struct nine_grid_brush *brush,
++        const D2D1_RECT_F *bounds, FLOAT opacity )
++{
++    struct nine_grid_brush snapshot = {0};
++
++    EnterCriticalSection( &brush->lock );
++    if (!brush->closed && brush->source)
++    {
++        snapshot.source = brush->source;
++        ICompositionBrush_AddRef( snapshot.source );
++        snapshot.bottom_inset = brush->bottom_inset;
++        snapshot.bottom_inset_scale = brush->bottom_inset_scale;
++        snapshot.left_inset = brush->left_inset;
++        snapshot.left_inset_scale = brush->left_inset_scale;
++        snapshot.right_inset = brush->right_inset;
++        snapshot.right_inset_scale = brush->right_inset_scale;
++        snapshot.top_inset = brush->top_inset;
++        snapshot.top_inset_scale = brush->top_inset_scale;
++        snapshot.center_hollow = brush->center_hollow;
++    }
++    LeaveCriticalSection( &brush->lock );
++    if (!snapshot.source) return;
++    draw_nine_grid_brush_content( context, &snapshot, bounds, opacity );
++    ICompositionBrush_Release( snapshot.source );
+ }
+ 
+ struct gradient_render_stop
+@@ -10724,12 +11113,15 @@
+     if (depth > 64) return D2DERR_CYCLIC_GRAPH;
+     if (brush->lpVtbl == &composition_brush_vtbl)
+     {
+-        struct Color value = color_brush_from_ICompositionBrush( brush )->color;
+-        D2D1_COLOR_F color = {value.R / 255.0f, value.G / 255.0f,
+-                value.B / 255.0f, opacity * value.A / 255.0f};
++        struct color_brush *impl = color_brush_from_ICompositionBrush( brush );
++        struct Color value;
++        D2D1_COLOR_F color;
+         ID2D1SolidColorBrush *solid;
+         HRESULT hr;
+ 
++        if (FAILED(hr = color_brush_get_Color( &impl->ICompositionColorBrush_iface, &value ))) return hr;
++        color = (D2D1_COLOR_F){value.R / 255.0f, value.G / 255.0f,
++                value.B / 255.0f, opacity * value.A / 255.0f};
+         if (FAILED(hr = ID2D1DeviceContext_CreateSolidColorBrush( context, &color, NULL, &solid ))) return hr;
+         else
+         {
+@@ -10837,20 +11229,31 @@
+     struct composition_effect *effect;
+     struct effect_source_binding *binding;
+     ICompositionBrush *source;
++    ICompositionSurface *retained;
+     UINT i;
+ 
+     if (!brush || depth > 64) return NULL;
+     if (brush->lpVtbl == &surface_composition_brush_vtbl)
+     {
+-        surface = drawing_surface_from_surface_brush( surface_brush_from_ICompositionBrush( brush ) );
++        if (FAILED(surface_brush_get_Surface( &surface_brush_from_ICompositionBrush( brush )->
++                ICompositionSurfaceBrush_iface, &retained ))) return NULL;
++        surface = drawing_surface_from_composition_surface( retained );
+         if (surface && (surface->committed_bitmap || !list_empty( &surface->tiles )))
+         {
+             ICompositionDrawingSurface_AddRef( &surface->ICompositionDrawingSurface_iface );
++            if (retained) ICompositionSurface_Release( retained );
+             return surface;
+         }
++        if (retained) ICompositionSurface_Release( retained );
+     }
+     else if (brush->lpVtbl == &nine_grid_composition_brush_vtbl)
+-        return find_brush_drawing_surface( nine_grid_brush_from_ICompositionBrush( brush )->source, depth + 1 );
++    {
++        if (FAILED(nine_grid_brush_get_Source( &nine_grid_brush_from_ICompositionBrush( brush )->
++                ICompositionNineGridBrush_iface, &source ))) return NULL;
++        surface = find_brush_drawing_surface( source, depth + 1 );
++        if (source) ICompositionBrush_Release( source );
++        return surface;
++    }
+     else if (brush->lpVtbl == &effect_composition_brush_vtbl)
+     {
+         effect = effect_from_ICompositionBrush( brush );
