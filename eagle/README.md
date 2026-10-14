@@ -103,6 +103,12 @@ the database notices and scanner license. It neither downloads dependencies
 nor installs libraries on the host. The package contains no Python analysis
 engine. Full parity, ARM and portability checks remain separate requirements.
 
+Manifest inspection reads XML elements and attribute values. DPI recommendations
+use the recognized `dpiAware` values and the ordered `dpiAwareness` modes, with
+the latter taking precedence as on Windows 10 versions that support it. This
+does not emulate earlier Windows manifest behavior or validate the full manifest
+schema. See the [Microsoft manifest reference](https://learn.microsoft.com/en-us/windows/win32/sbscs/application-manifests).
+
 The debugger regression suite is `tests/integration.py`. Session/export
 controls are in `tests/test_session_contract.py`; automatic per-launch logging
 is in `tests/test_tracing.py`. Their environment variables select an immutable

@@ -358,6 +358,67 @@ static std::string lower(std::string value)
     return value;
 }
 
+static std::string manifest_value(std::string value)
+{
+    value.erase(0, value.find_first_not_of(" \t\r\n"));
+    value.erase(value.find_last_not_of(" \t\r\n") + 1);
+    return lower(value);
+}
+
+struct manifest_info
+{
+    bool admin = false;
+    int legacy_dpi = -1, modern_dpi = -1;
+    std::vector<std::pair<std::string, std::string>> elements;
+    bool dpi() const { return (modern_dpi >= 0 ? modern_dpi : legacy_dpi) > 0; }
+};
+
+static manifest_info inspect_manifest(const std::string &xml)
+{
+    manifest_info result;
+    GMarkupParser parser = {
+        [](GMarkupParseContext *, const char *element, const char **names, const char **values, void *data, GError **) {
+            auto &info = *static_cast<manifest_info *>(data);
+            std::string name = element;
+            auto separator = name.rfind(':');
+            if (separator != std::string::npos) name.erase(0, separator + 1);
+            info.elements.emplace_back(name, "");
+            if (name == "requestedExecutionLevel")
+                for (size_t i = 0; names[i]; i++)
+                    if (std::string(names[i]) == "level" && std::string(values[i]) == "requireAdministrator") info.admin = true;
+        },
+        [](GMarkupParseContext *, const char *, void *data, GError **) {
+            auto &info = *static_cast<manifest_info *>(data);
+            auto element = info.elements.back(); info.elements.pop_back();
+            auto value = manifest_value(element.second);
+            if (element.first == "dpiAware") info.legacy_dpi = value == "true" || value == "true/pm" || value == "per monitor";
+            if (element.first != "dpiAwareness") return;
+            info.modern_dpi = 0;
+            size_t start = 0;
+            while (start <= value.size())
+            {
+                size_t end = value.find(',', start);
+                auto item = manifest_value(value.substr(start, end == std::string::npos ? end : end - start));
+                if (item == "unaware") break;
+                if (item == "system" || item == "permonitor" || item == "permonitorv2") { info.modern_dpi = 1; break; }
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+        },
+        [](GMarkupParseContext *, const char *text, gsize length, void *data, GError **) {
+            auto &info = *static_cast<manifest_info *>(data);
+            if (!info.elements.empty()) info.elements.back().second.append(text, length);
+        },
+        nullptr, nullptr
+    };
+    auto *context = g_markup_parse_context_new(&parser, G_MARKUP_TREAT_CDATA_AS_TEXT, &result, nullptr);
+    GError *error = nullptr;
+    size_t offset = xml.compare(0, 3, "\xef\xbb\xbf") == 0 ? 3 : 0;
+    bool valid = g_markup_parse_context_parse(context, xml.data() + offset, xml.size() - offset, &error) && g_markup_parse_context_end_parse(context, &error);
+    g_markup_parse_context_free(context); g_clear_error(&error);
+    return valid ? result : manifest_info{};
+}
+
 static json_object *pe_insights(json_object *request)
 {
     auto *structure = member(request, "structure"), *details = member(request, "details"), *metadata = member(request, "metadata");
@@ -434,9 +495,9 @@ static json_object *pe_insights(json_object *request)
     {
         auto *item = json_object_array_get_idx(manifests, i);
         if (!json_object_is_type(item, json_type_string)) throw std::runtime_error("PE manifest must be a string");
-        std::string xml = json_object_get_string(item);
-        if (xml.find("requireAdministrator") != std::string::npos) { admin = true; step("[!] Requires administrator"); }
-        if (lower(xml).find("dpiaware") != std::string::npos) dpi = true;
+        auto manifest = inspect_manifest(json_object_get_string(item));
+        if (manifest.admin) { admin = true; step("[!] Requires administrator"); }
+        dpi = dpi || manifest.dpi();
     }
     step("Checking .NET CLR header...");
     bool managed = json_object_get_boolean(member(structure, "managed"));
