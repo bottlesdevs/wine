@@ -92,17 +92,20 @@ def resolve(image, rvas):
         output.append(value)
     return output
 
-def pdb_resolver():
-    tool = shutil.which('llvm-symbolizer')
+def host_tool(name):
+    tool = shutil.which(name)
     if tool:
         return tool
     versions = []
     for directory in os.get_exec_path():
-        for path in Path(directory).glob('llvm-symbolizer-[0-9]*'):
-            match = re.fullmatch(r'llvm-symbolizer-([0-9]+)', path.name)
+        for path in Path(directory).glob(name + '-[0-9]*'):
+            match = re.fullmatch(re.escape(name) + r'-([0-9]+)', path.name)
             if match and path.is_file() and os.access(path, os.X_OK):
                 versions.append((int(match[1]), str(path)))
     return max(versions, default=(0, None))[1]
+
+def pdb_resolver():
+    return host_tool('llvm-symbolizer')
 
 def resolve_pdb(image, pdb, names, rvas):
     if not rvas:
@@ -143,7 +146,12 @@ def resolve_pdb(image, pdb, names, rvas):
     except (ValueError, KeyError, TypeError) as error:
         raise ValueError('PDB source resolver failed') from error
 
-def query(image, pdb=None, rvas=None):
+def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None):
+    if type(artifacts) is not bool:
+        raise ValueError('artifacts must be a boolean')
+    if debug_files is not None and (not isinstance(debug_files, list) or len(debug_files) > 256 or
+                                   any(not isinstance(path, str) or not path for path in debug_files)):
+        raise ValueError('debug_files must be a list of at most 256 paths')
     if rvas is not None:
         if not isinstance(rvas, list) or len(rvas) > 256:
             raise ValueError("rvas must be a list of at most 256 addresses")
@@ -183,6 +191,11 @@ def query(image, pdb=None, rvas=None):
         for offset, frame in zip(offsets, frames):
             status = 'source-resolved' if frame.get('file') and frame.get('line') else 'symbol-only' if frame.get('symbol') else 'unresolved'
             result['resolved'].append(dict(frame, rva=hex(offset), status=status))
+    if artifacts or debug_files is not None:
+        if result.get('format') != 'ELF':
+            raise ValueError('split-DWARF artifacts require an ELF image')
+        from dwarf import artifacts as inspect_artifacts
+        result['split_dwarf'] = inspect_artifacts(image, host_tool('llvm-dwarfdump'), debug_files or [])
     return result
 
 def pdb_identity(path):

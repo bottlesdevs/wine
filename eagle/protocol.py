@@ -15,6 +15,7 @@ def capabilities():
     return {
         "schema": 1,
         "symbol_queries": {"maximum": 256, "addresses": "RVA", "resolver": "requires host binutils", "pdb": "GUID/age verification; source lookup requires host llvm-symbolizer"},
+        "split_dwarf": {"inspection": "requires host llvm-dwarfdump", "maximum_units": 256, "maximum_files": 256, "scope": "unit identity only"},
         "debug_architectures": ["x86", "x86_64"],
         "static_analyzer": "Soda Eagle native analysis" if analyzer else None,
         "native_static_analyzer": analyzer,
@@ -153,7 +154,7 @@ def serve():
             elif method == "inspect": result = summary(params["session"])
             elif method == "symbols":
                 from symbols import query
-                result = query(params["path"], params.get("pdb"), params.get("rvas"))
+                result = query(params["path"], params.get("pdb"), params.get("rvas"), params.get("artifacts", False), params.get("debug_files"))
             elif method == "compare": result = compare(params["baseline"], params["candidate"])
             elif method == "export": result = export(params["session"], params["output"])
             elif method == "control": result = send_command(params["session"], params["command"])

@@ -23,7 +23,7 @@ for architecture in x86_64 i686; do
         -ffile-prefix-map="$root"=/usr/src/soda/eagle \
         "$root/native/debugger.c" -ldbghelp -o "$destination/lib/eagle/native/eagle-debug$bits.exe"
 done
-for module in cli session protocol symbols dap errors waits tracing analysis; do
+for module in cli session protocol symbols dwarf dap errors waits tracing analysis; do
     cp "$root/$module.py" "$destination/lib/eagle/"
 done
 cp "$root/eagle" "$root/COPYING.md" "$destination/lib/eagle/"

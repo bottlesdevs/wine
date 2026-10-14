@@ -50,6 +50,8 @@ def main():
         if name == "symbols":
             item.add_argument("--pdb")
             item.add_argument("--rva", action="append", help="resolve an RVA with host binutils; repeat for multiple addresses")
+            item.add_argument("--artifacts", action="store_true", help="inspect split-DWARF companion identities")
+            item.add_argument("--debug-file", action="append", help="inspect an explicit DWO or DWP companion")
     comparison = commands.add_parser("compare")
     comparison.add_argument("baseline"); comparison.add_argument("candidate")
     report = commands.add_parser("export")
@@ -87,7 +89,7 @@ def main():
         elif args.command == "inspect": result = summary(args.path)
         elif args.command == "symbols":
             from symbols import query
-            result = query(args.path, args.pdb, args.rva)
+            result = query(args.path, args.pdb, args.rva, args.artifacts, args.debug_file)
         elif args.command == "compare": result = compare(args.baseline, args.candidate)
         elif args.command == "export": result = export(args.session, args.output)
         elif args.command == "control": result = send_command(args.session, " ".join(args.action))

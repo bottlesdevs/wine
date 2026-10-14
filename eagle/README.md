@@ -90,6 +90,28 @@ The offline PDB fixture tests require `clang-cl`, `lld-link` and
 `llvm-symbolizer`. They report a skip if these optional host tools are absent;
 `EAGLE_TEST_LLD_LINK` can select a linker executable for the tests.
 
+Inspect split-DWARF companion identities separately from address lookup:
+
+```sh
+eagle symbols ./module --artifacts --debug-file ./symbols/module.dwp
+```
+
+The stdio method accepts `artifacts: true` and optional `debug_files` paths.
+The report compares skeleton DWO IDs with DWO units or DWP CU indexes and
+includes companion SHA256 values. Missing, mismatched and invalid candidates
+remain distinct. Matching IDs do not certify full types, inline data or source
+content; skeleton source lines can remain available without a companion.
+Inspection requires host `llvm-dwarfdump`, accepts up to 256 units/files and
+uses a shared 20-second budget with a 1 MiB limit on each tool response.
+Tool absence or an inspection limit is reported as unavailable. Default
+identity and source queries are unchanged unless artifact inspection is requested.
+References come from the inspected image's debug information. A skeleton stored
+in a separate debug file must be inspected through that file.
+
+Split-DWARF fixture tests require GCC and LLVM's dumper/packager tools. Set
+`EAGLE_TEST_DWARFDUMP` and `EAGLE_TEST_DWP` for version-suffixed executables;
+the tests report a skip when the tools are absent.
+
 ## Build and verification
 
 `.github/build-eagle.sh RUNNER WORK` builds and installs the debugger/tracing
