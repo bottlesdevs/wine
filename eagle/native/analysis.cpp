@@ -385,7 +385,7 @@ static manifest_info inspect_manifest(const std::string &xml)
             info.elements.emplace_back(name, "");
             if (name == "requestedExecutionLevel")
                 for (size_t i = 0; names[i]; i++)
-                    if (std::string(names[i]) == "level" && std::string(values[i]) == "requireAdministrator") info.admin = true;
+                    if (std::string(names[i]) == "level" && lower(values[i]) == "requireadministrator") info.admin = true;
         },
         [](GMarkupParseContext *, const char *, void *data, GError **) {
             auto &info = *static_cast<manifest_info *>(data);

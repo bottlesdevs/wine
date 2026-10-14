@@ -53,7 +53,11 @@ class ManifestTests(unittest.TestCase):
     def test_admin_requires_execution_level_attribute(self):
         for content, expected in [
             ('<requestedExecutionLevel level="requireAdministrator"/>', True),
+            ('<requestedExecutionLevel level="REQUIREADMINISTRATOR"/>', True),
+            ('<requestedExecutionLevel level="RequireAdministrator"/>', True),
             ('<requestedExecutionLevel level="asInvoker"/>', False),
+            ('<requestedExecutionLevel LEVEL="requireAdministrator"/>', False),
+            ('<requestedexecutionlevel level="requireAdministrator"/>', False),
             ('<requestedExecutionLevel level="highestAvailable"/>', False),
             ('<!-- <requestedExecutionLevel level="requireAdministrator"/> -->', False),
             ('<description>requireAdministrator</description>', False),
