@@ -511,6 +511,30 @@ jobs:
           run_smoke win64 "$RUNNER_TEMP/soda-office-winrt-smoke64.exe" "$RUNNER_TEMP/soda-ldap-smoke64.exe"
           run_smoke win32 "$RUNNER_TEMP/soda-office-winrt-smoke32.exe" "$RUNNER_TEMP/soda-ldap-smoke32.exe"
 
+      - name: verify Composition brush lifetime
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-composition-brush-smoke.c" \
+            -I"$runner_dir/include/wine/windows" -D__WINESRC__ \
+            -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
+            -o "$RUNNER_TEMP/soda-composition-brush64.exe"
+          i686-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-composition-brush-smoke.c" \
+            -I"$runner_dir/include/wine/windows" -D__WINESRC__ \
+            -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
+            -o "$RUNNER_TEMP/soda-composition-brush32.exe"
+          for bits in 64 32; do
+            export WINEDEBUG=-all
+            export WINEPREFIX="$RUNNER_TEMP/soda-composition-brush-prefix-$bits"
+            if [[ "$bits" == 64 ]]; then export WINEARCH=win64; else export WINEARCH=win32; fi
+            xvfb-run -a "$runner_dir/bin/wineboot" -u
+            xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-brush$bits.exe" \
+              | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-brush$bits.log"
+            grep -E '^composition_brush_checks:[1-9][0-9]* failures:0$' "$RUNNER_TEMP/soda-composition-brush$bits.log"
+            "$runner_dir/bin/wineserver" -w
+          done
+
       - name: verify Direct2D Flush presentation
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
@@ -1213,6 +1237,16 @@ jobs:
           printf 'Windows architectures: native=%s, x64=%s, x86=%s\n' \
             "$native_arch" "$x64_arch" "$x86_arch" | tee -a "$GITHUB_STEP_SUMMARY"
 
+          wine_headers=/tmp/proton-build/dst-wine-aarch64/include/wine/windows
+          test -f "$wine_headers/windows.ui.composition.h"
+          x86_64-w64-mingw32-gcc .github/soda-composition-brush-smoke.c \
+            -I"$wine_headers" -D__WINESRC__ \
+            -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
+            -o "$RUNNER_TEMP/soda-office-winrt/brush64.exe"
+          i686-w64-mingw32-gcc .github/soda-composition-brush-smoke.c \
+            -I"$wine_headers" -D__WINESRC__ \
+            -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
+            -o "$RUNNER_TEMP/soda-office-winrt/brush32.exe"
           export TZ=America/Denver
           export WINEDEBUG=-all
           "$runner_dir/bin/wine" /tmp/soda-icu/smoke64.exe \
@@ -1227,6 +1261,9 @@ jobs:
             for factory in core_application message_websocket protection_policy retail_info web_authentication_manager composition_effect_source_parameter; do
               grep -Fx "$factory:00000000" "$RUNNER_TEMP/soda-office-winrt/runtime$arch.log"
             done
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/brush$arch.exe" \
+              | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/brush$arch.log"
+            grep -E '^composition_brush_checks:[1-9][0-9]* failures:0$' "$RUNNER_TEMP/soda-office-winrt/brush$arch.log"
             "$runner_dir/bin/wine" reg add \
               "HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\ldap$arch.exe" \
               /v GlobalFlag /t REG_DWORD /d 112 /f
