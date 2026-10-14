@@ -73,6 +73,52 @@ class AnalysisHelpers(unittest.TestCase):
                 valid.symlink_to(root / 'payload.exe')
                 self.assertEqual(self.analysis(operation='discover', path=str(target), details=details)['ue_shipping_exe'], str(valid))
 
+    def test_asar_invalid_directory_tables_are_rejected(self):
+        for table in (None, [], False, ''):
+            with self.subTest(table=table), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                header = json.dumps({'files': {'directory': {'files': table},
+                                    'good.js': {'offset': '0', 'size': 4}}}).encode()
+                target = root / 'app.asar'
+                target.write_bytes(struct.pack('<4I', 0, 0, 0, len(header)) + header + b'good')
+                output = root / 'output'
+                output.mkdir(mode=0o700)
+                request = dict(operation='asar', path=str(target), output=str(output))
+                result = subprocess.run([str(NATIVE / 'eagle-analysis')], input=json.dumps(request),
+                                        capture_output=True, text=True, timeout=5)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('invalid ASAR file table', result.stderr)
+
+    def test_asar_invalid_utf8_directory_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            header = b'{"files":{"\xff.js":{"offset":"0","size":4}}}'
+            target = root / 'app.asar'
+            target.write_bytes(struct.pack('<4I', 0, 0, 0, len(header)) + header + b'good')
+            output = root / 'output'
+            output.mkdir(mode=0o700)
+            request = dict(operation='asar', path=str(target), output=str(output))
+            result = subprocess.run([str(NATIVE / 'eagle-analysis')], input=json.dumps(request),
+                                    capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('invalid ASAR directory', result.stderr)
+
+    def test_asar_nested_directories_reach_the_declared_limit(self):
+        for depth in (16, 32):
+            with self.subTest(depth=depth), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                tree = {'files': {'leaf.js': {'offset': '0', 'size': 4}}}
+                for _ in range(depth):
+                    tree = {'files': {'directory': tree}}
+                header = json.dumps(tree).encode()
+                target = root / 'app.asar'
+                target.write_bytes(struct.pack('<4I', 0, 0, 0, len(header)) + header + b'good')
+                output = root / 'output'
+                output.mkdir(mode=0o700)
+                files = self.analysis(operation='asar', path=str(target), output=str(output))
+                self.assertEqual(len(files), 1)
+                self.assertEqual(Path(files[0]).read_bytes(), b'good')
+
     def test_plugin_discovery_skips_hidden_entries(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

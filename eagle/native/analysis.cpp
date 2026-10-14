@@ -287,7 +287,8 @@ static json_object *asar(json_object *request)
         if ((i - start) % 2 && encoded.compare(i, 5, "u0000") == 0)
             throw std::runtime_error("ASAR directory contains a null character");
     }
-    auto *parser = json_tokener_new();
+    auto *parser = json_tokener_new_ex(128);
+    json_tokener_set_flags(parser, JSON_TOKENER_VALIDATE_UTF8);
     auto *header = json_tokener_parse_ex(parser, encoded.data(), encoded.size());
     bool valid = json_tokener_get_error(parser) == json_tokener_success;
     size_t consumed = json_tokener_get_parse_end(parser);
@@ -308,7 +309,8 @@ static json_object *asar(json_object *request)
             if (component.empty() || component == "." || component == ".." || component.find_first_of("/\\") != std::string::npos || fs::path(component).is_absolute()) throw std::runtime_error("invalid ASAR entry path");
             if (!json_object_is_type(info, json_type_object)) throw std::runtime_error("invalid ASAR entry");
             auto destination = output / relative / component;
-            if (member(info, "files"))
+            json_object *nested = nullptr;
+            if (json_object_object_get_ex(info, "files", &nested))
             {
                 fs::create_directories(destination); fs::permissions(destination, fs::perms::owner_all, fs::perm_options::replace);
                 walk(info, relative / component, depth+1); continue;
