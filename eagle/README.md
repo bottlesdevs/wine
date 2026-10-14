@@ -7,6 +7,11 @@ Fresh CI builds package Wine debug companions in a separate
 `share/soda/symbols.json`, which records image hashes, companion hashes and
 debug-link CRCs. Core Wine launcher, server and ntdll DWARF companions are required.
 Symbol-only companions and unavailable optional images are recorded separately.
+Matching PDBs beside an image or in its `.debug` directory move into the symbol
+archive after CodeView GUID/age checks. Shared PDBs are stored once. Missing
+optional PDBs stay marked unavailable; identity-only PDB coverage does not satisfy
+the required DWARF gate. The verifier checks PDB hashes and identities again.
+The `--objcopy` option supports LLVM for PE files carrying DWARF and CodeView.
 
 Use the archive for the exact runner component. Its directory layout overlays
 the runner and includes the same source/build inventories. Extract it into the

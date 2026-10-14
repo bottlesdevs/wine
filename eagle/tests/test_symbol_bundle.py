@@ -96,6 +96,18 @@ class SymbolBundle(unittest.TestCase):
         self.assertFalse(self.bundle.exists())
         self.assertEqual(producer.digest(image), before)
 
+    def test_shared_gnu_companion_is_removed_once(self):
+        image = self.image()
+        debug = image.with_name(image.name + '.debug')
+        subprocess.run(['objcopy', '--only-keep-debug', str(image), str(debug)], check=True)
+        subprocess.run(['objcopy', '--strip-debug', '--add-gnu-debuglink=' + str(debug), str(image)], check=True)
+        shutil.copyfile(image, image.with_name('copy'))
+        result = self.stage()
+        self.assertEqual(result['retained'], 2)
+        self.assertFalse(debug.exists())
+        self.assertEqual(result['images']['bin/fixture']['debug_file'], result['images']['bin/copy']['debug_file'])
+        self.assertEqual(producer.verify(self.runner, self.bundle, self.tools), result)
+
     def test_unavailable_optional_image_is_explicit(self):
         self.image()
         self.image('no-debug', debug=False)

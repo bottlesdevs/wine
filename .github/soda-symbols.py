@@ -1,7 +1,7 @@
 import argparse
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import shutil
 import stat
 import subprocess
@@ -11,6 +11,7 @@ import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'eagle'))
 from provenance import digest
+from symbols import pdb_identity
 
 
 def relative_path(value):
@@ -70,7 +71,7 @@ def stage(runner, destination, tools, name, required=(), objcopy='objcopy'):
             raise ValueError('symbol metadata parent must be a directory')
     if metadata_path.exists():
         raise ValueError('runner symbol manifest already exists')
-    records, plans = {}, []
+    records, plans, pdb_plans = {}, [], {}
     for directory, names, files in os.walk(runner, followlinks=False):
         for filename in sorted(files):
             image = Path(directory) / filename
@@ -87,6 +88,31 @@ def stage(runner, destination, tools, name, required=(), objcopy='objcopy'):
             record = {'status': 'unavailable', 'input_sha256': image_sha256, 'image_sha256': image_sha256,
                       'identity': {key: metadata[key] for key in ('format', 'machine', 'timestamp', 'image_base', 'build_id', 'codeview') if key in metadata}}
             records[relative] = record
+            if metadata.get('codeview'):
+                identities = {(entry['guid'], entry['age']) for entry in metadata['codeview']}
+                if len(identities) != 1:
+                    raise ValueError('ambiguous PDB identities: ' + relative)
+                names = {Path(entry['pdb']).name if entry['pdb'].startswith('/') else PureWindowsPath(entry['pdb']).name
+                         for entry in metadata['codeview']}
+                if any(not name or name in ('.', '..') for name in names):
+                    raise ValueError('invalid image PDB name: ' + relative)
+                candidates = {path for name in names for path in (image.parent / name, image.parent / '.debug' / name)}
+                found = [path for path in candidates if path.exists() or path.is_symlink()]
+                record['pdb_status'] = 'unavailable'
+                if found:
+                    if len(found) != 1:
+                        raise ValueError('ambiguous PDB companions: ' + relative)
+                    pdb = found[0]
+                    if pdb.resolve() != pdb:
+                        raise ValueError('PDB companion must not use symlinks: ' + relative)
+                    identity = pdb_identity(pdb)
+                    if (identity['guid'], identity['age']) not in identities:
+                        raise ValueError('PDB companion does not match image: ' + relative)
+                    pdb_relative = str(pdb.relative_to(runner))
+                    pdb_sha256 = digest(pdb)
+                    pdb_plans[pdb_relative] = (pdb, pdb_sha256)
+                    record.update(pdb_file=pdb_relative, pdb_sha256=pdb_sha256,
+                                  pdb_identity=identity, pdb_status='matched', coverage='pdb-identity')
             if metadata.get('debug_info'):
                 record['coverage'] = 'dwarf'
                 debug_relative = image.parent.relative_to(runner) / '.debug' / (image.name + '.debug')
@@ -109,7 +135,9 @@ def stage(runner, destination, tools, name, required=(), objcopy='objcopy'):
         relative_path(value)
         if value not in planned:
             raise ValueError('required image has no retained symbols: ' + value)
-    if not plans:
+    if {str(relative) for _, relative, _, _ in plans} & set(pdb_plans):
+        raise ValueError('PDB and GNU companions share an output path')
+    if not plans and not pdb_plans:
         raise ValueError('runner has no debug symbols to retain')
     destination.mkdir(parents=True)
     llvm_objcopy = None
@@ -149,13 +177,27 @@ def stage(runner, destination, tools, name, required=(), objcopy='objcopy'):
         debug.chmod(0o644)
         record.update(status='retained', image_sha256=digest(image), debug_file=str(debug_relative),
                       debug_sha256=digest(debug), debuglink_crc32=crc32(debug))
+    for relative, (pdb, expected) in pdb_plans.items():
+        if digest(pdb) != expected:
+            raise ValueError('PDB changed during symbol staging: ' + relative)
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(pdb, target)
+        target.chmod(0o644)
+        if digest(target) != expected:
+            raise ValueError('PDB changed during symbol copy: ' + relative)
+    for record in records.values():
+        if 'pdb_file' in record:
+            record['status'] = 'retained'
+    retained = sum(record['status'] == 'retained' for record in records.values())
     manifest = {'schema': 1, 'component': name, 'images': records,
-                'retained': len(plans), 'unavailable': len(records) - len(plans)}
+                'retained': retained, 'unavailable': len(records) - retained}
     write_manifest(destination / 'share/soda/symbols.json', manifest)
     write_manifest(metadata_path, manifest)
-    for _, _, existing, _ in plans:
-        if existing is not None:
-            existing.unlink()
+    for existing in {existing for _, _, existing, _ in plans if existing is not None}:
+        existing.unlink()
+    for pdb, _ in pdb_plans.values():
+        pdb.unlink()
     verify(runner, destination, tools)
     return manifest
 
@@ -180,13 +222,24 @@ def verify(runner, bundle, tools):
             raise ValueError('symbol bundle does not match runner image: ' + relative)
         if record['status'] != 'retained':
             continue
-        debug = bundle / relative_path(record['debug_file'])
-        regular(debug)
-        if debug.resolve() != debug or digest(debug) != record['debug_sha256'] or crc32(debug) != record['debuglink_crc32']:
-            raise ValueError('symbol bundle companion does not match: ' + relative)
         metadata = inspect(image, tools)
-        if metadata.get('debuglink') != debug.name or metadata.get('debuglink_crc') != record['debuglink_crc32']:
-            raise ValueError('runner debuglink does not match symbol bundle: ' + relative)
+        if 'debug_file' in record:
+            debug = bundle / relative_path(record['debug_file'])
+            regular(debug)
+            if debug.resolve() != debug or digest(debug) != record['debug_sha256'] or crc32(debug) != record['debuglink_crc32']:
+                raise ValueError('symbol bundle companion does not match: ' + relative)
+            if metadata.get('debuglink') != debug.name or metadata.get('debuglink_crc') != record['debuglink_crc32']:
+                raise ValueError('runner debuglink does not match symbol bundle: ' + relative)
+        if 'pdb_file' in record:
+            pdb = bundle / relative_path(record['pdb_file'])
+            regular(pdb)
+            if pdb.resolve() != pdb or digest(pdb) != record['pdb_sha256'] or pdb_identity(pdb) != record['pdb_identity']:
+                raise ValueError('symbol bundle PDB does not match: ' + relative)
+            identity = record['pdb_identity']
+            if not metadata.get('codeview') or any((entry['guid'], entry['age']) != (identity['guid'], identity['age']) for entry in metadata['codeview']):
+                raise ValueError('runner CodeView does not match PDB: ' + relative)
+        if 'debug_file' not in record and 'pdb_file' not in record:
+            raise ValueError('retained image has no symbol companion: ' + relative)
     return manifest
 
 
