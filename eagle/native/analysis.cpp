@@ -580,8 +580,8 @@ static std::string capture_context(const std::string &hex)
     }
     clean = clean.substr(start, end-start);
     clean.erase(std::remove(clean.begin(), clean.end(), '\0'), clean.end());
-    std::string upper = clean;
-    std::transform(upper.begin(), upper.end(), upper.begin(), [](unsigned char ch) { return ch >= 'a' && ch <= 'z' ? ch-32 : ch; });
+    char *uppercase = g_utf8_strup(clean.data(), clean.size());
+    std::string upper(uppercase); g_free(uppercase);
     if (g_utf8_strlen(clean.data(), clean.size()) <= 2 || upper == "HKEY_LOCAL_MACHINE" || upper == "HKEY_CURRENT_USER" || upper == "HKLM" || upper == "HKCU" || upper == "HKLM\\" || upper == "HKCU\\") return {};
     return clean;
 }
@@ -622,8 +622,9 @@ static json_object *yara_insights(json_object *request)
         }
         if (!exists)
         {
-            auto *item = json_object_new_object(); string(item, "name", name); string(item, "source", source);
+            auto *item = json_object_new_object(); string(item, "name", name);
             if (category == "Warning" || category == "Security") { string(item, "description", description); string(item, "severity", severity); }
+            string(item, "source", source);
             json_object_object_add(item, "context", json_object_get(context)); json_object_array_add(items, item);
             auto step = (category == "Warning" || category == "Security" ? "[!] " : "[" + category + "] ") + name + " (" + source + ")";
             json_object_array_add(steps, json_object_new_string(step.c_str()));

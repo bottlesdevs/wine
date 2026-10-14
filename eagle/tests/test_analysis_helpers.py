@@ -72,6 +72,31 @@ class AnalysisHelpers(unittest.TestCase):
                 valid.symlink_to(root / 'payload.exe')
                 self.assertEqual(self.analysis(operation='discover', path=str(target), details=details)['ue_shipping_exe'], str(valid))
 
+    def test_context_root_filter_uses_unicode_case(self):
+        for encoding in ('utf-8', 'utf-16le'):
+            for suffix in ('', r'\Software\EagleFixture'):
+                value = 'hkey_local_mach\u0131ne' + suffix
+                with self.subTest(encoding=encoding, suffix=suffix):
+                    result = self.analysis(operation='yara-insights', source='Own fixture',
+                        details={}, matches=[dict(rule='ContextFixture',
+                            meta={'category': 'Registry', 'name': 'Own marker'},
+                            strings=[dict(identifier='$capture', hex=value.encode(encoding).hex())])])
+                    self.assertEqual(result['details']['Registry'][0]['context'], [value] if suffix else [])
+
+    def test_warning_fields_preserve_framework_text_order(self):
+        for category in ('Warning', 'Security'):
+            with self.subTest(category=category):
+                details = {name: [] for name in ('Graphics', 'Upscaling', 'Engines', 'Runtimes', 'Physics', 'Protection', 'Frameworks', 'Warning')}
+                result = self.analysis(operation='yara-insights', source='Own fixture', details=details,
+                    matches=[dict(rule='ContextFixture', meta=dict(category=category,
+                        name='Own marker', description='Own description', severity='high'), strings=[])])
+                advice = self.analysis(operation='recommend', details=result['details'],
+                    metadata={'is_packed': False}, is_net=False, dpi_aware=True,
+                    ue_shipping_exe=None, intel=None)
+                expected = dict(name='Own marker', description='Own description', severity='high',
+                                source='Own fixture', context=[])
+                self.assertEqual(advice['frameworks'], [f'{category}: {expected}'])
+
     def test_empty_suggestions_and_rule_results(self):
         self.assertEqual(self.analysis(operation='merge', suggestions=[], intel=None), [])
         details = {name: [] for name in ('Graphics', 'Upscaling', 'Engines', 'Runtimes', 'Physics', 'Protection', 'Frameworks', 'Warning')}
