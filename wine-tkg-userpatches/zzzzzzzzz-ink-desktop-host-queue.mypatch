@@ -1,0 +1,456 @@
+diff --git a/configure.ac b/configure.ac
+--- a/configure.ac
++++ b/configure.ac
+@@ -2940,6 +2940,7 @@
+ WINE_CONFIG_MAKEFILE(dlls/infosoft/tests)
+ WINE_CONFIG_MAKEFILE(dlls/initpki)
+ WINE_CONFIG_MAKEFILE(dlls/inkobj)
++WINE_CONFIG_MAKEFILE(dlls/inkobjcore)
+ WINE_CONFIG_MAKEFILE(dlls/inseng)
+ WINE_CONFIG_MAKEFILE(dlls/iphlpapi)
+ WINE_CONFIG_MAKEFILE(dlls/iphlpapi/tests)
+diff --git a/dlls/inkobjcore/Makefile.in b/dlls/inkobjcore/Makefile.in
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/Makefile.in
+@@ -0,0 +1,6 @@
++MODULE = inkobjcore.dll
++IMPORTS = ole32 uuid
++
++SOURCES = \
++	inkobjcore.rc \
++	main.c
+diff --git a/dlls/inkobjcore/inkobjcore.rc b/dlls/inkobjcore/inkobjcore.rc
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/inkobjcore.rc
+@@ -0,0 +1 @@
++1 WINE_REGISTRY "inkobjcore.rgs"
+diff --git a/dlls/inkobjcore/inkobjcore.rgs b/dlls/inkobjcore/inkobjcore.rgs
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/inkobjcore.rgs
+@@ -0,0 +1,13 @@
++HKCR
++{
++    NoRemove CLSID
++    {
++        ForceRemove '{062584A6-F830-4BDC-A4D2-0A10AB062B1D}' = s 'Ink Desktop Host'
++        {
++            InprocServer32 = s '%MODULE%'
++            {
++                val ThreadingModel = s 'Both'
++            }
++        }
++    }
++}
+diff --git a/dlls/inkobjcore/inkobjcore.spec b/dlls/inkobjcore/inkobjcore.spec
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/inkobjcore.spec
+@@ -0,0 +1,4 @@
++@ stdcall -private DllCanUnloadNow()
++@ stdcall -private DllGetClassObject(ptr ptr ptr)
++@ stdcall -private DllRegisterServer()
++@ stdcall -private DllUnregisterServer()
+diff --git a/dlls/inkobjcore/main.c b/dlls/inkobjcore/main.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/main.c
+@@ -0,0 +1,299 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++#include <stdlib.h>
++
++#define COBJMACROS
++#include "windef.h"
++#include "winbase.h"
++#include "objbase.h"
++#include "inkpresenterdesktop.h"
++#include "wine/debug.h"
++#include "wine/list.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(ink);
++
++struct queued_work
++{
++    struct list entry;
++    IInkHostWorkItem *item;
++};
++
++struct desktop_host
++{
++    IInkDesktopHost IInkDesktopHost_iface;
++    LONG ref;
++    IUnknown *marshaler;
++    CRITICAL_SECTION lock;
++    struct list queue;
++    HANDLE event, ready;
++    HMODULE module;
++    HRESULT init_result;
++    BOOL stopping;
++};
++
++static LONG object_count, factory_refs, server_locks;
++
++static struct desktop_host *impl_from_IInkDesktopHost(IInkDesktopHost *iface)
++{
++    return CONTAINING_RECORD(iface, struct desktop_host, IInkDesktopHost_iface);
++}
++
++static HRESULT WINAPI desktop_host_QueryInterface(IInkDesktopHost *iface, REFIID iid, void **out)
++{
++    struct desktop_host *host = impl_from_IInkDesktopHost(iface);
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInkDesktopHost)
++            || IsEqualGUID(iid, &IID_IAgileObject))
++    {
++        *out = iface;
++        IInkDesktopHost_AddRef(iface);
++        return S_OK;
++    }
++    if (IsEqualGUID(iid, &IID_IMarshal)) return IUnknown_QueryInterface(host->marshaler, iid, out);
++    TRACE("unsupported interface %s\n", debugstr_guid(iid));
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI desktop_host_AddRef(IInkDesktopHost *iface)
++{
++    struct desktop_host *host = impl_from_IInkDesktopHost(iface);
++    return InterlockedIncrement(&host->ref);
++}
++
++static ULONG WINAPI desktop_host_Release(IInkDesktopHost *iface)
++{
++    struct desktop_host *host = impl_from_IInkDesktopHost(iface);
++    ULONG ref = InterlockedDecrement(&host->ref);
++
++    if (ref == 1)
++    {
++        EnterCriticalSection(&host->lock);
++        host->stopping = TRUE;
++        SetEvent(host->event);
++        LeaveCriticalSection(&host->lock);
++    }
++    if (!ref)
++    {
++        if (host->marshaler) IUnknown_Release(host->marshaler);
++        if (host->event) CloseHandle(host->event);
++        if (host->ready) CloseHandle(host->ready);
++        DeleteCriticalSection(&host->lock);
++        InterlockedDecrement(&object_count);
++        free(host);
++    }
++    return ref;
++}
++
++static HRESULT WINAPI desktop_host_QueueWorkItem(IInkDesktopHost *iface, IInkHostWorkItem *item)
++{
++    struct desktop_host *host = impl_from_IInkDesktopHost(iface);
++    struct queued_work *work;
++
++    if (!item) return E_POINTER;
++    if (!(work = malloc(sizeof(*work)))) return E_OUTOFMEMORY;
++    work->item = item;
++    IInkHostWorkItem_AddRef(item);
++    EnterCriticalSection(&host->lock);
++    if (host->stopping)
++    {
++        LeaveCriticalSection(&host->lock);
++        IInkHostWorkItem_Release(item);
++        free(work);
++        return CO_E_OBJNOTCONNECTED;
++    }
++    list_add_tail(&host->queue, &work->entry);
++    SetEvent(host->event);
++    LeaveCriticalSection(&host->lock);
++    return S_OK;
++}
++
++static HRESULT WINAPI desktop_host_CreateInkPresenter(IInkDesktopHost *iface, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    FIXME("presenter %s is not implemented\n", debugstr_guid(iid));
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI desktop_host_CreateAndInitializeInkPresenter(IInkDesktopHost *iface,
++        IUnknown *visual, float width, float height, REFIID iid, void **out)
++{
++    return desktop_host_CreateInkPresenter(iface, iid, out);
++}
++
++static const IInkDesktopHostVtbl desktop_host_vtbl =
++{
++    desktop_host_QueryInterface,
++    desktop_host_AddRef,
++    desktop_host_Release,
++    desktop_host_QueueWorkItem,
++    desktop_host_CreateInkPresenter,
++    desktop_host_CreateAndInitializeInkPresenter,
++};
++
++static DWORD WINAPI desktop_host_thread(void *arg)
++{
++    struct desktop_host *host = arg;
++    HMODULE module = host->module;
++    struct queued_work *work;
++    struct list *entry;
++    BOOL stopping;
++    HRESULT hr;
++
++    host->init_result = CoInitializeEx(NULL, COINIT_MULTITHREADED);
++    SetEvent(host->ready);
++    if (SUCCEEDED(host->init_result))
++    {
++        for (;;)
++        {
++            WaitForSingleObject(host->event, INFINITE);
++            EnterCriticalSection(&host->lock);
++            entry = list_head(&host->queue);
++            if (entry) list_remove(entry);
++            stopping = host->stopping;
++            if (list_empty(&host->queue) && !stopping) ResetEvent(host->event);
++            LeaveCriticalSection(&host->lock);
++            if (!entry)
++            {
++                if (stopping) break;
++                continue;
++            }
++            work = LIST_ENTRY(entry, struct queued_work, entry);
++            hr = IInkHostWorkItem_Invoke(work->item);
++            TRACE("work item %p returned %#lx\n", work->item, hr);
++            IInkHostWorkItem_Release(work->item);
++            free(work);
++        }
++        CoUninitialize();
++    }
++    IInkDesktopHost_Release(&host->IInkDesktopHost_iface);
++    FreeLibraryAndExitThread(module, 0);
++    return 0;
++}
++
++static HRESULT desktop_host_create(REFIID iid, void **out)
++{
++    struct desktop_host *host;
++    HANDLE thread;
++    DWORD index;
++    HRESULT hr;
++
++    if (!(host = calloc(1, sizeof(*host)))) return E_OUTOFMEMORY;
++    host->IInkDesktopHost_iface.lpVtbl = &desktop_host_vtbl;
++    host->ref = 1;
++    InitializeCriticalSection(&host->lock);
++    list_init(&host->queue);
++    InterlockedIncrement(&object_count);
++    host->event = CreateEventW(NULL, TRUE, FALSE, NULL);
++    host->ready = CreateEventW(NULL, TRUE, FALSE, NULL);
++    if (!host->event || !host->ready)
++    {
++        hr = HRESULT_FROM_WIN32(GetLastError());
++        goto done;
++    }
++    hr = CoCreateFreeThreadedMarshaler((IUnknown *)&host->IInkDesktopHost_iface, &host->marshaler);
++    if (FAILED(hr)) goto done;
++    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
++            (const WCHAR *)desktop_host_thread, &host->module))
++    {
++        hr = HRESULT_FROM_WIN32(GetLastError());
++        goto done;
++    }
++    IInkDesktopHost_AddRef(&host->IInkDesktopHost_iface);
++    if (!(thread = CreateThread(NULL, 0, desktop_host_thread, host, 0, NULL)))
++    {
++        hr = HRESULT_FROM_WIN32(GetLastError());
++        IInkDesktopHost_Release(&host->IInkDesktopHost_iface);
++        FreeLibrary(host->module);
++        goto done;
++    }
++    CloseHandle(thread);
++    hr = CoWaitForMultipleHandles(0,
++            INFINITE, 1, &host->ready, &index);
++    if (SUCCEEDED(hr)) hr = host->init_result;
++    if (SUCCEEDED(hr)) hr = IInkDesktopHost_QueryInterface(&host->IInkDesktopHost_iface, iid, out);
++
++done:
++    IInkDesktopHost_Release(&host->IInkDesktopHost_iface);
++    return hr;
++}
++
++static HRESULT WINAPI factory_QueryInterface(IClassFactory *iface, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!IsEqualGUID(iid, &IID_IUnknown) && !IsEqualGUID(iid, &IID_IClassFactory)) return E_NOINTERFACE;
++    *out = iface;
++    IClassFactory_AddRef(iface);
++    return S_OK;
++}
++
++static ULONG WINAPI factory_AddRef(IClassFactory *iface)
++{
++    return InterlockedIncrement(&factory_refs);
++}
++
++static ULONG WINAPI factory_Release(IClassFactory *iface)
++{
++    return InterlockedDecrement(&factory_refs);
++}
++
++static HRESULT WINAPI factory_CreateInstance(IClassFactory *iface, IUnknown *outer, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (outer) return CLASS_E_NOAGGREGATION;
++    return desktop_host_create(iid, out);
++}
++
++static HRESULT WINAPI factory_LockServer(IClassFactory *iface, BOOL lock)
++{
++    if (lock) InterlockedIncrement(&server_locks);
++    else InterlockedDecrement(&server_locks);
++    return S_OK;
++}
++
++static const IClassFactoryVtbl factory_vtbl =
++{
++    factory_QueryInterface,
++    factory_AddRef,
++    factory_Release,
++    factory_CreateInstance,
++    factory_LockServer,
++};
++
++static IClassFactory class_factory = {&factory_vtbl};
++
++HRESULT WINAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!IsEqualGUID(clsid, &CLSID_InkDesktopHost)) return CLASS_E_CLASSNOTAVAILABLE;
++    return IClassFactory_QueryInterface(&class_factory, iid, out);
++}
++
++HRESULT WINAPI DllCanUnloadNow(void)
++{
++    return InterlockedCompareExchange(&object_count, 0, 0)
++            || InterlockedCompareExchange(&factory_refs, 0, 0)
++            || InterlockedCompareExchange(&server_locks, 0, 0) ? S_FALSE : S_OK;
++}
+diff --git a/include/Makefile.in b/include/Makefile.in
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -402,6 +402,7 @@
+ 	indexsrv.idl \
+ 	initguid.h \
+ 	inputpaneinterop.idl \
++	inkpresenterdesktop.idl \
+ 	inputscope.idl \
+ 	inseng.idl \
+ 	inspectable.idl \
+diff --git a/include/inkpresenterdesktop.idl b/include/inkpresenterdesktop.idl
+new file mode 100644
+--- /dev/null
++++ b/include/inkpresenterdesktop.idl
+@@ -0,0 +1,70 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++import "unknwn.idl";
++
++[
++    object,
++    uuid(fabea3fc-b108-45b6-a9fc-8d08fa9f85cf)
++]
++interface IInkCommitRequestHandler : IUnknown
++{
++    HRESULT OnCommitRequested();
++}
++
++[
++    object,
++    uuid(73f3c0d9-2e8b-48f3-895e-20cbd27b723b)
++]
++interface IInkPresenterDesktop : IUnknown
++{
++    HRESULT SetRootVisual([in] IUnknown *visual, [in, unique] IUnknown *device);
++    HRESULT SetCommitRequestHandler([in] IInkCommitRequestHandler *handler);
++    HRESULT GetSize([out] float *width, [out] float *height);
++    HRESULT SetSize([in] float width, [in] float height);
++    HRESULT OnHighContrastChanged();
++}
++
++[
++    object,
++    uuid(ccda0a9a-1b78-4632-bb96-97800662e26c)
++]
++interface IInkHostWorkItem : IUnknown
++{
++    HRESULT Invoke();
++}
++
++[
++    object,
++    uuid(4ce7d875-a981-4140-a1ff-ad93258e8d59)
++]
++interface IInkDesktopHost : IUnknown
++{
++    HRESULT QueueWorkItem([in] IInkHostWorkItem *item);
++    HRESULT CreateInkPresenter([in] REFIID iid, [out, iid_is(iid)] void **object);
++    HRESULT CreateAndInitializeInkPresenter([in] IUnknown *visual, [in] float width,
++            [in] float height, [in] REFIID iid, [out, iid_is(iid)] void **object);
++}
++
++[
++    uuid(062584a6-f830-4bdc-a4d2-0a10ab062b1d)
++]
++coclass InkDesktopHost
++{
++    interface IInkDesktopHost;
++}
+diff --git a/libs/uuid/uuid.c b/libs/uuid/uuid.c
+--- a/libs/uuid/uuid.c
++++ b/libs/uuid/uuid.c
+@@ -67,6 +67,7 @@
+ #include "downloadmgr.h"
+ #include "objsel.h"
+ #include "hlink.h"
++#include "inkpresenterdesktop.h"
+ #include "optary.h"
+ #include "indexsrv.h"
+ #include "htiface.h"
