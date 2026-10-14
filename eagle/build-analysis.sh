@@ -28,6 +28,7 @@ done
 cp "$root/analysis.json" "$destination/lib/eagle/"
 EAGLE_PACKAGE="$destination" python3 -S "$root/tests/test_analysis_helpers.py"
 EAGLE_PACKAGE="$destination" python3 -S "$root/tests/test_manifest.py"
+EAGLE_PACKAGE="$destination" python3 -S "$root/tests/test_imports.py"
 EAGLE_PACKAGE="$destination" python3 -S "$root/tests/test_analysis_driver.py"
 EAGLE_PACKAGE="$destination" python3 -S "$root/tests/test_analysis_lifecycle.py"
 EAGLE_PACKAGE="$destination" python3 -S "$root/tests/test_analysis_adapter.py"
