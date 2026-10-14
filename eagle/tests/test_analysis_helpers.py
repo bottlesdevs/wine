@@ -219,6 +219,30 @@ class AnalysisHelpers(unittest.TestCase):
                     expected = "Known application: Example (winetricks verb 'example')" if verb else 'Known application: Example'
                     self.assertEqual(json.loads(result.stdout)['notes'], [expected])
 
+    def test_winetricks_metadata_requires_complete_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'intel.sqlite'
+            with sqlite3.connect(path) as connection:
+                connection.execute('CREATE TABLE trick (name TEXT, kind TEXT, title TEXT, '
+                                   'files_json TEXT, overrides_json TEXT, winver TEXT, bottles_dep TEXT)')
+                connection.execute("INSERT INTO trick (name, kind) VALUES ('example', 'apps')")
+            constants = json.loads((NATIVE.parent / 'analysis.json').read_text())['intel']
+            encoded = json.dumps([dict(mode='native', dlls=['example'])])
+            for suffix in ('', '\n ', ' trailing', '[]', '\0', '\0tail'):
+                with self.subTest(suffix=suffix):
+                    with sqlite3.connect(path) as connection:
+                        connection.execute('UPDATE trick SET overrides_json = ?', (encoded + suffix,))
+                    before = path.read_bytes()
+                    hit = dict(match='name', tweaks=[], software=dict(
+                        name='Example', source='winetricks', trick_name='example'))
+                    result = subprocess.run([str(NATIVE / 'eagle-intel'), str(path)],
+                        input=json.dumps(dict(operation='plan', hit=hit, constants=constants)),
+                        capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    expected = {'example': {'value': 'n', 'evidence': 0}} if suffix in ('', '\n ') else {}
+                    self.assertEqual(json.loads(result.stdout)['dll_overrides'], expected)
+                    self.assertEqual(path.read_bytes(), before)
+
     def test_invalid_requests_return_errors(self):
         for request in ('[]', '{}', '{', '{"operation":"unknown"}', '{"operation":"merge","suggestions":{}}'):
             with self.subTest(request=request):

@@ -16,7 +16,7 @@ static std::string field(json_object *object, const char *name)
     json_object *value = nullptr;
     if (!json_object_object_get_ex(object, name, &value) || !value) return "";
     if (!json_object_is_type(value, json_type_string)) throw std::runtime_error("lookup fields must be strings");
-    return json_object_get_string(value);
+    return std::string(json_object_get_string(value), json_object_get_string_len(value));
 }
 
 static std::string fold(const std::string &value)
@@ -128,7 +128,7 @@ public:
                 int type = sqlite3_column_type(statement, index);
                 if (type == SQLITE_INTEGER) item = json_object_new_int64(sqlite3_column_int64(statement, index));
                 else if (type == SQLITE_FLOAT) item = json_object_new_double(sqlite3_column_double(statement, index));
-                else if (type != SQLITE_NULL) item = json_object_new_string(reinterpret_cast<const char *>(sqlite3_column_text(statement, index)));
+                else if (type != SQLITE_NULL) item = json_object_new_string_len(reinterpret_cast<const char *>(sqlite3_column_text(statement, index)), sqlite3_column_bytes(statement, index));
                 json_object_object_add(row, sqlite3_column_name(statement, index), item);
             }
             rows.push_back(row);
@@ -266,7 +266,7 @@ static void copy(json_object *destination, const char *key, json_object *value)
 
 static void text(json_object *destination, const char *key, const std::string &value)
 {
-    json_object_object_add(destination, key, json_object_new_string(value.c_str()));
+    json_object_object_add(destination, key, json_object_new_string_len(value.data(), value.size()));
 }
 
 static json_object *hint(json_object *value, int64_t evidence, const std::string &reason = "")
@@ -336,7 +336,15 @@ static json_object *plan(database &db, json_object *request)
         for (const char *key : {"steam_appid", "tier"}) json_object_object_add(result, key, nullptr);
         for (const char *key : {"reports", "verdict_yes", "verdict_no"}) json_object_object_add(result, key, json_object_new_int(0));
         auto *verb = db.trick(field(software, "trick_name"));
-        auto *items = json_tokener_parse(field(verb, "overrides_json").c_str());
+        auto encoded = field(verb, "overrides_json");
+        auto *parser = json_tokener_new();
+        json_tokener_set_flags(parser, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
+        auto *items = json_tokener_parse_ex(parser, encoded.data(), encoded.size());
+        bool valid = json_tokener_get_error(parser) == json_tokener_success;
+        size_t consumed = json_tokener_get_parse_end(parser);
+        json_tokener_free(parser);
+        if (!valid || encoded.find('\0') != std::string::npos || encoded.find_first_not_of(" \t\r\n", consumed) != std::string::npos)
+        { if (items) json_object_put(items); items = nullptr; }
         if (items && json_object_is_type(items, json_type_array)) for (size_t i = 0; i < json_object_array_length(items); i++)
         {
             auto *item = json_object_array_get_idx(items, i);
