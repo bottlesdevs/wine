@@ -102,6 +102,19 @@ public:
         if (count == maximum || count == length - offset) throw std::runtime_error("unterminated PE string");
         return std::string(reinterpret_cast<const char *>(data + offset), count);
     }
+    std::string debug_section_name(const std::string &name, size_t pe) const
+    {
+        if (name.size() < 2 || name[0] != '/' ||
+            !std::all_of(name.begin()+1, name.end(), [](unsigned char ch) { return ch >= '0' && ch <= '9'; })) return name;
+        uint64_t table = static_cast<uint64_t>(dword(pe+12)) + static_cast<uint64_t>(dword(pe+16))*18;
+        if (!dword(pe+12)) throw std::runtime_error("missing COFF section string table");
+        bounds(table, 4);
+        uint32_t size = dword(table);
+        bounds(table, size);
+        unsigned long offset = std::stoul(name.substr(1));
+        if (size < 4 || offset < 4 || offset >= size) throw std::runtime_error("invalid COFF section string offset");
+        return text(table+offset, std::min<size_t>(size-offset, 4096));
+    }
     size_t file_offset(uint32_t rva, size_t size = 1) const
     {
         if (rva < headers) { bounds(rva, size); return rva; }
@@ -198,7 +211,7 @@ public:
             }
         }
     }
-    void print()
+    void print(bool debug_only = false)
     {
         if (word(0) != 0x5a4d) throw std::runtime_error("not a DOS image");
         size_t pe = dword(0x3c);
@@ -219,6 +232,29 @@ public:
             bounds(offset, 40);
             std::string name = section_name(data + offset);
             sections.push_back({dword(offset+12), dword(offset+8), dword(offset+20), dword(offset+16), name});
+        }
+        bool has_debug = false;
+        std::string debuglink;
+        uint32_t debuglink_crc = 0;
+        for (const auto &entry : sections)
+        {
+            auto name = debug_section_name(entry.name, pe);
+            if (name == ".debug_info" || name == ".zdebug_info")
+            {
+                bounds(entry.raw, entry.size);
+                has_debug = entry.size != 0;
+            }
+            if (name != ".gnu_debuglink") continue;
+            bounds(entry.raw, entry.size);
+            debuglink = text(entry.raw, std::min<size_t>(entry.size, 4096));
+            size_t crc_offset = (debuglink.size()+4) & ~size_t(3);
+            if (crc_offset+4 > entry.size) throw std::runtime_error("invalid PE debuglink CRC");
+            debuglink_crc = dword(entry.raw+crc_offset);
+        }
+        if (debug_only)
+        {
+            printf("{\"debug_info\":%s}\n", has_debug ? "true" : "false");
+            return;
         }
         auto directory = [&](unsigned index) -> uint32_t { return index < directory_count ? dword(directory_start + index * 8) : 0; };
         std::string resource_error;
@@ -323,7 +359,8 @@ public:
             printf("{\"name\":"); quote(entry.name);
             printf(",\"rva\":%u,\"virtual_size\":%u,\"raw_size\":%u}", entry.rva, entry.virtual_size, entry.size);
         }
-        printf("],\"managed\":%s,\"rich_products\":[", directory(14) && dword(directory_start+14*8+4) ? "true" : "false");
+        printf("],\"debug_info\":%s,\"debuglink\":", has_debug ? "true" : "false"); quote(debuglink);
+        printf(",\"debuglink_crc\":%u,\"managed\":%s,\"rich_products\":[", debuglink_crc, directory(14) && dword(directory_start+14*8+4) ? "true" : "false");
         comma = false;
         for (size_t rich = 64; rich + 8 <= pe; rich += 4) if (dword(rich) == 0x68636952)
         {
@@ -374,7 +411,8 @@ public:
 
 int main(int argc, char **argv)
 {
-    if (argc != 2) { fputs("usage: eagle-pe IMAGE\n", stderr); return 2; }
-    try { image file(argv[1]); file.print(); return 0; }
+    bool debug_only = argc == 3 && !strcmp(argv[1], "--debug");
+    if (argc != 2 && !debug_only) { fputs("usage: eagle-pe [--debug] IMAGE\n", stderr); return 2; }
+    try { image file(argv[debug_only ? 2 : 1]); file.print(debug_only); return 0; }
     catch (const std::exception &error) { fprintf(stderr, "%s\n", error.what()); return 1; }
 }

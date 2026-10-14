@@ -207,6 +207,9 @@ jobs:
             sed -i '$a_GCC_FLAGS="-O2 -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -fprofile-generate=/tmp/soda-pgo/profiles -fprofile-update=prefer-atomic -fprofile-exclude-files=preloader"' wine-tkg.cfg
             sed -i '$a_LD_FLAGS="-Wl,-O1,--sort-common,--as-needed -fprofile-generate=/tmp/soda-pgo/profiles"' wine-tkg.cfg
           fi
+          printf '%s\n' '_pkg_strip="false"' \
+            '_GCC_FLAGS="${_GCC_FLAGS} -g -ffile-prefix-map=${_where}=/usr/src/soda/tkg"' \
+            '_CROSS_FLAGS="${_CROSS_FLAGS} -g -ffile-prefix-map=${_where}=/usr/src/soda/tkg"' >> wine-tkg.cfg
           cat wine-tkg.cfg
 
       - name: build PGO training programs
@@ -350,7 +353,7 @@ jobs:
           sed -i '/      _source_cleanup/a\      "$GITHUB_WORKSPACE/.github/import-msicu.sh" "${srcdir}/${_winesrcdir}"\n      "$GITHUB_WORKSPACE/.github/import-wineopenxr.sh" "${srcdir}/${_winesrcdir}" "/tmp/proton/wineopenxr"' non-makepkg-build.sh
           recipe=/home/runner/.config/frogminer/wine-tkg.cfg
           sed -i '/^_GCC_FLAGS=/d; /^_LD_FLAGS=/d' "$recipe"
-          sed -i '$a_GCC_FLAGS="-O2 -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-missing-profile -fprofile-use=/tmp/soda-pgo/profiles -fprofile-correction -fprofile-partial-training -fprofile-exclude-files=preloader"' "$recipe"
+          sed -i '$a_GCC_FLAGS="-O2 -g -ffile-prefix-map=${_where}=/usr/src/soda/tkg -pipe -msse3 -mfpmath=sse -ftree-vectorize -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-missing-profile -fprofile-use=/tmp/soda-pgo/profiles -fprofile-correction -fprofile-partial-training -fprofile-exclude-files=preloader"' "$recipe"
           sed -i '$a_LD_FLAGS="-Wl,-O1,--sort-common,--as-needed -fprofile-use=/tmp/soda-pgo/profiles"' "$recipe"
           find /tmp/soda-pgo/profiles -type f -name '*.gcda' -exec touch -a -d @1 {} +
           touch /tmp/soda-pgo/profile-use-start
@@ -419,6 +422,21 @@ jobs:
             --source build_tools=/tmp/build-tools --expect-source "build_tools=$BUILD_TOOLS_COMMIT" \
             --patch-dir "$GITHUB_WORKSPACE/wine-tkg-userpatches" \
             --input recipe=/home/runner/.config/frogminer/wine-tkg.cfg --config-root "$PWD/src"
+
+      - name: retain separate Wine symbols
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        env:
+          COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
+        run: |
+          runner="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          tools="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-source-provenance/native"
+          symbols="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-symbols/$COMPONENT_NAME"
+          python3 -S "$GITHUB_WORKSPACE/.github/soda-symbols.py" "$runner" "$symbols" \
+            --tools "$tools" --name "$COMPONENT_NAME" --require bin/wine --require bin/wineserver \
+            --require lib/wine/i386-unix/ntdll.so --require lib/wine/x86_64-unix/ntdll.so \
+            --require lib/wine/i386-windows/ntdll.dll --require lib/wine/x86_64-windows/ntdll.dll
+          python3 -S "$GITHUB_WORKSPACE/.github/soda-provenance.py" "$runner" \
+            --tools "$tools" --name "$COMPONENT_NAME" --refresh
 
       - name: upload pre-test runner
         if: steps.identity.outputs.prerelease == 'true' || steps.identity.outputs.publish == 'false'
@@ -1104,6 +1122,11 @@ jobs:
           sh "$GITHUB_WORKSPACE/.github/soda-provenance.sh" "$runner_dir" \
             "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-package-provenance" \
             --name "$COMPONENT_NAME" --refresh --assembly-source "$GITHUB_WORKSPACE"
+          symbols_root="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-symbols"
+          python3 -S "$GITHUB_WORKSPACE/.github/soda-symbols.py" "$runner_dir" "$symbols_root/$COMPONENT_NAME" \
+            --tools "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-package-provenance/native" --verify
+          cp "$runner_dir/share/soda/"{build,files,sources}.json "$symbols_root/$COMPONENT_NAME/share/soda/"
+          tar -C "$symbols_root" -cJf "/tmp/$COMPONENT_NAME-symbols.tar.xz" "$COMPONENT_NAME"
           mv "$runner_dir" "$COMPONENT_NAME"
           tar cJvf "$ARCHIVE_NAME" "$COMPONENT_NAME"
           mv "$ARCHIVE_NAME" "/tmp/$ARCHIVE_NAME"
@@ -1131,7 +1154,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.identity.outputs.component_name }}
-          path: /tmp/${{ steps.identity.outputs.archive_name }}
+          path: |
+            /tmp/${{ steps.identity.outputs.archive_name }}
+            /tmp/${{ steps.identity.outputs.component_name }}-symbols.tar.xz
           if-no-files-found: error
 
       - name: upload PGO evidence
@@ -1237,10 +1262,10 @@ jobs:
       - name: build Wine and FEX
         working-directory: /tmp/proton-build
         run: |
-          make WINE_DEPENDS= WINE_aarch64_DEPENDS= wine
-          make WINE_DEPENDS= WINE_aarch64_DEPENDS= fex
-          make WINE_DEPENDS= WINE_aarch64_DEPENDS= fex_unixlib
-          make WINE_DEPENDS= WINE_aarch64_DEPENDS= wineopenxr
+          make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= wine
+          make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= fex
+          make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= fex_unixlib
+          make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= wineopenxr
 
       - name: package
         env:
@@ -1306,13 +1331,25 @@ jobs:
             --patch-dir "$GITHUB_WORKSPACE/wine-tkg-userpatches" \
             --input "openxr_patch=$GITHUB_WORKSPACE/.github/wineopenxr-host-runtime-proton.mypatch" \
             --config-root /tmp/proton-build --assembly-source "$GITHUB_WORKSPACE"
+          tools="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64-provenance/native"
+          symbols_root="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64-symbols"
+          python3 -S "$GITHUB_WORKSPACE/.github/soda-symbols.py" "$runner_dir" "$symbols_root/$COMPONENT_NAME" \
+            --tools "$tools" --name "$COMPONENT_NAME" --require bin/wine --require bin/wineserver \
+            --require lib/wine/aarch64-unix/ntdll.so --require lib/wine/aarch64-windows/ntdll.dll \
+            --require lib/wine/x86_64-windows/ntdll.dll
+          python3 -S "$GITHUB_WORKSPACE/.github/soda-provenance.py" "$runner_dir" \
+            --tools "$tools" --name "$COMPONENT_NAME" --refresh
+          cp "$runner_dir/share/soda/"{build,files,sources}.json "$symbols_root/$COMPONENT_NAME/share/soda/"
+          tar -C "$symbols_root" -cJf "/tmp/$COMPONENT_NAME-symbols.tar.xz" "$COMPONENT_NAME"
           tar -C /tmp -cJf "/tmp/$ARCHIVE_NAME" "$COMPONENT_NAME"
 
       - name: upload
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.identity.outputs.component_name }}
-          path: /tmp/${{ steps.identity.outputs.archive_name }}
+          path: |
+            /tmp/${{ steps.identity.outputs.archive_name }}
+            /tmp/${{ steps.identity.outputs.component_name }}-symbols.tar.xz
           if-no-files-found: error
 
       - name: verify Windows architectures
@@ -1653,6 +1690,8 @@ jobs:
           GH_REPO: ${{ github.repository }}
           ARCHIVE_NAME: ${{ needs.build.outputs.archive_name }}
           ARM64_ARCHIVE_NAME: ${{ needs.arm64.outputs.archive_name }}
+          SYMBOLS_ARCHIVE_NAME: ${{ needs.build.outputs.component_name }}-symbols.tar.xz
+          ARM64_SYMBOLS_ARCHIVE_NAME: ${{ needs.arm64.outputs.component_name }}-symbols.tar.xz
         run: |
           tag="soda-$WINE_VERSION-$REVISION"
           title="Soda $WINE_VERSION-$REVISION"
@@ -1669,5 +1708,7 @@ jobs:
             echo "Release $tag already exists." >&2
             exit 1
           fi
-          sha256sum "$file" "$arm64_file" > SHA256SUMS
-          gh release create "$tag" "$file" "$arm64_file" SHA256SUMS --target "$GITHUB_SHA" --title "$title" --notes "$RELEASE_NOTES" "${release_flags[@]}"
+          test -s "$SYMBOLS_ARCHIVE_NAME"
+          test -s "$ARM64_SYMBOLS_ARCHIVE_NAME"
+          sha256sum "$file" "$arm64_file" "$SYMBOLS_ARCHIVE_NAME" "$ARM64_SYMBOLS_ARCHIVE_NAME" > SHA256SUMS
+          gh release create "$tag" "$file" "$arm64_file" "$SYMBOLS_ARCHIVE_NAME" "$ARM64_SYMBOLS_ARCHIVE_NAME" SHA256SUMS --target "$GITHUB_SHA" --title "$title" --notes "$RELEASE_NOTES" "${release_flags[@]}"

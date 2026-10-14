@@ -1,5 +1,21 @@
 # Eagle
 
+## Soda build symbols
+
+Fresh CI builds package Wine debug companions in a separate
+`<component>-symbols.tar.xz` archive. The normal runner keeps debug links and
+`share/soda/symbols.json`, which records image hashes, companion hashes and
+debug-link CRCs. Core Wine launcher, server and ntdll DWARF companions are required.
+Symbol-only companions and unavailable optional images are recorded separately.
+
+Use the archive for the exact runner component. Its directory layout overlays
+the runner and includes the same source/build inventories. Extract it into the
+runner's parent directory before resolving captured addresses. The build helper
+`.github/soda-symbols.py RUNNER SYMBOLS --tools TOOLS --verify` checks the bundle
+against its runner before packaging. Recovered older prebuilt runners may lack
+symbols that were already discarded. Symbol archives do not certify target
+architecture execution or complete source/type/inline coverage.
+
 Soda 11.0-26 Experimental includes the debugger and tracing commands on Linux
 x86_64. It supports x86 and x64 targets. Bottles keeps its existing analyzer.
 The native analyzer replacement is still in development and is not included

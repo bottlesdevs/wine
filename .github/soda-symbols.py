@@ -1,0 +1,207 @@
+import argparse
+import json
+import os
+from pathlib import Path, PurePosixPath
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import zlib
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'eagle'))
+from provenance import digest
+
+
+def relative_path(value):
+    path = PurePosixPath(value)
+    if not value or path.is_absolute() or '..' in path.parts or str(path) != value:
+        raise ValueError('invalid symbol bundle path')
+    return Path(value)
+
+
+def regular(path):
+    if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode):
+        raise ValueError('symbol input must be a regular file: ' + str(path))
+
+
+def crc32(path):
+    regular(path)
+    value = 0
+    with path.open('rb') as file:
+        for block in iter(lambda: file.read(1024 * 1024), b''):
+            value = zlib.crc32(block, value)
+    return value
+
+
+def inspect(path, tools, debug_only=False):
+    regular(path)
+    with path.open('rb') as file:
+        magic = file.read(4)
+    kind = 'elf' if magic == b'\x7fELF' else 'pe' if magic[:2] == b'MZ' else None
+    if kind is None:
+        return None
+    arguments = ['--debug'] if kind == 'pe' and debug_only else []
+    value = subprocess.check_output([str(tools / ('eagle-' + kind)), *arguments, str(path)], text=True, timeout=20)
+    return json.loads(value)
+
+
+def write_manifest(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('x') as file:
+        json.dump(value, file, sort_keys=True, indent=2)
+        file.write('\n')
+    path.chmod(0o644)
+
+
+def stage(runner, destination, tools, name, required=(), objcopy='objcopy'):
+    runner = Path(runner).resolve(strict=True)
+    destination = Path(destination).absolute()
+    if destination.exists() or destination.resolve() != destination or destination.resolve() == runner or runner in destination.resolve().parents:
+        raise ValueError('symbol destination must be new and outside the runner')
+    if runner in destination.parents or destination.resolve() in runner.parents:
+        raise ValueError('symbol destination overlaps the runner')
+    metadata_path = runner / 'share/soda/symbols.json'
+    for parent in (runner / 'share', runner / 'share/soda', metadata_path):
+        if parent.is_symlink():
+            raise ValueError('symbol metadata must not use symlinks')
+    for parent in (runner / 'share', runner / 'share/soda'):
+        if parent.exists() and not parent.is_dir():
+            raise ValueError('symbol metadata parent must be a directory')
+    if metadata_path.exists():
+        raise ValueError('runner symbol manifest already exists')
+    records, plans = {}, []
+    for directory, names, files in os.walk(runner, followlinks=False):
+        for filename in sorted(files):
+            image = Path(directory) / filename
+            if image.is_symlink():
+                continue
+            regular(image)
+            if image.suffix in ('.debug', '.dwo', '.dwp', '.pdb'):
+                continue
+            metadata = inspect(image, tools)
+            if metadata is None:
+                continue
+            relative = str(image.relative_to(runner))
+            image_sha256 = digest(image)
+            record = {'status': 'unavailable', 'input_sha256': image_sha256, 'image_sha256': image_sha256,
+                      'identity': {key: metadata[key] for key in ('format', 'machine', 'timestamp', 'image_base', 'build_id', 'codeview') if key in metadata}}
+            records[relative] = record
+            if metadata.get('debug_info'):
+                record['coverage'] = 'dwarf'
+                debug_relative = image.parent.relative_to(runner) / '.debug' / (image.name + '.debug')
+                plans.append((image, debug_relative, None, metadata))
+            elif metadata.get('debuglink'):
+                link = metadata['debuglink']
+                if Path(link).name != link or link in ('.', '..') or '\\' in link:
+                    raise ValueError('invalid image debuglink name: ' + relative)
+                candidates = [image.parent / link, image.parent / '.debug' / link]
+                found = [path for path in candidates if path.exists() or path.is_symlink()]
+                if len(found) != 1:
+                    raise ValueError('missing or ambiguous debug companion: ' + relative)
+                debug = found[0]
+                if debug.resolve() != debug or runner not in debug.parents or crc32(debug) != metadata['debuglink_crc']:
+                    raise ValueError('debug companion does not match image: ' + relative)
+                record['coverage'] = 'dwarf' if inspect(debug, tools, debug_only=True).get('debug_info') else 'symbol-only'
+                plans.append((image, debug.relative_to(runner), debug, metadata))
+    planned = {str(image.relative_to(runner)) for image, _, _, _ in plans if records[str(image.relative_to(runner))].get('coverage') == 'dwarf'}
+    for value in required:
+        relative_path(value)
+        if value not in planned:
+            raise ValueError('required image has no retained symbols: ' + value)
+    if not plans:
+        raise ValueError('runner has no debug symbols to retain')
+    destination.mkdir(parents=True)
+    for image, debug_relative, existing, before in plans:
+        relative = str(image.relative_to(runner))
+        record = records[relative]
+        if digest(image) != record['image_sha256']:
+            raise ValueError('runner changed during symbol staging: ' + relative)
+        debug = destination / debug_relative
+        debug.parent.mkdir(parents=True, exist_ok=True)
+        if existing is not None:
+            shutil.copyfile(existing, debug)
+            if crc32(debug) != before['debuglink_crc']:
+                raise ValueError('debug companion changed during symbol staging: ' + relative)
+        else:
+            subprocess.run([objcopy, '--preserve-dates', '--only-keep-debug', str(image), str(debug)], check=True, capture_output=True, timeout=60)
+            with tempfile.NamedTemporaryFile(dir=image.parent, prefix='.soda-symbols-', delete=False) as file:
+                temporary = Path(file.name)
+            try:
+                subprocess.run([objcopy, '--preserve-dates', '--remove-section=.gnu_debuglink', '--strip-unneeded',
+                                '--add-gnu-debuglink=' + str(debug), str(image), str(temporary)],
+                               check=True, capture_output=True, timeout=60)
+                after = inspect(temporary, tools)
+                for key in ('machine', 'timestamp', 'image_base', 'build_id', 'codeview', 'entry', 'entry_rva'):
+                    if after.get(key) != before.get(key):
+                        raise ValueError('stripping changed image ' + key + ': ' + relative)
+                if after.get('debug_info') or after.get('debuglink') != debug.name or after.get('debuglink_crc') != crc32(debug):
+                    raise ValueError('stripped image debuglink does not match: ' + relative)
+                temporary.chmod(stat.S_IMODE(image.stat().st_mode))
+                temporary.replace(image)
+            finally:
+                temporary.unlink(missing_ok=True)
+        debug.chmod(0o644)
+        record.update(status='retained', image_sha256=digest(image), debug_file=str(debug_relative),
+                      debug_sha256=digest(debug), debuglink_crc32=crc32(debug))
+    manifest = {'schema': 1, 'component': name, 'images': records,
+                'retained': len(plans), 'unavailable': len(records) - len(plans)}
+    write_manifest(destination / 'share/soda/symbols.json', manifest)
+    write_manifest(metadata_path, manifest)
+    for _, _, existing, _ in plans:
+        if existing is not None:
+            existing.unlink()
+    verify(runner, destination, tools)
+    return manifest
+
+
+def verify(runner, bundle, tools):
+    runner, bundle = Path(runner).resolve(strict=True), Path(bundle).resolve(strict=True)
+    manifest_path = bundle / 'share/soda/symbols.json'
+    for path in (manifest_path, runner / 'share/soda/symbols.json'):
+        if path.resolve() != path:
+            raise ValueError('symbol manifest must not use symlinks')
+    regular(manifest_path)
+    manifest = json.loads(manifest_path.read_text())
+    regular(runner / 'share/soda/symbols.json')
+    if (runner / 'share/soda/symbols.json').read_bytes() != manifest_path.read_bytes():
+        raise ValueError('runner and symbol bundle manifests differ')
+    if type(manifest.get('schema')) is not int or manifest['schema'] != 1:
+        raise ValueError('invalid symbol manifest schema')
+    for relative, record in manifest['images'].items():
+        image = runner / relative_path(relative)
+        regular(image)
+        if image.resolve() != image or digest(image) != record['image_sha256']:
+            raise ValueError('symbol bundle does not match runner image: ' + relative)
+        if record['status'] != 'retained':
+            continue
+        debug = bundle / relative_path(record['debug_file'])
+        regular(debug)
+        if debug.resolve() != debug or digest(debug) != record['debug_sha256'] or crc32(debug) != record['debuglink_crc32']:
+            raise ValueError('symbol bundle companion does not match: ' + relative)
+        metadata = inspect(image, tools)
+        if metadata.get('debuglink') != debug.name or metadata.get('debuglink_crc') != record['debuglink_crc32']:
+            raise ValueError('runner debuglink does not match symbol bundle: ' + relative)
+    return manifest
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('runner', type=Path)
+    parser.add_argument('symbols', type=Path)
+    parser.add_argument('--tools', required=True, type=Path)
+    parser.add_argument('--name', default='soda')
+    parser.add_argument('--require', action='append', default=[])
+    parser.add_argument('--objcopy', default='objcopy')
+    parser.add_argument('--verify', action='store_true')
+    options = parser.parse_args()
+    try:
+        manifest = verify(options.runner, options.symbols, options.tools) if options.verify else stage(
+            options.runner, options.symbols, options.tools, options.name, options.require, options.objcopy)
+        print(json.dumps({'component': manifest['component'], 'retained': manifest['retained'], 'unavailable': manifest['unavailable']}))
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        parser.exit(1, str(error) + '\n')
+
+
+if __name__ == '__main__':
+    main()
