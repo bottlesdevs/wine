@@ -86,6 +86,12 @@ group. Extraction workspaces are removed on these paths. Processes that leave
 the helper group, SIGKILL and uninterruptible filesystem operations are outside
 these cleanup guarantees. Complete runtime packaging remains open.
 The driver requires the native rule scanner and its data alongside these helpers.
+When the driver, helpers, configuration, rules and Intel database are present,
+`eagle analyze` and the stdio `analyze` method use the native driver. The Python
+adapter forwards progress, returns the report and sends interruption requests
+to the driver on cancellation. Incomplete packages do not advertise analysis.
+This adapter does not certify full feature parity or enable the analyzer in
+the debugger-only runner package.
 
 The debugger regression suite is `tests/integration.py`. Session/export
 controls are in `tests/test_session_contract.py`; automatic per-launch logging

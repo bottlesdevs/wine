@@ -10,13 +10,13 @@ from errors import Cancelled
 MAX_MESSAGE = 1024 * 1024
 
 def capabilities():
-    native = Path(__file__).resolve().parent / 'native'
-    analyzer = all((native / name).is_file() for name in ('eagle-analysis', 'eagle-intel', 'eagle-yara'))
+    from analysis import available
+    analyzer = available()
     return {
         "schema": 1,
         "debug_architectures": ["x86", "x86_64"],
-        "static_analyzer": "Bottles Eagle compatibility provider" if analyzer else None,
-        "native_static_analyzer": False,
+        "static_analyzer": "Soda Eagle native analysis" if analyzer else None,
+        "native_static_analyzer": analyzer,
         "native_components": (["PE parser and metadata/dependency interpretation", "YARA scanner and report interpretation", "Intel lookup and plans", "suggestion merge", "recommendations", "ASAR extraction", "directory discovery"] if analyzer else ["PE identities"]) + ["ELF identities", "Win32 debug engine"],
         "analysis": {"available": analyzer, "asynchronous": analyzer, "cancellation": analyzer, "maximum_concurrent": 2 if analyzer else 0},
         "debug": ["launch", "attach", "process-tree", "exceptions", "registers", "all-thread-stacks", "minidump", "software-breakpoint", "source-line-breakpoint", "module-load-stop", "register-condition", "hit-count-condition", "stack-logpoint", "hardware-watchpoint", "instruction-step", "pause", "resume", "detach", "memory-read", "PE-disassembly", "DAP"],
@@ -85,19 +85,11 @@ def serve():
         def run():
             try:
                 if method == 'analyze':
-                    from engine.runtime import analyze
+                    from analysis import analyze
                     result = analyze(params["path"], progress, params.get("scan_limit", 50), cancelled)
                 elif method == 'security-scan':
-                    from pathlib import Path
-                    from engine.runtime import cancellation, run_tool
-                    root = Path(__file__).resolve().parent
-                    token = cancellation.set(cancelled)
-                    try:
-                        completed = run_tool([str(root / 'native/eagle-yara'), str(root / 'engine/eagle.yar'), str(Path(params['path']).resolve(strict=True)), '30', '--security'], capture_output=True, text=True, timeout=35)
-                        if completed.returncode: raise ValueError(completed.stderr.strip())
-                        result = json.loads(completed.stdout)['matches']
-                    finally:
-                        cancellation.reset(token)
+                    from analysis import scan
+                    result = scan(params['path'], cancelled)
                 else:
                     from session import capture
                     result = capture(params['wine'], params['prefix'], params['session'],

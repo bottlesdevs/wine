@@ -2,15 +2,18 @@ import argparse
 import json
 import sys
 import subprocess
+import signal
 from pathlib import Path
 
 from session import capture, compare, export, identity, send_command, summary
+from errors import Cancelled
 
 def main():
     parser = argparse.ArgumentParser(prog="eagle")
     commands = parser.add_subparsers(dest="command", required=True)
     native = Path(__file__).resolve().parent / 'native'
-    if (native / 'eagle-analysis').is_file():
+    from analysis import available
+    if available():
         analysis = commands.add_parser("analyze")
         analysis.add_argument("target")
         analysis.add_argument("--scan-limit", type=int, default=50)
@@ -63,15 +66,18 @@ def main():
             print(json.dumps({'status': True, 'data': result}, indent=2))
             sys.exit(result['exit_code'] & 255)
         elif args.command == 'security-scan':
-            root = Path(__file__).resolve().parent
-            completed = subprocess.run([str(root / 'native/eagle-yara'), str(root / 'engine/eagle.yar'), str(Path(args.target).resolve(strict=True)), '30', '--security'], capture_output=True, text=True, timeout=35)
-            if completed.returncode:
-                raise ValueError(completed.stderr.strip())
-            result = json.loads(completed.stdout)['matches']
+            from analysis import scan
+            result = scan(args.target)
         elif args.command == "analyze":
-            from engine.runtime import analyze
+            from analysis import analyze
             progress = (lambda text: print(json.dumps({"event": "step", "data": text}), flush=True)) if args.progress else None
-            result = analyze(args.target, progress, args.scan_limit)
+            def interrupt(signum, frame):
+                raise Cancelled('analysis cancelled')
+            handlers = {value: signal.signal(value, interrupt) for value in (signal.SIGINT, signal.SIGTERM)}
+            try:
+                result = analyze(args.target, progress, args.scan_limit)
+            finally:
+                for value, handler in handlers.items(): signal.signal(value, handler)
         elif args.command in ("run", "attach"):
             if args.timeout <= 0:
                 raise ValueError("timeout must be positive")
@@ -100,6 +106,9 @@ def main():
             from dap import serve
             serve(); return
         print(json.dumps({"status": True, "data": result}, indent=None if args.command == "analyze" and args.progress else 2))
+    except Cancelled as error:
+        print(json.dumps({'status': False, 'cancelled': True, 'error': str(error)}), file=sys.stderr)
+        sys.exit(130)
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(json.dumps({"status": False, "error": str(error)}), file=sys.stderr)
         sys.exit(1)
