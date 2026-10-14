@@ -231,6 +231,20 @@ def send_command(root, command):
             raise ValueError(result["error"])
         return result
 
+def stop_collector(process):
+    if process.poll() is not None:
+        return
+    try:
+        process.stdin.write(b'detach\n'); process.stdin.flush()
+        process.wait(timeout=10)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
 def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive=False, timeout=120, profile="crash", observer=None, breakpoint=None, architecture="x86_64", on_hresult=None, trigger_action="snapshot", cancellation=None, target_cwd=None, control_enabled=True):
     if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= 86400:
         raise ValueError('timeout must be finite and between zero and one day')
@@ -295,20 +309,28 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
     (root / 'events.jsonl').touch(mode=0o600, exist_ok=False)
     control = socket.socket(socket.AF_UNIX)
     selector = selectors.DefaultSelector()
+    process = None
     try:
         if control_enabled:
             control.bind(str(root / "control.sock")); os.chmod(root / "control.sock", 0o600); control.listen(4)
         process = subprocess.Popen([str(wine), str(collector), mode, argument, "interactive" if manifest["interactive"] else "auto"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root / "dumps", env=env)
+        for stream in (process.stdout, process.stderr):
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, "stdout" if stream is process.stdout else "stderr")
+        if control_enabled:
+            selector.register(control, selectors.EVENT_READ, "control")
     except BaseException as error:
-        selector.close(); control.close(); (root / 'control.sock').unlink(missing_ok=True)
-        manifest.update(ended=time.time(), setup_error=str(error))
-        (root / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        try:
+            if process is not None:
+                stop_collector(process)
+        finally:
+            selector.close(); control.close(); (root / 'control.sock').unlink(missing_ok=True)
+            if process is not None:
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    stream.close()
+            manifest.update(ended=time.time(), setup_error=str(error))
+            (root / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         raise
-    for stream in (process.stdout, process.stderr):
-        os.set_blocking(stream.fileno(), False)
-        selector.register(stream, selectors.EVENT_READ, "stdout" if stream is process.stdout else "stderr")
-    if control_enabled:
-        selector.register(control, selectors.EVENT_READ, "control")
     buffers = {"stdout": b"", "stderr": b""}
     deadline = time.monotonic() + timeout
     drain_deadline = None
@@ -342,7 +364,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
             raise ValueError('invalid debugger command')
         process.stdin.write(command.encode() + b"\n"); process.stdin.flush()
     try:
-        with (root / "events.jsonl").open("x", encoding="utf-8") as output:
+        with (root / "events.jsonl").open("a", encoding="utf-8") as output:
             while process.poll() is None or any(key.data != "control" for key in selector.get_map().values()):
                 if process.poll() is not None:
                     if drain_deadline is None:
@@ -512,14 +534,12 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
             manifest["collector_exit"] = process.wait(timeout=10)
             manifest["completed"] = complete_event and manifest["collector_exit"] == 0 and not manifest.get("timeout") and not manifest.get('cancelled')
     finally:
-        if process.poll() is None:
-            try:
-                native("detach"); process.wait(timeout=10)
-            except (OSError, subprocess.TimeoutExpired):
-                process.terminate(); process.wait(timeout=10)
-        selector.close(); control.close(); (root / "control.sock").unlink(missing_ok=True)
-        for stream in (process.stdin, process.stdout, process.stderr):
-            stream.close()
-        manifest["ended"] = time.time()
-        (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        try:
+            stop_collector(process)
+        finally:
+            selector.close(); control.close(); (root / "control.sock").unlink(missing_ok=True)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
+            manifest["ended"] = time.time()
+            (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return summary(root)
