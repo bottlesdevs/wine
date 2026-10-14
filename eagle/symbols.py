@@ -66,15 +66,20 @@ def disassemble(image, rva, size=64):
 def resolve(image, rvas):
     if not rvas:
         return []
+    if len(rvas) > 256:
+        raise ValueError("symbol query exceeds frame limit")
     image = Path(image).resolve(strict=True)
     metadata = image_metadata(image)
     base = int(metadata['image_base'], 0)
     machine = metadata['machine']
+    if metadata.get('format') != 'ELF' and machine not in (0x14c, 0x8664):
+        tool = host_tool('llvm-symbolizer')
+        if not tool or not (metadata.get('debug_info') or metadata.get('debuglink')):
+            return []
+        return resolve_llvm(image, rvas, tool, 'llvm-exact-image')
     tool = shutil.which('addr2line' if metadata.get('format') == 'ELF' else "x86_64-w64-mingw32-addr2line" if machine == 0x8664 else "i686-w64-mingw32-addr2line") or shutil.which("addr2line")
     if not tool:
         return []
-    if len(rvas) > 256:
-        raise ValueError("symbol query exceeds frame limit")
     addresses = [hex(base + int(rva, 0)) for rva in rvas]
     result = subprocess.run([tool, "-f", "-C", "-e", str(image), *addresses], capture_output=True, text=True, timeout=10)
     if result.returncode:
@@ -107,6 +112,30 @@ def host_tool(name):
 def pdb_resolver():
     return host_tool('llvm-symbolizer')
 
+def resolve_llvm(image, rvas, tool, origin):
+    result = subprocess.run([tool, '--obj=' + str(image), '--relative-address',
+                             '--output-style=JSON', '--no-inlines', '--no-debuginfod', *rvas],
+                            capture_output=True, text=True, timeout=10,
+                            env={key: value for key, value in os.environ.items() if key != 'LLVM_SYMBOLIZER_OPTS'})
+    try:
+        values = json.loads(result.stdout)
+        if result.returncode or not isinstance(values, list) or len(values) != len(rvas):
+            raise ValueError('invalid resolver response')
+        output = []
+        for address, value in zip(rvas, values):
+            if int(value['Address'], 0) != int(address, 0) or 'Error' in value:
+                raise ValueError('invalid resolver address')
+            frame, = value['Symbol']
+            name = frame['FunctionName']
+            filename, line = frame['FileName'], frame['Line']
+            item = {'symbol': None if name in ('', '??') else name, 'source': None, 'resolver': origin}
+            if filename and filename != '??' and type(line) is int and line > 0:
+                item.update(file=filename, line=line, source=filename + ':' + str(line))
+            output.append(item)
+        return output
+    except (ValueError, KeyError, TypeError) as error:
+        raise ValueError('source resolver failed') from error
+
 def resolve_pdb(image, pdb, names, rvas):
     if not rvas:
         return []
@@ -123,28 +152,10 @@ def resolve_pdb(image, pdb, names, rvas):
         selected.symlink_to(Path(image).resolve(strict=True))
         for name in set(names):
             (root / name).symlink_to(Path(pdb).resolve(strict=True))
-        result = subprocess.run([tool, '--obj=' + str(selected), '--relative-address',
-                                 '--output-style=JSON', '--no-inlines', '--no-debuginfod', *rvas],
-                                capture_output=True, text=True, timeout=10,
-                                env={key: value for key, value in os.environ.items() if key != 'LLVM_SYMBOLIZER_OPTS'})
-    try:
-        values = json.loads(result.stdout)
-        if result.returncode or not isinstance(values, list) or len(values) != len(rvas):
-            raise ValueError('invalid resolver response')
-        output = []
-        for address, value in zip(rvas, values):
-            if int(value['Address'], 0) != int(address, 0) or 'Error' in value:
-                raise ValueError('invalid resolver address')
-            frame, = value['Symbol']
-            name = frame['FunctionName']
-            filename, line = frame['FileName'], frame['Line']
-            item = {'symbol': None if name in ('', '??') else name, 'source': None, 'resolver': 'llvm-matched-pdb'}
-            if filename and filename != '??' and type(line) is int and line > 0:
-                item.update(file=filename, line=line, source=filename + ':' + str(line))
-            output.append(item)
-        return output
-    except (ValueError, KeyError, TypeError) as error:
-        raise ValueError('PDB source resolver failed') from error
+        try:
+            return resolve_llvm(selected, rvas, tool, 'llvm-matched-pdb')
+        except ValueError as error:
+            raise ValueError('PDB source resolver failed') from error
 
 def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None):
     if type(artifacts) is not bool:

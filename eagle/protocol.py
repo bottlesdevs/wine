@@ -14,7 +14,7 @@ def capabilities():
     analyzer = available()
     return {
         "schema": 1,
-        "symbol_queries": {"maximum": 256, "addresses": "RVA", "resolver": "requires host binutils", "pdb": "GUID/age verification; source lookup requires host llvm-symbolizer"},
+        "symbol_queries": {"maximum": 256, "addresses": "RVA", "resolver": "requires host binutils", "pdb": "GUID/age verification; source lookup requires host llvm-symbolizer", "arm_pe": "DWARF source lookup requires host llvm-symbolizer"},
         "split_dwarf": {"inspection": "requires host llvm-dwarfdump", "maximum_units": 256, "maximum_files": 256, "scope": "unit identity only"},
         "debug_architectures": ["x86", "x86_64"],
         "static_analyzer": "Soda Eagle native analysis" if analyzer else None,

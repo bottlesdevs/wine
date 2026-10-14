@@ -94,7 +94,10 @@ inside the image. Each result reports `source-resolved`, `symbol-only` or
 `unresolved`; a missing resolver returns an error. Omitting RVAs keeps the
 existing identity response.
 
-DWARF/symbol-table lookup uses host binutils. With `--pdb ./module.pdb`, source
+DWARF/symbol-table lookup uses host binutils for ELF and x86/x64 PE images.
+ARM64 PE DWARF queries use host `llvm-symbolizer`, including matching GNU
+debug-link companions. Missing tools remain an explicit lookup failure.
+With `--pdb ./module.pdb`, source
 lookup uses a host `llvm-symbolizer` (including version-suffixed executables).
 The selected PDB must match the PE GUID and age. Temporary links select that
 file even when it was moved or another PDB sits beside the image; the files

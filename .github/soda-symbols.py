@@ -112,6 +112,7 @@ def stage(runner, destination, tools, name, required=(), objcopy='objcopy'):
     if not plans:
         raise ValueError('runner has no debug symbols to retain')
     destination.mkdir(parents=True)
+    llvm_objcopy = None
     for image, debug_relative, existing, before in plans:
         relative = str(image.relative_to(runner))
         record = records[relative]
@@ -124,11 +125,15 @@ def stage(runner, destination, tools, name, required=(), objcopy='objcopy'):
             if crc32(debug) != before['debuglink_crc']:
                 raise ValueError('debug companion changed during symbol staging: ' + relative)
         else:
-            subprocess.run([objcopy, '--preserve-dates', '--only-keep-debug', str(image), str(debug)], check=True, capture_output=True, timeout=60)
+            if llvm_objcopy is None:
+                version = subprocess.check_output([objcopy, '--version'], text=True, timeout=10)
+                llvm_objcopy = version.splitlines()[0].lower().startswith('llvm')
+            flags = [] if llvm_objcopy and before.get('format') != 'ELF' else ['--preserve-dates']
+            subprocess.run([objcopy, *flags, '--only-keep-debug', str(image), str(debug)], check=True, capture_output=True, timeout=60)
             with tempfile.NamedTemporaryFile(dir=image.parent, prefix='.soda-symbols-', delete=False) as file:
                 temporary = Path(file.name)
             try:
-                subprocess.run([objcopy, '--preserve-dates', '--remove-section=.gnu_debuglink', '--strip-unneeded',
+                subprocess.run([objcopy, *flags, '--remove-section=.gnu_debuglink', '--strip-unneeded',
                                 '--add-gnu-debuglink=' + str(debug), str(image), str(temporary)],
                                check=True, capture_output=True, timeout=60)
                 after = inspect(temporary, tools)
