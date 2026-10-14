@@ -11,10 +11,9 @@ def host_path(value, prefix):
     if value.startswith("/"):
         return Path(value)
     if len(value) > 2 and value[1] == ":":
-        if value[0].lower() == "z":
+        root = Path(prefix) / "dosdevices" / value[:2].lower()
+        if value[0].lower() == "z" and not root.exists():
             root = Path("/")
-        else:
-            root = Path(prefix) / "dosdevices" / value[:2].lower()
         relative = value[3:].replace("\\", "/")
         path = root / relative
         if path.exists():

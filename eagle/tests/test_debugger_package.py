@@ -15,7 +15,7 @@ PACKAGE = Path(os.environ['EAGLE_PACKAGE'])
 sys.path.insert(0, str(PACKAGE / 'lib/eagle'))
 from protocol import read_message, write_message
 from symbols import host_path
-from session import capture, mapped_image
+from session import capture, mapped_image, windows_path
 
 
 class DebuggerPackageTests(unittest.TestCase):
@@ -70,6 +70,9 @@ class DebuggerPackageTests(unittest.TestCase):
             image.write_bytes(b'fixture')
             (prefix / 'dosdevices').mkdir()
             (prefix / 'dosdevices/c:').symlink_to(prefix / 'drive_c', target_is_directory=True)
+            self.assertEqual(windows_path(image, prefix), 'C:\\Program Files\\Example\\vfs\\Shared\\Image.DLL')
+            self.assertEqual(windows_path(prefix / 'drive_c', prefix), 'C:\\')
+            self.assertEqual(windows_path(image), 'Z:' + str(image).replace('/', '\\'))
             for value in ('C:\\Program Files\\Example\\vfs\\Shared\\Image.DLL', '\\\\?\\C:\\program files\\example\\VFS\\shared\\image.dll'):
                 self.assertEqual(host_path(value, prefix).resolve(), image.resolve())
             self.assertEqual(host_path(str(image), prefix), image)
@@ -77,6 +80,33 @@ class DebuggerPackageTests(unittest.TestCase):
             image.with_name('IMAGE.dll').write_bytes(b'other image')
             self.assertFalse(host_path('C:\\program files\\example\\VFS\\shared\\image.dll', prefix).is_file())
             self.assertEqual(host_path('C:\\Program Files\\Example\\vfs\\Shared\\Image.DLL', prefix).resolve(), image.resolve())
+
+    def test_launch_paths_use_the_most_specific_drive(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['EAGLE_TEST_ROOT']) as directory:
+            prefix = Path(directory)
+            image = prefix / 'drive_c/Shared/Image.dll'
+            image.parent.mkdir(parents=True)
+            image.touch()
+            devices = prefix / 'dosdevices'
+            devices.mkdir()
+            (devices / 'c:').symlink_to(prefix / 'drive_c', target_is_directory=True)
+            for drive in ('d:', 'x:'):
+                (devices / drive).symlink_to(image.parent, target_is_directory=True)
+            (devices / 'e:').symlink_to(prefix / 'missing')
+            (devices / 'f:').symlink_to('f:')
+            self.assertEqual(windows_path(image, prefix), 'D:\\Image.dll')
+            self.assertEqual(host_path(windows_path(image, prefix), prefix).resolve(), image)
+
+    def test_configured_z_drive_is_used_in_both_directions(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['EAGLE_TEST_ROOT']) as directory:
+            prefix = Path(directory)
+            image = prefix / 'mapped/Example/Image.DLL'
+            image.parent.mkdir(parents=True)
+            image.touch()
+            (prefix / 'dosdevices').mkdir()
+            (prefix / 'dosdevices/z:').symlink_to(prefix / 'mapped', target_is_directory=True)
+            self.assertEqual(windows_path(image, prefix), 'Z:\\Example\\Image.DLL')
+            self.assertEqual(host_path('Z:\\example\\image.dll', prefix).resolve(), image)
 
     def test_provider_dlls_leave_executable_tls_unchanged(self):
         for architecture in ('i386', 'x86_64'):

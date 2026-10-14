@@ -12,8 +12,21 @@ import math
 
 SCHEMA = 1
 
-def windows_path(path):
-    return "Z:" + str(Path(path).resolve()).replace("/", "\\")
+def windows_path(path, prefix=None):
+    path = Path(path).resolve()
+    if prefix is not None:
+        matches = []
+        for drive in 'abcdefghijklmnopqrstuvwxyz':
+            try:
+                root = (Path(prefix) / 'dosdevices' / (drive + ':')).resolve(strict=True)
+                relative = path.relative_to(root)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            matches.append((-len(root.parts), drive, relative.parts))
+        if matches:
+            _, drive, relative = min(matches)
+            return drive.upper() + ':\\' + '\\'.join(relative)
+    return 'Z:' + str(path).replace('/', '\\')
 
 def unix_modules(pid):
     if not isinstance(pid, int) or pid <= 0:
@@ -224,14 +237,14 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
         env['EAGLE_TRACE_EXCLUDE_WINE_CONHOST'] = '1'
         env['EAGLE_TRACE_DETACH_WINE_SERVICES'] = '1'
     if target:
-        env["EAGLE_TARGET_CWD"] = windows_path(Path(target_cwd).resolve(strict=True) if target_cwd else Path(target).resolve().parent)
+        env["EAGLE_TARGET_CWD"] = windows_path(Path(target_cwd).resolve(strict=True) if target_cwd else Path(target).resolve().parent, prefix)
     if on_hresult:
         if profile not in ('winrt', 'dwrite', 'com') or not re.fullmatch(r'0x[0-9a-fA-F]{8}', on_hresult):
             raise ValueError('HRESULT trigger requires a provider profile and an eight-digit hexadecimal value')
         if trigger_action not in ('snapshot', 'dump', 'stop'):
             raise ValueError('unsupported trigger action')
         env.update(EAGLE_TRIGGER_HRESULT=on_hresult.lower(), EAGLE_TRIGGER_ACTION=trigger_action)
-    mode, argument = ("attach", str(pid)) if pid else ("run", subprocess.list2cmdline([windows_path(target), *arguments]))
+    mode, argument = ("attach", str(pid)) if pid else ("run", subprocess.list2cmdline([windows_path(target, prefix), *arguments]))
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     (root / "dumps").mkdir(mode=0o700)
     manifest = {"schema": SCHEMA, "wine": str(wine), "prefix": str(prefix), "target": str(target) if target else None, "target_identity": ident, "arguments": list(arguments), "profile": profile, "interactive": interactive or bool(breakpoint), "started": time.time(), "completed": False, "dropped_events": 0, "modules": {}}

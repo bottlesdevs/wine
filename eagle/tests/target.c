@@ -29,6 +29,21 @@ static DWORD WINAPI eagle_worker(void *argument)
 
 int main(int argc, char **argv)
 {
+    if (argc > 2 && !strcmp(argv[1], "paths"))
+    {
+        char module[MAX_PATH], directory[MAX_PATH];
+        DWORD length;
+        FILE *file;
+        int result;
+        length = GetModuleFileNameA(NULL, module, sizeof(module));
+        if (!length || length >= sizeof(module)) return 17;
+        length = GetCurrentDirectoryA(sizeof(directory), directory);
+        if (!length || length >= sizeof(directory)) return 18;
+        if (!(file = fopen(argv[2], "w"))) return 19;
+        result = fprintf(file, "%s\n%s\n", module, directory);
+        if (fclose(file) || result < 0) return 20;
+        return 0;
+    }
     if (argc > 2 && !strcmp(argv[1], "pidalive"))
     {
         HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, strtoul(argv[2], NULL, 10));

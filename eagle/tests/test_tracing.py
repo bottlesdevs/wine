@@ -13,6 +13,22 @@ ROOT = Path(os.environ['EAGLE_TRACE_TEST_ROOT'])
 
 
 class Tracing(unittest.TestCase):
+    def test_prefix_launch_preserves_executable_and_working_directory(self):
+        prefix = (ROOT / 'prefix').resolve()
+        directory = prefix / 'drive_c/Mapped Programs'
+        directory.mkdir(exist_ok=True)
+        for bits in ('32', '64'):
+            with self.subTest(bits=bits):
+                target = directory / ('target' + bits + '.exe')
+                shutil.copy2(ROOT / target.name, target)
+                output = prefix / 'drive_c' / ('mapped-paths-' + bits + '.txt')
+                output.unlink(missing_ok=True)
+                result = subprocess.run([str(CANDIDATE / 'bin/eagle'), 'trace', '--wine', str(CANDIDATE / 'bin/wine'), '--prefix', str(prefix), '--logs', str(prefix / 'logs/runs'), '--cwd', str(directory), '--', str(target), 'paths', 'C:\\' + output.name], capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stderr[-4000:])
+                report = json.loads(Path(json.loads(result.stdout)['data']['log']).read_text())
+                self.assertTrue(report['manifest']['completed'])
+                self.assertEqual(output.read_text().splitlines(), ['C:\\Mapped Programs\\' + target.name, 'C:\\Mapped Programs'])
+
     def test_loaded_builtin_identity_ignores_the_stale_prefix_copy(self):
         prefix = (ROOT / 'prefix').resolve()
         environment = dict(os.environ, WINEPREFIX=str(prefix))
@@ -224,16 +240,21 @@ class Tracing(unittest.TestCase):
 
     def test_system_directory_replacement_keeps_its_children(self):
         prefix = (ROOT / 'prefix').resolve()
+        environment = dict(os.environ, WINEDLLOVERRIDES=os.environ.get('WINEDLLOVERRIDES', '') + ';explorer.exe=n')
         for bits, directory in [('32', 'syswow64'), ('64', 'system32')]:
             target = prefix / 'drive_c/windows' / directory / 'explorer.exe'
             backup = ROOT / ('explorer-' + bits + '.original')
             target.rename(backup)
             try:
                 shutil.copy2(ROOT / ('target' + bits + '.exe'), target)
-                result = subprocess.run([str(CANDIDATE / 'bin/eagle'), 'trace', '--wine', str(CANDIDATE / 'bin/wine'), '--prefix', str(prefix), '--logs', str(prefix / 'logs/runs'), '--', str(target), 'childwait'], capture_output=True, text=True, timeout=30)
+                expected = hashlib.sha256(target.read_bytes()).hexdigest()
+                result = subprocess.run([str(CANDIDATE / 'bin/eagle'), 'trace', '--wine', str(CANDIDATE / 'bin/wine'), '--prefix', str(prefix), '--logs', str(prefix / 'logs/runs'), '--', str(target), 'childwait'], env=environment, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr[-4000:])
                 report = json.loads(Path(json.loads(result.stdout)['data']['log']).read_text())
                 self.assertTrue(report['manifest']['completed'])
+                session = Path(json.loads(result.stdout)['data']['log']).with_suffix('.session')
+                events = [json.loads(line) for line in (session / 'events.jsonl').read_text().splitlines()]
+                self.assertEqual([item['identity']['sha256'] for item in events if item['kind'] == 'process_create'], [expected, expected])
                 self.assertEqual(report['counts']['process_create'], 2)
                 self.assertEqual([item['code'] for item in report['exits']], [0, 7])
                 self.assertNotIn('wine_services_detached', report['counts'])
