@@ -155,14 +155,18 @@ def summary(root):
 
 def fingerprint(event):
     frame = event.get("frame", {}) or {}
-    return (event["kind"], event.get("code"), event.get("first_chance"), Path(event.get("path", "").replace("\\", "/")).name, frame.get("module"), frame.get("rva"))
+    key = (event["kind"], event.get("code"), event.get("first_chance"), Path(event.get("path", "").replace("\\", "/")).name, frame.get("module"), frame.get("rva"))
+    if event["kind"] == "provider":
+        data = {name: value for name, value in event.get("data", {}).items() if name not in ("caller", "object")}
+        return key + (json.dumps(data, sort_keys=True),)
+    return key
 
 def compare(first, second):
     a, left = read_bundle(first)
     b, right = read_bundle(second)
     x = collections.Counter(map(fingerprint, left))
     y = collections.Counter(map(fingerprint, right))
-    same_input = bool(a.get("target_identity")) and all(a.get(key) == b.get(key) for key in ('target_identity', 'arguments', 'profile', 'trigger', 'interactive'))
+    same_input = bool(a.get("target_identity")) and all(a.get(key) == b.get(key) for key in ('target_identity', 'arguments', 'target_cwd', 'profile', 'trigger', 'interactive'))
     return {"matching_inputs": same_input, "verdict": "comparable" if same_input else "inconclusive: inputs or observers differ", "added": [{"fingerprint": list(key), "count": count} for key, count in (y-x).items()], "removed": [{"fingerprint": list(key), "count": count} for key, count in (x-y).items()]}
 
 def redact(value, key=""):
