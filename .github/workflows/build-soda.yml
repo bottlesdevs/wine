@@ -535,7 +535,7 @@ jobs:
             "$runner_dir/bin/wineserver" -w
           done
 
-      - name: verify InkDesktopHost work queue
+      - name: verify InkDesktopHost and value objects
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -548,6 +548,14 @@ jobs:
             -I"$runner_dir/include/wine/windows" -D__WINESRC__ \
             -O2 -Wall -Wextra -Wno-unused-parameter -Werror -lole32 -luuid \
             -o "$RUNNER_TEMP/soda-ink-host32.exe"
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-ink-values-smoke.c" \
+            -I"$runner_dir/include/wine/windows" -D__WINESRC__ \
+            -O2 -Wall -Wextra -Wno-unused-parameter -Werror -lole32 -lruntimeobject -luuid \
+            -o "$RUNNER_TEMP/soda-ink-values64.exe"
+          i686-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-ink-values-smoke.c" \
+            -I"$runner_dir/include/wine/windows" -D__WINESRC__ \
+            -O2 -Wall -Wextra -Wno-unused-parameter -Werror -lole32 -lruntimeobject -luuid \
+            -o "$RUNNER_TEMP/soda-ink-values32.exe"
           export WINEDEBUG=-all
           export WINEPREFIX="$RUNNER_TEMP/soda-ink-host-prefix"
           export WINEARCH=win64
@@ -557,6 +565,9 @@ jobs:
               xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-ink-host$bits.exe" "$apartment" \
                 | tr -d '\r' | tee "$RUNNER_TEMP/soda-ink-host$bits-$apartment.log"
               grep -Fx 'QUEUE_RESULT callbacks=64 destroyed=64 failures=0' "$RUNNER_TEMP/soda-ink-host$bits-$apartment.log"
+              xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-ink-values$bits.exe" "$apartment" \
+                | tr -d '\r' | tee "$RUNNER_TEMP/soda-ink-values$bits-$apartment.log"
+              grep -E '^INK_VALUE_RESULT checks=[1-9][0-9]* failures=0$' "$RUNNER_TEMP/soda-ink-values$bits-$apartment.log"
             done
           done
           "$runner_dir/bin/wineserver" -w
@@ -1281,6 +1292,14 @@ jobs:
             -I"$wine_headers" -D__WINESRC__ \
             -O2 -Wall -Wextra -Wno-unused-parameter -Werror -lole32 -luuid \
             -o "$RUNNER_TEMP/soda-office-winrt/ink32.exe"
+          x86_64-w64-mingw32-gcc .github/soda-ink-values-smoke.c \
+            -I"$wine_headers" -D__WINESRC__ \
+            -O2 -Wall -Wextra -Wno-unused-parameter -Werror -lole32 -lruntimeobject -luuid \
+            -o "$RUNNER_TEMP/soda-office-winrt/ink-values64.exe"
+          i686-w64-mingw32-gcc .github/soda-ink-values-smoke.c \
+            -I"$wine_headers" -D__WINESRC__ \
+            -O2 -Wall -Wextra -Wno-unused-parameter -Werror -lole32 -lruntimeobject -luuid \
+            -o "$RUNNER_TEMP/soda-office-winrt/ink-values32.exe"
           export TZ=America/Denver
           export WINEDEBUG=-all
           "$runner_dir/bin/wine" /tmp/soda-icu/smoke64.exe \
@@ -1302,6 +1321,9 @@ jobs:
               "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/ink$arch.exe" "$apartment" \
                 | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/ink$arch-$apartment.log"
               grep -Fx 'QUEUE_RESULT callbacks=64 destroyed=64 failures=0' "$RUNNER_TEMP/soda-office-winrt/ink$arch-$apartment.log"
+              "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/ink-values$arch.exe" "$apartment" \
+                | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/ink-values$arch-$apartment.log"
+              grep -E '^INK_VALUE_RESULT checks=[1-9][0-9]* failures=0$' "$RUNNER_TEMP/soda-office-winrt/ink-values$arch-$apartment.log"
             done
             "$runner_dir/bin/wine" reg add \
               "HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\ldap$arch.exe" \

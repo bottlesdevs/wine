@@ -1,0 +1,943 @@
+diff --git a/dlls/inkobjcore/Makefile.in b/dlls/inkobjcore/Makefile.in
+--- a/dlls/inkobjcore/Makefile.in
++++ b/dlls/inkobjcore/Makefile.in
+@@ -1,6 +1,10 @@
+ MODULE = inkobjcore.dll
+-IMPORTS = ole32 uuid
++IMPORTS = combase ole32 uuid
+ 
+ SOURCES = \
++	classes.idl \
++	drawing.c \
++	factory.c \
+ 	inkobjcore.rc \
+-	main.c
++	main.c \
++	point.c
+diff --git a/dlls/inkobjcore/classes.idl b/dlls/inkobjcore/classes.idl
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/classes.idl
+@@ -0,0 +1,27 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#pragma makedep register
++#pragma winrt ns_prefix
++
++import "windows.ui.input.inking.idl";
++
++namespace Windows.UI.Input.Inking {
++    runtimeclass InkPoint;
++    runtimeclass InkDrawingAttributes;
++}
+diff --git a/dlls/inkobjcore/drawing.c b/dlls/inkobjcore/drawing.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/drawing.c
+@@ -0,0 +1,231 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <math.h>
++#include "private.h"
++
++struct drawing_attributes
++{
++    IInkDrawingAttributes IInkDrawingAttributes_iface;
++    IInkDrawingAttributes2 IInkDrawingAttributes2_iface;
++    IInkDrawingAttributes4 IInkDrawingAttributes4_iface;
++    LONG ref;
++    IUnknown *marshaler;
++    CRITICAL_SECTION lock;
++    struct Color color;
++    struct Size size;
++    enum PenTipShape pen_tip;
++    struct Matrix3x2 transform;
++    boolean ignore_pressure, fit_to_curve, highlighter, ignore_tilt;
++};
++
++static struct drawing_attributes *impl_from_IInkDrawingAttributes(IInkDrawingAttributes *iface)
++{
++    return CONTAINING_RECORD(iface, struct drawing_attributes, IInkDrawingAttributes_iface);
++}
++
++static HRESULT WINAPI drawing_QueryInterface(IInkDrawingAttributes *iface, REFIID iid, void **out)
++{
++    struct drawing_attributes *impl = impl_from_IInkDrawingAttributes(iface);
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable)
++            || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_IInkDrawingAttributes))
++        *out = &impl->IInkDrawingAttributes_iface;
++    else if (IsEqualGUID(iid, &IID_IInkDrawingAttributes2))
++        *out = &impl->IInkDrawingAttributes2_iface;
++    else if (IsEqualGUID(iid, &IID_IInkDrawingAttributes4))
++        *out = &impl->IInkDrawingAttributes4_iface;
++    else if (IsEqualGUID(iid, &IID_IMarshal))
++        return IUnknown_QueryInterface(impl->marshaler, iid, out);
++    else return E_NOINTERFACE;
++    IInkDrawingAttributes_AddRef(iface);
++    return S_OK;
++}
++
++static ULONG WINAPI drawing_AddRef(IInkDrawingAttributes *iface)
++{
++    return InterlockedIncrement(&impl_from_IInkDrawingAttributes(iface)->ref);
++}
++
++static ULONG WINAPI drawing_Release(IInkDrawingAttributes *iface)
++{
++    struct drawing_attributes *impl = impl_from_IInkDrawingAttributes(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++
++    if (!ref)
++    {
++        if (impl->marshaler) IUnknown_Release(impl->marshaler);
++        DeleteCriticalSection(&impl->lock);
++        free(impl);
++        InterlockedDecrement(&ink_object_count);
++    }
++    return ref;
++}
++
++static HRESULT WINAPI drawing_GetIids(IInkDrawingAttributes *iface, ULONG *count, IID **iids)
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = NULL;
++    if (!(*iids = CoTaskMemAlloc(3 * sizeof(**iids)))) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_IInkDrawingAttributes;
++    (*iids)[1] = IID_IInkDrawingAttributes2;
++    (*iids)[2] = IID_IInkDrawingAttributes4;
++    *count = 3;
++    return S_OK;
++}
++
++static HRESULT WINAPI drawing_GetRuntimeClassName(IInkDrawingAttributes *iface, HSTRING *name)
++{
++    const WCHAR *class = RuntimeClass_Windows_UI_Input_Inking_InkDrawingAttributes;
++    if (!name) return E_POINTER;
++    return WindowsCreateString(class, wcslen(class), name);
++}
++
++static HRESULT WINAPI drawing_GetTrustLevel(IInkDrawingAttributes *iface, TrustLevel *level)
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++#define DRAWING_GET(prefix, interface, name, type, member) \
++static HRESULT WINAPI prefix##_get_##name(interface *iface, type *value) \
++{ \
++    struct drawing_attributes *impl = impl_from_##interface(iface); \
++    if (!value) return E_POINTER; \
++    EnterCriticalSection(&impl->lock); \
++    *value = impl->member; \
++    LeaveCriticalSection(&impl->lock); \
++    return S_OK; \
++}
++
++#define DRAWING_PUT(prefix, interface, name, type, member, expression) \
++static HRESULT WINAPI prefix##_put_##name(interface *iface, type value) \
++{ \
++    struct drawing_attributes *impl = impl_from_##interface(iface); \
++    EnterCriticalSection(&impl->lock); \
++    impl->member = expression; \
++    LeaveCriticalSection(&impl->lock); \
++    return S_OK; \
++}
++
++DRAWING_GET(drawing, IInkDrawingAttributes, Color, struct Color, color)
++DRAWING_PUT(drawing, IInkDrawingAttributes, Color, struct Color, color, value)
++DRAWING_GET(drawing, IInkDrawingAttributes, PenTip, enum PenTipShape, pen_tip)
++DRAWING_GET(drawing, IInkDrawingAttributes, Size, struct Size, size)
++DRAWING_GET(drawing, IInkDrawingAttributes, IgnorePressure, boolean, ignore_pressure)
++DRAWING_PUT(drawing, IInkDrawingAttributes, IgnorePressure, boolean, ignore_pressure, !!value)
++DRAWING_GET(drawing, IInkDrawingAttributes, FitToCurve, boolean, fit_to_curve)
++DRAWING_PUT(drawing, IInkDrawingAttributes, FitToCurve, boolean, fit_to_curve, !!value)
++
++static HRESULT WINAPI drawing_put_PenTip(IInkDrawingAttributes *iface, enum PenTipShape value)
++{
++    struct drawing_attributes *impl = impl_from_IInkDrawingAttributes(iface);
++
++    if (value != PenTipShape_Circle && value != PenTipShape_Rectangle) return E_INVALIDARG;
++    EnterCriticalSection(&impl->lock);
++    impl->pen_tip = value;
++    LeaveCriticalSection(&impl->lock);
++    return S_OK;
++}
++
++static HRESULT WINAPI drawing_put_Size(IInkDrawingAttributes *iface, struct Size value)
++{
++    struct drawing_attributes *impl = impl_from_IInkDrawingAttributes(iface);
++
++    if (!isfinite(value.Width) || !isfinite(value.Height) || value.Width <= 0 || value.Height <= 0)
++        return E_INVALIDARG;
++    EnterCriticalSection(&impl->lock);
++    impl->size = value;
++    LeaveCriticalSection(&impl->lock);
++    return S_OK;
++}
++
++static const IInkDrawingAttributesVtbl drawing_vtbl =
++{
++    drawing_QueryInterface, drawing_AddRef, drawing_Release,
++    drawing_GetIids, drawing_GetRuntimeClassName, drawing_GetTrustLevel,
++    drawing_get_Color, drawing_put_Color, drawing_get_PenTip, drawing_put_PenTip,
++    drawing_get_Size, drawing_put_Size, drawing_get_IgnorePressure, drawing_put_IgnorePressure,
++    drawing_get_FitToCurve, drawing_put_FitToCurve,
++};
++
++DEFINE_IINSPECTABLE(drawing2, IInkDrawingAttributes2, struct drawing_attributes, IInkDrawingAttributes_iface)
++
++DRAWING_GET(drawing2, IInkDrawingAttributes2, PenTipTransform, struct Matrix3x2, transform)
++DRAWING_GET(drawing2, IInkDrawingAttributes2, DrawAsHighlighter, boolean, highlighter)
++DRAWING_PUT(drawing2, IInkDrawingAttributes2, DrawAsHighlighter, boolean, highlighter, !!value)
++
++static HRESULT WINAPI drawing2_put_PenTipTransform(IInkDrawingAttributes2 *iface, struct Matrix3x2 value)
++{
++    struct drawing_attributes *impl = impl_from_IInkDrawingAttributes2(iface);
++
++    if (!isfinite(value.M11) || !isfinite(value.M12) || !isfinite(value.M21) || !isfinite(value.M22)
++            || value.M31 != 0 || value.M32 != 0) return E_INVALIDARG;
++    EnterCriticalSection(&impl->lock);
++    impl->transform = value;
++    LeaveCriticalSection(&impl->lock);
++    return S_OK;
++}
++
++static const IInkDrawingAttributes2Vtbl drawing2_vtbl =
++{
++    drawing2_QueryInterface, drawing2_AddRef, drawing2_Release,
++    drawing2_GetIids, drawing2_GetRuntimeClassName, drawing2_GetTrustLevel,
++    drawing2_get_PenTipTransform, drawing2_put_PenTipTransform,
++    drawing2_get_DrawAsHighlighter, drawing2_put_DrawAsHighlighter,
++};
++
++DEFINE_IINSPECTABLE(drawing4, IInkDrawingAttributes4, struct drawing_attributes, IInkDrawingAttributes_iface)
++
++DRAWING_GET(drawing4, IInkDrawingAttributes4, IgnoreTilt, boolean, ignore_tilt)
++DRAWING_PUT(drawing4, IInkDrawingAttributes4, IgnoreTilt, boolean, ignore_tilt, !!value)
++
++static const IInkDrawingAttributes4Vtbl drawing4_vtbl =
++{
++    drawing4_QueryInterface, drawing4_AddRef, drawing4_Release,
++    drawing4_GetIids, drawing4_GetRuntimeClassName, drawing4_GetTrustLevel,
++    drawing4_get_IgnoreTilt, drawing4_put_IgnoreTilt,
++};
++
++HRESULT ink_drawing_attributes_create(IInkDrawingAttributes **out)
++{
++    struct drawing_attributes *impl;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->IInkDrawingAttributes_iface.lpVtbl = &drawing_vtbl;
++    impl->IInkDrawingAttributes2_iface.lpVtbl = &drawing2_vtbl;
++    impl->IInkDrawingAttributes4_iface.lpVtbl = &drawing4_vtbl;
++    impl->ref = 1;
++    impl->color.A = 255;
++    impl->size.Width = impl->size.Height = 2;
++    impl->fit_to_curve = TRUE;
++    impl->transform.M11 = impl->transform.M22 = 1;
++    InitializeCriticalSection(&impl->lock);
++    InterlockedIncrement(&ink_object_count);
++    hr = CoCreateFreeThreadedMarshaler((IUnknown *)&impl->IInkDrawingAttributes_iface, &impl->marshaler);
++    if (FAILED(hr)) IInkDrawingAttributes_Release(&impl->IInkDrawingAttributes_iface);
++    else *out = &impl->IInkDrawingAttributes_iface;
++    return hr;
++}
+diff --git a/dlls/inkobjcore/factory.c b/dlls/inkobjcore/factory.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/factory.c
+@@ -0,0 +1,167 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++#include "initguid.h"
++#include "activation.h"
++
++struct ink_factory
++{
++    IActivationFactory IActivationFactory_iface;
++    IInkPointFactory IInkPointFactory_iface;
++    IInkPointFactory2 IInkPointFactory2_iface;
++    LONG ref;
++    BOOL point;
++};
++
++static struct ink_factory *impl_from_IActivationFactory(IActivationFactory *iface)
++{
++    return CONTAINING_RECORD(iface, struct ink_factory, IActivationFactory_iface);
++}
++
++static HRESULT WINAPI factory_QueryInterface(IActivationFactory *iface, REFIID iid, void **out)
++{
++    struct ink_factory *impl = impl_from_IActivationFactory(iface);
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable)
++            || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_IActivationFactory))
++        *out = &impl->IActivationFactory_iface;
++    else if (impl->point && IsEqualGUID(iid, &IID_IInkPointFactory))
++        *out = &impl->IInkPointFactory_iface;
++    else if (impl->point && IsEqualGUID(iid, &IID_IInkPointFactory2))
++        *out = &impl->IInkPointFactory2_iface;
++    else return E_NOINTERFACE;
++    IActivationFactory_AddRef(iface);
++    return S_OK;
++}
++
++static ULONG WINAPI factory_AddRef(IActivationFactory *iface)
++{
++    InterlockedIncrement(&ink_factory_refs);
++    return InterlockedIncrement(&impl_from_IActivationFactory(iface)->ref);
++}
++
++static ULONG WINAPI factory_Release(IActivationFactory *iface)
++{
++    ULONG ref = InterlockedDecrement(&impl_from_IActivationFactory(iface)->ref);
++    InterlockedDecrement(&ink_factory_refs);
++    return ref;
++}
++
++static HRESULT WINAPI factory_GetIids(IActivationFactory *iface, ULONG *count, IID **iids)
++{
++    struct ink_factory *impl = impl_from_IActivationFactory(iface);
++    ULONG size = impl->point ? 3 : 1;
++
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = NULL;
++    if (!(*iids = CoTaskMemAlloc(size * sizeof(**iids)))) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_IActivationFactory;
++    if (impl->point)
++    {
++        (*iids)[1] = IID_IInkPointFactory;
++        (*iids)[2] = IID_IInkPointFactory2;
++    }
++    *count = size;
++    return S_OK;
++}
++
++static HRESULT WINAPI factory_GetRuntimeClassName(IActivationFactory *iface, HSTRING *name)
++{
++    struct ink_factory *impl = impl_from_IActivationFactory(iface);
++    const WCHAR *class = impl->point ? RuntimeClass_Windows_UI_Input_Inking_InkPoint
++            : RuntimeClass_Windows_UI_Input_Inking_InkDrawingAttributes;
++
++    if (!name) return E_POINTER;
++    return WindowsCreateString(class, wcslen(class), name);
++}
++
++static HRESULT WINAPI factory_GetTrustLevel(IActivationFactory *iface, TrustLevel *level)
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI factory_ActivateInstance(IActivationFactory *iface, IInspectable **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (impl_from_IActivationFactory(iface)->point) return E_NOTIMPL;
++    return ink_drawing_attributes_create((IInkDrawingAttributes **)out);
++}
++
++static const IActivationFactoryVtbl factory_vtbl =
++{
++    factory_QueryInterface, factory_AddRef, factory_Release,
++    factory_GetIids, factory_GetRuntimeClassName, factory_GetTrustLevel, factory_ActivateInstance,
++};
++
++DEFINE_IINSPECTABLE(point_factory, IInkPointFactory, struct ink_factory, IActivationFactory_iface)
++
++static HRESULT WINAPI point_factory_CreateInkPoint(IInkPointFactory *iface, struct Point position,
++        float pressure, IInkPoint **out)
++{
++    return ink_point_create(position, pressure, 0, 0, 0, out);
++}
++
++static const IInkPointFactoryVtbl point_factory_vtbl =
++{
++    point_factory_QueryInterface, point_factory_AddRef, point_factory_Release,
++    point_factory_GetIids, point_factory_GetRuntimeClassName, point_factory_GetTrustLevel,
++    point_factory_CreateInkPoint,
++};
++
++DEFINE_IINSPECTABLE(point_factory2, IInkPointFactory2, struct ink_factory, IActivationFactory_iface)
++
++static HRESULT WINAPI point_factory2_CreateInkPointWithTiltAndTimestamp(IInkPointFactory2 *iface,
++        struct Point position, float pressure, float tilt_x, float tilt_y, UINT64 timestamp, IInkPoint **out)
++{
++    return ink_point_create(position, pressure, tilt_x, tilt_y, timestamp, out);
++}
++
++static const IInkPointFactory2Vtbl point_factory2_vtbl =
++{
++    point_factory2_QueryInterface, point_factory2_AddRef, point_factory2_Release,
++    point_factory2_GetIids, point_factory2_GetRuntimeClassName, point_factory2_GetTrustLevel,
++    point_factory2_CreateInkPointWithTiltAndTimestamp,
++};
++
++static struct ink_factory point_factory =
++{
++    {&factory_vtbl}, {&point_factory_vtbl}, {&point_factory2_vtbl}, 0, TRUE,
++};
++static struct ink_factory drawing_factory = {{&factory_vtbl}};
++
++HRESULT WINAPI DllGetActivationFactory(HSTRING name, IActivationFactory **out)
++{
++    const WCHAR *class = WindowsGetStringRawBuffer(name, NULL);
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!wcscmp(class, RuntimeClass_Windows_UI_Input_Inking_InkPoint))
++        return IActivationFactory_QueryInterface(&point_factory.IActivationFactory_iface,
++                &IID_IActivationFactory, (void **)out);
++    if (!wcscmp(class, RuntimeClass_Windows_UI_Input_Inking_InkDrawingAttributes))
++        return IActivationFactory_QueryInterface(&drawing_factory.IActivationFactory_iface,
++                &IID_IActivationFactory, (void **)out);
++    return CLASS_E_CLASSNOTAVAILABLE;
++}
+diff --git a/dlls/inkobjcore/inkobjcore.spec b/dlls/inkobjcore/inkobjcore.spec
+--- a/dlls/inkobjcore/inkobjcore.spec
++++ b/dlls/inkobjcore/inkobjcore.spec
+@@ -2,3 +2,4 @@
+ @ stdcall -private DllGetClassObject(ptr ptr ptr)
+ @ stdcall -private DllRegisterServer()
+ @ stdcall -private DllUnregisterServer()
++@ stdcall -private DllGetActivationFactory(ptr ptr)
+diff --git a/dlls/inkobjcore/main.c b/dlls/inkobjcore/main.c
+--- a/dlls/inkobjcore/main.c
++++ b/dlls/inkobjcore/main.c
+@@ -48,7 +48,8 @@
+     BOOL stopping;
+ };
+ 
+-static LONG object_count, factory_refs, server_locks;
++LONG ink_object_count, ink_factory_refs;
++static LONG server_locks;
+ 
+ static struct desktop_host *impl_from_IInkDesktopHost(IInkDesktopHost *iface)
+ {
+@@ -97,7 +98,7 @@
+         if (host->event) CloseHandle(host->event);
+         if (host->ready) CloseHandle(host->ready);
+         DeleteCriticalSection(&host->lock);
+-        InterlockedDecrement(&object_count);
++        InterlockedDecrement(&ink_object_count);
+         free(host);
+     }
+     return ref;
+@@ -202,7 +203,7 @@
+     host->ref = 1;
+     InitializeCriticalSection(&host->lock);
+     list_init(&host->queue);
+-    InterlockedIncrement(&object_count);
++    InterlockedIncrement(&ink_object_count);
+     host->event = CreateEventW(NULL, TRUE, FALSE, NULL);
+     host->ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+     if (!host->event || !host->ready)
+@@ -249,12 +250,12 @@
+ 
+ static ULONG WINAPI factory_AddRef(IClassFactory *iface)
+ {
+-    return InterlockedIncrement(&factory_refs);
++    return InterlockedIncrement(&ink_factory_refs);
+ }
+ 
+ static ULONG WINAPI factory_Release(IClassFactory *iface)
+ {
+-    return InterlockedDecrement(&factory_refs);
++    return InterlockedDecrement(&ink_factory_refs);
+ }
+ 
+ static HRESULT WINAPI factory_CreateInstance(IClassFactory *iface, IUnknown *outer, REFIID iid, void **out)
+@@ -293,7 +294,7 @@
+ 
+ HRESULT WINAPI DllCanUnloadNow(void)
+ {
+-    return InterlockedCompareExchange(&object_count, 0, 0)
+-            || InterlockedCompareExchange(&factory_refs, 0, 0)
++    return InterlockedCompareExchange(&ink_object_count, 0, 0)
++            || InterlockedCompareExchange(&ink_factory_refs, 0, 0)
+             || InterlockedCompareExchange(&server_locks, 0, 0) ? S_FALSE : S_OK;
+ }
+diff --git a/dlls/inkobjcore/point.c b/dlls/inkobjcore/point.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/point.c
+@@ -0,0 +1,173 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++
++struct ink_point
++{
++    IInkPoint IInkPoint_iface;
++    IInkPoint2 IInkPoint2_iface;
++    LONG ref;
++    IUnknown *marshaler;
++    struct Point position;
++    float pressure, tilt_x, tilt_y;
++    UINT64 timestamp;
++};
++
++static struct ink_point *impl_from_IInkPoint(IInkPoint *iface)
++{
++    return CONTAINING_RECORD(iface, struct ink_point, IInkPoint_iface);
++}
++
++static HRESULT WINAPI point_QueryInterface(IInkPoint *iface, REFIID iid, void **out)
++{
++    struct ink_point *impl = impl_from_IInkPoint(iface);
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable)
++            || IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_IInkPoint))
++        *out = &impl->IInkPoint_iface;
++    else if (IsEqualGUID(iid, &IID_IInkPoint2))
++        *out = &impl->IInkPoint2_iface;
++    else if (IsEqualGUID(iid, &IID_IMarshal))
++        return IUnknown_QueryInterface(impl->marshaler, iid, out);
++    else return E_NOINTERFACE;
++    IInkPoint_AddRef(iface);
++    return S_OK;
++}
++
++static ULONG WINAPI point_AddRef(IInkPoint *iface)
++{
++    return InterlockedIncrement(&impl_from_IInkPoint(iface)->ref);
++}
++
++static ULONG WINAPI point_Release(IInkPoint *iface)
++{
++    struct ink_point *impl = impl_from_IInkPoint(iface);
++    ULONG ref = InterlockedDecrement(&impl->ref);
++
++    if (!ref)
++    {
++        if (impl->marshaler) IUnknown_Release(impl->marshaler);
++        free(impl);
++        InterlockedDecrement(&ink_object_count);
++    }
++    return ref;
++}
++
++static HRESULT WINAPI point_GetIids(IInkPoint *iface, ULONG *count, IID **iids)
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = NULL;
++    if (!(*iids = CoTaskMemAlloc(2 * sizeof(**iids)))) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_IInkPoint;
++    (*iids)[1] = IID_IInkPoint2;
++    *count = 2;
++    return S_OK;
++}
++
++static HRESULT WINAPI point_GetRuntimeClassName(IInkPoint *iface, HSTRING *name)
++{
++    const WCHAR *class = RuntimeClass_Windows_UI_Input_Inking_InkPoint;
++    if (!name) return E_POINTER;
++    return WindowsCreateString(class, wcslen(class), name);
++}
++
++static HRESULT WINAPI point_GetTrustLevel(IInkPoint *iface, TrustLevel *level)
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI point_get_Position(IInkPoint *iface, struct Point *value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IInkPoint(iface)->position;
++    return S_OK;
++}
++
++static HRESULT WINAPI point_get_Pressure(IInkPoint *iface, float *value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IInkPoint(iface)->pressure;
++    return S_OK;
++}
++
++static const IInkPointVtbl point_vtbl =
++{
++    point_QueryInterface, point_AddRef, point_Release,
++    point_GetIids, point_GetRuntimeClassName, point_GetTrustLevel,
++    point_get_Position, point_get_Pressure,
++};
++
++DEFINE_IINSPECTABLE(point2, IInkPoint2, struct ink_point, IInkPoint_iface)
++
++static HRESULT WINAPI point2_get_TiltX(IInkPoint2 *iface, float *value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IInkPoint2(iface)->tilt_x;
++    return S_OK;
++}
++
++static HRESULT WINAPI point2_get_TiltY(IInkPoint2 *iface, float *value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IInkPoint2(iface)->tilt_y;
++    return S_OK;
++}
++
++static HRESULT WINAPI point2_get_Timestamp(IInkPoint2 *iface, UINT64 *value)
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IInkPoint2(iface)->timestamp;
++    return S_OK;
++}
++
++static const IInkPoint2Vtbl point2_vtbl =
++{
++    point2_QueryInterface, point2_AddRef, point2_Release,
++    point2_GetIids, point2_GetRuntimeClassName, point2_GetTrustLevel,
++    point2_get_TiltX, point2_get_TiltY, point2_get_Timestamp,
++};
++
++HRESULT ink_point_create(struct Point position, float pressure, float tilt_x, float tilt_y,
++        UINT64 timestamp, IInkPoint **out)
++{
++    struct ink_point *impl;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    impl->IInkPoint_iface.lpVtbl = &point_vtbl;
++    impl->IInkPoint2_iface.lpVtbl = &point2_vtbl;
++    impl->ref = 1;
++    impl->position = position;
++    impl->pressure = pressure;
++    impl->tilt_x = tilt_x;
++    impl->tilt_y = tilt_y;
++    impl->timestamp = timestamp;
++    InterlockedIncrement(&ink_object_count);
++    hr = CoCreateFreeThreadedMarshaler((IUnknown *)&impl->IInkPoint_iface, &impl->marshaler);
++    if (FAILED(hr)) IInkPoint_Release(&impl->IInkPoint_iface);
++    else *out = &impl->IInkPoint_iface;
++    return hr;
++}
+diff --git a/dlls/inkobjcore/private.h b/dlls/inkobjcore/private.h
+new file mode 100644
+--- /dev/null
++++ b/dlls/inkobjcore/private.h
+@@ -0,0 +1,80 @@
++/*
++ * Copyright 2023 Mohamad Al-Jaf
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef __WINE_INKOBJCORE_PRIVATE_H
++#define __WINE_INKOBJCORE_PRIVATE_H
++
++#include <stdarg.h>
++#include <stdlib.h>
++#define COBJMACROS
++#include "windef.h"
++#include "winbase.h"
++#include "objbase.h"
++#include "winstring.h"
++#define WIDL_using_Windows_Foundation
++#define WIDL_using_Windows_Foundation_Numerics
++#define WIDL_using_Windows_UI
++#define WIDL_using_Windows_UI_Input_Inking
++#include "windows.ui.input.inking.h"
++
++extern LONG ink_object_count, ink_factory_refs;
++HRESULT ink_point_create(struct Point position, float pressure, float tilt_x, float tilt_y,
++        UINT64 timestamp, IInkPoint **out);
++HRESULT ink_drawing_attributes_create(IInkDrawingAttributes **out);
++
++#define DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from, iface_mem, expr )             \
++    static inline impl_type *impl_from( iface_type *iface )                                        \
++    {                                                                                              \
++        return CONTAINING_RECORD( iface, impl_type, iface_mem );                                   \
++    }                                                                                              \
++    static HRESULT WINAPI pfx##_QueryInterface( iface_type *iface, REFIID iid, void **out )        \
++    {                                                                                              \
++        impl_type *impl = impl_from( iface );                                                      \
++        return IInspectable_QueryInterface( (IInspectable *)(expr), iid, out );                    \
++    }                                                                                              \
++    static ULONG WINAPI pfx##_AddRef( iface_type *iface )                                          \
++    {                                                                                              \
++        impl_type *impl = impl_from( iface );                                                      \
++        return IInspectable_AddRef( (IInspectable *)(expr) );                                      \
++    }                                                                                              \
++    static ULONG WINAPI pfx##_Release( iface_type *iface )                                         \
++    {                                                                                              \
++        impl_type *impl = impl_from( iface );                                                      \
++        return IInspectable_Release( (IInspectable *)(expr) );                                     \
++    }                                                                                              \
++    static HRESULT WINAPI pfx##_GetIids( iface_type *iface, ULONG *iid_count, IID **iids )         \
++    {                                                                                              \
++        impl_type *impl = impl_from( iface );                                                      \
++        return IInspectable_GetIids( (IInspectable *)(expr), iid_count, iids );                    \
++    }                                                                                              \
++    static HRESULT WINAPI pfx##_GetRuntimeClassName( iface_type *iface, HSTRING *class_name )      \
++    {                                                                                              \
++        impl_type *impl = impl_from( iface );                                                      \
++        return IInspectable_GetRuntimeClassName( (IInspectable *)(expr), class_name );             \
++    }                                                                                              \
++    static HRESULT WINAPI pfx##_GetTrustLevel( iface_type *iface, TrustLevel *trust_level )        \
++    {                                                                                              \
++        impl_type *impl = impl_from( iface );                                                      \
++        return IInspectable_GetTrustLevel( (IInspectable *)(expr), trust_level );                  \
++    }
++#define DEFINE_IINSPECTABLE( pfx, iface_type, impl_type, base_iface )                              \
++    DEFINE_IINSPECTABLE_( pfx, iface_type, impl_type, impl_from_##iface_type, iface_type##_iface, &impl->base_iface )
++
++
++#endif
+diff --git a/include/Makefile.in b/include/Makefile.in
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -1094,6 +1094,7 @@
+ 	windows.ui.core.idl \
+ 	windows.ui.idl \
+ 	windows.ui.input.idl \
++	windows.ui.input.inking.idl \
+ 	windows.ui.notifications.idl \
+ 	windows.ui.viewmanagement.core.idl \
+ 	windows.ui.viewmanagement.idl \
+diff --git a/include/windows.ui.input.inking.idl b/include/windows.ui.input.inking.idl
+new file mode 100644
+--- /dev/null
++++ b/include/windows.ui.input.inking.idl
+@@ -0,0 +1,133 @@
++/*
++ * Copyright 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifdef __WIDL__
++#pragma winrt ns_prefix
++#endif
++
++import "inspectable.idl";
++import "windowscontracts.idl";
++import "windows.foundation.idl";
++import "windows.foundation.numerics.idl";
++import "windows.ui.idl";
++
++namespace Windows.UI.Input.Inking {
++    typedef enum PenTipShape PenTipShape;
++    interface IInkPoint;
++    interface IInkPoint2;
++    interface IInkPointFactory;
++    interface IInkPointFactory2;
++    interface IInkDrawingAttributes;
++    interface IInkDrawingAttributes2;
++    interface IInkDrawingAttributes4;
++    runtimeclass InkPoint;
++    runtimeclass InkDrawingAttributes;
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0)]
++    enum PenTipShape
++    {
++        Circle = 0,
++        Rectangle = 1
++    };
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     exclusiveto(Windows.UI.Input.Inking.InkPoint), uuid(9f87272b-858c-46a5-9b41-d195970459fd)]
++    interface IInkPoint : IInspectable
++    {
++        [propget] HRESULT Position([out, retval] Windows.Foundation.Point *value);
++        [propget] HRESULT Pressure([out, retval] FLOAT *value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 4.0),
++     exclusiveto(Windows.UI.Input.Inking.InkPoint), uuid(fba9c3f7-ae56-4d5c-bd2f-0ac45f5e4af9)]
++    interface IInkPoint2 : IInspectable
++    {
++        [propget] HRESULT TiltX([out, retval] FLOAT *value);
++        [propget] HRESULT TiltY([out, retval] FLOAT *value);
++        [propget] HRESULT Timestamp([out, retval] UINT64 *value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     exclusiveto(Windows.UI.Input.Inking.InkPoint), uuid(29e5d51c-c98f-405d-9f3b-e53e31068d4d)]
++    interface IInkPointFactory : IInspectable
++    {
++        HRESULT CreateInkPoint([in] Windows.Foundation.Point position, [in] FLOAT pressure,
++                [out, retval] Windows.UI.Input.Inking.InkPoint **result);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 4.0),
++     exclusiveto(Windows.UI.Input.Inking.InkPoint), uuid(e0145e85-daff-45f2-ad69-050d8256a209)]
++    interface IInkPointFactory2 : IInspectable
++    {
++        HRESULT CreateInkPointWithTiltAndTimestamp([in] Windows.Foundation.Point position,
++                [in] FLOAT pressure, [in] FLOAT tilt_x, [in] FLOAT tilt_y, [in] UINT64 timestamp,
++                [out, retval] Windows.UI.Input.Inking.InkPoint **result);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     exclusiveto(Windows.UI.Input.Inking.InkDrawingAttributes), uuid(97a2176c-6774-48ad-84f0-48f5a9be74f9)]
++    interface IInkDrawingAttributes : IInspectable
++    {
++        [propget] HRESULT Color([out, retval] Windows.UI.Color *value);
++        [propput] HRESULT Color([in] Windows.UI.Color value);
++        [propget] HRESULT PenTip([out, retval] Windows.UI.Input.Inking.PenTipShape *value);
++        [propput] HRESULT PenTip([in] Windows.UI.Input.Inking.PenTipShape value);
++        [propget] HRESULT Size([out, retval] Windows.Foundation.Size *value);
++        [propput] HRESULT Size([in] Windows.Foundation.Size value);
++        [propget] HRESULT IgnorePressure([out, retval] boolean *value);
++        [propput] HRESULT IgnorePressure([in] boolean value);
++        [propget] HRESULT FitToCurve([out, retval] boolean *value);
++        [propput] HRESULT FitToCurve([in] boolean value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0),
++     exclusiveto(Windows.UI.Input.Inking.InkDrawingAttributes), uuid(7cab6508-8ec4-42fd-a5a5-e4b7d1d5316d)]
++    interface IInkDrawingAttributes2 : IInspectable
++    {
++        [propget] HRESULT PenTipTransform([out, retval] Windows.Foundation.Numerics.Matrix3x2 *value);
++        [propput] HRESULT PenTipTransform([in] Windows.Foundation.Numerics.Matrix3x2 value);
++        [propget] HRESULT DrawAsHighlighter([out, retval] boolean *value);
++        [propput] HRESULT DrawAsHighlighter([in] boolean value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 4.0),
++     exclusiveto(Windows.UI.Input.Inking.InkDrawingAttributes), uuid(ef65dc25-9f19-456d-91a3-bc3a3d91c5fb)]
++    interface IInkDrawingAttributes4 : IInspectable
++    {
++        [propget] HRESULT IgnoreTilt([out, retval] boolean *value);
++        [propput] HRESULT IgnoreTilt([in] boolean value);
++    }
++
++    [activatable(Windows.UI.Input.Inking.IInkPointFactory, Windows.Foundation.UniversalApiContract, 1.0),
++     activatable(Windows.UI.Input.Inking.IInkPointFactory2, Windows.Foundation.UniversalApiContract, 4.0),
++     contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile), threading(both)]
++    runtimeclass InkPoint
++    {
++        [default] interface Windows.UI.Input.Inking.IInkPoint;
++        [contract(Windows.Foundation.UniversalApiContract, 4.0)] interface Windows.UI.Input.Inking.IInkPoint2;
++    }
++
++    [activatable(Windows.Foundation.UniversalApiContract, 1.0),
++     contract(Windows.Foundation.UniversalApiContract, 1.0), marshaling_behavior(agile), threading(both)]
++    runtimeclass InkDrawingAttributes
++    {
++        [default] interface Windows.UI.Input.Inking.IInkDrawingAttributes;
++        interface Windows.UI.Input.Inking.IInkDrawingAttributes2;
++        [contract(Windows.Foundation.UniversalApiContract, 4.0)] interface Windows.UI.Input.Inking.IInkDrawingAttributes4;
++    }
++}
+diff --git a/libs/uuid/uuid.c b/libs/uuid/uuid.c
+--- a/libs/uuid/uuid.c
++++ b/libs/uuid/uuid.c
+@@ -68,6 +68,7 @@
+ #include "objsel.h"
+ #include "hlink.h"
+ #include "inkpresenterdesktop.h"
++#include "windows.ui.input.inking.h"
+ #include "optary.h"
+ #include "indexsrv.h"
+ #include "htiface.h"
