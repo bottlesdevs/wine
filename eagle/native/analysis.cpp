@@ -365,11 +365,17 @@ static std::string manifest_value(std::string value)
     return lower(value);
 }
 
+struct manifest_element
+{
+    std::string name, text;
+    std::map<std::string, std::string> namespaces;
+};
+
 struct manifest_info
 {
     bool admin = false;
     int legacy_dpi = -1, modern_dpi = -1;
-    std::vector<std::pair<std::string, std::string>> elements;
+    std::vector<manifest_element> elements;
     bool dpi() const { return (modern_dpi >= 0 ? modern_dpi : legacy_dpi) > 0; }
 };
 
@@ -379,20 +385,34 @@ static manifest_info inspect_manifest(const std::string &xml)
     GMarkupParser parser = {
         [](GMarkupParseContext *, const char *element, const char **names, const char **values, void *data, GError **) {
             auto &info = *static_cast<manifest_info *>(data);
-            std::string name = element;
-            auto separator = name.rfind(':');
-            if (separator != std::string::npos) name.erase(0, separator + 1);
-            info.elements.emplace_back(name, "");
-            if (name == "requestedExecutionLevel")
+            info.elements.push_back({element, "", {}});
+            auto &current = info.elements.back();
+            for (size_t i = 0; names[i]; i++)
+            {
+                std::string name = names[i];
+                if (name == "xmlns") current.namespaces[""] = values[i];
+                else if (name.compare(0, 6, "xmlns:") == 0) current.namespaces[name.substr(6)] = values[i];
+            }
+            auto separator = current.name.find(':');
+            auto prefix = separator == std::string::npos ? "" : current.name.substr(0, separator);
+            if (separator != std::string::npos) current.name.erase(0, separator + 1);
+            std::string uri;
+            for (auto it = info.elements.rbegin(); it != info.elements.rend(); ++it)
+                if (auto found = it->namespaces.find(prefix); found != it->namespaces.end()) { uri = found->second; break; }
+            auto expected = current.name == "dpiAware" ? "http://schemas.microsoft.com/SMI/2005/WindowsSettings" :
+                            current.name == "dpiAwareness" ? "http://schemas.microsoft.com/SMI/2016/WindowsSettings" :
+                            current.name == "requestedExecutionLevel" ? "urn:schemas-microsoft-com:asm.v3" : "";
+            if ((!uri.empty() || !prefix.empty()) && uri != expected) current.name.clear();
+            if (current.name == "requestedExecutionLevel")
                 for (size_t i = 0; names[i]; i++)
                     if (std::string(names[i]) == "level" && lower(values[i]) == "requireadministrator") info.admin = true;
         },
         [](GMarkupParseContext *, const char *, void *data, GError **) {
             auto &info = *static_cast<manifest_info *>(data);
-            auto element = info.elements.back(); info.elements.pop_back();
-            auto value = manifest_value(element.second);
-            if (element.first == "dpiAware") info.legacy_dpi = value == "true" || value == "true/pm" || value == "per monitor";
-            if (element.first != "dpiAwareness") return;
+            auto element = std::move(info.elements.back()); info.elements.pop_back();
+            auto value = manifest_value(element.text);
+            if (element.name == "dpiAware") info.legacy_dpi = value == "true" || value == "true/pm" || value == "per monitor";
+            if (element.name != "dpiAwareness") return;
             info.modern_dpi = 0;
             size_t start = 0;
             while (start <= value.size())
@@ -407,7 +427,7 @@ static manifest_info inspect_manifest(const std::string &xml)
         },
         [](GMarkupParseContext *, const char *text, gsize length, void *data, GError **) {
             auto &info = *static_cast<manifest_info *>(data);
-            if (!info.elements.empty()) info.elements.back().second.append(text, length);
+            if (!info.elements.empty()) info.elements.back().text.append(text, length);
         },
         nullptr, nullptr
     };

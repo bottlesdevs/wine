@@ -66,6 +66,43 @@ class ManifestTests(unittest.TestCase):
             with self.subTest(content=content):
                 self.assertEqual(self.interpret(['<assembly>' + content + '</assembly>'])['admin'], expected)
 
+    def test_namespace_qualification(self):
+        legacy = 'http://schemas.microsoft.com/SMI/2005/WindowsSettings'
+        modern = 'http://schemas.microsoft.com/SMI/2016/WindowsSettings'
+        assembly = 'urn:schemas-microsoft-com:asm.v3'
+        for manifest, admin, dpi in [
+            ('<assembly xmlns:w="' + legacy + '"><w:dpiAware>true</w:dpiAware></assembly>', False, True),
+            ('<assembly><settings xmlns="' + legacy + '"><dpiAware>true</dpiAware></settings></assembly>', False, True),
+            ('<assembly xmlns:w="' + modern + '"><w:dpiAwareness>PerMonitorV2</w:dpiAwareness></assembly>', False, True),
+            ('<assembly xmlns:m="' + assembly + '"><m:requestedExecutionLevel level="REQUIREADMINISTRATOR"/></assembly>', True, False),
+            ('<assembly><requestedExecutionLevel level="requireAdministrator" xmlns="' + assembly + '"/></assembly>', True, False),
+            ('<assembly xmlns:m="urn:example:metadata"><m:requestedExecutionLevel level="requireAdministrator"/></assembly>', False, False),
+            ('<assembly xmlns="urn:example:metadata"><dpiAware>true</dpiAware></assembly>', False, False),
+            ('<assembly><w:dpiAware>true</w:dpiAware></assembly>', False, False),
+            ('<assembly xmlns:w="' + legacy + '"><W:dpiAware>true</W:dpiAware></assembly>', False, False),
+            ('<assembly xmlns="' + modern + '"><dpiAware>true</dpiAware></assembly>', False, False),
+            ('<assembly xmlns="' + legacy + '"><dpiAwareness>system</dpiAwareness></assembly>', False, False),
+            ('<assembly><dpiAware>true</dpiAware><dpiAwareness xmlns="urn:example:metadata">unaware</dpiAwareness></assembly>', False, True),
+        ]:
+            with self.subTest(manifest=manifest):
+                result = self.interpret([manifest])
+                self.assertEqual((result['admin'], result['dpi_aware']), (admin, dpi))
+
+    def test_namespace_scope_is_restored(self):
+        namespace = 'http://schemas.microsoft.com/SMI/2005/WindowsSettings'
+        for manifest, dpi in [
+            ('<assembly xmlns:w="' + namespace + '"><w:dpiAware>true</w:dpiAware><settings xmlns:w="urn:example:metadata"><w:dpiAware>false</w:dpiAware></settings></assembly>', True),
+            ('<assembly xmlns:w="urn:example:metadata"><settings xmlns:w="' + namespace + '"><w:dpiAware>false</w:dpiAware></settings><w:dpiAware>true</w:dpiAware></assembly>', False),
+            ('<assembly xmlns:w="' + namespace + '"><settings xmlns:w="urn:example:metadata"/><w:dpiAware>true</w:dpiAware></assembly>', True),
+            ('<assembly><settings xmlns="' + namespace + '"><dpiAware>true</dpiAware><settings xmlns="urn:example:metadata"><dpiAware>false</dpiAware></settings></settings></assembly>', True),
+            ('<assembly><settings xmlns="urn:example:metadata"><settings xmlns="' + namespace + '"><dpiAware>false</dpiAware></settings><dpiAware>true</dpiAware></settings></assembly>', False),
+        ]:
+            with self.subTest(manifest=manifest):
+                self.assertEqual(self.interpret([manifest])['dpi_aware'], dpi)
+        result = self.interpret(['<assembly xmlns:w="' + namespace + '"/>',
+                                 '<assembly><w:dpiAware>true</w:dpiAware></assembly>'])
+        self.assertFalse(result['dpi_aware'])
+
     def test_invalid_manifest_does_not_set_flags(self):
         for manifest in ('<assembly><dpiAware>true</dpiAware>',
                          '<assembly><requestedExecutionLevel level="requireAdministrator"/>',
