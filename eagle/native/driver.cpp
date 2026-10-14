@@ -16,11 +16,22 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/stat.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
 using json = std::unique_ptr<json_object, decltype(&json_object_put)>;
+
+static volatile sig_atomic_t cancel_signal;
+static void interrupt(int signal) { if (!cancel_signal) cancel_signal = signal; }
+
+struct analysis_cancelled : std::runtime_error
+{
+    analysis_cancelled() : std::runtime_error("analysis cancelled") {}
+};
+
+static void check_cancelled() { if (cancel_signal) throw analysis_cancelled(); }
 
 static json own(json_object *value) { return json(value, json_object_put); }
 static json object() { return own(json_object_new_object()); }
@@ -43,6 +54,7 @@ static json parse(const std::string &input)
 
 static json file_json(const fs::path &path)
 {
+    check_cancelled();
     int descriptor = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
     struct stat info;
     if (descriptor < 0) throw std::runtime_error("analysis configuration is unavailable");
@@ -56,6 +68,7 @@ static json file_json(const fs::path &path)
         data.append(buffer, count);
         if (data.size() > 1024 * 1024) throw std::runtime_error("analysis configuration exceeds limit");
     }
+    check_cancelled();
     if (ferror(file.get())) throw std::runtime_error("cannot read analysis configuration");
     return parse(data);
 }
@@ -82,7 +95,12 @@ struct process
     pid_t pid = 0;
     ~process()
     {
-        if (pid > 0) { kill(pid, SIGKILL); while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {} }
+        if (pid > 0)
+        {
+            kill(-pid, SIGKILL); kill(pid, SIGKILL);
+            while (waitpid(-pid, nullptr, 0) > 0 || errno == EINTR) {}
+            while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {}
+        }
         for (auto &pipe : pipes) for (int descriptor : pipe) if (descriptor >= 0) close(descriptor);
     }
     void close_fd(int &descriptor) { if (descriptor >= 0) close(descriptor); descriptor = -1; }
@@ -95,6 +113,7 @@ struct tool_failure : std::runtime_error
 
 static std::string run_tool(const std::vector<std::string> &arguments, const std::string &input = "", unsigned timeout = 30)
 {
+    check_cancelled();
     process child;
     for (auto &pipe : child.pipes) if (pipe2(pipe, O_CLOEXEC)) throw std::runtime_error("cannot create helper pipes");
     std::vector<char *> argv;
@@ -104,10 +123,12 @@ static std::string run_tool(const std::vector<std::string> &arguments, const std
     if (child.pid < 0) throw std::runtime_error("cannot start analysis helper");
     if (!child.pid)
     {
+        if (setpgid(0, 0)) _exit(127);
         if (dup2(child.pipes[0][0], STDIN_FILENO) < 0 || dup2(child.pipes[1][1], STDOUT_FILENO) < 0 || dup2(child.pipes[2][1], STDERR_FILENO) < 0) _exit(127);
         for (auto &pipe : child.pipes) for (int descriptor : pipe) close(descriptor);
         execv(argv[0], argv.data()); _exit(127);
     }
+    if (setpgid(child.pid, child.pid) && errno != EACCES && errno != ESRCH) throw std::runtime_error("cannot isolate analysis helper");
     child.close_fd(child.pipes[0][0]); child.close_fd(child.pipes[1][1]); child.close_fd(child.pipes[2][1]);
     int &in = child.pipes[0][1], &out = child.pipes[1][0], &err = child.pipes[2][0];
     for (int descriptor : {in, out, err})
@@ -118,10 +139,11 @@ static std::string run_tool(const std::vector<std::string> &arguments, const std
     if (input.empty()) child.close_fd(in);
     size_t sent = 0;
     std::string output, errors;
-    int status = 0;
+    bool exited = false, succeeded = false;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout);
-    while (child.pid || out >= 0 || err >= 0)
+    while (!exited || out >= 0 || err >= 0)
     {
+        check_cancelled();
         if (std::chrono::steady_clock::now() >= deadline) throw std::runtime_error("analysis helper timed out");
         pollfd descriptors[] = {{in, POLLOUT, 0}, {out, POLLIN, 0}, {err, POLLIN, 0}};
         if (poll(descriptors, 3, 100) < 0 && errno != EINTR) throw std::runtime_error("analysis helper poll failed");
@@ -139,6 +161,7 @@ static std::string run_tool(const std::vector<std::string> &arguments, const std
             char buffer[8192];
             while (descriptor >= 0)
             {
+                check_cancelled();
                 ssize_t count = read(descriptor, buffer, sizeof(buffer));
                 if (count > 0) result.append(buffer, count);
                 else if (!count) child.close_fd(descriptor);
@@ -147,14 +170,22 @@ static std::string run_tool(const std::vector<std::string> &arguments, const std
                 if (result.size() > 16 * 1024 * 1024) throw std::runtime_error("analysis helper output exceeds limit");
             }
         }
-        if (child.pid)
+        if (!exited)
         {
-            pid_t ended = waitpid(child.pid, &status, WNOHANG);
-            if (ended == child.pid) { child.pid = 0; child.close_fd(in); }
-            else if (ended < 0 && errno != EINTR) throw std::runtime_error("cannot wait for analysis helper");
+            siginfo_t status = {};
+            if (waitid(P_PID, child.pid, &status, WEXITED | WNOHANG | WNOWAIT))
+            { if (errno != EINTR) throw std::runtime_error("cannot wait for analysis helper"); }
+            else if (status.si_pid == child.pid)
+            {
+                exited = true; succeeded = status.si_code == CLD_EXITED && !status.si_status;
+                child.close_fd(in);
+                // Keep the leader unreaped until its group has been stopped.
+                kill(-child.pid, SIGKILL);
+            }
         }
     }
-    if (!WIFEXITED(status) || WEXITSTATUS(status)) throw tool_failure(errors.empty() ? "analysis helper failed" : errors);
+    check_cancelled();
+    if (!succeeded) throw tool_failure(errors.empty() ? "analysis helper failed" : errors);
     return output;
 }
 
@@ -179,6 +210,7 @@ class analyzer
 
     void step(const std::string &message)
     {
+        check_cancelled();
         auto event = object(); string(event.get(), "event", "step"); string(event.get(), "data", message);
         puts(encode(event.get()).c_str()); fflush(stdout);
     }
@@ -203,6 +235,7 @@ class analyzer
             details = own(json_object_get(get(result.get(), "details"))); steps(result.get());
             return json_object_array_length(get(result.get(), "matches"));
         }
+        catch (const analysis_cancelled &) { throw; }
         catch (const std::exception &error) { fprintf(stderr, "Eagle pattern scan failed: %s\n", error.what()); return 0; }
     }
     std::vector<fs::path> installer(const std::string &type, const fs::path &output)
@@ -232,6 +265,7 @@ class analyzer
             for (const char *extension : {".exe", ".dll"})
             {
                 std::function<void(const fs::path &, unsigned)> collect = [&](const fs::path &directory, unsigned depth) {
+                    check_cancelled();
                     if (depth > 64 || files.size() > 100000) throw std::runtime_error("installer traversal exceeds limit");
                     std::vector<fs::directory_entry> entries;
                     for (const auto &entry : fs::directory_iterator(directory)) if (entry.path().filename().string().front() != '.') entries.push_back(entry);
@@ -242,6 +276,7 @@ class analyzer
             }
             step("Found " + std::to_string(files.size()) + " binaries in installer");
         }
+        catch (const analysis_cancelled &) { throw; }
         catch (const std::exception &error)
         {
             fprintf(stderr, "Eagle extraction failed: %s\n", error.what());
@@ -268,6 +303,7 @@ class analyzer
             auto request = object(); string(request.get(), "operation", "status");
             json status = own(nullptr);
             try { status = tool({(native / "eagle-intel").string(), database.string()}, encode(request.get())); }
+            catch (const analysis_cancelled &) { throw; }
             catch (const std::exception &) { continue; }
             try
             {
@@ -290,6 +326,7 @@ class analyzer
                 else step("Community match (" + text(get(plan.get(), "match")) + "): " + text(get(plan.get(), "name")) + ", tier " + text(get(plan.get(), "tier")) + ", " + text(get(plan.get(), "reports")) + " reports");
                 return plan;
             }
+            catch (const analysis_cancelled &) { throw; }
             catch (const std::exception &error) { fprintf(stderr, "Eagle Intel lookup failed: %s\n", error.what()); return own(nullptr); }
         }
         return own(nullptr);
@@ -373,6 +410,7 @@ public:
                     step("Scanning ASAR content: " + name); scan(path, "Electron Source: " + name);
                 }
             }
+            catch (const analysis_cancelled &) { throw; }
             catch (const std::exception &error) { fprintf(stderr, "Eagle ASAR extraction failed: %s\n", error.what()); }
         }
         step("Scanning neighbor files..."); auto *neighbors = get(discovery.get(), "neighbors");
@@ -417,6 +455,7 @@ public:
                 }
                 if (!largest.empty()) { step("Scanning main binary: " + largest.filename().string()); scan_installer(files, true); }
             }
+            catch (const analysis_cancelled &) { throw; }
             catch (const std::exception &error) { fprintf(stderr, "Eagle deep scan failed: %s\n", error.what()); step("Deep scan failed, continuing with surface analysis"); }
         }
         step("Querying community intelligence..."); auto plan = intelligence(structure.get(), text(get(interpreted.get(), "product_name")));
@@ -436,14 +475,23 @@ int main(int argc, char **argv)
 {
     if (argc != 1) { fputs("usage: eagle-driver < REQUEST\n", stderr); return 2; }
     signal(SIGPIPE, SIG_IGN);
+    struct sigaction action = {};
+    action.sa_handler = interrupt; sigemptyset(&action.sa_mask);
+    if (sigaction(SIGINT, &action, nullptr) || sigaction(SIGTERM, &action, nullptr)) { fputs("cannot install analysis interruption handlers\n", stderr); return 1; }
     try
     {
         std::string input; char buffer[4096];
-        while (size_t count = fread(buffer, 1, sizeof(buffer), stdin)) { input.append(buffer, count); if (input.size() > 1024 * 1024) throw std::runtime_error("request exceeds limit"); }
+        while (size_t count = fread(buffer, 1, sizeof(buffer), stdin)) { check_cancelled(); input.append(buffer, count); if (input.size() > 1024 * 1024) throw std::runtime_error("request exceeds limit"); }
+        check_cancelled();
+        if (prctl(PR_SET_CHILD_SUBREAPER, 1)) throw std::runtime_error("cannot collect analysis helper descendants");
         auto request = parse(input);
         if (!json_object_is_type(request.get(), json_type_object)) throw std::runtime_error("analysis request must be an object");
-        analyzer engine(fs::canonical(argv[0]), request.get()); auto report = engine.run(); auto result = object();
+        analyzer engine(fs::canonical(argv[0]), request.get()); auto report = engine.run(); check_cancelled(); auto result = object();
         json_object_object_add(result.get(), "status", json_object_new_boolean(true)); set(result.get(), "data", report.get()); puts(encode(result.get()).c_str()); return 0;
+    }
+    catch (const analysis_cancelled &error)
+    {
+        auto result = object(); json_object_object_add(result.get(), "status", json_object_new_boolean(false)); json_object_object_add(result.get(), "cancelled", json_object_new_boolean(true)); string(result.get(), "error", error.what()); puts(encode(result.get()).c_str()); return 128 + cancel_signal;
     }
     catch (const std::exception &error)
     {

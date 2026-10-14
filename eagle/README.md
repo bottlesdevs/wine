@@ -80,7 +80,11 @@ neighbor, ASAR and installer analysis are under comparison with the existing
 backend. Installer extraction uses an available 7z, 7za or 7zr command, with
 the existing optional patool module as an external fallback. A caller can
 pass its Python executable through `extractor_python` for that fallback.
-Cancellation and complete runtime packaging remain open.
+SIGINT and SIGTERM stop the active helper group and return a cancelled result.
+Helper timeouts and normal completion also stop and reap descendants in that
+group. Extraction workspaces are removed on these paths. Processes that leave
+the helper group, SIGKILL and uninterruptible filesystem operations are outside
+these cleanup guarantees. Complete runtime packaging remains open.
 The driver requires the native rule scanner and its data alongside these helpers.
 
 The debugger regression suite is `tests/integration.py`. Session/export
