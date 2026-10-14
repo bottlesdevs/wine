@@ -124,7 +124,7 @@ public:
         position = (position + 2 + 3) & ~size_t(3);
         size_t bytes = type == 1 ? static_cast<size_t>(value_size) * 2 : value_size;
         if (position > end || bytes > end-position) throw std::runtime_error("version value is truncated");
-        if (type == 1 && value_size) version[key] = wide(position, value_size);
+        if (type == 1 && (value_size || depth == 3)) version[key] = wide(position, value_size);
         position = (position + bytes + 3) & ~size_t(3);
         while (position + 6 <= end)
         {
