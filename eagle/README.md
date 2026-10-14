@@ -111,6 +111,10 @@ schema. See the [Microsoft manifest reference](https://learn.microsoft.com/en-us
 
 Runtime dependency suggestions use a stable order by label.
 
+The PE helper exposes ordered `version_tables` alongside the flattened
+`version` dictionary. Product and publisher selection uses the last nonempty
+value across those tables, matching the existing Bottles analyzer.
+
 The debugger regression suite is `tests/integration.py`. Session/export
 controls are in `tests/test_session_contract.py`; automatic per-launch logging
 is in `tests/test_tracing.py`. Their environment variables select an immutable

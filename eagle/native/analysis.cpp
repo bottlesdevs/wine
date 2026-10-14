@@ -487,6 +487,18 @@ static json_object *pe_insights(json_object *request)
     auto product = member(version, "ProductName") ? text(version, "ProductName") : text(request, "basename");
     if (publisher.empty()) publisher = "Unknown";
     if (product.empty()) product = text(request, "basename");
+    if (auto *tables = member(structure, "version_tables"))
+    {
+        if (!json_object_is_type(tables, json_type_array)) throw std::runtime_error("PE version tables must be an array");
+        if (json_object_array_length(tables)) { publisher = "Unknown"; product = text(request, "basename"); }
+        for (size_t i = 0; i < json_object_array_length(tables); i++)
+        {
+            auto *table = json_object_array_get_idx(tables, i);
+            if (!json_object_is_type(table, json_type_object)) throw std::runtime_error("PE version table must be an object");
+            if (member(table, "CompanyName") && !text(table, "CompanyName").empty()) publisher = text(table, "CompanyName");
+            if (member(table, "ProductName") && !text(table, "ProductName").empty()) product = text(table, "ProductName");
+        }
+    }
     if (publisher != "Unknown") step("Publisher: " + publisher);
     step("Parsing application manifest...");
     bool admin = false, dpi = false;

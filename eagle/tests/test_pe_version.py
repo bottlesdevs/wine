@@ -11,6 +11,47 @@ NATIVE = Path(os.environ['EAGLE_PACKAGE']) / 'lib/eagle/native/eagle-pe'
 
 
 class PEVersionTests(unittest.TestCase):
+    def test_multiple_version_tables_preserve_order_and_empty_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'main.c'
+            source.write_text('int main(void) { return 0; }\n')
+            resource = root / 'version.rc'
+            resource.write_text('''1 VERSIONINFO
+FILEVERSION 1,2,3,4
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "040904b0"
+  BEGIN
+   VALUE "CompanyName", "Example"
+   VALUE "ProductName", "Product"
+   VALUE "LegalCopyright", "First"
+  END
+  BLOCK "041004b0"
+  BEGIN
+   VALUE "CompanyName", ""
+   VALUE "ProductName", ""
+   VALUE "LegalCopyright", ""
+  END
+ END
+END
+''')
+            for architecture in ('i686', 'x86_64'):
+                with self.subTest(architecture=architecture):
+                    target = root / (architecture + '.exe')
+                    obj = root / (architecture + '.o')
+                    subprocess.run([architecture + '-w64-mingw32-windres', str(resource), str(obj)], check=True, capture_output=True)
+                    subprocess.run([architecture + '-w64-mingw32-gcc', str(source), str(obj), '-o', str(target)], check=True, capture_output=True)
+                    result = subprocess.run([str(NATIVE), str(target)], check=True, capture_output=True, text=True)
+                    metadata = json.loads(result.stdout)
+                    self.assertEqual(metadata['resource_error'], '')
+                    self.assertEqual(metadata['version'], {'CompanyName': '', 'ProductName': '', 'LegalCopyright': ''})
+                    self.assertEqual(metadata.get('version_tables'), [
+                        {'CompanyName': 'Example', 'ProductName': 'Product', 'LegalCopyright': 'First'},
+                        {'CompanyName': '', 'ProductName': '', 'LegalCopyright': ''},
+                    ])
+
     def test_empty_version_strings_are_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

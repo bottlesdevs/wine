@@ -35,6 +35,7 @@ class image
     std::vector<section> sections;
     uint32_t headers;
     std::map<std::string, std::string> version;
+    std::vector<std::map<std::string, std::string>> version_tables;
     std::vector<std::string> manifests;
     std::vector<std::string> import_names;
 public:
@@ -111,7 +112,7 @@ public:
         }
         return result;
     }
-    void version_block(size_t start, size_t end, unsigned depth)
+    void version_block(size_t start, size_t end, unsigned depth, const std::string &parent = "", size_t table = SIZE_MAX)
     {
         if (depth > 8 || end < start || end - start < 6) throw std::runtime_error("invalid version block");
         uint16_t size = word(start), value_size = word(start+2), type = word(start+4);
@@ -121,16 +122,22 @@ public:
         while (position + 2 <= end && word(position)) position += 2;
         if (position + 2 > end) throw std::runtime_error("version key is truncated");
         std::string key = wide(key_start, (position-key_start)/2);
+        if (parent == "StringFileInfo") { version_tables.emplace_back(); table = version_tables.size() - 1; }
         position = (position + 2 + 3) & ~size_t(3);
         size_t bytes = type == 1 ? static_cast<size_t>(value_size) * 2 : value_size;
         if (position > end || bytes > end-position) throw std::runtime_error("version value is truncated");
-        if (type == 1 && (value_size || depth == 3)) version[key] = wide(position, value_size);
+        if (type == 1 && (value_size || depth == 3))
+        {
+            auto value = wide(position, value_size);
+            version[key] = value;
+            if (table != SIZE_MAX) version_tables[table][key] = value;
+        }
         position = (position + bytes + 3) & ~size_t(3);
         while (position + 6 <= end)
         {
             uint16_t child_size = word(position);
             if (!child_size) break;
-            version_block(position, end, depth+1);
+            version_block(position, end, depth+1, key, table);
             position = (position + child_size + 3) & ~size_t(3);
         }
     }
@@ -313,7 +320,19 @@ public:
             if (comma) putchar(',');
             comma = true; quote(entry.first); putchar(':'); quote(entry.second);
         }
-        printf("},\"manifests\":["); comma = false;
+        printf("},\"version_tables\":["); comma = false;
+        for (const auto &table : version_tables)
+        {
+            if (comma) putchar(',');
+            comma = true; putchar('{'); bool field = false;
+            for (const auto &entry : table)
+            {
+                if (field) putchar(',');
+                field = true; quote(entry.first); putchar(':'); quote(entry.second);
+            }
+            putchar('}');
+        }
+        printf("],\"manifests\":["); comma = false;
         for (const auto &manifest : manifests)
         {
             if (comma) putchar(',');
