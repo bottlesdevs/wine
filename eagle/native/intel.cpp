@@ -184,11 +184,12 @@ public:
         std::string software_id, level;
         for (const char *name : {"sha256", "imphash", "steam_appid"})
         {
+            if (std::string(name) == "steam_appid" && !software_id.empty()) break;
             std::string value = field(request, name);
             if (value.empty()) continue;
             std::string sql = std::string(name) == "steam_appid" ? "SELECT id FROM software WHERE steam_appid = ?" : "SELECT software_id AS id FROM artifact WHERE " + std::string(name) + " = ? AND software_id IS NOT NULL LIMIT 1";
-            software_id = id(sql.c_str(), value);
-            if (!software_id.empty()) { level = name; break; }
+            auto candidate = id(sql.c_str(), value);
+            if (software_id.empty() && !candidate.empty()) { software_id = candidate; level = name; }
         }
         std::vector<std::string> candidates;
         std::string product = field(request, "product_name");

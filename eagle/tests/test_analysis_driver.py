@@ -1,12 +1,16 @@
+import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
+
+from test_imports import image
 
 
 PACKAGE = Path(os.environ['EAGLE_PACKAGE']) / 'lib/eagle'
@@ -106,6 +110,39 @@ class AnalysisDriver(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn({'event': 'step', 'data': 'Extraction skipped (not supported)'}, messages)
             self.assertEqual(list(work.iterdir()), [])
+
+    def test_incomplete_intel_database_keeps_no_match_progress(self):
+        for missing in ('name', 'imphash'):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                native = self.package(root)
+                target = root / 'app.exe'
+                target.write_bytes(image('unknown.dll', 0x8664))
+                database = root / 'intel.sqlite'
+                with sqlite3.connect(database) as connection:
+                    connection.executescript("""
+                        CREATE TABLE meta (key TEXT, value TEXT);
+                        INSERT INTO meta VALUES ('schema_version', '1');
+                        CREATE TABLE artifact (software_id INTEGER, sha256 TEXT, imphash TEXT);
+                        CREATE TABLE software (id INTEGER, name TEXT, steam_appid TEXT,
+                                               trick_name TEXT, source TEXT);
+                        INSERT INTO software VALUES (1, 'Example', NULL, NULL, 'protondb');
+                        CREATE TABLE report_agg (software_id INTEGER, reports INTEGER,
+                            verdict_yes INTEGER, verdict_no INTEGER, tinkered INTEGER, tier TEXT);
+                        INSERT INTO report_agg VALUES (1, 50, 50, 0, 0, 'gold');
+                        CREATE TABLE tweak (software_id INTEGER, kind TEXT, value TEXT, evidence INTEGER);
+                        CREATE TABLE trick (id INTEGER);
+                    """)
+                    connection.execute('INSERT INTO artifact VALUES (1, ?, ?)',
+                                       (hashlib.sha256(target.read_bytes()).hexdigest(), 'other'))
+                    table = 'software' if missing == 'name' else 'artifact'
+                    connection.execute('ALTER TABLE ' + table + ' DROP COLUMN ' + missing)
+                result, messages = self.invoke(dict(target=str(target), database=str(database)),
+                                               native / 'eagle-driver')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(messages[-1]['status'])
+                self.assertIsNone(messages[-1]['data']['intel'])
+                self.assertIn({'event': 'step', 'data': 'No community intelligence match'}, messages)
 
 
 if __name__ == '__main__':

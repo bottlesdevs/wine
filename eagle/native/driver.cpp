@@ -318,7 +318,13 @@ class analyzer
                 auto appid = call("steam-appid", std::move(input)); set(lookup.get(), "steam_appid", appid.get());
                 string(lookup.get(), "product_name", product);
                 auto names = own(json_object_new_array()); json_object_array_add(names.get(), json_object_new_string(target.stem().c_str())); set(lookup.get(), "names", names.get());
-                auto hit = tool({(native / "eagle-intel").string(), database.string()}, encode(lookup.get()));
+                auto hit = own(nullptr);
+                try { hit = tool({(native / "eagle-intel").string(), database.string()}, encode(lookup.get())); }
+                catch (const tool_failure &error)
+                {
+                    fprintf(stderr, "Eagle Intel lookup failed: %s\n", error.what());
+                    step("No community intelligence match"); return own(nullptr);
+                }
                 if (!hit) { step("No community intelligence match"); return own(nullptr); }
                 auto plan_request = object(); string(plan_request.get(), "operation", "plan"); set(plan_request.get(), "hit", hit.get()); set(plan_request.get(), "constants", get(config.get(), "intel"));
                 auto plan = tool({(native / "eagle-intel").string(), database.string()}, encode(plan_request.get()));
