@@ -63,7 +63,7 @@ for architecture in x86_64 i686; do
     directory="$work/tests/j$bits"
     mkdir -p "$directory"
     "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror -D__WINESRC__ \
-        -I"$runner/include/wine/windows" "$root/eagle/tests/identity_bridge.c" -lruntimeobject -lole32 -o "$directory/target.exe"
+        -I"$runner/include/wine/windows" "$root/eagle/tests/identity_bridge.c" -lruntimeobject -lole32 -ladvapi32 -luser32 -o "$directory/target.exe"
     ln -s ../prefix "$directory/prefix"
     export EAGLE_IDENTITY_BRIDGE_TEST_ROOT="$directory" EAGLE_IDENTITY_BRIDGE_BITS="$bits"
     python3 "$root/eagle/tests/test_identity_bridge.py" > "$directory/integration.log" 2>&1
@@ -76,6 +76,15 @@ for architecture in x86_64 i686; do
     ln -s ../prefix "$directory/prefix"
     export EAGLE_IDENTITY_HTTP_TEST_ROOT="$directory"
     python3 "$root/eagle/tests/test_identity_http.py" > "$directory/integration.log" 2>&1
+    directory="$work/tests/l$bits"
+    mkdir -p "$directory"
+    "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror \
+        "$root/eagle/tests/identity_uri.c" -o "$directory/uri.exe"
+    ln -s ../j$bits/target.exe "$directory/target.exe"
+    ln -s ../k$bits/winhttp.dll "$directory/winhttp.dll"
+    ln -s ../prefix "$directory/prefix"
+    export EAGLE_IDENTITY_PROMPT_TEST_ROOT="$directory"
+    python3 "$root/eagle/tests/test_identity_prompt.py" > "$directory/integration.log" 2>&1
 done
 directory="$work/tests/d"
 mkdir -p "$directory"

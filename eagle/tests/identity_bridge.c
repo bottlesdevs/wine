@@ -14,6 +14,88 @@
 #include <stdio.h>
 #include <string.h>
 
+static BOOL device, async_cancel;
+static volatile LONG dialog_seen, action_taken, dialog_closed;
+static IAsyncInfo *cancel_info;
+static HWND prompt_window;
+
+static BOOL CALLBACK find_prompt(HWND window, LPARAM data)
+{
+    WCHAR title[128];
+    DWORD pid;
+    (void)data;
+    GetWindowThreadProcessId(window, &pid);
+    if (pid == GetCurrentProcessId() && IsWindowVisible(window) &&
+        GetWindowTextW(window, title, sizeof(title)/sizeof(WCHAR)) && !wcscmp(title, L"Microsoft 365 sign-in"))
+    { prompt_window = window; return FALSE; }
+    return TRUE;
+}
+
+static BOOL marker_exists(const char *name)
+{
+    char path[4096];
+    DWORD size = GetEnvironmentVariableA(name, path, sizeof(path));
+    return size && size < sizeof(path) && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+static DWORD WINAPI watch_prompt(void *context)
+{
+    char path[4096], action[32] = {0};
+    DWORD start = GetTickCount(), size;
+    FILE *file;
+    (void)context;
+    if (FAILED(RoInitialize(RO_INIT_MULTITHREADED))) return 7;
+    while (!prompt_window && GetTickCount() - start < 20000)
+    { EnumWindows(find_prompt, 0); if (!prompt_window) Sleep(20); }
+    if (!prompt_window) return 1;
+    InterlockedExchange(&dialog_seen, 1);
+    size = GetEnvironmentVariableA("EAGLE_FIXTURE_PROMPT_READY", path, sizeof(path));
+    if (!size || size >= sizeof(path) || !(file = fopen(path, "wb"))) return 2;
+    fprintf(file, "%lu\n", (unsigned long)(ULONG_PTR)prompt_window);fclose(file);
+    start = GetTickCount();
+    while (!marker_exists("EAGLE_FIXTURE_PROMPT_CLICK") && GetTickCount() - start < 20000) Sleep(20);
+    if (!marker_exists("EAGLE_FIXTURE_PROMPT_CLICK")) return 3;
+    GetEnvironmentVariableA("EAGLE_FIXTURE_PROMPT_ACTION", action, sizeof(action));
+    if (async_cancel)
+    {
+        if (FAILED(IAsyncInfo_Cancel(cancel_info))) return 4;
+    }
+    else
+    {
+        HWND button = GetDlgItem(prompt_window, !strcmp(action, "cancel") ? IDCANCEL : IDOK);
+        if (!button || !IsWindowEnabled(button)) return 5;
+        SendMessageW(button, BM_CLICK, 0, 0);
+    }
+    InterlockedExchange(&action_taken, 1);
+    start = GetTickCount();
+    while (IsWindow(prompt_window) && GetTickCount() - start < 10000) Sleep(20);
+    if (IsWindow(prompt_window)) return 6;
+    InterlockedExchange(&dialog_closed, 1);
+    RoUninitialize();
+    return 0;
+}
+
+static BOOL register_fixture_uri(void)
+{
+    char executable[4096], output[4096], command[8300];
+    HKEY key, child;
+    LONG result;
+    DWORD exe_size = GetEnvironmentVariableA("EAGLE_FIXTURE_URI_EXE", executable, sizeof(executable));
+    DWORD out_size = GetEnvironmentVariableA("EAGLE_FIXTURE_URI_LOG", output, sizeof(output));
+    if (!exe_size || exe_size >= sizeof(executable) || !out_size || out_size >= sizeof(output)) return FALSE;
+    if (RegCreateKeyExA(HKEY_CLASSES_ROOT, "eagle-fixture", 0, NULL, 0, KEY_WRITE, NULL, &key, NULL)) return FALSE;
+    result = RegSetValueExA(key, "URL Protocol", 0, REG_SZ, (const BYTE *)"", 1);
+    if (!result) result = RegCreateKeyExA(key, "shell\\open\\command", 0, NULL, 0, KEY_WRITE, NULL, &child, NULL);
+    if (!result)
+    {
+        snprintf(command, sizeof(command), "\"%s\" \"%%1\" \"%s\"", executable, output);
+        result = RegSetValueExA(child, NULL, 0, REG_SZ, (BYTE *)command, strlen(command)+1);
+        RegCloseKey(child);
+    }
+    RegCloseKey(key);
+    return !result;
+}
+
 static HRESULT wait_result(IUnknown *value)
 {
     IAsyncInfo *info;
@@ -21,7 +103,7 @@ static HRESULT wait_result(IUnknown *value)
     unsigned i;
     HRESULT hr = IUnknown_QueryInterface(value, &IID_IAsyncInfo, (void **)&info);
     if (FAILED(hr)) return hr;
-    for (i = 0; i < 1000 && status == Started; i++)
+    for (i = 0; i < (device ? 3000 : 1000) && status == Started; i++)
     {
         hr = IAsyncInfo_get_Status(info, &status);
         if (FAILED(hr)) break;
@@ -51,10 +133,18 @@ int main(int argc, char **argv)
     UINT32 count = 0, error_code = 0;
     BOOL token, interactive, record;
     FILE *file;
-    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive") && strcmp(argv[2], "record") && strcmp(argv[2], "refresh") && strcmp(argv[2], "refresh-interactive")))) return 1;
+    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive") && strcmp(argv[2], "record") && strcmp(argv[2], "refresh") && strcmp(argv[2], "refresh-interactive") && strcmp(argv[2], "device")))) return 1;
+    device = argc == 3 && !strcmp(argv[2], "device");
+    if (device)
+    {
+        char action[32] = {0};
+        GetEnvironmentVariableA("EAGLE_FIXTURE_PROMPT_ACTION", action, sizeof(action));
+        async_cancel = !strcmp(action, "async");
+        if (!register_fixture_uri()) return 10;
+    }
     record = argc == 3 && !strcmp(argv[2], "record");
-    token = argc == 3 && (!strcmp(argv[2], "silent") || !strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh") || !strcmp(argv[2], "refresh-interactive"));
-    interactive = token && (!strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh-interactive"));
+    token = device || (argc == 3 && (!strcmp(argv[2], "silent") || !strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh") || !strcmp(argv[2], "refresh-interactive")));
+    interactive = device || (token && (!strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh-interactive")));
     CHECK(RoInitialize(RO_INIT_MULTITHREADED));
     module = LoadLibraryW(L"windows.security.authentication.onlineid.dll");
     if (!module) { fprintf(stderr, "LoadLibrary error=%lu\n", GetLastError()); return 2; }
@@ -77,7 +167,8 @@ int main(int argc, char **argv)
         IWebTokenRequestFactory *constructor;
         IWebTokenRequest *request;
         IAsyncOperation_WebTokenRequestResult *token_operation;
-        IWebTokenRequestResult *token_result;
+        IWebTokenRequestResult *token_result = NULL;
+        HANDLE watcher_thread = NULL;
         WebTokenRequestStatus token_status;
         HSTRING request_name, scope;
         static const WCHAR request_class[] = L"Windows.Security.Authentication.Web.Core.WebTokenRequest";
@@ -89,31 +180,60 @@ int main(int argc, char **argv)
         CHECK(IWebTokenRequestFactory_Create(constructor, provider, scope, client_id, &request));
         if (interactive) CHECK(IWebAuthenticationCoreManagerStatics_RequestTokenAsync(manager, request, &token_operation));
         else CHECK(IWebAuthenticationCoreManagerStatics_GetTokenSilentlyAsync(manager, request, &token_operation));
-        CHECK(wait_result((IUnknown *)token_operation));
-        CHECK(IAsyncOperation_WebTokenRequestResult_GetResults(token_operation, &token_result));
-        CHECK(IWebTokenRequestResult_get_ResponseStatus(token_result, &token_status));
-        if (token_status == WebTokenRequestStatus_Success)
+        if (device)
         {
-            IVectorView_WebTokenResponse *responses;
-            IWebTokenResponse *response;
-            HSTRING access;
-            CHECK(IWebTokenRequestResult_get_ResponseData(token_result, &responses));
-            CHECK(IVectorView_WebTokenResponse_get_Size(responses, &count));
-            if (count != 1) return 8;
-            CHECK(IVectorView_WebTokenResponse_GetAt(responses, 0, &response));
-            CHECK(IWebTokenResponse_get_Token(response, &access));
-            if (wcscmp(WindowsGetStringRawBuffer(access, NULL), L"fixture-access-not-a-token")) return 9;
-            WindowsDeleteString(access);
-            IWebTokenResponse_Release(response);IVectorView_WebTokenResponse_Release(responses);
+            CHECK(IAsyncOperation_WebTokenRequestResult_QueryInterface(token_operation, &IID_IAsyncInfo, (void **)&cancel_info));
+            watcher_thread = CreateThread(NULL, 0, watch_prompt, NULL, 0, NULL);
+            if (!watcher_thread) return 11;
+        }
+        if (async_cancel)
+        {
+            AsyncStatus state = Started;
+            HRESULT cancellation;
+            unsigned i;
+            for (i = 0; i < 3000 && state == Started; i++)
+            { CHECK(IAsyncInfo_get_Status(cancel_info, &state)); if (state == Started) Sleep(10); }
+            CHECK(IAsyncInfo_get_ErrorCode(cancel_info, &cancellation));
+            if (state != Canceled || cancellation != E_ABORT ||
+                IAsyncOperation_WebTokenRequestResult_GetResults(token_operation, &token_result) != E_ILLEGAL_METHOD_CALL || token_result) return 12;
+            token_status = (WebTokenRequestStatus)Canceled;
+            error_code = (UINT32)cancellation;
         }
         else
         {
-            CHECK(IWebTokenRequestResult_get_ResponseError(token_result, &error));
-            CHECK(IWebProviderError_get_ErrorCode(error, &error_code));
-            IWebProviderError_Release(error);
+            CHECK(wait_result((IUnknown *)token_operation));
+            CHECK(IAsyncOperation_WebTokenRequestResult_GetResults(token_operation, &token_result));
+            CHECK(IWebTokenRequestResult_get_ResponseStatus(token_result, &token_status));
+            if (token_status == WebTokenRequestStatus_Success)
+            {
+                IVectorView_WebTokenResponse *responses;
+                IWebTokenResponse *response;
+                HSTRING access;
+                CHECK(IWebTokenRequestResult_get_ResponseData(token_result, &responses));
+                CHECK(IVectorView_WebTokenResponse_get_Size(responses, &count));
+                if (count != 1) return 8;
+                CHECK(IVectorView_WebTokenResponse_GetAt(responses, 0, &response));
+                CHECK(IWebTokenResponse_get_Token(response, &access));
+                if (wcscmp(WindowsGetStringRawBuffer(access, NULL), L"fixture-access-not-a-token")) return 9;
+                WindowsDeleteString(access);
+                IWebTokenResponse_Release(response);IVectorView_WebTokenResponse_Release(responses);
+            }
+            else
+            {
+                CHECK(IWebTokenRequestResult_get_ResponseError(token_result, &error));
+                CHECK(IWebProviderError_get_ErrorCode(error, &error_code));
+                IWebProviderError_Release(error);
+            }
+        }
+        if (device)
+        {
+            DWORD result;
+            if (WaitForSingleObject(watcher_thread, 20000) != WAIT_OBJECT_0 ||
+                !GetExitCodeThread(watcher_thread, &result) || result || !dialog_seen || !action_taken || !dialog_closed) return 13;
+            CloseHandle(watcher_thread);IAsyncInfo_Release(cancel_info);
         }
         status = (FindAllWebAccountsStatus)token_status;
-        IWebTokenRequestResult_Release(token_result);
+        if (token_result) IWebTokenRequestResult_Release(token_result);
         IAsyncOperation_WebTokenRequestResult_Release(token_operation);
         IWebTokenRequest_Release(request);
         IWebTokenRequestFactory_Release(constructor);
@@ -158,6 +278,7 @@ int main(int argc, char **argv)
     }
     if (!(file = fopen(argv[1], "wb"))) return 4;
     fprintf(file, "%lu %u %08x %u\n", GetCurrentProcessId(), status, (unsigned)error_code, (unsigned)count);
+    if (device) fprintf(file, "%ld %ld %ld\n", dialog_seen, action_taken, dialog_closed);
     if (fclose(file)) return 5;
     IWebAccountProvider_Release(provider);
     IAsyncOperation_WebAccountProvider_Release(provider_operation);
@@ -166,5 +287,11 @@ int main(int argc, char **argv)
     IActivationFactory_Release(factory);
     WindowsDeleteString(client_id);WindowsDeleteString(authority);WindowsDeleteString(provider_id);WindowsDeleteString(name);
     RoUninitialize();
+    if (device)
+    {
+        DWORD start = GetTickCount();
+        while (!marker_exists("EAGLE_FIXTURE_PROMPT_FINISH") && GetTickCount() - start < 20000) Sleep(20);
+        if (!marker_exists("EAGLE_FIXTURE_PROMPT_FINISH")) return 14;
+    }
     return 0;
 }

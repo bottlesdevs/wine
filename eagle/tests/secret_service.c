@@ -87,6 +87,7 @@ static void create_item(GVariant *parameters, GDBusMethodInvocation *invocation)
         g_free(stored_record);
         stored_record = g_strndup(bytes, length);
         record = stored_record;
+        populated = TRUE;
         g_dbus_method_invocation_return_value(invocation, g_variant_new("(oo)", item_path, "/"));
     }
     g_free(expected);
@@ -145,7 +146,7 @@ static GVariant *get_property(GDBusConnection *connection, const gchar *sender, 
                               const gchar *interface, const gchar *property, GError **error, gpointer data)
 {
     if (!strcmp(property, "Collections")) return g_variant_new_objv((const gchar * const[]){collection_path}, 1);
-    if (!strcmp(property, "Items")) return g_variant_new_objv((const gchar * const[]){item_path}, 1);
+    if (!strcmp(property, "Items")) return populated ? g_variant_new_objv((const gchar * const[]){item_path}, 1) : empty_paths();
     if (!strcmp(property, "Locked")) return g_variant_new_boolean(FALSE);
     if (!strcmp(property, "Attributes")) return attributes ? g_variant_ref(attributes) : g_variant_new_array(G_VARIANT_TYPE("{ss}"), NULL, 0);
     if (!strcmp(property, "Label")) return g_variant_new_string("Fixture Account");
@@ -163,7 +164,7 @@ int main(int argc, char **argv)
     FILE *ready;
     static const GDBusInterfaceVTable table = {method_call, get_property, NULL, {0}};
 
-    if (argc != 4 || (strcmp(argv[3], "empty") && strcmp(argv[3], "denied") && strcmp(argv[3], "record") && strcmp(argv[3], "wrong-audience") && strcmp(argv[3], "store-error")) || !(calls = fopen(argv[2], "wb"))) return 1;
+    if (argc != 4 || (strcmp(argv[3], "empty") && strcmp(argv[3], "denied") && strcmp(argv[3], "record") && strcmp(argv[3], "wrong-audience") && strcmp(argv[3], "store-error") && strcmp(argv[3], "device")) || !(calls = fopen(argv[2], "wb"))) return 1;
     denied = !strcmp(argv[3], "denied");
     populated = !strcmp(argv[3], "record") || !strcmp(argv[3], "wrong-audience") || !strcmp(argv[3], "store-error");
     reject_store = !strcmp(argv[3], "store-error");
