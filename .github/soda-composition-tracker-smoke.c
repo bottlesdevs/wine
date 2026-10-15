@@ -102,7 +102,7 @@ int main(int argc,char **argv)
     ICompositionObject *object,*tracker_object,*layout_object;
     IInteractionTrackerStatics *factory;IInteractionTracker *tracker;ICompositionPropertySet *layout;
     IClosable *closable;HSTRING name,size;HWND window;INT32 request;struct Vector3 position;
-    HRESULT cycle;ULONG refs_before,refs_after;HANDLE threads[2];struct stress_context stress;
+    HRESULT result;ULONG refs_before,refs_after;HANDLE threads[2];struct stress_context stress;
     BOOL candidate=argc>1;
     verify_pixels=candidate;
 
@@ -153,10 +153,19 @@ int main(int argc,char **argv)
         CloseHandle(threads[0]);CloseHandle(threads[1]);ICompositionAnimation_Release(stress.animation);
         puts("TRACKER_CONCURRENT_500_WRITES_1000_READS_PASS");
     }
-    start(compositor,tracker_object,L"MinPosition.X",L"this.target.Position.X",NULL,NULL);
-    cycle=IInteractionTracker_get_Position(tracker,&position);printf("CYCLE_RESULT=%08lx\n",(unsigned long)cycle);
-    if(candidate && cycle!=E_ILLEGAL_METHOD_CALL)return 5;
-    stage(controller,"CYCLE");
+    {
+        const WCHAR *expressions[] = {L"this.target.Position.X", L"this.target.position.x", L"This.Target.POSITION.X"};
+        UINT i;
+
+        for (i = 0; i < sizeof(expressions) / sizeof(expressions[0]); ++i)
+        {
+            start(compositor,tracker_object,L"MinPosition.X",expressions[i],NULL,NULL);
+            result=IInteractionTracker_get_Position(tracker,&position);
+            printf("SELF_POSITION_%u_RESULT=%08lx\n",i,(unsigned long)result);
+            if(candidate && (FAILED(result) || position.X!=-30))return 5;
+        }
+    }
+    stage(controller,"POSITION");
     start(compositor,tracker_object,L"MinPosition.X",L"1/0",NULL,NULL);
     stage(controller,"INVALID");
     check("closable",IInteractionTracker_QueryInterface(tracker,&IID_IClosable,(void **)&closable));

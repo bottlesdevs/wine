@@ -1,0 +1,61 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -4346,21 +4346,21 @@
+         name[length] = 0;
+         if (SUCCEEDED(ICompositionObject_QueryInterface( object, &IID_IInteractionTracker, (void **)&tracker )))
+         {
+-            if (!wcscmp( name, L"Scale" )) hr = IInteractionTracker_get_Scale( tracker, value );
+-            else if (!wcscmp( name, L"MinScale" )) hr = IInteractionTracker_get_MinScale( tracker, value );
+-            else if (!wcscmp( name, L"MaxScale" )) hr = IInteractionTracker_get_MaxScale( tracker, value );
+-            else if (!wcscmp( name, L"IsPositionRoundingSuggested" ))
++            if (!wcsicmp( name, L"Scale" )) hr = IInteractionTracker_get_Scale( tracker, value );
++            else if (!wcsicmp( name, L"MinScale" )) hr = IInteractionTracker_get_MinScale( tracker, value );
++            else if (!wcsicmp( name, L"MaxScale" )) hr = IInteractionTracker_get_MaxScale( tracker, value );
++            else if (!wcsicmp( name, L"IsPositionRoundingSuggested" ))
+             {
+                 hr = IInteractionTracker_get_IsPositionRoundingSuggested( tracker, &rounding );
+                 if (SUCCEEDED(hr)) *value = rounding;
+             }
+-            else if (length >= 2 && name[length - 2] == '.' && name[length - 1] >= 'X' && name[length - 1] <= 'Z')
++            else if (length >= 2 && name[length - 2] == '.' && towupper( name[length - 1] ) >= 'X' && towupper( name[length - 1] ) <= 'Z')
+             {
+                 name[length - 2] = 0;
+-                if (!wcscmp( name, L"Position" )) hr = IInteractionTracker_get_Position( tracker, &vector );
+-                else if (!wcscmp( name, L"MinPosition" )) hr = IInteractionTracker_get_MinPosition( tracker, &vector );
+-                else if (!wcscmp( name, L"MaxPosition" )) hr = IInteractionTracker_get_MaxPosition( tracker, &vector );
+-                if (SUCCEEDED(hr)) *value = name[length - 1] == 'X' ? vector.X : name[length - 1] == 'Y' ? vector.Y : vector.Z;
++                if (!wcsicmp( name, L"Position" )) hr = IInteractionTracker_get_Position( tracker, &vector );
++                else if (!wcsicmp( name, L"MinPosition" )) hr = IInteractionTracker_get_MinPosition( tracker, &vector );
++                else if (!wcsicmp( name, L"MaxPosition" )) hr = IInteractionTracker_get_MaxPosition( tracker, &vector );
++                if (SUCCEEDED(hr)) *value = towupper( name[length - 1] ) == 'X' ? vector.X : towupper( name[length - 1] ) == 'Y' ? vector.Y : vector.Z;
+                 name[length - 2] = '.';
+             }
+             IInteractionTracker_Release( tracker );
+@@ -4412,7 +4412,7 @@
+ {
+     struct expression_animation_reference *reference;
+ 
+-    if (key_length == 4 && !wcsncmp( key, L"this", 4 ) && property_length > 7 && !wcsncmp( property, L"target.", 7 ))
++    if (key_length == 4 && !wcsnicmp( key, L"this", 4 ) && property_length > 7 && !wcsnicmp( property, L"target.", 7 ))
+         return target ? expression_object_scalar( target, property + 7, property_length - 7, value ) : E_NOTIMPL;
+     LIST_FOR_EACH_ENTRY( reference, &impl->references, struct expression_animation_reference, entry )
+     {
+--- a/dlls/windows.ui/interactions.c
++++ b/dlls/windows.ui/interactions.c
+@@ -1040,9 +1040,13 @@
+ {
+     struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
+     HRESULT hr;
+-
+-    if (!value) return E_POINTER;
+-    if (FAILED(hr = interaction_tracker_evaluate_bounds( impl ))) return hr;
++    BOOL evaluating;
++
++    if (!value) return E_POINTER;
++    EnterCriticalSection( &impl->animation_cs );
++    evaluating = impl->evaluation_thread == GetCurrentThreadId();
++    LeaveCriticalSection( &impl->animation_cs );
++    if (!evaluating && FAILED(hr = interaction_tracker_evaluate_bounds( impl ))) return hr;
+     EnterCriticalSection( &impl->animation_cs );
+     *value = impl->position;
+     LeaveCriticalSection( &impl->animation_cs );
