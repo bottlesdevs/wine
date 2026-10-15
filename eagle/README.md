@@ -195,6 +195,31 @@ Exports remove selected paths, source paths and `offline_diagnostic` details,
 keep mode 0600 and still require review. Image hashes match recorded files;
 they do not certify that a prefix-file fallback was the actual runtime image.
 
+## Exported and live log inputs
+
+`inspect` and `export` accept a full session directory, a finalized `.log`
+summary or an `eagle-live-v1` `.running.log`. The stdio methods use the same
+`session` parameter. Imported report files must be regular files, at most
+32 MiB. Full-bundle behavior is unchanged.
+
+Finalized summaries preserve their declared counts and omission metadata.
+Retained records are ordered by collector sequence numbers; identical events
+shown in several views share one record. Conflicting sequence data is invalid.
+When sequence information is missing, inspection still works, but reviewed
+symbol enrichment marks the frame order unavailable. Missing load history
+stays unavailable. Redacted image aliases require recorded address/base data.
+
+Live logs retain file order and remain partial even after a `finished` event.
+An incomplete final JSONL line is marked and ignored; malformed complete or
+middle records fail. Capture-limit/error markers remain visible. Imported
+memory events and raw dump bodies are excluded; dump metadata remains.
+
+`input_coverage` states the retained history and ordering limits. Optional
+`--symbol-images` enrichment uses that retained evidence without reopening
+recorded paths. Re-export keeps path/diagnostic redaction, mode 0600 and review.
+Run comparison requires complete session directories: exported views cannot
+establish matching run inputs or recover omitted events.
+
 ## Backend messages
 
 `eagle serve` uses Content-Length frames with a 1 MiB body limit. Request IDs

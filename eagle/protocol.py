@@ -18,6 +18,8 @@ def capabilities():
     analyzer = available()
     return {
         "schema": 1,
+        "session_inputs": {"inspect_export": ["session directory", "exported summary", "eagle-live-v1"],
+                           "maximum_report_bytes": 33554432, "comparison": "complete session directories"},
         "saved_frame_symbols": {"selection": "explicit SHA256/image mappings", "maximum_addresses": 256, "capture_values": "preserved"},
         "inline_frames": {"requires": "host llvm-symbolizer", "maximum_depth": 64, "order": "innermost-to-outermost",
                           "split_packages": "debug_files selects matching DWP/DWO inputs; requires host llvm-dwarfdump and llvm-dwp for DWO assembly",

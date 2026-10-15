@@ -139,15 +139,49 @@ def frame_key(frame):
         rva = hex(rva)
     return frame.get('module'), rva
 
-def read_bundle(root):
-    root = Path(root)
-    manifest = json.loads((root / "manifest.json").read_text())
+def validate_manifest(manifest):
     if not isinstance(manifest, dict):
         raise ValueError("session manifest must be an object")
     if type(manifest.get("schema")) is not int or manifest["schema"] != SCHEMA:
         raise ValueError("unsupported session schema")
     for name in ("modules", "unix_modules"):
         module_records(manifest.get(name, {}), name)
+
+def validate_event(event, error):
+    if not isinstance(event, dict) or not isinstance(event.get("kind"), str) or not event["kind"]:
+        raise ValueError(error)
+    if event["kind"] == "process_exit" and any(key not in event for key in ("pid", "code")):
+        raise ValueError(error + ": incomplete process exit")
+    if event["kind"] == "exception" and not isinstance(event.get("first_chance"), bool):
+        raise ValueError(error + ": missing exception chance")
+    for key, expected in (("path", str), ("code", (str, int)), ("first_chance", bool)):
+        if key in event and not isinstance(event[key], expected):
+            raise ValueError(error + ": " + key)
+    try:
+        if event.get('frame') is not None:
+            frame_key(event['frame'])
+        if 'frames' in event:
+            if not isinstance(event['frames'], list) or len(event['frames']) > 4096:
+                raise ValueError('invalid frame stack')
+            for frame in event['frames']:
+                frame_key(frame)
+            if event.get('unwind') is not None and not isinstance(event['unwind'], str):
+                raise ValueError('invalid unwind method')
+            if event.get('truncated') is not None and type(event['truncated']) is not bool:
+                raise ValueError('invalid stack truncation')
+    except ValueError as detail:
+        raise ValueError(error + ': ' + str(detail)) from detail
+    if event["kind"] == "provider":
+        data = event.get("data")
+        if not isinstance(data, dict) or ("provider" in data and type(data["provider"]) not in (str, int)):
+            raise ValueError(error + ": invalid provider data")
+    if "wait_graph" in event and not isinstance(event["wait_graph"], dict):
+        raise ValueError(error + ": invalid wait graph")
+
+def read_bundle(root):
+    root = Path(root)
+    manifest = json.loads((root / "manifest.json").read_text())
+    validate_manifest(manifest)
     events = []
     with (root / "events.jsonl").open() as file:
         for number, line in enumerate(file, 1):
@@ -155,40 +189,11 @@ def read_bundle(root):
                 raise ValueError("session event exceeds size limit")
             event = json.loads(line)
             error = f"invalid session event at line {number}"
-            if not isinstance(event, dict) or not isinstance(event.get("kind"), str) or not event["kind"]:
-                raise ValueError(error)
-            if event["kind"] == "process_exit" and any(key not in event for key in ("pid", "code")):
-                raise ValueError(error + ": incomplete process exit")
-            if event["kind"] == "exception" and not isinstance(event.get("first_chance"), bool):
-                raise ValueError(error + ": missing exception chance")
-            for key, expected in (("path", str), ("code", (str, int)), ("first_chance", bool)):
-                if key in event and not isinstance(event[key], expected):
-                    raise ValueError(error + ": " + key)
-            try:
-                if event.get('frame') is not None:
-                    frame_key(event['frame'])
-                if 'frames' in event:
-                    if not isinstance(event['frames'], list) or len(event['frames']) > 4096:
-                        raise ValueError('invalid frame stack')
-                    for frame in event['frames']:
-                        frame_key(frame)
-                    if event.get('unwind') is not None and not isinstance(event['unwind'], str):
-                        raise ValueError('invalid unwind method')
-                    if event.get('truncated') is not None and type(event['truncated']) is not bool:
-                        raise ValueError('invalid stack truncation')
-            except ValueError as detail:
-                raise ValueError(error + ': ' + str(detail)) from detail
-            if event["kind"] == "provider":
-                data = event.get("data")
-                if not isinstance(data, dict) or ("provider" in data and type(data["provider"]) not in (str, int)):
-                    raise ValueError(error + ": invalid provider data")
-            if "wait_graph" in event and not isinstance(event["wait_graph"], dict):
-                raise ValueError(error + ": invalid wait graph")
+            validate_event(event, error)
             events.append(event)
     return manifest, events
 
-def summary(root, symbol_images=None):
-    manifest, events = read_bundle(root)
+def summarize(manifest, events):
     exits = [{key: event[key] for key in ("pid", "code")} for event in events if event["kind"] == "process_exit"]
     faults = [event for event in events if event["kind"] == "exception" and not event["first_chance"]]
     providers = [event for event in events if event['kind'] == 'provider']
@@ -208,9 +213,23 @@ def summary(root, symbol_images=None):
     timeline = [event for event in events if event['kind'] not in ('provider', 'snapshot', 'dump', 'memory') and not (event['kind'] == 'exception' and event.get('internal'))]
     dumps = [{key: event[key] for key in ('seq', 'time_ms', 'kind', 'pid', 'tid', 'path', 'size') if key in event} for event in events if event['kind'] == 'dump']
     report = {"manifest": manifest, "counts": dict(collections.Counter(event["kind"] for event in events)), "exits": exits, "terminal_exceptions": faults, "snapshots": [event for event in events if event["kind"] == "snapshot"], "dumps": dumps, 'providers': selected_providers, 'provider_selection': 'up to 2000 recent events balanced across providers', 'timeline': timeline[-4096:], 'timeline_events_omitted': max(0, len(timeline) - 4096), 'provider_events_omitted': len(providers) - len(selected_providers), 'observed_wait_cycles': cycles[:100], 'wait_cycles_omitted': max(0, len(cycles) - 100)}
+    return report
+
+def summary(root, symbol_images=None):
+    ordered = True
+    if Path(root).is_dir():
+        manifest, events = read_bundle(root)
+        report = summarize(manifest, events)
+    else:
+        from session_reports import load_report
+        report, events = load_report(root)
+        manifest = report['manifest']
+        ordered = report['input_coverage']['event_order'] in ('sequence', 'stream')
     if symbol_images is not None:
         from session_symbols import enrich
-        report['offline_symbolization'] = enrich(manifest, events, symbol_images)
+        report['offline_symbolization'] = enrich(manifest, events, symbol_images, ordered=ordered)
+        if 'input_coverage' in report:
+            report['offline_symbolization']['record_scope'] = 'retained report records'
     return report
 
 def fingerprint(event):
@@ -224,6 +243,8 @@ def fingerprint(event):
     return key
 
 def compare(first, second):
+    if not Path(first).is_dir() or not Path(second).is_dir():
+        raise ValueError('run comparison requires complete session bundles')
     a, left = read_bundle(first)
     b, right = read_bundle(second)
     x = collections.Counter(map(fingerprint, left))

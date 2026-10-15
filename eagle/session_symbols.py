@@ -61,7 +61,12 @@ def number(value):
         raise ValueError('recorded address is invalid')
     return result
 
-def recorded_frames(manifest, events):
+def recorded_frames(manifest, events, ordered=True):
+    if not ordered:
+        for event in events:
+            for frame in ([event['frame']] if event.get('frame') is not None else []) + event.get('frames', []):
+                yield event, frame, None, None, None, 'retained event order is unavailable'
+        return
     active = {}
     names = collections.defaultdict(dict)
     timeline = any(event['kind'] in ('process_create', 'module_load', 'module_unload') for event in events)
@@ -119,7 +124,7 @@ def recorded_frames(manifest, events):
                     base = number(frame['address']) - rva
                     record = candidates.get(base)
                 else:
-                    record = next(iter(candidates.values())) if len(candidates) == 1 else None
+                    record = next(iter(candidates.values())) if len(candidates) == 1 and image != '[redacted]' else None
                 if record is None and not timeline and pid not in ended and image in inventory:
                     record = dict(identity=inventory[image], origin='manifest only; runtime unverified')
                 if record is None:
@@ -132,12 +137,12 @@ def recorded_frames(manifest, events):
             except ValueError as error:
                 yield event, frame, None, None, None, str(error)
 
-def enrich(manifest, events, values):
+def enrich(manifest, events, values, ordered=True):
     mappings = image_maps(values)
     deadline = time.monotonic() + 20
     selected = {}
     priority = {level: collections.OrderedDict() for level in (1, 2, 3)}
-    for event, frame, digest, rva, origin, reason in recorded_frames(manifest, events):
+    for event, frame, digest, rva, origin, reason in recorded_frames(manifest, events, ordered):
         if time.monotonic() >= deadline:
             raise ValueError('saved-frame symbolization timed out')
         annotation = dict(status='unavailable')
