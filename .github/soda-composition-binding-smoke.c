@@ -29,6 +29,14 @@ static HSTRING string(const WCHAR *text)
     HSTRING value;check("string",WindowsCreateString(text,lstrlenW(text),&value));return value;
 }
 
+static void create_tracker(IInteractionTrackerStatics *factory,ICompositor *compositor,IInteractionTracker **tracker)
+{
+    check("create",IInteractionTrackerStatics_Create(factory,compositor,tracker));
+    check("min position",IInteractionTracker_put_MinPosition(*tracker,((struct Vector3){-10000,-10000,-10000})));
+    check("max position",IInteractionTracker_put_MaxPosition(*tracker,((struct Vector3){10000,10000,10000})));
+    check("max scale",IInteractionTracker_put_MaxScale(*tracker,4));
+}
+
 static void expect_scale(IInteractionTracker *tracker,FLOAT expected)
 {
     FLOAT value;
@@ -62,7 +70,7 @@ static void test_position_bindings(IInteractionTrackerStatics *factory,IInteract
     INT32 request;
     UINT i;
 
-    for(i=0;i<5;++i)check("position create",IInteractionTrackerStatics_Create(factory,compositor,&trackers[i]));
+    for(i=0;i<5;++i)create_tracker(factory,compositor,&trackers[i]);
     check("bind X",IInteractionTrackerStatics2_SetBindingMode(bindings,trackers[0],trackers[1],InteractionBindingAxisModes_PositionX));
     check("bind distinct Y",IInteractionTrackerStatics2_SetBindingMode(bindings,trackers[1],trackers[2],InteractionBindingAxisModes_PositionY));
     check("bind Y",IInteractionTrackerStatics2_SetBindingMode(bindings,trackers[0],trackers[3],InteractionBindingAxisModes_PositionY));
@@ -127,7 +135,7 @@ static DWORD WINAPI stress_bind(void *data)
     check("worker initialize",RoInitialize(RO_INIT_MULTITHREADED));
     for(i=0;i<1000;++i)
     {
-        check("stress create",IInteractionTrackerStatics_Create(context->factory,context->compositor,&peer));
+        create_tracker(context->factory,context->compositor,&peer);
         check("stress bind",IInteractionTrackerStatics2_SetBindingMode(context->bindings,context->root,peer,InteractionBindingAxisModes_Scale|InteractionBindingAxisModes_PositionX|InteractionBindingAxisModes_PositionY));
         if(i%2)
         {
@@ -163,7 +171,7 @@ int main(void)
     check("factory",RoGetActivationFactory(name,&IID_IInteractionTrackerStatics,(void **)&factory));WindowsDeleteString(name);
     check("bindings",IInteractionTrackerStatics_QueryInterface(factory,&IID_IInteractionTrackerStatics2,(void **)&bindings));
     test_position_bindings(factory,bindings,compositor);
-    for(i=0;i<5;++i)check("create",IInteractionTrackerStatics_Create(factory,compositor,&trackers[i]));
+    for(i=0;i<5;++i)create_tracker(factory,compositor,&trackers[i]);
     check("bind01",IInteractionTrackerStatics2_SetBindingMode(bindings,trackers[0],trackers[1],InteractionBindingAxisModes_Scale));
     check("bind12",IInteractionTrackerStatics2_SetBindingMode(bindings,trackers[1],trackers[2],InteractionBindingAxisModes_Scale|InteractionBindingAxisModes_PositionX));
     check("bind20",IInteractionTrackerStatics2_SetBindingMode(bindings,trackers[2],trackers[0],InteractionBindingAxisModes_Scale));
@@ -190,7 +198,7 @@ int main(void)
 
     for(i=0;i<256;++i)
     {
-        check("chain create",IInteractionTrackerStatics_Create(factory,compositor,&chain[i]));
+        create_tracker(factory,compositor,&chain[i]);
         if(i)check("chain bind",IInteractionTrackerStatics2_SetBindingMode(bindings,chain[i-1],chain[i],InteractionBindingAxisModes_Scale));
     }
     check("chain cycle",IInteractionTrackerStatics2_SetBindingMode(bindings,chain[255],chain[0],InteractionBindingAxisModes_Scale));

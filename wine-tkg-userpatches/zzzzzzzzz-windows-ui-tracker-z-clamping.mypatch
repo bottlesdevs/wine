@@ -1,0 +1,120 @@
+diff --git a/dlls/windows.ui/interactions.c b/dlls/windows.ui/interactions.c
+--- a/dlls/windows.ui/interactions.c
++++ b/dlls/windows.ui/interactions.c
+@@ -732,6 +732,7 @@
+     IAgileReference *owner;
+     CO_MTA_USAGE_COOKIE owner_mta_cookie;
+     BOOL notifications_closed;
++    BOOL clamp_position;
+     struct list bindings;
+     struct list update_entry;
+     struct list changed_entry;
+@@ -1136,9 +1137,12 @@
+     {
+         impl->min_position = (struct Vector3){values[0], values[1], values[2]};
+         impl->max_position = (struct Vector3){values[3], values[4], values[5]};
+-        impl->position.X = min( max( impl->position.X, values[0] ), values[3] );
+-        impl->position.Y = min( max( impl->position.Y, values[1] ), values[4] );
+-        impl->position.Z = min( max( impl->position.Z, values[2] ), values[5] );
++        if (impl->clamp_position)
++        {
++            impl->position.X = min( max( impl->position.X, values[0] ), values[3] );
++            impl->position.Y = min( max( impl->position.Y, values[1] ), values[4] );
++            impl->position.Z = min( max( impl->position.Z, values[2] ), values[5] );
++        }
+     }
+     impl->evaluation_thread = 0;
+     LeaveCriticalSection( &impl->animation_cs );
+@@ -1503,11 +1507,13 @@
+     }
+ }
+ 
+-static void interaction_tracker_update_position( struct interaction_tracker *impl,
+-        struct Vector3 value, BOOL relative, INT32 *request_id )
++static HRESULT interaction_tracker_update_position( struct interaction_tracker *impl,
++        struct Vector3 value, BOOL relative, BOOL clamp, INT32 *request_id )
+ {
+     struct list changed, discarded;
+-
++    HRESULT hr;
++
++    if (clamp && FAILED(hr = interaction_tracker_evaluate_bounds( impl ))) return hr;
+     list_init( &changed );
+     list_init( &discarded );
+     EnterCriticalSection( &tracker_binding_cs );
+@@ -1518,6 +1524,13 @@
+         value.X += impl->position.X;
+         value.Y += impl->position.Y;
+         value.Z += impl->position.Z;
++    }
++    impl->clamp_position = clamp;
++    if (clamp)
++    {
++        value.X = min( max( value.X, impl->min_position.X ), impl->max_position.X );
++        value.Y = min( max( value.Y, impl->min_position.Y ), impl->max_position.Y );
++        value.Z = min( max( value.Z, impl->min_position.Z ), impl->max_position.Z );
+     }
+     if (impl->position.Z != value.Z) interaction_tracker_mark_changed( impl, &changed );
+     impl->position.Z = value.Z;
+@@ -1528,6 +1541,7 @@
+     interaction_tracker_notify_changes( impl, *request_id, &changed, &discarded );
+     LeaveCriticalSection( &tracker_binding_cs );
+     tracker_notifications_free( &discarded );
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_TryUpdatePosition( IInteractionTracker *iface,
+@@ -1536,8 +1550,7 @@
+     struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
+ 
+     if (!request_id) return E_POINTER;
+-    interaction_tracker_update_position( impl, value, FALSE, request_id );
+-    return S_OK;
++    return interaction_tracker_update_position( impl, value, FALSE, TRUE, request_id );
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_TryUpdatePositionBy( IInteractionTracker *iface,
+@@ -1546,8 +1559,7 @@
+     struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
+ 
+     if (!request_id) return E_POINTER;
+-    interaction_tracker_update_position( impl, amount, TRUE, request_id );
+-    return S_OK;
++    return interaction_tracker_update_position( impl, amount, TRUE, TRUE, request_id );
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_TryUpdatePositionWithAnimation( IInteractionTracker *iface,
+@@ -1578,6 +1590,9 @@
+     list_init( &discarded );
+     EnterCriticalSection( &tracker_binding_cs );
+     *request_id = interaction_tracker_next_request_id( impl );
++    EnterCriticalSection( &impl->animation_cs );
++    value = min( max( value, impl->min_scale ), impl->max_scale );
++    LeaveCriticalSection( &impl->animation_cs );
+     interaction_tracker_update_axis( impl, InteractionBindingAxisModes_Scale, value, &changed );
+     interaction_tracker_notify_changes( impl, *request_id, &changed, &discarded );
+     LeaveCriticalSection( &tracker_binding_cs );
+@@ -1648,8 +1663,13 @@
+     struct interaction_tracker *impl = impl_from_IInteractionTracker5( iface );
+ 
+     if (!request_id) return E_POINTER;
+-    interaction_tracker_update_position( impl, value, FALSE, request_id );
+-    return S_OK;
++    if (option != InteractionTrackerClampingOption_Auto && option != InteractionTrackerClampingOption_Disabled)
++        return E_INVALIDARG;
++    if (position_update_option != InteractionTrackerPositionUpdateOption_Default &&
++            position_update_option != InteractionTrackerPositionUpdateOption_AllowActiveCustomScaleAnimation)
++        return E_INVALIDARG;
++    return interaction_tracker_update_position( impl, value, FALSE,
++            option == InteractionTrackerClampingOption_Auto, request_id );
+ }
+ 
+ static const IInteractionTracker5Vtbl interaction_tracker5_vtbl =
+@@ -1925,6 +1945,7 @@
+     list_init( &impl->changed_entry );
+     impl->max_scale = 1.0f;
+     impl->scale = 1.0f;
++    impl->clamp_position = TRUE;
+     impl->ref = 1;
+     ICompositor_AddRef( compositor );
+     if (owner)
