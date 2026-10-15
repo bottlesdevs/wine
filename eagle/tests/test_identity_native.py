@@ -1,8 +1,10 @@
 import hashlib
 import json
 import os
+import select
 from pathlib import Path
 import subprocess
+import time
 import unittest
 
 ROOT = Path(os.environ['EAGLE_IDENTITY_BRIDGE_TEST_ROOT'])
@@ -11,11 +13,11 @@ BITS = int(os.environ['EAGLE_IDENTITY_BRIDGE_BITS'])
 
 
 class IdentityNative(unittest.TestCase):
-    def capture(self, name, profile, invalid=False, token=None):
+    def capture(self, name, profile, invalid=False, token=None, bus=None, success=False):
         root = ROOT / name;root.mkdir()
         marker = root / 'result.txt'
         bundle = root / 'session'
-        environment = dict(os.environ, DBUS_SESSION_BUS_ADDRESS='unix:path=' + str(root / 'no-bus'))
+        environment = dict(os.environ, DBUS_SESSION_BUS_ADDRESS=bus or 'unix:path=' + str(root / 'no-bus'))
         environment.pop('SODA_IDENTITY_BRIDGE_SOCKET', None)
         command = [str(CANDIDATE / 'bin/eagle'), 'run', '--wine', str(CANDIDATE / 'bin/wine'),
                    '--prefix', str(ROOT / 'prefix'), '--session', str(bundle), '--profile', profile,
@@ -25,8 +27,12 @@ class IdentityNative(unittest.TestCase):
         result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=50)
         self.assertEqual(result.returncode, 0, result.stderr[-4000:])
         fields = marker.read_text().split()
-        expected = '80070057' if invalid else '80070426'
-        self.assertEqual((fields[1], fields[2], fields[3]), ('5' if token == 'interactive' else '3', expected, '0'))
+        expected = '00000000' if success else '80070057' if invalid else '80070426'
+        self.assertEqual((fields[1], fields[2], fields[3]), ('0' if success else '5' if token == 'interactive' else '3', expected, '0'))
+        manifest = json.loads((bundle / 'manifest.json').read_text())
+        self.assertTrue(manifest['completed'])
+        self.assertEqual(manifest['collector_exit'], 0)
+        self.assertEqual(manifest['dropped_events'], 0)
         events = [json.loads(line) for line in (bundle / 'events.jsonl').read_text().splitlines()]
         self.assertEqual(next(event['code'] for event in events if event['kind'] == 'process_exit' and event['pid'] == int(fields[0])), 0)
         architecture = 'x86_64' if BITS == 64 else 'i386'
@@ -51,6 +57,46 @@ class IdentityNative(unittest.TestCase):
                 self.assertEqual((group[0]['stage'], group[-1]['stage']), ('begin', 'complete'))
                 self.assertEqual(group[-1]['hresult'], '0x' + expected)
             self.assertEqual(stages[-1]['hresult'], '0x' + expected)
+
+    def test_native_empty_and_refused_service(self):
+        fixture = Path(os.environ['EAGLE_IDENTITY_SECRET_SERVICE'])
+        for mode in ('empty', 'denied'):
+            root = ROOT / ('s0' if mode == 'empty' else 's1');root.mkdir(mode=0o700)
+            path = root / 'b.sock'
+            with (root / 'bus.log').open('w') as bus_log, (root / 'service.log').open('w') as service_log:
+                bus = subprocess.Popen(['dbus-daemon', '--session', '--nofork', '--nopidfile',
+                                        '--address=unix:path=' + str(path), '--print-address=1'],
+                                       stdout=subprocess.PIPE, stderr=bus_log, text=True)
+                try:
+                    self.assertTrue(select.select([bus.stdout], [], [], 5)[0])
+                    address = bus.stdout.readline().strip()
+                    self.assertTrue(address.startswith('unix:path=' + str(path)))
+                    path.chmod(0o600)
+                    service = subprocess.Popen([str(fixture), str(root / 'ready'), str(root / 'calls.log'), mode],
+                                               env=dict(os.environ, DBUS_SESSION_BUS_ADDRESS=address),
+                                               stdout=service_log, stderr=subprocess.STDOUT)
+                    try:
+                        deadline = time.monotonic() + 5
+                        while not (root / 'ready').exists() and service.poll() is None and time.monotonic() < deadline:
+                            time.sleep(0.05)
+                        self.assertIsNone(service.poll())
+                        self.assertEqual((root / 'ready').read_text(), 'ready\n')
+                        if mode == 'empty':
+                            self.capture('s-off', 'crash', bus=address, success=True)
+                            self.capture('s-empty', 'winrt', bus=address, success=True)
+                        else:
+                            self.capture('s-denied', 'winrt', bus=address)
+                        self.assertIsNone(service.poll())
+                        calls = (root / 'calls.log').read_text().splitlines()
+                        self.assertEqual(calls.count('SearchItems'), 2 if mode == 'empty' else 1, calls)
+                        self.assertTrue(set(calls) <= {'SearchItems', 'Unlock'}, calls)
+                    finally:
+                        if service.poll() is None:service.terminate()
+                        service.wait(timeout=10)
+                finally:
+                    if bus.poll() is None:bus.terminate()
+                    bus.wait(timeout=10)
+                    bus.stdout.close()
 
     def test_native_keyring_failure_and_invalid_client(self):
         self.capture('n-off', 'crash')

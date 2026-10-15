@@ -8,10 +8,15 @@ mkdir -p "$work/t"
 work=$(CDPATH= cd -- "$work" && pwd)
 export TMPDIR="$work/t" TMP="$work/t" TEMP="$work/t"
 test -x "$runner/bin/wine"
+command -v dbus-daemon >/dev/null
 sh "$root/eagle/build-native.sh" "$work/package" - "$work/native"
 cp -a "$work/package/." "$runner/"
 python3 "$root/eagle/install.py" "$runner"
 mkdir -p "$work/tests"
+cc -O0 -g -Wall -Wextra -Werror -Wno-unused-parameter \
+    $(pkg-config --cflags gio-2.0) "$root/eagle/tests/secret_service.c" \
+    $(pkg-config --libs gio-2.0) -o "$work/tests/secret-service"
+export EAGLE_IDENTITY_SECRET_SERVICE="$work/tests/secret-service"
 EAGLE_PACKAGE="$runner" python3 -S "$root/eagle/tests/test_pe_version.py" \
     > "$work/tests/pe-version.log" 2>&1
 EAGLE_PACKAGE="$runner" python3 -S "$root/eagle/tests/test_image_inputs.py" \

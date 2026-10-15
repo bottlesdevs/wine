@@ -1155,7 +1155,9 @@ jobs:
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/i32/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/i64/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j32/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j32/s*/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j64/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j64/s*/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/d/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/t/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/e/*.log
