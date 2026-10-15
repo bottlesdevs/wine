@@ -8,7 +8,7 @@ runner = Path(sys.argv[1]).resolve(strict=True)
 architectures = ('aarch64',) if platform.machine() == 'aarch64' else ('i386', 'x86_64')
 identities = {}
 for architecture in architectures:
-    for module in ('combase', 'dwrite', 'd2d1', 'kernelbase'):
+    for module in ('combase', 'dwrite', 'd2d1', 'kernelbase', 'ntdll'):
         path = runner / f'lib/wine/{architecture}-windows/{module}.dll'
         data = path.read_bytes()
         if b'EAGLE/1' not in data:
@@ -17,6 +17,8 @@ for architecture in architectures:
             raise ValueError(f'{architecture} d2d1 does not include Eagle draw results')
         if module == 'kernelbase' and any(marker not in data for marker in (b'loader.LoadLibraryExW', b'loader.GetProcAddress', b'loader.FreeLibrary', b'loader.LoadPackagedLibrary', b'__wine_eagle_loader_result')):
             raise ValueError(f'{architecture} kernelbase does not include Eagle loader results')
+        if module == 'ntdll' and any(marker not in data for marker in (b'loader.LdrLoadDll', b'loader.LdrGetProcedureAddress', b'loader.LdrUnloadDll', b'loader.DependencyFailure')):
+            raise ValueError(f'{architecture} ntdll does not include Eagle native loader results')
         identities[f'{architecture}/{module}'] = hashlib.sha256(data).hexdigest()
     path = runner / f'lib/wine/{architecture}-windows/kernel32.dll'
     data = path.read_bytes()
@@ -33,7 +35,7 @@ manifest = {
     'tracing': 1,
     'profiles': {name: ['32', '64'] for name in ('winrt', 'dwrite', 'd2d', 'loader', 'com', 'wait')},
     'scopes': {
-        'loader': 'Win32 LoadLibrary variants, FreeLibrary, GetProcAddress and LoadPackagedLibrary outcomes; basenames only; 4096 events per process; native Ldr failures not observed',
+        'loader': 'Win32 library/export outcomes, native LdrLoadDll/LdrGetProcedureAddress/LdrUnloadDll and internal dependency-load failures; basenames only; independent 4096-event Win32 and native budgets per process; process-detach unloads excluded',
         'd2d': 'EndDraw/Flush HRESULT and error tags; 4096 events per process, then one budget marker',
         'com': 'activation, class object, initialization/uninitialization, activation-only QueryInterface',
         'wait': 'observed KernelBase mutex handles within each process; partial coverage',

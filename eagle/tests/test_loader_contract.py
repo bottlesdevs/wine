@@ -17,6 +17,14 @@ class LoaderContract(unittest.TestCase):
         self.assertEqual(fingerprint(self.event()),
                          fingerprint(self.event(module='0x20000000', address='0x20001234', caller='0x7890')))
 
+    def test_native_comparison_ignores_mapped_addresses(self):
+        event = self.event(provider=64, event='loader.LdrGetProcedureAddress', ntstatus='0x00000000')
+        moved = self.event(provider=64, event='loader.LdrGetProcedureAddress', ntstatus='0x00000000',
+                           module='0x20000000', address='0x20001234', caller='0x7890')
+        self.assertEqual(fingerprint(event), fingerprint(moved))
+        self.assertNotEqual(fingerprint(event), fingerprint(self.event(provider=64,
+                            event='loader.LdrGetProcedureAddress', ntstatus='0xc000007a')))
+
     def test_comparison_keeps_requested_symbols_and_results(self):
         original = fingerprint(self.event())
         for change in ({'name': 'OtherExport'}, {'ordinal': 9}, {'hresult': '0x8007007f'}):

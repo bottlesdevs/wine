@@ -110,7 +110,7 @@ class DebuggerPackageTests(unittest.TestCase):
 
     def test_provider_dlls_leave_executable_tls_unchanged(self):
         for architecture in ('i386', 'x86_64'):
-            for module in ('kernelbase', 'kernel32', 'combase', 'dwrite', 'd2d1'):
+            for module in ('kernelbase', 'kernel32', 'combase', 'dwrite', 'd2d1', 'ntdll'):
                 path = PACKAGE / f'lib/wine/{architecture}-windows/{module}.dll'
                 with self.subTest(architecture=architecture, module=module):
                     data = path.read_bytes()

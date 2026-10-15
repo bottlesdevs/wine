@@ -44,7 +44,7 @@ class SessionComparison(unittest.TestCase):
                             {'module': 'caller', 'rva': '0x220', 'address': '0x501220'}])
 
     def test_provider_budget_makes_complete_history_inconclusive(self):
-        for provider in (8, 16, 32):
+        for provider in (8, 16, 32, 64):
             event = dict(kind='provider', pid=1, tid=2, seq=3, time_ms=4,
                          data=dict(provider=provider, event='ObserverBudgetExceeded', limit=4096))
             root = self.bundle('budget-' + str(provider), [event])

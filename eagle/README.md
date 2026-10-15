@@ -189,8 +189,14 @@ module/address, requested ordinal or bounded name and caller. Library names
 contain only the basename. Inputs without a readable terminator within 512 characters have no name.
 Labels are capped at 127 characters; sanitation and truncation are explicit. Delegated API calls can produce several
 events. Both DLLs share a 4096-event budget and one limit marker per process.
-Native `Ldr*` failures and transitive dependency failures are not observed by
-this provider; module-load/unload debug events remain separate.
+The native channel records `LdrLoadDll`, `LdrGetProcedureAddress` and
+`LdrUnloadDll` outcomes, including early search-path errors, plus internal
+DLL-load failures that identify missing transitive dependencies. It records
+NTSTATUS and the corresponding Win32 error/HRESULT. Counted native names use
+their declared length, with a 512-character read limit and 127-character label
+limit. The native channel has its own 4096-event budget and one limit marker.
+Unload calls during process detach are excluded. Module-load/unload debug
+events remain separate.
 
 The COM observer covers activation, requested apartments and activation-time
 interface queries. The wait graph covers observed KernelBase mutex handles

@@ -58,6 +58,20 @@ for architecture in x86_64 i686; do
     ln -s ../prefix "$directory/prefix"
     EAGLE_LOADER_TEST_ROOT="$directory" python3 "$root/eagle/tests/test_loader_provider.py" \
         > "$directory/integration.log" 2>&1
+    directory="$work/tests/n$bits"
+    mkdir -p "$directory/build"
+    "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror -D__WINESRC__ \
+        -I"$runner/include/wine/windows" "$root/eagle/tests/native_loader_provider.c" -lntdll -o "$directory/target.exe"
+    "$architecture-w64-mingw32-gcc" -shared -O0 -g -gdwarf-4 -Wall -Wextra -Werror \
+        "$root/eagle/tests/native_loader_dependency.c" -Wl,--out-implib,"$directory/build/libEagleDependencyFixture.a" \
+        -o "$directory/build/EagleDependencyFixture.dll"
+    "$architecture-w64-mingw32-gcc" -shared -O0 -g -gdwarf-4 -Wall -Wextra -Werror \
+        "$root/eagle/tests/native_loader_parent.c" -L"$directory/build" -lEagleDependencyFixture \
+        -o "$directory/EagleParentFixture.dll"
+    rm "$directory/build/EagleDependencyFixture.dll"
+    ln -s ../prefix "$directory/prefix"
+    EAGLE_NATIVE_LOADER_TEST_ROOT="$directory" EAGLE_NATIVE_LOADER_BITS="$bits" \
+        python3 "$root/eagle/tests/test_native_loader_provider.py" > "$directory/integration.log" 2>&1
     directory="$work/tests/c$bits"
     mkdir -p "$directory"
     "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror         "$root/eagle/tests/com_provider.c" -lole32 -o "$directory/target.exe"

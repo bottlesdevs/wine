@@ -261,7 +261,7 @@ def fingerprint(event):
         key += (('stack', tuple(frame_key(frame) for frame in event['frames']), event.get('unwind'), event.get('truncated')),)
     if event["kind"] == "provider":
         ignored = ('caller', 'object', 'request_id') if event.get('data', {}).get('event') == 'identity.stage' else ('caller', 'object')
-        if event.get('data', {}).get('provider') == 32:
+        if event.get('data', {}).get('provider') in (32, 64):
             ignored += ('module', 'address')
         data = {name: value for name, value in event.get("data", {}).items() if name not in ignored}
         return key + (json.dumps(data, sort_keys=True),)
@@ -380,7 +380,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
         requested = ('winrt', 'dwrite', 'd2d', 'loader', 'com', 'wait') if profile == 'trace' else (profile,)
         if any(bits not in providers.get('profiles', {}).get(name, []) for name in requested):
             raise ValueError("provider is not available for this runner and architecture")
-        env["EAGLE_PROVIDER_MASK"] = {"winrt": "1", "dwrite": "2", "com": "4", "wait": "8", "d2d": "16", "loader": "32", "trace": "63"}[profile]
+        env["EAGLE_PROVIDER_MASK"] = {"winrt": "1", "dwrite": "2", "com": "4", "wait": "8", "d2d": "16", "loader": "96", "trace": "127"}[profile]
     if profile == 'trace':
         env['EAGLE_TRACE_EXCLUDE_WINE_CONHOST'] = '1'
         env['EAGLE_TRACE_DETACH_WINE_SERVICES'] = '1'
@@ -531,7 +531,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                                 manifest['unix_inventory']['unavailable'] = manifest['unix_inventory'].get('unavailable', 0) + 1
                         if event["kind"] == "provider":
                             payload = json.loads(event.pop("payload"))
-                            if not isinstance(payload, dict) or payload.get("provider") not in (1, 2, 4, 8, 16, 32):
+                            if not isinstance(payload, dict) or payload.get("provider") not in (1, 2, 4, 8, 16, 32, 64):
                                 raise ValueError("unsupported provider payload")
                             if payload["provider"] == 1:
                                 if payload.get('event') in ('identity.stage', 'identity.native.stage'):

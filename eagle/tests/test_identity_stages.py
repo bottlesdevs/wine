@@ -17,8 +17,10 @@ class IdentityStages(unittest.TestCase):
         architectures = ('aarch64',) if platform.machine() == 'aarch64' else ('i386', 'x86_64')
         for architecture in architectures:
             directory = root / f'lib/wine/{architecture}-windows';directory.mkdir(parents=True)
-            for module in ('combase', 'dwrite', 'd2d1', 'kernelbase', 'kernel32', 'windows.security.authentication.onlineid'):
+            for module in ('combase', 'dwrite', 'd2d1', 'kernelbase', 'kernel32', 'ntdll', 'windows.security.authentication.onlineid'):
                 (directory / (module + '.dll')).write_bytes(b'EAGLE/1 identity.stage identity.native.stage d2d.end_draw d2d.flush loader.LoadLibraryExW loader.GetProcAddress loader.FreeLibrary loader.LoadPackagedLibrary __wine_eagle_loader_result')
+            path = directory / 'ntdll.dll'
+            path.write_bytes(path.read_bytes() + b' loader.LdrLoadDll loader.LdrGetProcedureAddress loader.LdrUnloadDll loader.DependencyFailure')
         return architectures
 
     def test_installer_rejects_missing_identity_instrumentation(self):
@@ -43,6 +45,15 @@ class IdentityStages(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory);architectures = self.runner(root)
             (root / f'lib/wine/{architectures[0]}-windows/kernel32.dll').write_bytes(b'EAGLE/1')
+            result = subprocess.run([sys.executable, '-S', str(Path(__file__).resolve().parents[1] / 'install.py'), str(root)],
+                                    capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / 'share/eagle/providers.json').exists())
+
+    def test_installer_rejects_missing_native_loader_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory);architectures = self.runner(root)
+            (root / f'lib/wine/{architectures[0]}-windows/ntdll.dll').write_bytes(b'EAGLE/1')
             result = subprocess.run([sys.executable, '-S', str(Path(__file__).resolve().parents[1] / 'install.py'), str(root)],
                                     capture_output=True, text=True, timeout=5)
             self.assertNotEqual(result.returncode, 0)

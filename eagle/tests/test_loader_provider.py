@@ -36,7 +36,7 @@ class LoaderProvider(unittest.TestCase):
         events, after = self.capture('on', 'loader')
         self.assertEqual(before, after)
         providers = [event for event in events if event['kind'] == 'provider']
-        rows = [event['data'] for event in providers]
+        rows = [event['data'] for event in providers if event['data']['provider'] == 32]
         self.assertTrue(rows)
         self.assertTrue(all(row['provider'] == 32 for row in rows))
         self.assertFalse(any('private-path-sentinel' in json.dumps(row) for row in rows))
@@ -54,6 +54,9 @@ class LoaderProvider(unittest.TestCase):
         ordinal = next(row for row in rows if row['event'] == 'loader.GetProcAddress' and row['ordinal'] == 9)
         self.assertTrue(ordinal['success'])
         self.assertFalse(ordinal['name_available'])
+        self.assertTrue(any(event['data']['provider'] == 64 and event['data']['event'] == 'loader.LdrGetProcedureAddress'
+                            and event['data']['ordinal'] == 9 and event['data']['success']
+                            and not event['data']['name_available'] for event in providers))
         quoted = next(row for row in rows if row['name'] == 'EagleMissing?Quote')
         self.assertTrue(quoted['name_sanitized'])
         self.assertEqual(quoted['win32_error'], 127)
@@ -77,7 +80,7 @@ class LoaderProvider(unittest.TestCase):
         self.assertTrue(all(any(frame.get('symbol') == 'main' for frame in event.get('frames', []))
                             for event in events if event['kind'] == 'snapshot'))
         events, _ = self.capture('budget', 'loader', arguments=['budget'])
-        rows = [event['data'] for event in events if event['kind'] == 'provider']
+        rows = [event['data'] for event in events if event['kind'] == 'provider' and event['data']['provider'] == 32]
         self.assertEqual(len(rows), 4097)
         self.assertEqual(rows[-1], {'provider': 32, 'event': 'ObserverBudgetExceeded', 'limit': 4096})
 

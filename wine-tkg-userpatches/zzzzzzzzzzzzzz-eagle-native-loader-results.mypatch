@@ -1,0 +1,162 @@
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -2144,6 +2144,108 @@
+ }
+ 
+ 
++static BOOL eagle_native_loader_enabled(void)
++{
++    WCHAR buffer[16];
++    UNICODE_STRING name = RTL_CONSTANT_STRING(L"EAGLE_PROVIDER_MASK");
++    UNICODE_STRING value = {0, sizeof(buffer), buffer};
++    ULONG mask, i;
++
++    if (!NtCurrentTeb()->Peb->BeingDebugged) return FALSE;
++    if (RtlQueryEnvironmentVariable_U(NULL, &name, &value)) return FALSE;
++    for (i = 0; i < value.Length / sizeof(WCHAR); ++i)
++        if (buffer[i] < '0' || buffer[i] > '9') return FALSE;
++    return value.Length && !RtlUnicodeStringToInteger(&value, 10, &mask) && (mask & 64);
++}
++
++static BOOL eagle_native_loader_name(const void *name, ULONG length, BOOL wide, BOOL basename,
++        char *label, BOOL *sanitized, BOOL *truncated)
++{
++    ULONG i, size = 0;
++    BOOL available = FALSE;
++
++    *sanitized = *truncated = FALSE;
++    label[0] = 0;
++    if (!name) return FALSE;
++    __TRY
++    {
++        for (i = 0; i < length && i < 512; ++i)
++        {
++            WCHAR ch = wide ? ((const WCHAR *)name)[i] : ((const unsigned char *)name)[i];
++            if (!ch) { available = TRUE; break; }
++            if (basename && (ch == '/' || ch == '\\' || ch == ':'))
++            {
++                size = 0;
++                *sanitized = *truncated = FALSE;
++            }
++            else if (size < 127)
++            {
++                BOOL plain = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
++                        || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-' || ch == '@' || ch == '$';
++                label[size++] = plain ? ch : '?';
++                if (!plain) *sanitized = TRUE;
++            }
++            else *truncated = TRUE;
++        }
++        if (i == length) available = TRUE;
++    }
++    __EXCEPT_PAGE_FAULT
++    {
++        available = FALSE;
++    }
++    __ENDTRY
++    label[available ? size : 0] = 0;
++    return available;
++}
++
++static void eagle_native_loader_result(const char *operation, const void *name, ULONG length,
++        BOOL wide, BOOL basename, ULONG ordinal, HMODULE module, const void *address,
++        ULONG flags, NTSTATUS status, const void *caller)
++{
++    static LONG fls_index = -1, emitted;
++    ULONG saved_error = NtCurrentTeb()->LastErrorValue, saved_status = NtCurrentTeb()->LastStatusValue;
++    ULONG created, error;
++    LONG index, count;
++    void *busy;
++    BOOL active = FALSE, available, sanitized, truncated;
++    char label[128], text[896];
++
++    if (!NtCurrentTeb()->Peb->BeingDebugged) return;
++    if (InterlockedCompareExchange(&emitted, 0, 0) >= 4097 || !eagle_native_loader_enabled()) goto done;
++    index = InterlockedCompareExchange(&fls_index, -1, -1);
++    if (index == -1)
++    {
++        if (RtlFlsAlloc(NULL, &created)) goto done;
++        index = InterlockedCompareExchange(&fls_index, created, -1);
++        if (index == -1) index = created;
++        else RtlFlsFree(created);
++    }
++    if (!NtCurrentTeb()->FlsSlots && RtlFlsSetValue(index, NULL)) goto done;
++    if (RtlFlsGetValue(index, &busy) || busy || RtlFlsSetValue(index, (void *)1)) goto done;
++    active = TRUE;
++    count = InterlockedIncrement(&emitted);
++    if (count > 4097) goto done;
++    if (count == 4097)
++        snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":64,\"event\":\"ObserverBudgetExceeded\",\"limit\":4096}");
++    else
++    {
++        available = eagle_native_loader_name(name, length, wide, basename, label, &sanitized, &truncated);
++        error = NT_SUCCESS(status) ? 0 : RtlNtStatusToDosErrorNoTeb(status);
++        snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":64,\"event\":\"%s\",\"hresult\":\"0x%08lx\","
++                "\"ntstatus\":\"0x%08lx\",\"win32_error\":%lu,\"success\":%s,\"name\":\"%s\","
++                "\"name_available\":%s,\"name_sanitized\":%s,\"name_truncated\":%s,\"ordinal\":%lu,"
++                "\"module\":\"%p\",\"address\":\"%p\",\"flags\":%lu,\"caller\":\"%p\"}",
++                operation, error ? (error & 0xffff) | 0x80070000 : 0, status, error,
++                NT_SUCCESS(status) ? "true" : "false", label, available ? "true" : "false",
++                sanitized ? "true" : "false", truncated ? "true" : "false", ordinal, module, address, flags, caller);
++    }
++    DbgPrint("%s", text);
++ done:
++    if (active) RtlFlsSetValue(index, NULL);
++    NtCurrentTeb()->LastErrorValue = saved_error;
++    NtCurrentTeb()->LastStatusValue = saved_status;
++}
++
+ /******************************************************************
+  *		LdrGetProcedureAddress  (NTDLL.@)
+  */
+@@ -2177,6 +2279,9 @@
+     }
+ 
+     RtlLeaveCriticalSection( &loader_section );
++    eagle_native_loader_result("loader.LdrGetProcedureAddress", name ? name->Buffer : NULL,
++            name ? name->Length : 0, FALSE, FALSE, name ? 0 : ord, module,
++            NT_SUCCESS(ret) ? *address : NULL, 0, ret, __builtin_return_address(0));
+     return ret;
+ }
+ 
+@@ -3609,6 +3714,9 @@
+ 
+     if (mapping) NtClose( mapping );
+     RtlFreeUnicodeString( &nt_name );
++    if (!NT_SUCCESS(nts))
++        eagle_native_loader_result("loader.DependencyFailure", libname, wcslen(libname), TRUE,
++                TRUE, 0, NULL, NULL, flags, nts, __builtin_return_address(0));
+     return nts;
+ }
+ 
+@@ -3707,7 +3815,11 @@
+     if (!search_path || ((ULONG_PTR)search_path & 1))
+     {
+         if ((nts = LdrGetDllPath( libname->Buffer, (ULONG_PTR)search_path & load_library_search_flags, &path_name, &dummy )))
++        {
++            eagle_native_loader_result("loader.LdrLoadDll", libname->Buffer, libname->Length / sizeof(WCHAR),
++                    TRUE, TRUE, 0, NULL, NULL, flags, nts, __builtin_return_address(0));
+             return nts;
++        }
+     }
+     else path_name = (WCHAR *)search_path;
+ 
+@@ -3729,6 +3841,8 @@
+     RtlLeaveCriticalSection( &loader_section );
+     RtlFreeHeap( GetProcessHeap(), 0, dllname );
+     if (path_name != search_path) RtlReleasePath( path_name );
++    eagle_native_loader_result("loader.LdrLoadDll", libname->Buffer, libname->Length / sizeof(WCHAR),
++            TRUE, TRUE, 0, NT_SUCCESS(nts) ? *hModule : NULL, NULL, flags, nts, __builtin_return_address(0));
+     return nts;
+ }
+ 
+@@ -4395,6 +4509,8 @@
+     free_lib_count--;
+ 
+     RtlLeaveCriticalSection( &loader_section );
++    eagle_native_loader_result("loader.LdrUnloadDll", NULL, 0, FALSE, TRUE, 0, hModule, NULL,
++            0, retv, __builtin_return_address(0));
+ 
+     return retv;
+ }
