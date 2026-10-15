@@ -214,6 +214,22 @@ chains are verified with GCC DWARF 4 and Clang DWARF 5 instead. DWO/DWP identity
 inspection remains separate; inline lookup does not certify complete types,
 all split companions or mixed CodeView/DWARF precedence.
 
+For split ELF images, combine `--inlines` with `--debug-file reviewed.dwp` to
+select a relocated package explicitly. The stdio equivalent is `debug_files`.
+The selected DWP must contain every skeleton DWO identity; a partial package,
+different matching contents or changed file makes inline lookup unavailable.
+Identical copies are allowed. Explicit choices take precedence over adjacent
+packages. Without explicit choices, existing `<debug-image>.dwp` and
+`<image>.dwp` candidates receive the same checks. This requires host
+`llvm-dwarfdump`; the package path, SHA-256 and requested unit IDs appear in
+`inline_artifacts` only after successful lookup with that exact DWP.
+
+Individual DWO selections remain available for identity inspection. They do
+not select a package for inline lookup. Without a selected or adjacent DWP,
+LLVM can still use its own DWO discovery; no `inline_artifacts` verification
+is claimed for that path. DWP unit identities do not certify source content,
+complete type information or symbol authenticity.
+
 Inspect split-DWARF companion identities separately from address lookup:
 
 ```sh

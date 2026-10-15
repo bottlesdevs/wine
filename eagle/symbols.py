@@ -161,8 +161,10 @@ def inline_output(arguments, environment):
             process.kill()
             process.wait()
 
-def resolve_llvm(image, rvas, tool, origin, inlines=False):
+def resolve_llvm(image, rvas, tool, origin, inlines=False, dwp=None):
     flags = [] if inlines else ['--no-inlines']
+    if dwp is not None:
+        flags.append('--dwp=' + str(dwp))
     arguments = [tool, '--obj=' + str(image), '--relative-address', '--output-style=JSON', *flags, '--no-debuginfod', *rvas]
     environment = {key: value for key, value in os.environ.items() if key != 'LLVM_SYMBOLIZER_OPTS'}
     result = inline_output(arguments, environment) if inlines else subprocess.run(
@@ -222,8 +224,8 @@ def resolve_pdb(image, pdb, names, rvas, inlines=False):
         except ValueError as error:
             raise ValueError('PDB source resolver failed') from error
 
-def resolve_inlines(image, rvas, pdb, names, expected_sha256):
-    from dwarf import debug_image, file_identity, file_state
+def resolve_inlines(image, rvas, pdb, names, expected_sha256, debug_files=None):
+    from dwarf import debug_image, file_identity, file_state, inline_package
     tool = host_tool('llvm-symbolizer')
     if not tool:
         raise ValueError('inline lookup requires host llvm-symbolizer')
@@ -233,6 +235,7 @@ def resolve_inlines(image, rvas, pdb, names, expected_sha256):
     if identity['sha256'] != expected_sha256:
         raise ValueError('image changed during inline lookup')
     states = {image: state}
+    package = None
     metadata = image_metadata(image)
     if pdb:
         pdb = Path(pdb).resolve(strict=True)
@@ -247,13 +250,21 @@ def resolve_inlines(image, rvas, pdb, names, expected_sha256):
         selected, _, state = debug_image(image, metadata, deadline)
         if state is not None:
             states[selected] = state
+        if metadata.get('format') == 'ELF':
+            paths = debug_files or [path for path in dict.fromkeys((Path(str(selected) + '.dwp'), Path(str(image) + '.dwp')))
+                                    if path.exists() or path.is_symlink()]
+            if paths:
+                package, state = inline_package(selected, paths, host_tool('llvm-dwarfdump'), deadline)
+                if package:
+                    states[Path(package['path'])] = state
         addresses = [hex(int(metadata['image_base'], 0) + int(value, 0)) for value in rvas] if metadata.get('format') == 'ELF' else rvas
-        values = resolve_llvm(selected, addresses, tool, 'llvm-exact-image', inlines=True)
+        options = {'dwp': package['path']} if package else {}
+        values = resolve_llvm(selected, addresses, tool, 'llvm-exact-image', inlines=True, **options)
     if any(state != file_state(path.stat()) for path, state in states.items()):
         raise ValueError('inline debug artifacts changed during lookup')
     if time.monotonic() >= deadline:
         raise ValueError('inline lookup timed out')
-    return [value['inline_frames'] for value in values]
+    return [value['inline_frames'] for value in values], package
 
 def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None, sources=False, source_files=None,
           runner_root=None, source_maps=None, inlines=False):
@@ -318,7 +329,9 @@ def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None, sources
         if inlines:
             result['inline_order'] = 'innermost-to-outermost'
             try:
-                chains = resolve_inlines(image, addresses, pdb, names if pdb else [], result['sha256']) if addresses else []
+                chains, package = resolve_inlines(image, addresses, pdb, names if pdb else [], result['sha256'], debug_files) if addresses else ([], None)
+                if package:
+                    result['inline_artifacts'] = package
                 for frame, chain in zip(result['resolved'], chains):
                     status = 'available' if len(chain) > 1 and any(value['symbol'] for value in chain[:-1]) else 'not-reported' if any(value['symbol'] or value.get('file') for value in chain) else 'unresolved'
                     frame.update(inline_frames=chain, inline_status=status)

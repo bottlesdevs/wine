@@ -142,6 +142,38 @@ def debug_image(image, metadata, deadline):
         selected_image, identity, selected_state = matches[0]
     return selected_image, identity, selected_state
 
+def inline_package(image, paths, tool, deadline):
+    if not tool:
+        raise ValueError('selected inline packages require host llvm-dwarfdump')
+    needed = {unit['dwo_id'] for unit in references(dump(tool, image, deadline))}
+    if not needed:
+        return None, None
+    matches = []
+    reasons = []
+    for path in dict.fromkeys(paths):
+        if time.monotonic() >= deadline:
+            raise ValueError('inline package selection timed out')
+        try:
+            path = Path(path).resolve(strict=True)
+            identity, before = file_identity(path, deadline)
+            text = dump(tool, path, deadline)
+            indexes = re.findall(r'(?m)^\s+[0-9]+\s+(0x[0-9a-fA-F]+)\s+\[',
+                                 text.partition('.debug_cu_index contents:')[2].partition('.debug_tu_index contents:')[0])
+            ids = {unit_id(value) for value in indexes}
+            if before != file_state(path.stat()):
+                raise ValueError('inline package changed during inspection')
+            if not needed <= ids:
+                raise ValueError('inline package does not contain all image DWO identities')
+            matches.append((dict(path=str(path), sha256=identity['sha256'], dwo_ids=sorted(needed),
+                                 status='matched', scope='selected DWP unit identities'), before))
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            reasons.append(str(error))
+    if not matches:
+        raise ValueError('no matching inline DWP: ' + '; '.join(reasons)[:1024])
+    if len({record['sha256'] for record, _ in matches}) != 1:
+        raise ValueError('ambiguous matching inline DWP packages')
+    return matches[0]
+
 def artifacts(image, tool, debug_files):
     result = {'scope': 'split unit identities; not full type/inline verification', 'units': [], 'files': []}
     if not tool:
