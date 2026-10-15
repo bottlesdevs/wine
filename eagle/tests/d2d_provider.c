@@ -1,6 +1,7 @@
 #define COBJMACROS
 #define INITGUID
 #include <windows.h>
+#include <winternl.h>
 #include <d3d11.h>
 #include <dxgi.h>
 #include <d2d1_1.h>
@@ -38,9 +39,11 @@ int main(int argc, char **argv)
     if (FAILED(ID2D1DeviceContext_CreateCommandList(context, &commands))) return 9;
     ID2D1DeviceContext_SetTarget(context, (ID2D1Image *)commands);
     ID2D1DeviceContext_BeginDraw(context);
+    NtCurrentTeb()->LastStatusValue = 0xc0000022;
     SetLastError(0x12345678);
     if (ID2D1DeviceContext_EndDraw(context, NULL, NULL) != S_OK) return 10;
     if (GetLastError() != 0x12345678) return 12;
+    if (NtCurrentTeb()->LastStatusValue != 0xc0000022) return 13;
     if (argc > 1 && !strcmp(argv[1], "budget"))
     {
         for (i = 0; i < 4100; i++)
