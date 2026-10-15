@@ -179,7 +179,15 @@ def resolve_pdb(image, pdb, names, rvas):
         except ValueError as error:
             raise ValueError('PDB source resolver failed') from error
 
-def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None, sources=False, source_files=None):
+def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None, sources=False, source_files=None,
+          runner_root=None, source_maps=None):
+    if runner_root is not None and (not isinstance(runner_root, (str, os.PathLike)) or not str(runner_root) or len(str(runner_root)) > 4096):
+        raise ValueError('runner_root must be a path')
+    if source_maps is not None:
+        from build_sources import validate_maps
+        validate_maps(source_maps)
+        if runner_root is None:
+            raise ValueError('source_maps requires runner_root')
     if type(sources) is not bool:
         raise ValueError('sources must be a boolean')
     if source_files is not None and (not isinstance(source_files, list) or len(source_files) > 256 or
@@ -237,6 +245,12 @@ def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None, sources
     if sources or source_files is not None:
         from sources import inspect_sources
         result['source_checksums'] = inspect_sources(image, host_tool('llvm-dwarfdump'), source_files or [], expected_sha256=result['sha256'])
+    if runner_root is not None:
+        from build_sources import inspect_build_sources
+        result['build_sources'] = inspect_build_sources(image, runner_root, source_maps or [], result['sha256'])
+    if sources or source_files is not None or runner_root is not None:
+        if len(json.dumps(result).encode()) > 768 * 1024:
+            raise ValueError('source query response exceeds limit')
     return result
 
 def pdb_identity(path):

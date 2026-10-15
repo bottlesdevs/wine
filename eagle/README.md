@@ -60,6 +60,28 @@ and uses a shared 20-second budget. Tool output is bounded at 256 MiB streamed,
 1 MiB of retained headers and a 512 KiB source report. Limits and missing tools
 are reported as unavailable. Default identity queries remain unchanged.
 
+Check a reviewed file against the recorded Soda build inputs, including when
+DWARF does not carry a checksum:
+
+```sh
+eagle symbols /runner/bin/wine --runner-root /runner \
+    --source-map wine:dlls/ntdll/unix/process.c=/reviewed/process.c
+```
+
+The stdio method accepts `runner_root` and `source_maps`, a list of objects with
+`source`, `path` and `file` fields. `source` selects the recorded source label,
+`path` is its exact relative inventory key and `file` is the explicit file to hash.
+The report verifies the queried image, both inventory digests and reconstructed
+source tree identities. Recorded links resolve within that inventory, without
+filesystem searches. External/cyclic links, partial metadata and changed inputs
+are rejected. Old runners without recorded sources remain unavailable.
+`build_sources.status: available` describes the inventory chain; each file has
+its own matched/mismatched/missing/not-recorded/invalid status. This records build
+input membership, not per-module compiler use or authenticity. DWARF checksum
+results remain separate. Inventories are limited to 32 MiB each, mappings to 256
+and inspection to a shared 20-second budget with a 512 KiB report limit.
+Combined source-query responses are limited to 768 KiB before CLI/backend output.
+
 Soda 11.0-26 Experimental includes the debugger and tracing commands on Linux
 x86_64. It supports x86 and x64 targets. Bottles keeps its existing analyzer.
 The native analyzer replacement is still in development and is not included
