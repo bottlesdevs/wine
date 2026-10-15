@@ -1,0 +1,172 @@
+diff --git a/dlls/windows.security.authentication.onlineid/private.h b/dlls/windows.security.authentication.onlineid/private.h
+--- a/dlls/windows.security.authentication.onlineid/private.h
++++ b/dlls/windows.security.authentication.onlineid/private.h
+@@ -69,11 +69,11 @@
+ extern HRESULT identity_bridge_authorize( const GUID *application_id, HSTRING service, HSTRING policy,
+                                           HANDLE cancel, struct identity_reply *reply );
+ extern HRESULT identity_bridge_authorize_client( HSTRING client_id, HSTRING scopes, HSTRING authority,
+-                                                 HSTRING login_hint, HSTRING policy, HANDLE cancel, struct identity_reply *reply );
++                                                 HSTRING login_hint, HSTRING policy, BOOL force, HANDLE cancel, struct identity_reply *reply );
+ extern HRESULT identity_bridge_get_token( HSTRING client_id, HSTRING scopes, HSTRING authority,
+                                           HSTRING account_id, HANDLE cancel, struct identity_reply *reply );
+ extern HRESULT identity_device_authorize( const GUID *application_id, HSTRING service, HSTRING authority, HSTRING login_hint,
+-                                          HANDLE cancel, struct identity_reply *reply );
++                                          BOOL force, HANDLE cancel, struct identity_reply *reply );
+ extern HRESULT identity_device_get_token( const GUID *application_id, HSTRING service, HSTRING authority,
+                                           HSTRING account_id, HSTRING login_hint, HANDLE cancel, struct identity_reply *reply );
+ extern HRESULT identity_native_credentials( UINT operation, const char *client_id, HSTRING authority,
+diff --git a/dlls/windows.security.authentication.onlineid/identity_bridge.c b/dlls/windows.security.authentication.onlineid/identity_bridge.c
+--- a/dlls/windows.security.authentication.onlineid/identity_bridge.c
++++ b/dlls/windows.security.authentication.onlineid/identity_bridge.c
+@@ -48,6 +48,7 @@
+ #define FIELD_ERROR 20
+ #define FIELD_POLICY 21
+ #define FIELD_ACCOUNTS 22
++#define FIELD_PROMPT 23
+ 
+ #pragma pack(push, 1)
+ struct bridge_header
+@@ -173,7 +174,7 @@
+ }
+ 
+ static HRESULT device_authorize_client( HSTRING client_id, HSTRING scopes, HSTRING authority,
+-                                       HSTRING account_id, HSTRING login_hint, BOOL silent, HANDLE cancel,
++                                       HSTRING account_id, HSTRING login_hint, BOOL silent, BOOL force, HANDLE cancel,
+                                        struct identity_reply *reply )
+ {
+     const WCHAR *value;
+@@ -190,7 +191,7 @@
+     guid_string[38] = 0;
+     if (FAILED(hr = CLSIDFromString( guid_string, &application_id ))) return hr;
+     if (silent) return identity_device_get_token( &application_id, scopes, authority, account_id, login_hint, cancel, reply );
+-    return identity_device_authorize( &application_id, scopes, authority, login_hint, cancel, reply );
++    return identity_device_authorize( &application_id, scopes, authority, login_hint, force, cancel, reply );
+ }
+ 
+ HRESULT identity_native_credentials( UINT operation, const char *client_id, HSTRING authority,
+@@ -402,7 +403,7 @@
+ }
+ 
+ HRESULT identity_bridge_authorize_client( HSTRING client_id, HSTRING scopes, HSTRING authority,
+-                                          HSTRING login_hint, HSTRING policy, HANDLE cancel,
++                                          HSTRING login_hint, HSTRING policy, BOOL force, HANDLE cancel,
+                                           struct identity_reply *reply )
+ {
+     struct message_builder builder = {0};
+@@ -414,7 +415,7 @@
+     if (!client_id || !reply) return E_POINTER;
+     memset( reply, 0, sizeof(*reply) );
+     if (!GetEnvironmentVariableW( L"SODA_IDENTITY_BRIDGE_SOCKET", NULL, 0 ))
+-        return device_authorize_client( client_id, scopes, authority, NULL, login_hint, FALSE, cancel, reply );
++        return device_authorize_client( client_id, scopes, authority, NULL, login_hint, FALSE, force, cancel, reply );
+     if (FAILED(hr = hstring_to_utf8( client_id, &client_utf8, &client_size )) ||
+         FAILED(hr = hstring_to_utf8( scopes, &scopes_utf8, &scopes_size )) ||
+         FAILED(hr = hstring_to_utf8( authority, &authority_utf8, &authority_size )) ||
+@@ -424,7 +425,8 @@
+         FAILED(hr = builder_add( &builder, FIELD_SCOPES, scopes_utf8, scopes_size )) ||
+         FAILED(hr = builder_add( &builder, FIELD_AUTHORITY, authority_utf8, authority_size )) ||
+         FAILED(hr = builder_add( &builder, FIELD_LOGIN_HINT, login_hint_utf8, login_hint_size )) ||
+-        FAILED(hr = builder_add( &builder, FIELD_POLICY, policy_utf8, policy_size )))
++        FAILED(hr = builder_add( &builder, FIELD_POLICY, policy_utf8, policy_size )) ||
++        (force && FAILED(hr = builder_add( &builder, FIELD_PROMPT, "login", 5 ))))
+         goto done;
+     hr = bridge_exchange( OP_AUTHORIZE, &builder, cancel, reply );
+ 
+@@ -450,7 +452,7 @@
+     if (!client_id || !reply) return E_POINTER;
+     memset( reply, 0, sizeof(*reply) );
+     if (!GetEnvironmentVariableW( L"SODA_IDENTITY_BRIDGE_SOCKET", NULL, 0 ))
+-        return device_authorize_client( client_id, scopes, authority, account_id, NULL, TRUE, cancel, reply );
++        return device_authorize_client( client_id, scopes, authority, account_id, NULL, TRUE, FALSE, cancel, reply );
+     if (FAILED(hr = hstring_to_utf8( client_id, &client_utf8, &client_size )) ||
+         FAILED(hr = hstring_to_utf8( scopes, &scopes_utf8, &scopes_size )) ||
+         FAILED(hr = hstring_to_utf8( authority, &authority_utf8, &authority_size )) ||
+@@ -486,7 +488,7 @@
+     if (!application_id || !reply) return E_POINTER;
+     memset( reply, 0, sizeof(*reply) );
+     if (!GetEnvironmentVariableW( L"SODA_IDENTITY_BRIDGE_SOCKET", NULL, 0 ))
+-        return identity_device_authorize( application_id, service, NULL, NULL, cancel, reply );
++        return identity_device_authorize( application_id, service, NULL, NULL, FALSE, cancel, reply );
+     if (StringFromGUID2( application_id, caller_buffer, ARRAY_SIZE(caller_buffer) ) != ARRAY_SIZE(caller_buffer))
+         return E_INVALIDARG;
+     if (FAILED(hr = WindowsCreateString( caller_buffer + 1, 36, &caller_id )) ||
+diff --git a/dlls/windows.security.authentication.onlineid/device_code.c b/dlls/windows.security.authentication.onlineid/device_code.c
+--- a/dlls/windows.security.authentication.onlineid/device_code.c
++++ b/dlls/windows.security.authentication.onlineid/device_code.c
+@@ -973,7 +973,7 @@
+ }
+ 
+ HRESULT identity_device_authorize( const GUID *application_id, HSTRING service, HSTRING authority, HSTRING login_hint,
+-                                   HANDLE cancel, struct identity_reply *reply )
++                                   BOOL force, HANDLE cancel, struct identity_reply *reply )
+ {
+     char client_id[37], *scopes = NULL, *encoded_scopes = NULL, *body = NULL, *response = NULL;
+     char *device_code = NULL, *encoded_code = NULL, *user_code = NULL, *verification_uri = NULL;
+@@ -981,7 +981,7 @@
+     UINT32 expires = 900, interval = 5, elapsed = 0;
+     DWORD status;
+     SIZE_T size;
+-    HRESULT hr;
++    HRESULT hr = E_FAIL;
+     ULONG trace_id = InterlockedIncrement( &trace_counter );
+     WCHAR device_path[80], token_path[80];
+ 
+@@ -992,9 +992,12 @@
+         return E_POINTER;
+     }
+     memset( reply, 0, sizeof(*reply) );
+-    eagle_trace_native_identity( trace_id, 2, EAGLE_IDENTITY_CACHE, E_PENDING, __builtin_return_address(0) );
+-    hr = identity_device_get_token( application_id, service, authority, NULL, login_hint, cancel, reply );
+-    eagle_trace_native_identity( trace_id, 2, EAGLE_IDENTITY_CACHE, hr, __builtin_return_address(0) );
++    if (!force)
++    {
++        eagle_trace_native_identity( trace_id, 2, EAGLE_IDENTITY_CACHE, E_PENDING, __builtin_return_address(0) );
++        hr = identity_device_get_token( application_id, service, authority, NULL, login_hint, cancel, reply );
++        eagle_trace_native_identity( trace_id, 2, EAGLE_IDENTITY_CACHE, hr, __builtin_return_address(0) );
++    }
+     if (SUCCEEDED(hr))
+     {
+         eagle_trace_native_identity( trace_id, 2, EAGLE_IDENTITY_COMPLETE, S_OK, __builtin_return_address(0) );
+diff --git a/dlls/windows.security.authentication.onlineid/web_async.c b/dlls/windows.security.authentication.onlineid/web_async.c
+--- a/dlls/windows.security.authentication.onlineid/web_async.c
++++ b/dlls/windows.security.authentication.onlineid/web_async.c
+@@ -401,15 +401,27 @@
+     IWebTokenRequestResult *token_result = NULL;
+     HSTRING client_id = NULL, scopes = NULL, authority = NULL, login_hint = NULL;
+     HSTRING account_id = NULL, policy = NULL;
+-    HRESULT hr;
+-
+-    if (FAILED(hr = IWebTokenRequest_get_ClientId( impl->u.token.request, &client_id )) ||
++    WebTokenRequestPromptType prompt;
++    HRESULT hr;
++
++    if (FAILED(hr = IWebTokenRequest_get_PromptType( impl->u.token.request, &prompt )) ||
++        FAILED(hr = IWebTokenRequest_get_ClientId( impl->u.token.request, &client_id )) ||
+         FAILED(hr = IWebTokenRequest_get_Scope( impl->u.token.request, &scopes )) ||
+         FAILED(hr = IWebTokenRequest_get_WebAccountProvider( impl->u.token.request, &provider )) ||
+         FAILED(hr = IWebAccountProvider_QueryInterface( provider, &IID_IWebAccountProvider2, (void **)&provider2 )) ||
+         FAILED(hr = IWebAccountProvider2_get_Authority( provider2, &authority )) ||
+         FAILED(hr = WindowsCreateString( L"", 0, &policy )))
+         goto done;
++    if (prompt != WebTokenRequestPromptType_Default && prompt != WebTokenRequestPromptType_ForceAuthentication)
++    {
++        hr = E_INVALIDARG;
++        goto done;
++    }
++    if (impl->u.token.silent && prompt == WebTokenRequestPromptType_ForceAuthentication)
++    {
++        hr = web_token_result_create( provider, NULL, WebTokenRequestStatus_UserInteractionRequired, &token_result );
++        goto done;
++    }
+     if (impl->u.token.account && impl->u.token.silent)
+     {
+         if (FAILED(hr = IWebAccount_QueryInterface( impl->u.token.account, &IID_IWebAccount2,
+@@ -428,7 +440,7 @@
+         hr = identity_bridge_get_token( client_id, scopes, authority, account_id, impl->cancel, &reply );
+     }
+     else
+-        hr = identity_bridge_authorize_client( client_id, scopes, authority, login_hint, policy, impl->cancel, &reply );
++        hr = identity_bridge_authorize_client( client_id, scopes, authority, login_hint, policy, prompt == WebTokenRequestPromptType_ForceAuthentication, impl->cancel, &reply );
+     if (SUCCEEDED(hr))
+         hr = web_token_result_create( provider, &reply, WebTokenRequestStatus_Success, &token_result );
+     else if (hr == HRESULT_FROM_WIN32( ERROR_CANCELLED ))

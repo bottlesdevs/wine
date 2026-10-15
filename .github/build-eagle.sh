@@ -76,6 +76,7 @@ for architecture in x86_64 i686; do
     ln -s ../prefix "$directory/prefix"
     export EAGLE_IDENTITY_HTTP_TEST_ROOT="$directory"
     python3 "$root/eagle/tests/test_identity_http.py" > "$directory/integration.log" 2>&1
+    python3 "$root/eagle/tests/test_identity_force.py" > "$directory/force.log" 2>&1
     directory="$work/tests/l$bits"
     mkdir -p "$directory"
     "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror \

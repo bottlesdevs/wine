@@ -131,9 +131,9 @@ int main(int argc, char **argv)
     HSTRING name, provider_id, authority, client_id;
     FindAllWebAccountsStatus status;
     UINT32 count = 0, error_code = 0;
-    BOOL token, interactive, record;
+    BOOL token, interactive, record, force;
     FILE *file;
-    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive") && strcmp(argv[2], "record") && strcmp(argv[2], "refresh") && strcmp(argv[2], "refresh-interactive") && strcmp(argv[2], "device")))) return 1;
+    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive") && strcmp(argv[2], "record") && strcmp(argv[2], "refresh") && strcmp(argv[2], "refresh-interactive") && strcmp(argv[2], "device") && strcmp(argv[2], "forced") && strcmp(argv[2], "forced-silent")))) return 1;
     device = argc == 3 && !strcmp(argv[2], "device");
     if (device)
     {
@@ -142,9 +142,10 @@ int main(int argc, char **argv)
         async_cancel = !strcmp(action, "async");
         if (!register_fixture_uri()) return 10;
     }
+    force = argc == 3 && (!strcmp(argv[2], "forced") || !strcmp(argv[2], "forced-silent"));
     record = argc == 3 && !strcmp(argv[2], "record");
-    token = device || (argc == 3 && (!strcmp(argv[2], "silent") || !strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh") || !strcmp(argv[2], "refresh-interactive")));
-    interactive = device || (token && (!strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh-interactive")));
+    token = force || device || (argc == 3 && (!strcmp(argv[2], "silent") || !strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh") || !strcmp(argv[2], "refresh-interactive")));
+    interactive = (force && !strcmp(argv[2], "forced")) || device || (token && (!strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh-interactive")));
     CHECK(RoInitialize(RO_INIT_MULTITHREADED));
     module = LoadLibraryW(L"windows.security.authentication.onlineid.dll");
     if (!module) { fprintf(stderr, "LoadLibrary error=%lu\n", GetLastError()); return 2; }
@@ -177,7 +178,8 @@ int main(int argc, char **argv)
         CHECK(get_factory(request_name, &request_factory));
         CHECK(IActivationFactory_QueryInterface(request_factory, &IID_IWebTokenRequestFactory, (void **)&constructor));
         CHECK(WindowsCreateString(L"openid", 6, &scope));
-        CHECK(IWebTokenRequestFactory_Create(constructor, provider, scope, client_id, &request));
+        CHECK(IWebTokenRequestFactory_CreateWithPromptType(constructor, provider, scope, client_id,
+                force ? WebTokenRequestPromptType_ForceAuthentication : WebTokenRequestPromptType_Default, &request));
         if (interactive) CHECK(IWebAuthenticationCoreManagerStatics_RequestTokenAsync(manager, request, &token_operation));
         else CHECK(IWebAuthenticationCoreManagerStatics_GetTokenSilentlyAsync(manager, request, &token_operation));
         if (device)

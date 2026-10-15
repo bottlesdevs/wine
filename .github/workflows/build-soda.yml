@@ -1156,8 +1156,10 @@ jobs:
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/i64/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j32/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j32/s*/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j32/*/session/*.json*
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j64/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j64/s*/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j64/*/session/*.json*
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/k32/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/k32/*/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/k32/*/session/*.json*
@@ -1697,6 +1699,8 @@ jobs:
           name: eagle-recovery-test-logs-${{ github.sha }}
           path: |
             ${{ env.RECOVERY_WORK }}/logs/*.log
+            ${{ env.RECOVERY_WORK }}/eagle/tests/j32/*/session/*.json*
+            ${{ env.RECOVERY_WORK }}/eagle/tests/j64/*/session/*.json*
             ${{ env.RECOVERY_WORK }}/eagle/tests/k32/*/session/*.json*
             ${{ env.RECOVERY_WORK }}/eagle/tests/k64/*/session/*.json*
             ${{ env.RECOVERY_WORK }}/eagle/tests/l32/*/session/*.json*
