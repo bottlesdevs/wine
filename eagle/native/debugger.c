@@ -697,6 +697,7 @@ int main(int argc, char **argv)
     DWORD active = 0, status, primary_pid = 0;
     unsigned i;
     char line[1024];
+    setvbuf(stdout, NULL, _IOFBF, 16384);
     if (argc < 3) { fputs("usage: eagle-debug.exe run <command-line> [interactive] | attach <pid> [interactive]\n", stderr); return 2; }
     interactive = argc > 3 && !strcmp(argv[3], "interactive");
     SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_EXACT_SYMBOLS | SYMOPT_FAIL_CRITICAL_ERRORS);
