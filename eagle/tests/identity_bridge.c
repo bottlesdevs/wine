@@ -49,10 +49,11 @@ int main(int argc, char **argv)
     HSTRING name, provider_id, authority, client_id;
     FindAllWebAccountsStatus status;
     UINT32 count = 0, error_code = 0;
-    BOOL token, interactive;
+    BOOL token, interactive, record;
     FILE *file;
-    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive")))) return 1;
-    token = argc == 3 && strcmp(argv[2], "invalid");
+    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive") && strcmp(argv[2], "record")))) return 1;
+    record = argc == 3 && !strcmp(argv[2], "record");
+    token = argc == 3 && (!strcmp(argv[2], "silent") || !strcmp(argv[2], "interactive"));
     interactive = token && !strcmp(argv[2], "interactive");
     CHECK(RoInitialize(RO_INIT_MULTITHREADED));
     module = LoadLibraryW(L"windows.security.authentication.onlineid.dll");
@@ -65,7 +66,7 @@ int main(int argc, char **argv)
     CHECK(IWebAuthenticationCoreManagerStatics_QueryInterface(manager, &IID_IWebAuthenticationCoreManagerStatics4, (void **)&manager4));
     CHECK(WindowsCreateString(L"https://login.microsoft.com", 27, &provider_id));
     CHECK(WindowsCreateString(L"common", 6, &authority));
-    if (argc == 3 && !token) CHECK(WindowsCreateString(L"invalid", 7, &client_id));
+    if (argc == 3 && !token && !record) CHECK(WindowsCreateString(L"invalid", 7, &client_id));
     else CHECK(WindowsCreateString(L"11111111-1111-1111-1111-111111111111", 36, &client_id));
     CHECK(IWebAuthenticationCoreManagerStatics_FindAccountProviderWithAuthorityAsync(manager, provider_id, authority, &provider_operation));
     CHECK(wait_result((IUnknown *)provider_operation));
@@ -112,6 +113,21 @@ int main(int argc, char **argv)
         {
             CHECK(IFindAllAccountsResult_get_Accounts(result, &accounts));
             CHECK(IVectorView_WebAccount_get_Size(accounts, &count));
+            if (record)
+            {
+                IWebAccount *account;
+                IWebAccount2 *account2;
+                HSTRING username, id;
+                if (count != 1) return 6;
+                CHECK(IVectorView_WebAccount_GetAt(accounts, 0, &account));
+                CHECK(IWebAccount_get_UserName(account, &username));
+                CHECK(IWebAccount_QueryInterface(account, &IID_IWebAccount2, (void **)&account2));
+                CHECK(IWebAccount2_get_Id(account2, &id));
+                if (wcscmp(WindowsGetStringRawBuffer(username, NULL), L"fixture-user@example.invalid") ||
+                    wcscmp(WindowsGetStringRawBuffer(id, NULL), L"fixture-account-id")) return 7;
+                WindowsDeleteString(username);WindowsDeleteString(id);
+                IWebAccount2_Release(account2);IWebAccount_Release(account);
+            }
             IVectorView_WebAccount_Release(accounts);
         }
         else

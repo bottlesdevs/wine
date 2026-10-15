@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import os
@@ -13,7 +14,7 @@ BITS = int(os.environ['EAGLE_IDENTITY_BRIDGE_BITS'])
 
 
 class IdentityNative(unittest.TestCase):
-    def capture(self, name, profile, invalid=False, token=None, bus=None, success=False):
+    def capture(self, name, profile, invalid=False, token=None, bus=None, success=False, record=False, wrong=False):
         root = ROOT / name;root.mkdir()
         marker = root / 'result.txt'
         bundle = root / 'session'
@@ -24,16 +25,18 @@ class IdentityNative(unittest.TestCase):
                    '--timeout', '30', str(ROOT / 'target.exe'), 'Z:' + str(marker).replace('/', '\\')]
         if invalid:command.append('invalid')
         if token:command.append(token)
+        if record:command.append('record')
         result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=50)
         self.assertEqual(result.returncode, 0, result.stderr[-4000:])
         fields = marker.read_text().split()
-        expected = '00000000' if success else '80070057' if invalid else '80070426'
-        self.assertEqual((fields[1], fields[2], fields[3]), ('0' if success else '5' if token == 'interactive' else '3', expected, '0'))
+        expected = '00000000' if success else '80070005' if wrong else '80070057' if invalid else '80070426'
+        self.assertEqual((fields[1], fields[2], fields[3]), ('0' if success else '5' if token == 'interactive' else '3', expected, '1' if record else '0'))
         manifest = json.loads((bundle / 'manifest.json').read_text())
         self.assertTrue(manifest['completed'])
         self.assertEqual(manifest['collector_exit'], 0)
         self.assertEqual(manifest['dropped_events'], 0)
-        events = [json.loads(line) for line in (bundle / 'events.jsonl').read_text().splitlines()]
+        raw = (bundle / 'events.jsonl').read_text()
+        events = [json.loads(line) for line in raw.splitlines()]
         self.assertEqual(next(event['code'] for event in events if event['kind'] == 'process_exit' and event['pid'] == int(fields[0])), 0)
         architecture = 'x86_64' if BITS == 64 else 'i386'
         module = CANDIDATE / f'lib/wine/{architecture}-windows/windows.security.authentication.onlineid.dll'
@@ -47,6 +50,17 @@ class IdentityNative(unittest.TestCase):
         if token:
             expected_stages = ['begin', 'cache', 'cache', 'complete'] if token == 'silent' else ['begin', 'cache', 'begin', 'cache', 'cache', 'complete', 'cache', 'complete']
         self.assertEqual([value['stage'] for value in stages], expected_stages)
+        for sentinel in ('fixture-user@example.invalid', 'fixture-account-id', 'fixture-refresh-not-a-token'):
+            self.assertNotIn(sentinel, raw)
+        claims = {'aud': '11111111-1111-1111-1111-111111111111', 'oid': 'fixture-account-id',
+                  'preferred_username': 'fixture-user@example.invalid', 'name': 'Fixture Account', 'tid': 'fixture-tenant'}
+        for audience in ('11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222'):
+            claims['aud'] = audience
+            encoded = base64.urlsafe_b64encode(json.dumps(claims, separators=(',', ':')).encode()).decode().rstrip('=')
+            self.assertNotIn(encoded, raw)
+        if bus and profile != 'crash':
+            self.assertEqual([value['hresult'] for value in stages],
+                             ['0x8000000a', '0x8000000a', '0x00000000' if success or wrong else '0x80070426', '0x' + expected])
         if stages:
             self.assertTrue(all(value['transport'] == 'native' for value in stages))
             expected_operations = {'get_token', 'authorize'} if token == 'interactive' else {'get_token'} if token else {'list_accounts'}
@@ -58,10 +72,10 @@ class IdentityNative(unittest.TestCase):
                 self.assertEqual(group[-1]['hresult'], '0x' + expected)
             self.assertEqual(stages[-1]['hresult'], '0x' + expected)
 
-    def test_native_empty_and_refused_service(self):
+    def test_native_storage_service_controls(self):
         fixture = Path(os.environ['EAGLE_IDENTITY_SECRET_SERVICE'])
-        for mode in ('empty', 'denied'):
-            root = ROOT / ('s0' if mode == 'empty' else 's1');root.mkdir(mode=0o700)
+        for index, mode in enumerate(('empty', 'denied', 'record', 'wrong-audience')):
+            root = ROOT / ('s' + str(index));root.mkdir(mode=0o700)
             path = root / 'b.sock'
             with (root / 'bus.log').open('w') as bus_log, (root / 'service.log').open('w') as service_log:
                 bus = subprocess.Popen(['dbus-daemon', '--session', '--nofork', '--nopidfile',
@@ -84,12 +98,19 @@ class IdentityNative(unittest.TestCase):
                         if mode == 'empty':
                             self.capture('s-off', 'crash', bus=address, success=True)
                             self.capture('s-empty', 'winrt', bus=address, success=True)
-                        else:
+                        elif mode == 'denied':
                             self.capture('s-denied', 'winrt', bus=address)
+                        elif mode == 'record':
+                            self.capture('s-rec-off', 'crash', bus=address, success=True, record=True)
+                            self.capture('s-record', 'winrt', bus=address, success=True, record=True)
+                        else:
+                            self.capture('s-wrong', 'winrt', bus=address, wrong=True)
                         self.assertIsNone(service.poll())
                         calls = (root / 'calls.log').read_text().splitlines()
-                        self.assertEqual(calls.count('SearchItems'), 2 if mode == 'empty' else 1, calls)
-                        self.assertTrue(set(calls) <= {'SearchItems', 'Unlock'}, calls)
+                        self.assertEqual(calls.count('SearchItems'), 2 if mode in ('empty', 'record') else 1, calls)
+                        self.assertTrue(set(calls) <= {'SearchItems', 'Unlock', 'OpenSession', 'GetSecret', 'GetSecrets', 'Close'}, calls)
+                        if mode in ('record', 'wrong-audience'):
+                            self.assertTrue(set(calls) & {'GetSecret', 'GetSecrets'}, calls)
                     finally:
                         if service.poll() is None:service.terminate()
                         service.wait(timeout=10)
