@@ -58,6 +58,18 @@ int main(void)
     check("factory",RoGetActivationFactory(name,&IID_IInteractionTrackerStatics,(void **)&factory));WindowsDeleteString(name);
     check("tracker",IInteractionTrackerStatics_Create(factory,compositor,&tracker));
     check("tracker5",IInteractionTracker_QueryInterface(tracker,&IID_IInteractionTracker5,(void **)&tracker5));
+    check("default min scale",IInteractionTracker_get_MinScale(tracker,&scale));
+    printf("DEFAULT_MIN_SCALE=%g EXPECT=1\n",scale);failures+=scale!=1.0f;
+    check("default max scale",IInteractionTracker_get_MaxScale(tracker,&scale));
+    printf("DEFAULT_MAX_SCALE=%g EXPECT=1\n",scale);failures+=scale!=1.0f;
+    check("default lower scale",IInteractionTracker_TryUpdateScale(tracker,0.25f,((struct Vector3){0}),&request));
+    check("default lower read",IInteractionTracker_get_Scale(tracker,&scale));
+    printf("DEFAULT_LOWER_SCALE=%g EXPECT=1\n",scale);failures+=scale!=1.0f;
+    check("explicit min scale",IInteractionTracker_put_MinScale(tracker,0.1f));
+    check("explicit max scale",IInteractionTracker_put_MaxScale(tracker,2.0f));
+    check("explicit lower scale",IInteractionTracker_TryUpdateScale(tracker,0.25f,((struct Vector3){0}),&request));
+    check("explicit lower read",IInteractionTracker_get_Scale(tracker,&scale));
+    printf("EXPLICIT_LOWER_SCALE=%g EXPECT=0.25\n",scale);failures+=scale!=0.25f;
     check("min",IInteractionTracker_put_MinPosition(tracker,((struct Vector3){-10,-20,-30})));
     check("max",IInteractionTracker_put_MaxPosition(tracker,((struct Vector3){10,20,30})));
     check("auto",IInteractionTracker5_TryUpdatePositionWithOption(tracker5,((struct Vector3){-20,200,25}),InteractionTrackerClampingOption_Auto,InteractionTrackerPositionUpdateOption_Default,&request));

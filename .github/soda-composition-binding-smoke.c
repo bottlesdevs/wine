@@ -34,6 +34,7 @@ static void create_tracker(IInteractionTrackerStatics *factory,ICompositor *comp
     check("create",IInteractionTrackerStatics_Create(factory,compositor,tracker));
     check("min position",IInteractionTracker_put_MinPosition(*tracker,((struct Vector3){-10000,-10000,-10000})));
     check("max position",IInteractionTracker_put_MaxPosition(*tracker,((struct Vector3){10000,10000,10000})));
+    check("min scale",IInteractionTracker_put_MinScale(*tracker,0.1f));
     check("max scale",IInteractionTracker_put_MaxScale(*tracker,4));
 }
 

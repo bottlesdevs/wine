@@ -1,0 +1,11 @@
+diff --git a/dlls/windows.ui/interactions.c b/dlls/windows.ui/interactions.c
+--- a/dlls/windows.ui/interactions.c
++++ b/dlls/windows.ui/interactions.c
+@@ -2036,6 +2036,7 @@
+     list_init( &impl->update_entry );
+     list_init( &impl->changed_entry );
+     impl->max_scale = 1.0f;
++    impl->min_scale = 1.0f;
+     impl->scale = 1.0f;
+     impl->clamp_position = TRUE;
+     impl->ref = 1;
