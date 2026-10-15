@@ -1,0 +1,747 @@
+--- a/dlls/windows.ui/interactions.c
++++ b/dlls/windows.ui/interactions.c
+@@ -10,6 +10,8 @@
+  */
+ 
+ #include "private.h"
++#include "roapi.h"
++#include "objbase.h"
+ 
+ #include "wine/debug.h"
+ #include "wine/list.h"
+@@ -727,9 +729,12 @@
+     ICompositionInteractionSourceCollection *sources;
+     ICompositionPropertySet *properties;
+     ICompositor *compositor;
+-    IInspectable *owner;
++    IAgileReference *owner;
++    CO_MTA_USAGE_COOKIE owner_mta_cookie;
++    BOOL notifications_closed;
+     struct list bindings;
+     struct list update_entry;
++    struct list changed_entry;
+     IInspectable *position_decay_rate;
+     IInspectable *scale_decay_rate;
+     CRITICAL_SECTION animation_cs;
+@@ -782,6 +787,290 @@
+     return i;
+ }
+ 
++struct tracker_values_changed_args
++{
++    IInteractionTrackerValuesChangedArgs IInteractionTrackerValuesChangedArgs_iface;
++    LONG ref;
++    struct Vector3 position;
++    FLOAT scale;
++    INT32 request_id;
++};
++
++struct tracker_notification
++{
++    struct list entry;
++    struct tracker_values_changed_args *args;
++    IInteractionTracker *sender;
++    IAgileReference *owner;
++};
++
++static CRITICAL_SECTION tracker_notification_cs;
++static CRITICAL_SECTION_DEBUG tracker_notification_cs_debug =
++{
++    0, 0, &tracker_notification_cs,
++    { &tracker_notification_cs_debug.ProcessLocksList, &tracker_notification_cs_debug.ProcessLocksList },
++    0, 0, { (DWORD_PTR)(__FILE__ ": tracker_notification_cs") }
++};
++static CRITICAL_SECTION tracker_notification_cs = { &tracker_notification_cs_debug, -1, 0, 0, 0, 0 };
++static struct list tracker_notifications = LIST_INIT(tracker_notifications);
++static BOOL tracker_notification_worker_active;
++
++static inline struct tracker_values_changed_args *impl_from_IInteractionTrackerValuesChangedArgs(
++        IInteractionTrackerValuesChangedArgs *iface )
++{
++    return CONTAINING_RECORD( iface, struct tracker_values_changed_args, IInteractionTrackerValuesChangedArgs_iface );
++}
++
++static HRESULT WINAPI tracker_values_QueryInterface( IInteractionTrackerValuesChangedArgs *iface,
++        REFIID iid, void **out )
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (!IsEqualGUID( iid, &IID_IUnknown ) && !IsEqualGUID( iid, &IID_IInspectable ) &&
++            !IsEqualGUID( iid, &IID_IAgileObject ) && !IsEqualGUID( iid, &IID_IInteractionTrackerValuesChangedArgs ))
++        return E_NOINTERFACE;
++    *out = iface;
++    IInteractionTrackerValuesChangedArgs_AddRef( iface );
++    return S_OK;
++}
++
++static ULONG WINAPI tracker_values_AddRef( IInteractionTrackerValuesChangedArgs *iface )
++{
++    return InterlockedIncrement( &impl_from_IInteractionTrackerValuesChangedArgs( iface )->ref );
++}
++
++static ULONG WINAPI tracker_values_Release( IInteractionTrackerValuesChangedArgs *iface )
++{
++    struct tracker_values_changed_args *impl = impl_from_IInteractionTrackerValuesChangedArgs( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref) free( impl );
++    return ref;
++}
++
++static HRESULT WINAPI tracker_values_GetIids( IInteractionTrackerValuesChangedArgs *iface,
++        ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    if (!(*iids = CoTaskMemAlloc( sizeof(**iids) ))) return E_OUTOFMEMORY;
++    **iids = IID_IInteractionTrackerValuesChangedArgs;
++    *count = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_values_GetRuntimeClassName( IInteractionTrackerValuesChangedArgs *iface,
++        HSTRING *value )
++{
++    if (!value) return E_POINTER;
++    return WindowsCreateString( RuntimeClass_Windows_UI_Composition_Interactions_InteractionTrackerValuesChangedArgs,
++            ARRAY_SIZE(RuntimeClass_Windows_UI_Composition_Interactions_InteractionTrackerValuesChangedArgs) - 1, value );
++}
++
++static HRESULT WINAPI tracker_values_GetTrustLevel( IInteractionTrackerValuesChangedArgs *iface, TrustLevel *value )
++{
++    if (!value) return E_POINTER;
++    *value = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_values_get_Position( IInteractionTrackerValuesChangedArgs *iface,
++        struct Vector3 *value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IInteractionTrackerValuesChangedArgs( iface )->position;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_values_get_RequestId( IInteractionTrackerValuesChangedArgs *iface, INT32 *value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IInteractionTrackerValuesChangedArgs( iface )->request_id;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_values_get_Scale( IInteractionTrackerValuesChangedArgs *iface, FLOAT *value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IInteractionTrackerValuesChangedArgs( iface )->scale;
++    return S_OK;
++}
++
++static const IInteractionTrackerValuesChangedArgsVtbl tracker_values_vtbl =
++{
++    tracker_values_QueryInterface,
++    tracker_values_AddRef,
++    tracker_values_Release,
++    tracker_values_GetIids,
++    tracker_values_GetRuntimeClassName,
++    tracker_values_GetTrustLevel,
++    tracker_values_get_Position,
++    tracker_values_get_RequestId,
++    tracker_values_get_Scale,
++};
++
++static void tracker_notification_free( struct tracker_notification *notification )
++{
++    IInteractionTrackerValuesChangedArgs_Release( &notification->args->IInteractionTrackerValuesChangedArgs_iface );
++    IAgileReference_Release( notification->owner );
++    IInteractionTracker_Release( notification->sender );
++    free( notification );
++}
++
++static void tracker_notifications_free( struct list *notifications )
++{
++    struct tracker_notification *notification;
++
++    while (!list_empty( notifications ))
++    {
++        notification = LIST_ENTRY( list_head( notifications ), struct tracker_notification, entry );
++        list_remove( &notification->entry );
++        tracker_notification_free( notification );
++    }
++}
++
++static void CALLBACK tracker_notification_worker( PTP_CALLBACK_INSTANCE instance, void *context )
++{
++    struct tracker_notification *notification;
++    struct interaction_tracker *tracker;
++    IInteractionTrackerOwner *owner;
++    HRESULT initialized, hr;
++    BOOL closed;
++
++    initialized = CoInitializeEx( NULL, COINIT_MULTITHREADED );
++    for (;;)
++    {
++        EnterCriticalSection( &tracker_notification_cs );
++        if (list_empty( &tracker_notifications ))
++        {
++            tracker_notification_worker_active = FALSE;
++            LeaveCriticalSection( &tracker_notification_cs );
++            break;
++        }
++        notification = LIST_ENTRY( list_head( &tracker_notifications ), struct tracker_notification, entry );
++        list_remove( &notification->entry );
++        LeaveCriticalSection( &tracker_notification_cs );
++
++        tracker = impl_from_IInteractionTracker( notification->sender );
++        EnterCriticalSection( &tracker->animation_cs );
++        closed = tracker->notifications_closed;
++        LeaveCriticalSection( &tracker->animation_cs );
++        hr = closed ? RO_E_CLOSED : initialized;
++        if (SUCCEEDED(hr))
++            hr = IAgileReference_Resolve( notification->owner, &IID_IInteractionTrackerOwner, (void **)&owner );
++        if (SUCCEEDED(hr))
++        {
++            hr = IInteractionTrackerOwner_ValuesChanged( owner, notification->sender,
++                    &notification->args->IInteractionTrackerValuesChangedArgs_iface );
++            IInteractionTrackerOwner_Release( owner );
++        }
++        if (FAILED(hr) && hr != RO_E_CLOSED) WARN( "ValuesChanged delivery failed, hr %#lx.\n", hr );
++        tracker_notification_free( notification );
++    }
++    if (SUCCEEDED(initialized)) CoUninitialize();
++}
++
++static BOOL interaction_tracker_try_addref( struct interaction_tracker *impl )
++{
++    LONG ref = InterlockedCompareExchange( &impl->ref, 0, 0 ), previous;
++
++    while (ref > 0)
++    {
++        previous = InterlockedCompareExchange( &impl->ref, ref + 1, ref );
++        if (previous == ref) return TRUE;
++        ref = previous;
++    }
++    return FALSE;
++}
++
++static void interaction_tracker_queue_notification( struct interaction_tracker *impl, INT32 request_id,
++        struct list *discarded )
++{
++    struct tracker_notification *notification;
++    struct tracker_values_changed_args *args;
++    BOOL enabled;
++
++    EnterCriticalSection( &impl->animation_cs );
++    enabled = impl->owner && !impl->notifications_closed;
++    LeaveCriticalSection( &impl->animation_cs );
++    if (!enabled) return;
++    if (!(notification = calloc( 1, sizeof(*notification) ))) return;
++    if (!(args = calloc( 1, sizeof(*args) )))
++    {
++        free( notification );
++        return;
++    }
++    EnterCriticalSection( &impl->animation_cs );
++    if (impl->notifications_closed || !impl->owner || !interaction_tracker_try_addref( impl ))
++    {
++        LeaveCriticalSection( &impl->animation_cs );
++        free( args );
++        free( notification );
++        return;
++    }
++    args->IInteractionTrackerValuesChangedArgs_iface.lpVtbl = &tracker_values_vtbl;
++    args->ref = 1;
++    args->position = impl->position;
++    args->scale = impl->scale;
++    args->request_id = request_id;
++    notification->args = args;
++    notification->sender = &impl->IInteractionTracker_iface;
++    notification->owner = impl->owner;
++    IAgileReference_AddRef( notification->owner );
++    LeaveCriticalSection( &impl->animation_cs );
++
++    EnterCriticalSection( &tracker_notification_cs );
++    list_add_tail( &tracker_notifications, &notification->entry );
++    if (!tracker_notification_worker_active)
++    {
++        tracker_notification_worker_active = TRUE;
++        if (!TrySubmitThreadpoolCallback( tracker_notification_worker, NULL, NULL ))
++        {
++            tracker_notification_worker_active = FALSE;
++            list_remove( &notification->entry );
++            list_add_tail( discarded, &notification->entry );
++            WARN( "Could not queue ValuesChanged delivery, error %lu.\n", GetLastError() );
++        }
++    }
++    LeaveCriticalSection( &tracker_notification_cs );
++}
++
++static void interaction_tracker_cancel_notifications( struct interaction_tracker *impl )
++{
++    struct tracker_notification *notification, *next;
++    struct list discarded;
++
++    list_init( &discarded );
++    EnterCriticalSection( &tracker_notification_cs );
++    LIST_FOR_EACH_ENTRY_SAFE( notification, next, &tracker_notifications, struct tracker_notification, entry )
++        if (notification->sender == &impl->IInteractionTracker_iface)
++        {
++            list_remove( &notification->entry );
++            list_add_tail( &discarded, &notification->entry );
++        }
++    LeaveCriticalSection( &tracker_notification_cs );
++    tracker_notifications_free( &discarded );
++}
++
++static void interaction_tracker_mark_changed( struct interaction_tracker *impl, struct list *changed )
++{
++    if (list_empty( &impl->changed_entry )) list_add_tail( changed, &impl->changed_entry );
++}
++
++static void interaction_tracker_notify_changes( struct interaction_tracker *impl, INT32 request_id,
++        struct list *changed, struct list *discarded )
++{
++    struct interaction_tracker *tracker;
++
++    while (!list_empty( changed ))
++    {
++        tracker = LIST_ENTRY( list_head( changed ), struct interaction_tracker, changed_entry );
++        list_remove( &tracker->changed_entry );
++        list_init( &tracker->changed_entry );
++        interaction_tracker_queue_notification( tracker, tracker == impl ? request_id : 0, discarded );
++    }
++}
++
+ static void interaction_tracker_clear_animations( struct interaction_tracker *impl )
+ {
+     IExpressionAnimation *previous[6];
+@@ -932,7 +1221,8 @@
+         if (impl->sources) ICompositionInteractionSourceCollection_Release( impl->sources );
+         if (impl->properties) ICompositionPropertySet_Release( impl->properties );
+         ICompositor_Release( impl->compositor );
+-        if (impl->owner) IInspectable_Release( impl->owner );
++        if (impl->owner) IAgileReference_Release( impl->owner );
++        if (impl->owner_mta_cookie) CoDecrementMTAUsage( impl->owner_mta_cookie );
+         if (impl->position_decay_rate) IInspectable_Release( impl->position_decay_rate );
+         if (impl->scale_decay_rate) IInspectable_Release( impl->scale_decay_rate );
+         DeleteCriticalSection( &impl->animation_cs );
+@@ -1038,14 +1328,23 @@
+     return S_OK;
+ }
+ 
+-static HRESULT WINAPI interaction_tracker_get_Owner( IInteractionTracker *iface, IInspectable **value )
++static HRESULT WINAPI interaction_tracker_get_Owner( IInteractionTracker *iface, IInteractionTrackerOwner **value )
+ {
+     struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
+-
+-    if (!value) return E_POINTER;
+-    if (impl->owner) IInspectable_AddRef( impl->owner );
+-    *value = impl->owner;
+-    return S_OK;
++    IAgileReference *owner;
++    HRESULT hr = S_OK;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->animation_cs );
++    if ((owner = impl->owner)) IAgileReference_AddRef( owner );
++    LeaveCriticalSection( &impl->animation_cs );
++    if (owner)
++    {
++        hr = IAgileReference_Resolve( owner, &IID_IInteractionTrackerOwner, (void **)value );
++        IAgileReference_Release( owner );
++    }
++    return hr;
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_get_Position( IInteractionTracker *iface, struct Vector3 *value )
+@@ -1170,11 +1469,12 @@
+ }
+ 
+ static void interaction_tracker_update_axis( struct interaction_tracker *impl,
+-        enum InteractionBindingAxisModes axis, FLOAT value )
++        enum InteractionBindingAxisModes axis, FLOAT value, struct list *changed )
+ {
+     struct interaction_tracker_binding *binding;
+     struct interaction_tracker *current;
+     struct list pending, visited;
++    FLOAT *property;
+ 
+     list_init( &pending );
+     list_init( &visited );
+@@ -1185,9 +1485,10 @@
+         list_remove( &current->update_entry );
+         list_add_tail( &visited, &current->update_entry );
+         EnterCriticalSection( &current->animation_cs );
+-        if (axis == InteractionBindingAxisModes_PositionX) current->position.X = value;
+-        else if (axis == InteractionBindingAxisModes_PositionY) current->position.Y = value;
+-        else current->scale = value;
++        property = axis == InteractionBindingAxisModes_PositionX ? &current->position.X :
++                axis == InteractionBindingAxisModes_PositionY ? &current->position.Y : &current->scale;
++        if (*property != value) interaction_tracker_mark_changed( current, changed );
++        *property = value;
+         ++current->animation_revision;
+         LeaveCriticalSection( &current->animation_cs );
+         LIST_FOR_EACH_ENTRY( binding, &current->bindings, struct interaction_tracker_binding, entry )
+@@ -1203,9 +1504,14 @@
+ }
+ 
+ static void interaction_tracker_update_position( struct interaction_tracker *impl,
+-        struct Vector3 value, BOOL relative )
+-{
++        struct Vector3 value, BOOL relative, INT32 *request_id )
++{
++    struct list changed, discarded;
++
++    list_init( &changed );
++    list_init( &discarded );
+     EnterCriticalSection( &tracker_binding_cs );
++    *request_id = interaction_tracker_next_request_id( impl );
+     EnterCriticalSection( &impl->animation_cs );
+     if (relative)
+     {
+@@ -1213,12 +1519,15 @@
+         value.Y += impl->position.Y;
+         value.Z += impl->position.Z;
+     }
++    if (impl->position.Z != value.Z) interaction_tracker_mark_changed( impl, &changed );
+     impl->position.Z = value.Z;
+     ++impl->animation_revision;
+     LeaveCriticalSection( &impl->animation_cs );
+-    interaction_tracker_update_axis( impl, InteractionBindingAxisModes_PositionX, value.X );
+-    interaction_tracker_update_axis( impl, InteractionBindingAxisModes_PositionY, value.Y );
++    interaction_tracker_update_axis( impl, InteractionBindingAxisModes_PositionX, value.X, &changed );
++    interaction_tracker_update_axis( impl, InteractionBindingAxisModes_PositionY, value.Y, &changed );
++    interaction_tracker_notify_changes( impl, *request_id, &changed, &discarded );
+     LeaveCriticalSection( &tracker_binding_cs );
++    tracker_notifications_free( &discarded );
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_TryUpdatePosition( IInteractionTracker *iface,
+@@ -1227,8 +1536,7 @@
+     struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
+ 
+     if (!request_id) return E_POINTER;
+-    interaction_tracker_update_position( impl, value, FALSE );
+-    *request_id = interaction_tracker_next_request_id( impl );
++    interaction_tracker_update_position( impl, value, FALSE, request_id );
+     return S_OK;
+ }
+ 
+@@ -1238,8 +1546,7 @@
+     struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
+ 
+     if (!request_id) return E_POINTER;
+-    interaction_tracker_update_position( impl, amount, TRUE );
+-    *request_id = interaction_tracker_next_request_id( impl );
++    interaction_tracker_update_position( impl, amount, TRUE, request_id );
+     return S_OK;
+ }
+ 
+@@ -1264,11 +1571,17 @@
+ {
+     struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
+ 
++    struct list changed, discarded;
++
+     if (!request_id) return E_POINTER;
++    list_init( &changed );
++    list_init( &discarded );
+     EnterCriticalSection( &tracker_binding_cs );
+-    interaction_tracker_update_axis( impl, InteractionBindingAxisModes_Scale, value );
++    *request_id = interaction_tracker_next_request_id( impl );
++    interaction_tracker_update_axis( impl, InteractionBindingAxisModes_Scale, value, &changed );
++    interaction_tracker_notify_changes( impl, *request_id, &changed, &discarded );
+     LeaveCriticalSection( &tracker_binding_cs );
+-    *request_id = interaction_tracker_next_request_id( impl );
++    tracker_notifications_free( &discarded );
+     return S_OK;
+ }
+ 
+@@ -1335,8 +1648,7 @@
+     struct interaction_tracker *impl = impl_from_IInteractionTracker5( iface );
+ 
+     if (!request_id) return E_POINTER;
+-    interaction_tracker_update_position( impl, value, FALSE );
+-    *request_id = interaction_tracker_next_request_id( impl );
++    interaction_tracker_update_position( impl, value, FALSE, request_id );
+     return S_OK;
+ }
+ 
+@@ -1562,14 +1874,23 @@
+ static HRESULT WINAPI tracker_closable_Close( IClosable *iface )
+ {
+     struct interaction_tracker *impl = tracker_from_IClosable( iface );
+-    IInspectable *owner = impl->owner;
++    IAgileReference *owner;
++    CO_MTA_USAGE_COOKIE cookie;
+ 
+     TRACE( "iface %p.\n", iface );
++    EnterCriticalSection( &impl->animation_cs );
++    impl->notifications_closed = TRUE;
++    owner = impl->owner;
+     impl->owner = NULL;
++    cookie = impl->owner_mta_cookie;
++    impl->owner_mta_cookie = NULL;
++    LeaveCriticalSection( &impl->animation_cs );
++    interaction_tracker_cancel_notifications( impl );
+     interaction_tracker_clear_animations( impl );
+     interaction_tracker_clear_bindings( impl );
+     ICompositionInteractionSourceCollection_RemoveAll( impl->sources );
+-    if (owner) IInspectable_Release( owner );
++    if (owner) IAgileReference_Release( owner );
++    if (cookie) CoDecrementMTAUsage( cookie );
+     return S_OK;
+ }
+ 
+@@ -1584,7 +1905,7 @@
+     tracker_closable_Close,
+ };
+ 
+-static HRESULT interaction_tracker_create( ICompositor *compositor, IInspectable *owner,
++static HRESULT interaction_tracker_create( ICompositor *compositor, IInteractionTrackerOwner *owner,
+         IInteractionTracker **result )
+ {
+     struct interaction_tracker *impl;
+@@ -1599,14 +1920,23 @@
+     impl->ICompositionObject_iface.lpVtbl = &tracker_composition_object_vtbl;
+     impl->IClosable_iface.lpVtbl = &tracker_closable_vtbl;
+     impl->compositor = compositor;
+-    impl->owner = owner;
+     list_init( &impl->bindings );
+     list_init( &impl->update_entry );
++    list_init( &impl->changed_entry );
+     impl->max_scale = 1.0f;
+     impl->scale = 1.0f;
+     impl->ref = 1;
+     ICompositor_AddRef( compositor );
+-    if (owner) IInspectable_AddRef( owner );
++    if (owner)
++    {
++        if (FAILED(hr = RoGetAgileReference( AGILEREFERENCE_DEFAULT, &IID_IInteractionTrackerOwner,
++                (IUnknown *)owner, &impl->owner )) ||
++            FAILED(hr = CoIncrementMTAUsage( &impl->owner_mta_cookie )))
++        {
++            IInteractionTracker_Release( &impl->IInteractionTracker_iface );
++            return hr;
++        }
++    }
+     if (FAILED(hr = interaction_source_collection_create( &impl->sources )) ||
+         FAILED(hr = composition_property_set_create( compositor, &impl->properties )))
+     {
+@@ -1766,7 +2096,7 @@
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_statics_CreateWithOwner( IInteractionTrackerStatics *iface,
+-        ICompositor *compositor, IInspectable *owner, IInteractionTracker **result )
++        ICompositor *compositor, IInteractionTrackerOwner *owner, IInteractionTracker **result )
+ {
+     TRACE( "iface %p, compositor %p, owner %p, result %p.\n", iface, compositor, owner, result );
+     return interaction_tracker_create( compositor, owner, result );
+--- a/include/windows.ui.composition.interactions.idl
++++ b/include/windows.ui.composition.interactions.idl
+@@ -79,6 +79,13 @@
+     interface ICompositionConditionalValueStatics;
+     interface IInteractionTracker;
+     interface IInteractionTracker5;
++    interface IInteractionTrackerOwner;
++    interface IInteractionTrackerCustomAnimationStateEnteredArgs;
++    interface IInteractionTrackerIdleStateEnteredArgs;
++    interface IInteractionTrackerInertiaStateEnteredArgs;
++    interface IInteractionTrackerInteractingStateEnteredArgs;
++    interface IInteractionTrackerRequestIgnoredArgs;
++    interface IInteractionTrackerValuesChangedArgs;
+     interface IInteractionTrackerStatics;
+     interface IInteractionTrackerStatics2;
+     interface IVisualInteractionSource;
+@@ -88,7 +95,173 @@
+     runtimeclass CompositionInteractionSourceCollection;
+     runtimeclass CompositionConditionalValue;
+     runtimeclass InteractionTracker;
++    runtimeclass InteractionTrackerCustomAnimationStateEnteredArgs;
++    runtimeclass InteractionTrackerIdleStateEnteredArgs;
++    runtimeclass InteractionTrackerInertiaStateEnteredArgs;
++    runtimeclass InteractionTrackerInteractingStateEnteredArgs;
++    runtimeclass InteractionTrackerRequestIgnoredArgs;
++    runtimeclass InteractionTrackerValuesChangedArgs;
+     runtimeclass VisualInteractionSource;
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        exclusiveto(Windows.UI.Composition.Interactions.InteractionTrackerCustomAnimationStateEnteredArgs),
++        uuid(8d1c8cf1-d7b0-434c-a5d2-2d7611864834)
++    ]
++    interface IInteractionTrackerCustomAnimationStateEnteredArgs : IInspectable
++    {
++        [propget] HRESULT RequestId([out, retval] INT32 *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass InteractionTrackerCustomAnimationStateEnteredArgs
++    {
++        [default] interface Windows.UI.Composition.Interactions.IInteractionTrackerCustomAnimationStateEnteredArgs;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        exclusiveto(Windows.UI.Composition.Interactions.InteractionTrackerIdleStateEnteredArgs),
++        uuid(50012faa-1510-4142-a1a5-019b09f8857b)
++    ]
++    interface IInteractionTrackerIdleStateEnteredArgs : IInspectable
++    {
++        [propget] HRESULT RequestId([out, retval] INT32 *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass InteractionTrackerIdleStateEnteredArgs
++    {
++        [default] interface Windows.UI.Composition.Interactions.IInteractionTrackerIdleStateEnteredArgs;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        exclusiveto(Windows.UI.Composition.Interactions.InteractionTrackerInertiaStateEnteredArgs),
++        uuid(87108cf2-e7ff-4f7d-9ffd-d72f1e409b63)
++    ]
++    interface IInteractionTrackerInertiaStateEnteredArgs : IInspectable
++    {
++        [propget] HRESULT ModifiedRestingPosition([out, retval] Windows.Foundation.IReference<Windows.Foundation.Numerics.Vector3> **value);
++        [propget] HRESULT ModifiedRestingScale([out, retval] Windows.Foundation.IReference<FLOAT> **value);
++        [propget] HRESULT NaturalRestingPosition([out, retval] Windows.Foundation.Numerics.Vector3 *value);
++        [propget] HRESULT NaturalRestingScale([out, retval] FLOAT *value);
++        [propget] HRESULT PositionVelocityInPixelsPerSecond([out, retval] Windows.Foundation.Numerics.Vector3 *value);
++        [propget] HRESULT RequestId([out, retval] INT32 *value);
++        [propget] HRESULT ScaleVelocityInPercentPerSecond([out, retval] FLOAT *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass InteractionTrackerInertiaStateEnteredArgs
++    {
++        [default] interface Windows.UI.Composition.Interactions.IInteractionTrackerInertiaStateEnteredArgs;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        exclusiveto(Windows.UI.Composition.Interactions.InteractionTrackerInteractingStateEnteredArgs),
++        uuid(a7263939-a17b-4011-99fd-b5c24f143748)
++    ]
++    interface IInteractionTrackerInteractingStateEnteredArgs : IInspectable
++    {
++        [propget] HRESULT RequestId([out, retval] INT32 *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass InteractionTrackerInteractingStateEnteredArgs
++    {
++        [default] interface Windows.UI.Composition.Interactions.IInteractionTrackerInteractingStateEnteredArgs;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        exclusiveto(Windows.UI.Composition.Interactions.InteractionTrackerRequestIgnoredArgs),
++        uuid(80dd82f1-ce25-488f-91dd-cb6455ccff2e)
++    ]
++    interface IInteractionTrackerRequestIgnoredArgs : IInspectable
++    {
++        [propget] HRESULT RequestId([out, retval] INT32 *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass InteractionTrackerRequestIgnoredArgs
++    {
++        [default] interface Windows.UI.Composition.Interactions.IInteractionTrackerRequestIgnoredArgs;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        exclusiveto(Windows.UI.Composition.Interactions.InteractionTrackerValuesChangedArgs),
++        uuid(cf1578ef-d3df-4501-b9e6-f02fb22f73d0)
++    ]
++    interface IInteractionTrackerValuesChangedArgs : IInspectable
++    {
++        [propget] HRESULT Position([out, retval] Windows.Foundation.Numerics.Vector3 *value);
++        [propget] HRESULT RequestId([out, retval] INT32 *value);
++        [propget] HRESULT Scale([out, retval] FLOAT *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass InteractionTrackerValuesChangedArgs
++    {
++        [default] interface Windows.UI.Composition.Interactions.IInteractionTrackerValuesChangedArgs;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 3.0),
++        uuid(db2e8af3-4deb-4e53-b29c-b06c9f96d651)
++    ]
++    interface IInteractionTrackerOwner : IInspectable
++    {
++        HRESULT CustomAnimationStateEntered(
++            [in] Windows.UI.Composition.Interactions.InteractionTracker *sender,
++            [in] Windows.UI.Composition.Interactions.InteractionTrackerCustomAnimationStateEnteredArgs *args
++        );
++        HRESULT IdleStateEntered(
++            [in] Windows.UI.Composition.Interactions.InteractionTracker *sender,
++            [in] Windows.UI.Composition.Interactions.InteractionTrackerIdleStateEnteredArgs *args
++        );
++        HRESULT InertiaStateEntered(
++            [in] Windows.UI.Composition.Interactions.InteractionTracker *sender,
++            [in] Windows.UI.Composition.Interactions.InteractionTrackerInertiaStateEnteredArgs *args
++        );
++        HRESULT InteractingStateEntered(
++            [in] Windows.UI.Composition.Interactions.InteractionTracker *sender,
++            [in] Windows.UI.Composition.Interactions.InteractionTrackerInteractingStateEnteredArgs *args
++        );
++        HRESULT RequestIgnored(
++            [in] Windows.UI.Composition.Interactions.InteractionTracker *sender,
++            [in] Windows.UI.Composition.Interactions.InteractionTrackerRequestIgnoredArgs *args
++        );
++        HRESULT ValuesChanged(
++            [in] Windows.UI.Composition.Interactions.InteractionTracker *sender,
++            [in] Windows.UI.Composition.Interactions.InteractionTrackerValuesChangedArgs *args
++        );
++    }
+ 
+     [
+         contract(Windows.Foundation.UniversalApiContract, 2.0),
+@@ -149,7 +322,7 @@
+         [propput] HRESULT MinScale([in] FLOAT value);
+         [propget] HRESULT NaturalRestingPosition([out, retval] Windows.Foundation.Numerics.Vector3 *value);
+         [propget] HRESULT NaturalRestingScale([out, retval] FLOAT *value);
+-        [propget] HRESULT Owner([out, retval] IInspectable **value);
++        [propget] HRESULT Owner([out, retval] Windows.UI.Composition.Interactions.IInteractionTrackerOwner **value);
+         [propget] HRESULT Position([out, retval] Windows.Foundation.Numerics.Vector3 *value);
+         [propget] HRESULT PositionInertiaDecayRate([out, retval] IInspectable **value);
+         [propput] HRESULT PositionInertiaDecayRate([in] IInspectable *value);
+@@ -244,7 +417,7 @@
+         );
+         HRESULT CreateWithOwner(
+             [in] Windows.UI.Composition.Compositor *compositor,
+-            [in] IInspectable *owner,
++            [in] Windows.UI.Composition.Interactions.IInteractionTrackerOwner *owner,
+             [out, retval] Windows.UI.Composition.Interactions.IInteractionTracker **result
+         );
+     }
