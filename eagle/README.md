@@ -86,6 +86,8 @@ Soda 11.0-26 Experimental includes the debugger and tracing commands on Linux
 x86_64. It supports x86 and x64 targets. Bottles keeps its existing analyzer.
 The x86_64 runner build includes the native analyzer. Bottles selects it
 through capabilities and keeps its existing analyzer for older runners.
+Debugger architectures in capabilities reflect the collectors included in the
+package. Analysis availability is independent of those collectors.
 
 ## Bottle tracing
 

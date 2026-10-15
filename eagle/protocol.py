@@ -16,6 +16,9 @@ class MessageTooLarge(ValueError):
 def capabilities():
     from analysis import available
     analyzer = available()
+    native = Path(__file__).resolve().parent / 'native'
+    architectures = [architecture for architecture, bits in (('x86', 32), ('x86_64', 64))
+                     if (native / f'eagle-debug{bits}.exe').is_file()]
     return {
         "schema": 1,
         "session_inputs": {"inspect_export": ["session directory", "exported summary", "eagle-live-v1"],
@@ -29,15 +32,15 @@ def capabilities():
         "split_dwarf": {"inspection": "requires host llvm-dwarfdump", "maximum_units": 256, "maximum_files": 256, "scope": "unit identity only"},
         "source_checksums": {"format": "DWARF MD5", "requires": "host llvm-dwarfdump", "maximum_files": 256, "reads": "explicit source_files only"},
         "build_sources": {"requires": "recorded Soda inventories", "maximum_files": 256, "mapping": "explicit source label and relative path"},
-        "debug_architectures": ["x86", "x86_64"],
+        "debug_architectures": architectures,
         "static_analyzer": "Soda Eagle native analysis" if analyzer else None,
         "native_static_analyzer": analyzer,
-        "native_components": (["PE parser and metadata/dependency interpretation", "YARA scanner and report interpretation", "Intel lookup and plans", "suggestion merge", "recommendations", "ASAR extraction", "directory discovery"] if analyzer else ["PE identities"]) + ["ELF identities", "Win32 debug engine"],
+        "native_components": (["PE parser and metadata/dependency interpretation", "YARA scanner and report interpretation", "Intel lookup and plans", "suggestion merge", "recommendations", "ASAR extraction", "directory discovery"] if analyzer else ["PE identities"]) + ["ELF identities"] + (["Win32 debug engine"] if architectures else []),
         "analysis": {"available": analyzer, "asynchronous": analyzer, "cancellation": analyzer, "maximum_concurrent": 2 if analyzer else 0},
-        "debug": ["launch", "attach", "process-tree", "exceptions", "registers", "all-thread-stacks", "minidump", "software-breakpoint", "source-line-breakpoint", "module-load-stop", "register-condition", "hit-count-condition", "stack-logpoint", "hardware-watchpoint", "instruction-step", "pause", "resume", "detach", "memory-read", "PE-disassembly", "DAP"],
-        "capture_profiles": ["crash", "process", "debug"],
-        "provider_profiles": {"winrt": "requires patched runner provider manifest", "dwrite": "requires patched runner provider manifest", "wait": "observed KernelBase mutex handles within each process; partial coverage; requires patched runner manifest", "com": "class object/instance activation, initialization/uninitialization and activation-only QI; requires patched runner manifest"},
-        "condition_language": "unsigned register or hit-count comparison with an integer constant",
+        "debug": ["launch", "attach", "process-tree", "exceptions", "registers", "all-thread-stacks", "minidump", "software-breakpoint", "source-line-breakpoint", "module-load-stop", "register-condition", "hit-count-condition", "stack-logpoint", "hardware-watchpoint", "instruction-step", "pause", "resume", "detach", "memory-read", "PE-disassembly", "DAP"] if architectures else [],
+        "capture_profiles": ["crash", "process", "debug"] if architectures else [],
+        "provider_profiles": {"winrt": "requires patched runner provider manifest", "dwrite": "requires patched runner provider manifest", "wait": "observed KernelBase mutex handles within each process; partial coverage; requires patched runner manifest", "com": "class object/instance activation, initialization/uninitialization and activation-only QI; requires patched runner manifest"} if architectures else {},
+        "condition_language": "unsigned register or hit-count comparison with an integer constant" if architectures else None,
         "unsupported": ["arbitrary-expression-evaluation", "wait-ownership-graph", "COM-wide-QI", "identity-stages", "host-adapters", "instruction-replay", "CLR", "ARM64-debug"],
     }
 

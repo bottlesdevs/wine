@@ -130,19 +130,19 @@ class DebuggerPackageTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)['data']
         self.assertEqual(data['debug_architectures'], ['x86', 'x86_64'])
-        self.assertIsNone(data['static_analyzer'])
-        self.assertFalse(data['analysis']['available'])
+        self.assertEqual(data['static_analyzer'], 'Soda Eagle native analysis')
+        self.assertTrue(data['analysis']['available'])
         result = subprocess.run([executable, '--help'], capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('trace', result.stdout)
-        self.assertNotIn('analyze', result.stdout)
-        self.assertNotIn('security-scan', result.stdout)
+        self.assertIn('analyze', result.stdout)
+        self.assertIn('security-scan', result.stdout)
 
-    def test_unavailable_requests_leave_backend_responsive(self):
+    def test_invalid_paths_leave_backend_responsive(self):
         with subprocess.Popen([str(PACKAGE / 'bin/eagle'), 'serve'], stdin=subprocess.PIPE, stdout=subprocess.PIPE) as process:
             try:
                 write_message(process.stdin, {'id': 1, 'method': 'initialize', 'params': {'schema': 1}})
-                self.assertFalse(read_message(process.stdout)['result']['analysis']['available'])
+                self.assertTrue(read_message(process.stdout)['result']['analysis']['available'])
                 for request_id, method in ((2, 'analyze'), (3, 'security-scan')):
                     write_message(process.stdin, {'id': request_id, 'method': method, 'params': {'path': '/missing'}})
                     response = read_message(process.stdout)
@@ -158,7 +158,7 @@ class DebuggerPackageTests(unittest.TestCase):
                     process.kill()
                     process.wait(timeout=5)
 
-    def test_both_architecture_identities_work_without_analyzer(self):
+    def test_both_architecture_identities_match_targets(self):
         for bits, machine in ((32, 0x14c), (64, 0x8664)):
             result = subprocess.run([str(PACKAGE / 'bin/eagle'), 'symbols', str(Path(os.environ['EAGLE_TEST_ROOT']) / f'target{bits}.exe')], capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
