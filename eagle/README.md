@@ -40,6 +40,26 @@ resolvers to agree on the source file and line. Missing or failed LLVM tools
 preserve the GNU result; incomplete or failed lookups include `symbol_reason`.
 Unresolved addresses do not start another resolver.
 
+Inspect source checksum records or check files selected for review:
+
+```sh
+eagle symbols module --sources
+eagle symbols module --source-file /reviewed/fixture.c
+```
+
+The stdio `symbols` method accepts `sources: true` and a `source_files` list.
+Only explicit files are opened; encoded source paths are listed without reads.
+Clang DWARF5 can record MD5 checksums. A missing checksum remains `not-recorded`,
+including ordinary GCC and DWARF4 fixtures. Selected files report `matched`,
+`mismatched`, `not-recorded`, `not-referenced`, `missing` or `invalid`, with SHA256
+of observed content and indexes of matching DWARF entries. MD5 association does
+not certify source authenticity, DWO types or inline data.
+Separate GNU debug images require a matching CRC. Inspection streams address
+rows without retaining them, allows 4096 file entries and 256 explicit files,
+and uses a shared 20-second budget. Tool output is bounded at 256 MiB streamed,
+1 MiB of retained headers and a 512 KiB source report. Limits and missing tools
+are reported as unavailable. Default identity queries remain unchanged.
+
 Soda 11.0-26 Experimental includes the debugger and tracing commands on Linux
 x86_64. It supports x86 and x64 targets. Bottles keeps its existing analyzer.
 The native analyzer replacement is still in development and is not included

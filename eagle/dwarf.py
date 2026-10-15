@@ -10,12 +10,14 @@ import time
 import zlib
 
 
-def dump(tool, path, deadline, arguments=None, output_limit=1024 * 1024):
+def dump(tool, path, deadline, arguments=None, output_limit=1024 * 1024, line_filter=None, input_limit=None):
     arguments = arguments if arguments is not None else ['--debug-info', '--recurse-depth=0', '--debug-cu-index']
     process = subprocess.Popen([tool, *arguments, '--', str(path)],
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                env=dict(os.environ, LC_ALL='C'))
     output = bytearray()
+    pending = b''
+    received = 0
     try:
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
@@ -26,11 +28,27 @@ def dump(tool, path, deadline, arguments=None, output_limit=1024 * 1024):
                 block = os.read(process.stdout.fileno(), 65536)
                 if not block:
                     break
-                output.extend(block)
+                received += len(block)
+                if received > (input_limit or output_limit):
+                    raise ValueError('split-DWARF tool output exceeds limit')
+                if line_filter is None:
+                    output.extend(block)
+                else:
+                    lines = (pending + block).split(b'\n')
+                    pending = lines.pop()
+                    if len(pending) > 65536:
+                        raise ValueError('DWARF tool line exceeds limit')
+                    for line in lines:
+                        if line_filter(line):
+                            output.extend(line + b'\n')
                 if len(output) > output_limit:
                     raise ValueError('split-DWARF tool output exceeds limit')
         if process.wait(timeout=max(0.01, deadline - time.monotonic())):
             raise ValueError('split-DWARF tool failed')
+        if pending and line_filter is not None and line_filter(pending):
+            output.extend(pending)
+        if len(output) > output_limit:
+            raise ValueError('split-DWARF tool output exceeds limit')
         return output.decode('utf-8', errors='replace')
     finally:
         process.stdout.close()

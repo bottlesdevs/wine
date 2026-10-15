@@ -179,7 +179,12 @@ def resolve_pdb(image, pdb, names, rvas):
         except ValueError as error:
             raise ValueError('PDB source resolver failed') from error
 
-def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None):
+def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None, sources=False, source_files=None):
+    if type(sources) is not bool:
+        raise ValueError('sources must be a boolean')
+    if source_files is not None and (not isinstance(source_files, list) or len(source_files) > 256 or
+                                    any(not isinstance(path, str) or not path or len(path) > 4096 for path in source_files)):
+        raise ValueError('source_files must be a list of at most 256 paths')
     if type(artifacts) is not bool:
         raise ValueError('artifacts must be a boolean')
     if debug_files is not None and (not isinstance(debug_files, list) or len(debug_files) > 256 or
@@ -229,6 +234,9 @@ def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None):
             raise ValueError('split-DWARF artifacts require an ELF image')
         from dwarf import artifacts as inspect_artifacts
         result['split_dwarf'] = inspect_artifacts(image, host_tool('llvm-dwarfdump'), debug_files or [])
+    if sources or source_files is not None:
+        from sources import inspect_sources
+        result['source_checksums'] = inspect_sources(image, host_tool('llvm-dwarfdump'), source_files or [], expected_sha256=result['sha256'])
     return result
 
 def pdb_identity(path):
