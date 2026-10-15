@@ -142,6 +142,67 @@ def debug_image(image, metadata, deadline):
         selected_image, identity, selected_state = matches[0]
     return selected_image, identity, selected_state
 
+def inflate_section(source, section, destination, deadline):
+    source.seek(section['offset'] + 12)
+    remaining = section['size'] - 12
+    decoder = zlib.decompressobj()
+    written = 0
+    try:
+        with destination.open('wb') as output:
+            while remaining:
+                block = source.read(min(65536, remaining))
+                if not block:
+                    raise ValueError('truncated GNU-compressed debug data')
+                remaining -= len(block)
+                while True:
+                    if time.monotonic() >= deadline:
+                        raise ValueError('debug normalization timed out')
+                    decoded = decoder.decompress(block, 65536)
+                    block = decoder.unconsumed_tail
+                    written += len(decoded)
+                    if written > section['expanded']:
+                        raise ValueError('GNU debug expansion exceeds declared size')
+                    output.write(decoded)
+                    if not block and len(decoded) < 65536:
+                        break
+            if not decoder.eof or decoder.unused_data or written != section['expanded']:
+                raise ValueError('invalid GNU-compressed debug stream length')
+    except zlib.error as error:
+        raise ValueError('invalid GNU-compressed debug stream') from error
+
+def normalize_debug_image(image, directory, deadline, helper):
+    from symbols import host_tool, inline_output, image_metadata
+    result = inline_output([str(helper), '--debug-compression', str(image)], dict(os.environ, LC_ALL='C'))
+    if result.returncode:
+        raise ValueError('GNU debug compression headers are invalid or exceed limits')
+    sections = json.loads(result.stdout)['sections']
+    if not sections:
+        return image, None
+    if image.stat().st_size > 256 * 1024 * 1024:
+        raise ValueError('GNU debug normalization input exceeds limit')
+    tool = host_tool('llvm-objcopy') or host_tool('objcopy')
+    if not tool:
+        raise ValueError('GNU debug normalization requires host llvm-objcopy or objcopy')
+    identity, _ = file_identity(image, deadline)
+    arguments = []
+    with image.open('rb') as source:
+        for index, section in enumerate(sections):
+            name = section['name']
+            if not re.fullmatch(r'\.zdebug_[A-Za-z0-9_.]+', name):
+                raise ValueError('unsupported GNU debug section name')
+            target = Path(directory) / ('section-' + str(index))
+            inflate_section(source, section, target, deadline)
+            arguments.extend(['--update-section=' + name + '=' + str(target), '--rename-section=' + name + '=.debug_' + name[8:]])
+    normalized = Path(directory) / 'normalized.elf'
+    result = inline_output([tool, *arguments, str(image), str(normalized)], dict(os.environ, LC_ALL='C'))
+    if result.returncode or normalized.stat().st_size > 512 * 1024 * 1024:
+        raise ValueError('GNU debug normalization failed or exceeds limit')
+    if image_metadata(normalized) != image_metadata(image):
+        raise ValueError('GNU debug normalization changed image identity fields')
+    normalized_identity, _ = file_identity(normalized, deadline)
+    return normalized, dict(path=str(image), sha256=identity['sha256'], normalized_sha256=normalized_identity['sha256'],
+                            compression='gnu-zlib', scope='temporary normalized ELF debug image')
+
 def package_ids(text):
     index = text.partition('.debug_cu_index contents:')[2].partition('.debug_tu_index contents:')[0]
     return {unit_id(value) for value in re.findall(r'(?m)^\s+[0-9]+\s+(0x[0-9a-fA-F]+)\s+\[', index)}

@@ -207,9 +207,19 @@ checks apply. Symbolizer output is limited to 16 MiB and 10 seconds.
 
 Owned optimized fixtures cover GCC/Clang DWARF 4/5 ELF, x86/x64 PE DWARF and
 x86/x64/ARM64 PDBs. These are static symbol lookups, not target execution.
-LLVM 21 reports no inline chain for legacy `.zdebug_*` GNU compression in the
-local fixtures; ELF `SHF_COMPRESSED` zlib works. The local LLVM DWP 21 tool
-also times out packing the optimized GCC DWARF 5 fixture. Relocated split
+Legacy GNU `.zdebug_*` ELF sections are normalized in a temporary image for
+inline lookup. The native ELF helper checks compression headers and declared
+sizes; Python zlib expands the sections in bounded chunks, then an existing
+host `llvm-objcopy` or `objcopy` replaces and renames them. Original image
+identity fields must match after conversion. `inline_debug_image` records
+the original path/SHA-256 and normalized SHA-256. GNU debug-link CRC selection
+happens first; originals are unchanged and temporaries removed on all exits.
+Input and expanded debug data are each limited to 256 MiB; output is limited
+to 512 MiB. Standard `SHF_COMPRESSED` zlib needs no conversion. Static owned
+fixtures cover ELF32/ELF64 and ARM64, detached symbols and selected DWO/DWP
+inputs. Compressed DWO/DWP inputs themselves are not qualified by this path.
+
+The local LLVM DWP 21 tool still times out packing the optimized GCC DWARF 5 fixture. Relocated split
 chains are verified with GCC DWARF 4 and Clang DWARF 5 instead. DWO/DWP identity
 inspection remains separate; inline lookup does not certify complete types,
 all split companions or mixed CodeView/DWARF precedence.

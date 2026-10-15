@@ -229,7 +229,7 @@ def resolve_inlines(image, rvas, pdb, names, expected_sha256, debug_files=None):
         return resolve_inline_files(image, rvas, pdb, names, expected_sha256, debug_files, directory)
 
 def resolve_inline_files(image, rvas, pdb, names, expected_sha256, debug_files, directory):
-    from dwarf import debug_image, file_identity, file_state, inline_package
+    from dwarf import debug_image, file_identity, file_state, inline_package, normalize_debug_image
     tool = host_tool('llvm-symbolizer')
     if not tool:
         raise ValueError('inline lookup requires host llvm-symbolizer')
@@ -241,6 +241,7 @@ def resolve_inline_files(image, rvas, pdb, names, expected_sha256, debug_files, 
     states = {image: state}
     package = None
     package_path = None
+    normalization = None
     metadata = image_metadata(image)
     if pdb:
         pdb = Path(pdb).resolve(strict=True)
@@ -256,7 +257,9 @@ def resolve_inline_files(image, rvas, pdb, names, expected_sha256, debug_files, 
         if state is not None:
             states[selected] = state
         if metadata.get('format') == 'ELF':
-            paths = debug_files or [path for path in dict.fromkeys((Path(str(selected) + '.dwp'), Path(str(image) + '.dwp')))
+            original_selected = selected
+            selected, normalization = normalize_debug_image(selected, directory, deadline, Path(__file__).resolve().parent / 'native/eagle-elf')
+            paths = debug_files or [path for path in dict.fromkeys((Path(str(original_selected) + '.dwp'), Path(str(image) + '.dwp')))
                                     if path.exists() or path.is_symlink()]
             if paths:
                 package, selected_states, package_path = inline_package(selected, paths, host_tool('llvm-dwarfdump'), deadline, directory)
@@ -268,7 +271,7 @@ def resolve_inline_files(image, rvas, pdb, names, expected_sha256, debug_files, 
         raise ValueError('inline debug artifacts changed during lookup')
     if time.monotonic() >= deadline:
         raise ValueError('inline lookup timed out')
-    return [value['inline_frames'] for value in values], package
+    return [value['inline_frames'] for value in values], package, normalization
 
 def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None, sources=False, source_files=None,
           runner_root=None, source_maps=None, inlines=False):
@@ -333,7 +336,9 @@ def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None, sources
         if inlines:
             result['inline_order'] = 'innermost-to-outermost'
             try:
-                chains, package = resolve_inlines(image, addresses, pdb, names if pdb else [], result['sha256'], debug_files) if addresses else ([], None)
+                chains, package, normalization = resolve_inlines(image, addresses, pdb, names if pdb else [], result['sha256'], debug_files) if addresses else ([], None, None)
+                if normalization:
+                    result['inline_debug_image'] = normalization
                 if package:
                     result['inline_artifacts'] = package
                 for frame, chain in zip(result['resolved'], chains):

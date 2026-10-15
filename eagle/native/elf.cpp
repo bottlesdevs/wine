@@ -9,6 +9,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 class image
 {
@@ -18,6 +19,10 @@ class image
     std::string build_id, debuglink;
     uint32_t debuglink_crc = 0;
     bool has_debug = false;
+    bool compression = false;
+    struct compressed_section { std::string name; uint64_t offset, size, expanded; };
+    std::vector<compressed_section> compressed;
+    uint64_t expanded = 0;
     void bounds(uint64_t offset, uint64_t size)
     {
         if (offset > length || size > length-offset) throw std::runtime_error("ELF field exceeds file bounds");
@@ -102,6 +107,19 @@ class image
                 auto name = string(names.sh_offset+section.sh_name, names.sh_size-section.sh_name);
                 if (section.sh_type == SHT_NOTE) notes(section.sh_offset, section.sh_size);
                 if (name == ".debug_info" || name == ".zdebug_info") has_debug = true;
+                if (compression && name.compare(0, 8, ".zdebug_") == 0)
+                {
+                    bounds(section.sh_offset, section.sh_size);
+                    if (name.size() > 128 || section.sh_type != SHT_PROGBITS || (section.sh_flags & (SHF_ALLOC | SHF_COMPRESSED)) ||
+                        section.sh_size < 12 || memcmp(data+section.sh_offset, "ZLIB", 4))
+                        throw std::runtime_error("invalid GNU-compressed debug section");
+                    uint64_t bytes = 0;
+                    for (unsigned j = 4; j < 12; j++) bytes = (bytes << 8) | data[section.sh_offset+j];
+                    if (bytes > 256*1024*1024-expanded || compressed.size() >= 256)
+                        throw std::runtime_error("GNU-compressed debug expansion exceeds limit");
+                    expanded += bytes;
+                    compressed.push_back({name, section.sh_offset, section.sh_size, bytes});
+                }
                 if (name == ".gnu_debuglink")
                 {
                     debuglink = string(section.sh_offset, section.sh_size);
@@ -110,6 +128,19 @@ class image
                     debuglink_crc = read<uint32_t>(section.sh_offset+crc_offset);
                 }
             }
+        }
+        if (compression)
+        {
+            printf("{\"expanded_debug_bytes\":%llu,\"sections\":[", static_cast<unsigned long long>(expanded));
+            for (size_t i = 0; i < compressed.size(); i++)
+            {
+                const auto &section = compressed[i];
+                if (i) putchar(',');
+                printf("{\"name\":"); quote(section.name);
+                printf(",\"offset\":%llu,\"size\":%llu,\"expanded\":%llu}", static_cast<unsigned long long>(section.offset),
+                       static_cast<unsigned long long>(section.size), static_cast<unsigned long long>(section.expanded));
+            }
+            puts("]}"); return;
         }
         printf("{\"format\":\"ELF\",\"machine\":%u,\"type\":%u,\"image_base\":\"0x%llx\",\"size\":%llu,\"entry\":\"0x%llx\",\"build_id\":", header.e_machine, header.e_type, static_cast<unsigned long long>(base), static_cast<unsigned long long>(end-base), static_cast<unsigned long long>(header.e_entry));
         quote(build_id); printf(",\"debug_info\":%s,\"debuglink\":", has_debug ? "true" : "false"); quote(debuglink);
@@ -128,8 +159,9 @@ public:
         data = static_cast<const unsigned char *>(mapping);
     }
     ~image() { munmap(const_cast<unsigned char *>(data), length); close(descriptor); }
-    void inspect()
+    void inspect(bool debug_compression = false)
     {
+        compression = debug_compression;
         if (memcmp(data, ELFMAG, SELFMAG) || data[EI_DATA] != ELFDATA2LSB || data[EI_VERSION] != EV_CURRENT)
             throw std::runtime_error("unsupported ELF encoding");
         if (data[EI_CLASS] == ELFCLASS64) inspect<Elf64_Ehdr, Elf64_Phdr, Elf64_Shdr>();
@@ -140,7 +172,8 @@ public:
 
 int main(int argc, char **argv)
 {
-    if (argc != 2) { fputs("usage: eagle-elf IMAGE\n", stderr); return 2; }
-    try { image file(argv[1]); file.inspect(); return 0; }
+    bool compression = argc == 3 && !strcmp(argv[1], "--debug-compression");
+    if (argc != 2 && !compression) { fputs("usage: eagle-elf [--debug-compression] IMAGE\n", stderr); return 2; }
+    try { image file(argv[compression ? 2 : 1]); file.inspect(compression); return 0; }
     catch (const std::exception &error) { fprintf(stderr, "%s\n", error.what()); return 1; }
 }

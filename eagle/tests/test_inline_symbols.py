@@ -105,17 +105,7 @@ class InlineSymbols(unittest.TestCase):
             if compressed:
                 subprocess.run(['objcopy', '--compress-debug-sections=' + compressed, str(debug)], check=True, capture_output=True)
             subprocess.run(['objcopy', '--strip-unneeded', '--add-gnu-debuglink=' + str(debug), str(image)], check=True, capture_output=True)
-            if compressed == 'zlib-gnu':
-                frame, = symbols.query(image, rvas=[rva], inlines=True)['resolved']
-                raw = subprocess.check_output([self.tool, '--obj=' + str(debug), '--relative-address',
-                                               '--output-style=JSON', '--no-debuginfod', rva], text=True,
-                                              env={key: value for key, value in os.environ.items() if key != 'LLVM_SYMBOLIZER_OPTS'})
-                expected = json.loads(raw)[0]['Symbol']
-                self.assertEqual([value['symbol'] for value in frame['inline_frames']],
-                                 [value['FunctionName'] or None for value in expected])
-                self.assertEqual(frame['inline_status'], 'available' if len(expected) > 1 else 'not-reported')
-            else:
-                self.check(image, pdb, source, rva)
+            self.check(image, pdb, source, rva)
 
     def test_split_archive_relocation_and_missing_companion_are_distinct(self):
         self.split_archive('gcc', 4)

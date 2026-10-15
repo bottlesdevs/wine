@@ -19,7 +19,8 @@ def capabilities():
     return {
         "schema": 1,
         "inline_frames": {"requires": "host llvm-symbolizer", "maximum_depth": 64, "order": "innermost-to-outermost",
-                          "split_packages": "debug_files selects matching DWP/DWO inputs; requires host llvm-dwarfdump and llvm-dwp for DWO assembly"},
+                          "split_packages": "debug_files selects matching DWP/DWO inputs; requires host llvm-dwarfdump and llvm-dwp for DWO assembly",
+                          "gnu_compression": "temporary ELF normalization requires host llvm-objcopy or objcopy"},
         "stdio": {"maximum_message_bytes": MAX_MESSAGE, "maximum_id_bytes": MAX_ID, "large_results": "CLI or file export"},
         "symbol_queries": {"maximum": 256, "addresses": "RVA", "resolver": "requires host binutils", "pdb": "GUID/age verification; source lookup requires host llvm-symbolizer", "arm_pe": "DWARF source lookup requires host llvm-symbolizer"},
         "split_dwarf": {"inspection": "requires host llvm-dwarfdump", "maximum_units": 256, "maximum_files": 256, "scope": "unit identity only"},
