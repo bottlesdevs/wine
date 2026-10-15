@@ -109,6 +109,10 @@ it is private diagnostic data, not the upload file.
 Tracing adds debugger and observer overhead. It does not fix application
 compatibility. The tested target architectures are x86 and x64. Mixed
 architecture process trees and ARM runner execution are not yet certified.
+Each capture shares at most 1024 file identities across child inventories and
+module loads. File device, inode, size, modification and change times must match;
+changed files are rehashed. Process mappings remain separate, and the cache
+is discarded after the capture.
 Console input/output is disconnected during collection.
 Passive tracing excludes Wine's builtin console host in the Windows system
 directory and records that exclusion. Application children are still traced;

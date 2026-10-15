@@ -29,7 +29,24 @@ def windows_path(path, prefix=None):
             return drive.upper() + ':\\' + '\\'.join(relative)
     return 'Z:' + str(path).replace('/', '\\')
 
-def unix_modules(pid):
+def cached_identity(path, cache):
+    path = Path(path).resolve(strict=True)
+    before = path.stat()
+    signature = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+    previous = cache.get(str(path))
+    if previous and previous[0] == signature:
+        return previous[1]
+    cache.pop(str(path), None)
+    value = identity(path)
+    after = path.stat()
+    if signature != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+        raise ValueError('image changed during identity inspection')
+    if len(cache) >= 1024:
+        cache.pop(next(iter(cache)))
+    cache[str(path)] = (signature, value)
+    return value
+
+def unix_modules(pid, identities=None):
     if not isinstance(pid, int) or pid <= 0:
         raise ValueError('invalid Unix process id')
     mappings = {}
@@ -52,7 +69,8 @@ def unix_modules(pid):
             if len(modules) >= 128:
                 skipped += 1
                 continue
-            modules[path] = {**identity(path), 'pid': pid, 'regions': regions}
+            value = identity(path) if identities is None else cached_identity(path, identities)
+            modules[path] = {**value, 'pid': pid, 'regions': regions}
         except (OSError, ValueError, subprocess.SubprocessError):
             skipped += 1
     return modules, skipped
@@ -392,6 +410,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
     initialized_breakpoint = False
     complete_event = False
     verified_images = {}
+    module_identities = {}
     resolved_frames = {}
     unix_pids = {}
     loaded_images = {}
@@ -406,7 +425,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
         key = str(image.resolve())
         if verified_images.get(key) == (signature, expected):
             return True
-        if identity(image) != expected:
+        if cached_identity(image, module_identities) != expected:
             return False
         after = image.stat()
         if signature != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
@@ -479,7 +498,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                         if event['kind'] == 'process_create' and event.get('unix_pid'):
                             unix_pids[event['pid']] = event['unix_pid']
                             try:
-                                modules, skipped = unix_modules(event['unix_pid'])
+                                modules, skipped = unix_modules(event['unix_pid'], module_identities)
                                 manifest['unix_modules'].update(modules)
                                 manifest['unix_inventory']['skipped'] = manifest['unix_inventory'].get('skipped', 0) + skipped
                             except (OSError, ValueError):
@@ -522,7 +541,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                             image = image or prefix_image
                             if image and image.is_file():
                                 try:
-                                    event["identity"] = identity(image)
+                                    event["identity"] = cached_identity(image, module_identities)
                                     event['image'] = str(image)
                                     event['identity_origin'] = origin
                                     manifest["modules"][str(image.resolve())] = event["identity"]
@@ -531,7 +550,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                                         mismatch = True
                                         if prefix_image and prefix_image.is_file():
                                             try:
-                                                mismatch = identity(prefix_image) != event['identity']
+                                                mismatch = cached_identity(prefix_image, module_identities) != event['identity']
                                             except (ValueError, OSError):
                                                 pass
                                     loaded_images[module_key(event['pid'], event.get('path', ''))] = {'image': image, 'origin': origin, 'mismatch': mismatch, 'base': event['base']}

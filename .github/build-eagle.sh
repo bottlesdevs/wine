@@ -68,6 +68,7 @@ mkdir -p "$work/tests/e"
 export EAGLE_TRACE_EXPORT_ROOT="$work/tests/e"
 python3 -S "$root/eagle/tests/test_trace_export.py" > "$work/tests/e/integration.log" 2>&1
 python3 -S "$root/eagle/tests/test_session_reports.py" > "$work/tests/e/session-reports.log" 2>&1
+python3 -S "$root/eagle/tests/test_module_inventory.py" > "$work/tests/e/module-inventory.log" 2>&1
 python3 -S "$root/eagle/tests/test_session_symbols.py" > "$work/tests/e/session-symbols.log" 2>&1
 python3 -S "$root/eagle/tests/test_session_compare.py" > "$work/tests/e/comparison.log" 2>&1
 python3 -S "$root/eagle/tests/test_symbols_offline.py" > "$work/tests/e/symbols-offline.log" 2>&1
