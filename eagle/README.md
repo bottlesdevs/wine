@@ -12,6 +12,17 @@ archive after CodeView GUID/age checks. Shared PDBs are stored once. Missing
 optional PDBs stay marked unavailable; identity-only PDB coverage does not satisfy
 the required DWARF gate. The verifier checks PDB hashes and identities again.
 The `--objcopy` option supports LLVM for PE files carrying DWARF and CodeView.
+ELF split-DWARF builds retain matching units in `<debug-image>.dwp` beside the
+separate debug image. The builder searches the runner and explicit `--debug-root`
+directories; encoded build paths do not authorize reads outside those roots.
+It checks unit IDs and hashes, rejects missing or ambiguous inputs, and records
+the DWP hash and input hashes. External build files stay in place. Matching
+companions inside the runner move into the optional archive.
+This path requires existing host `readelf`, `llvm-dwarfdump` and, when packing
+DWO files, `llvm-dwp`. Ordinary ELF DWARF does not require LLVM. Builder inspection
+allows up to 65536 units and 64 MiB per tool response; interactive inspection
+keeps its smaller limits. The verifier checks required IDs against the actual
+debug image and retained DWP, including after archive relocation.
 
 Use the archive for the exact runner component. Its directory layout overlays
 the runner and includes the same source/build inventories. Extract it into the

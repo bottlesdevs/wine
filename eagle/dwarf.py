@@ -10,8 +10,9 @@ import time
 import zlib
 
 
-def dump(tool, path, deadline):
-    process = subprocess.Popen([tool, '--debug-info', '--recurse-depth=0', '--debug-cu-index', '--', str(path)],
+def dump(tool, path, deadline, arguments=None, output_limit=1024 * 1024):
+    arguments = arguments if arguments is not None else ['--debug-info', '--recurse-depth=0', '--debug-cu-index']
+    process = subprocess.Popen([tool, *arguments, '--', str(path)],
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                env=dict(os.environ, LC_ALL='C'))
     output = bytearray()
@@ -26,7 +27,7 @@ def dump(tool, path, deadline):
                 if not block:
                     break
                 output.extend(block)
-                if len(output) > 1024 * 1024:
+                if len(output) > output_limit:
                     raise ValueError('split-DWARF tool output exceeds limit')
         if process.wait(timeout=max(0.01, deadline - time.monotonic())):
             raise ValueError('split-DWARF tool failed')
@@ -64,7 +65,7 @@ def file_identity(path, deadline):
         raise ValueError('debug companion changed during inspection')
     return {'sha256': digest.hexdigest(), 'crc32': crc}, file_state(before)
 
-def references(text):
+def references(text, limit=256):
     units = []
     for entry in re.split(r'(?m)^0x[0-9a-fA-F]+: Compile Unit:', text)[1:]:
         name = re.search(r'DW_AT_(?:GNU_)?dwo_name\s+\((".*")\)', entry)
@@ -76,16 +77,16 @@ def references(text):
             raise ValueError('split unit has no DWO identity')
         units.append({'dwo_id': unit_id(identifier[1]), 'name': json.loads(name[1]),
                       'directory': json.loads(directory[1]) if directory else ''})
-        if len(units) > 256:
+        if len(units) > limit:
             raise ValueError('split-DWARF unit count exceeds limit')
     return units
 
-def companion(tool, path, deadline):
+def companion(tool, path, deadline, output_limit=1024 * 1024):
     result = {'path': str(path)}
     try:
         identity, before = file_identity(path, deadline)
         result.update(identity)
-        text = dump(tool, path, deadline)
+        text = dump(tool, path, deadline) if output_limit == 1024 * 1024 else dump(tool, path, deadline, output_limit=output_limit)
         split_info = text.partition('.debug_info.dwo contents:')[2]
         ids = re.findall(r'(?:DWO_id\s*=\s*|DW_AT_GNU_dwo_id\s+\()(0x[0-9a-fA-F]+)', split_info)
         ids += re.findall(r'(?m)^\s+[0-9]+\s+(0x[0-9a-fA-F]+)\s+\[', text)

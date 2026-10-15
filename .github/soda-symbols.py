@@ -2,16 +2,127 @@ import argparse
 import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'eagle'))
 from provenance import digest
-from symbols import pdb_identity
+from symbols import host_tool, pdb_identity
+from dwarf import companion, dump, file_identity, references
+
+
+def split_references(debug):
+    limit = 64 * 1024 * 1024
+    text = dump('readelf', debug, time.monotonic() + 60,
+                arguments=['--debug-dump=info', '--debug-dump=no-follow-links', '--dwarf-depth=1'], output_limit=limit)
+    if not re.search(r'DW_AT_(?:GNU_)?dwo_name|DW_UT_skeleton', text):
+        return [], None
+    dumper = host_tool('llvm-dwarfdump')
+    if not dumper:
+        raise ValueError('split symbols require existing host llvm-dwarfdump')
+    found = references(dump(dumper, debug, time.monotonic() + 60, output_limit=limit), limit=65536)
+    if not found:
+        raise ValueError('split debug image has no DWO identities: ' + str(debug))
+    return found, dumper
+
+
+def split_inputs(plans, runner, roots):
+    units, candidates = {}, {}
+    dumper = None
+    limit = 64 * 1024 * 1024
+    for image, relative, existing, metadata in plans:
+        if metadata.get('format') != 'ELF':
+            continue
+        debug = existing or image
+        found, selected_tool = split_references(debug)
+        if not found:
+            continue
+        dumper = selected_tool
+        units[str(image.relative_to(runner))] = (relative, found)
+    if not units:
+        return {}, None
+    for root in dict.fromkeys([runner, *roots]):
+        root = Path(root).absolute()
+        if root.resolve(strict=True) != root or not root.is_dir():
+            raise ValueError('debug root must be a directory without symlinks')
+        for directory, names, files in os.walk(root, followlinks=False):
+            names[:] = [name for name in names if not (Path(directory) / name).is_symlink()]
+            for name in files:
+                path = Path(directory) / name
+                if path.suffix in ('.dwo', '.dwp'):
+                    if path.resolve() != path:
+                        raise ValueError('split companion must not use symlinks: ' + str(path))
+                    regular(path)
+                    candidates.setdefault(name, set()).add(path)
+    cache, result = {}, {}
+    def inspect_split(path):
+        if path not in cache:
+            value = companion(dumper, path, time.monotonic() + 60, output_limit=limit)
+            if value['status'] != 'available':
+                raise ValueError('invalid split companion: ' + str(path))
+            cache[path] = value
+        return cache[path]
+    packages = [path for name, paths in candidates.items() if name.endswith('.dwp') for path in paths]
+    for image, (relative, found) in units.items():
+        needed = {unit['dwo_id'] for unit in found}
+        packed = [path for path in packages if needed <= set(inspect_split(path)['dwo_ids'])]
+        if packed:
+            if len({inspect_split(path)['sha256'] for path in packed}) != 1:
+                raise ValueError('ambiguous split packages: ' + image)
+            selected = [sorted(packed)[0]]
+        else:
+            selected = []
+            for unit in found:
+                matches = [path for path in candidates.get(Path(unit['name']).name, ())
+                           if unit['dwo_id'] in inspect_split(path)['dwo_ids']]
+                if not matches:
+                    raise ValueError('missing matching split unit: ' + image + ': ' + unit['dwo_id'])
+                if len({inspect_split(path)['sha256'] for path in matches}) != 1:
+                    raise ValueError('ambiguous split units: ' + image + ': ' + unit['dwo_id'])
+                selected.append(sorted(matches)[0])
+        result[image] = {'file': str(relative) + '.dwp', 'dwo_ids': sorted(needed),
+                         'inputs': [(path, inspect_split(path)['sha256']) for path in sorted(set(selected))]}
+    return result, dumper
+
+
+def retain_split(plan, destination, dumper):
+    target = destination / relative_path(plan['file'])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    for path, expected in plan['inputs']:
+        if path.resolve() != path or file_identity(path, time.monotonic() + 60)[0]['sha256'] != expected:
+            raise ValueError('split input changed before staging: ' + str(path))
+    paths = [path for path, _ in plan['inputs']]
+    if len(paths) == 1 and paths[0].suffix == '.dwp':
+        shutil.copyfile(paths[0], target)
+    else:
+        packager = host_tool('llvm-dwp')
+        if not packager:
+            raise ValueError('split symbols require existing host llvm-dwp')
+        if any(ord(character) < 32 for path in paths for character in str(path)):
+            raise ValueError('split input path contains a control character')
+        with tempfile.NamedTemporaryFile(mode='w', dir=destination, prefix='.soda-dwp-', delete=False) as file:
+            response = Path(file.name)
+            for path in paths:
+                file.write(json.dumps(str(path), ensure_ascii=False) + '\n')
+        try:
+            subprocess.run([packager, '@' + str(response), '-o', str(target)], check=True, capture_output=True, timeout=120)
+        finally:
+            response.unlink(missing_ok=True)
+    for path, expected in plan['inputs']:
+        if path.resolve() != path or file_identity(path, time.monotonic() + 60)[0]['sha256'] != expected:
+            raise ValueError('split input changed during staging: ' + str(path))
+    actual = companion(dumper, target, time.monotonic() + 60, output_limit=64 * 1024 * 1024)
+    if actual['status'] != 'available' or not set(plan['dwo_ids']) <= set(actual['dwo_ids']):
+        raise ValueError('retained split package has missing unit identities')
+    target.chmod(0o644)
+    return {'file': plan['file'], 'sha256': actual['sha256'], 'dwo_ids': plan['dwo_ids'],
+            'inputs': [{'name': path.name, 'sha256': expected} for path, expected in plan['inputs']]}
 
 
 def relative_path(value):
@@ -55,7 +166,7 @@ def write_manifest(path, value):
     path.chmod(0o644)
 
 
-def stage(runner, destination, tools, name, required=(), objcopy='objcopy'):
+def stage(runner, destination, tools, name, required=(), objcopy='objcopy', debug_roots=()):
     runner = Path(runner).resolve(strict=True)
     destination = Path(destination).absolute()
     if destination.exists() or destination.resolve() != destination or destination.resolve() == runner or runner in destination.resolve().parents:
@@ -139,7 +250,13 @@ def stage(runner, destination, tools, name, required=(), objcopy='objcopy'):
         raise ValueError('PDB and GNU companions share an output path')
     if not plans and not pdb_plans:
         raise ValueError('runner has no debug symbols to retain')
+    split, dumper = split_inputs(plans, runner, debug_roots)
+    outputs = {str(relative) for _, relative, _, _ in plans} | set(pdb_plans)
+    if any(plan['file'] in outputs for plan in split.values()):
+        raise ValueError('split and other companions share an output path')
     destination.mkdir(parents=True)
+    for relative, plan in split.items():
+        records[relative]['split_dwarf'] = retain_split(plan, destination, dumper)
     llvm_objcopy = None
     for image, debug_relative, existing, before in plans:
         relative = str(image.relative_to(runner))
@@ -198,6 +315,8 @@ def stage(runner, destination, tools, name, required=(), objcopy='objcopy'):
         existing.unlink()
     for pdb, _ in pdb_plans.values():
         pdb.unlink()
+    for path in {path for plan in split.values() for path, _ in plan['inputs'] if runner in path.parents}:
+        path.unlink()
     verify(runner, destination, tools)
     return manifest
 
@@ -230,6 +349,11 @@ def verify(runner, bundle, tools):
                 raise ValueError('symbol bundle companion does not match: ' + relative)
             if metadata.get('debuglink') != debug.name or metadata.get('debuglink_crc') != record['debuglink_crc32']:
                 raise ValueError('runner debuglink does not match symbol bundle: ' + relative)
+            units, _ = split_references(debug) if metadata.get('format') == 'ELF' else ([], None)
+            expected_units = sorted({unit['dwo_id'] for unit in units})
+            retained_units = record.get('split_dwarf', {}).get('dwo_ids', [])
+            if expected_units != retained_units:
+                raise ValueError('split manifest does not match debug image: ' + relative)
         if 'pdb_file' in record:
             pdb = bundle / relative_path(record['pdb_file'])
             regular(pdb)
@@ -238,6 +362,20 @@ def verify(runner, bundle, tools):
             identity = record['pdb_identity']
             if not metadata.get('codeview') or any((entry['guid'], entry['age']) != (identity['guid'], identity['age']) for entry in metadata['codeview']):
                 raise ValueError('runner CodeView does not match PDB: ' + relative)
+        if 'split_dwarf' in record:
+            split = record['split_dwarf']
+            if not split['dwo_ids'] or split['file'] != record.get('debug_file', '') + '.dwp':
+                raise ValueError('invalid split companion manifest: ' + relative)
+            path = bundle / relative_path(split['file'])
+            regular(path)
+            if path.resolve() != path or digest(path) != split['sha256']:
+                raise ValueError('split symbol bundle does not match: ' + relative)
+            dumper = host_tool('llvm-dwarfdump')
+            if not dumper:
+                raise ValueError('split verification requires existing host llvm-dwarfdump')
+            actual = companion(dumper, path, time.monotonic() + 60, output_limit=64 * 1024 * 1024)
+            if actual['status'] != 'available' or not set(split['dwo_ids']) <= set(actual['dwo_ids']):
+                raise ValueError('split symbol bundle has missing units: ' + relative)
         if 'debug_file' not in record and 'pdb_file' not in record:
             raise ValueError('retained image has no symbol companion: ' + relative)
     return manifest
@@ -251,11 +389,12 @@ def main():
     parser.add_argument('--name', default='soda')
     parser.add_argument('--require', action='append', default=[])
     parser.add_argument('--objcopy', default='objcopy')
+    parser.add_argument('--debug-root', action='append', default=[], type=Path)
     parser.add_argument('--verify', action='store_true')
     options = parser.parse_args()
     try:
         manifest = verify(options.runner, options.symbols, options.tools) if options.verify else stage(
-            options.runner, options.symbols, options.tools, options.name, options.require, options.objcopy)
+            options.runner, options.symbols, options.tools, options.name, options.require, options.objcopy, options.debug_root)
         print(json.dumps({'component': manifest['component'], 'retained': manifest['retained'], 'unavailable': manifest['unavailable']}))
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         parser.exit(1, str(error) + '\n')

@@ -432,7 +432,8 @@ jobs:
           tools="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-source-provenance/native"
           symbols="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-symbols/$COMPONENT_NAME"
           python3 -S "$GITHUB_WORKSPACE/.github/soda-symbols.py" "$runner" "$symbols" \
-            --tools "$tools" --name "$COMPONENT_NAME" --require bin/wine --require bin/wineserver \
+            --tools "$tools" --name "$COMPONENT_NAME" --debug-root "$PWD/src" \
+            --require bin/wine --require bin/wineserver \
             --require lib/wine/i386-unix/ntdll.so --require lib/wine/x86_64-unix/ntdll.so \
             --require lib/wine/i386-windows/ntdll.dll --require lib/wine/x86_64-windows/ntdll.dll
           python3 -S "$GITHUB_WORKSPACE/.github/soda-provenance.py" "$runner" \
@@ -1334,7 +1335,8 @@ jobs:
           tools="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64-provenance/native"
           symbols_root="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64-symbols"
           python3 -S "$GITHUB_WORKSPACE/.github/soda-symbols.py" "$runner_dir" "$symbols_root/$COMPONENT_NAME" \
-            --tools "$tools" --name "$COMPONENT_NAME" --require bin/wine --require bin/wineserver \
+            --tools "$tools" --name "$COMPONENT_NAME" --debug-root /tmp/proton-build \
+            --require bin/wine --require bin/wineserver \
             --require lib/wine/aarch64-unix/ntdll.so --require lib/wine/aarch64-windows/ntdll.dll \
             --require lib/wine/x86_64-windows/ntdll.dll
           python3 -S "$GITHUB_WORKSPACE/.github/soda-provenance.py" "$runner_dir" \
