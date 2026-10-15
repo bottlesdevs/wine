@@ -260,7 +260,8 @@ def fingerprint(event):
     if 'frames' in event:
         key += (('stack', tuple(frame_key(frame) for frame in event['frames']), event.get('unwind'), event.get('truncated')),)
     if event["kind"] == "provider":
-        data = {name: value for name, value in event.get("data", {}).items() if name not in ("caller", "object")}
+        ignored = ('caller', 'object', 'request_id') if event.get('data', {}).get('event') == 'identity.stage' else ('caller', 'object')
+        data = {name: value for name, value in event.get("data", {}).items() if name not in ignored}
         return key + (json.dumps(data, sort_keys=True),)
     return key
 
@@ -529,7 +530,11 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                             if not isinstance(payload, dict) or payload.get("provider") not in (1, 2, 4, 8):
                                 raise ValueError("unsupported provider payload")
                             if payload["provider"] == 1:
-                                payload["class"] = payload.pop("subject")
+                                if payload.get('event') == 'identity.stage':
+                                    from identity_stages import decode
+                                    payload = decode(payload)
+                                else:
+                                    payload["class"] = payload.pop("subject")
                             elif payload["provider"] == 2:
                                 payload["width"] = payload.pop("a")
                                 payload["height"] = payload.pop("b")

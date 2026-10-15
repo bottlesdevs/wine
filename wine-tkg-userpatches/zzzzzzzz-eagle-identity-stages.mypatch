@@ -1,0 +1,94 @@
+--- a/dlls/windows.security.authentication.onlineid/identity_bridge.c
++++ b/dlls/windows.security.authentication.onlineid/identity_bridge.c
+@@ -14,6 +14,7 @@
+ 
+ #include "winternl.h"
+ #include "unixlib.h"
++#include "eagle_identity_trace.h"
+ 
+ #define BRIDGE_MAGIC 0x31424953
+ #define BRIDGE_VERSION 1
+@@ -79,6 +80,7 @@
+ static INIT_ONCE unix_init_once = INIT_ONCE_STATIC_INIT;
+ static BOOL unix_lib_initialized;
+ static LONG request_counter;
++static LONG trace_counter;
+ 
+ static BOOL WINAPI init_unix_lib_once( INIT_ONCE *once, void *param, void **context )
+ {
+@@ -312,10 +314,18 @@
+     struct bridge_header request, response;
+     struct exchange_params params = {0};
+     BYTE *request_data = NULL, *response_data = NULL;
++    ULONG trace_id;
+     NTSTATUS status;
+     HRESULT hr;
+ 
+-    if (!init_unix_lib()) return HRESULT_FROM_WIN32( ERROR_SERVICE_NOT_ACTIVE );
++    trace_id = InterlockedIncrement( &trace_counter );
++    eagle_trace_identity( trace_id, opcode, EAGLE_IDENTITY_BEGIN, E_PENDING, __builtin_return_address(0) );
++    if (!init_unix_lib())
++    {
++        hr = HRESULT_FROM_WIN32( ERROR_SERVICE_NOT_ACTIVE );
++        eagle_trace_identity( trace_id, opcode, EAGLE_IDENTITY_COMPLETE, hr, __builtin_return_address(0) );
++        return hr;
++    }
+     request.magic = BRIDGE_MAGIC;
+     request.version = BRIDGE_VERSION;
+     request.opcode = opcode;
+@@ -338,8 +348,10 @@
+     if ((status = ONLINEID_CALL( exchange, &params )))
+     {
+         hr = status == STATUS_CANCELLED ? HRESULT_FROM_WIN32( ERROR_CANCELLED ) : HRESULT_FROM_NT( status );
+-        goto done;
+-    }
++        eagle_trace_identity( trace_id, opcode, EAGLE_IDENTITY_TRANSPORT, hr, __builtin_return_address(0) );
++        goto done;
++    }
++    eagle_trace_identity( trace_id, opcode, EAGLE_IDENTITY_TRANSPORT, S_OK, __builtin_return_address(0) );
+     if (params.response_size < sizeof(response))
+     {
+         hr = E_INVALIDARG;
+@@ -355,10 +367,12 @@
+         goto done;
+     }
+     hr = parse_response( &response, response_data + sizeof(response), reply );
++    eagle_trace_identity( trace_id, opcode, EAGLE_IDENTITY_RESPONSE, hr, __builtin_return_address(0) );
+ 
+ done:
+     free( response_data );
+     free( request_data );
++    eagle_trace_identity( trace_id, opcode, EAGLE_IDENTITY_COMPLETE, hr, __builtin_return_address(0) );
+     return hr;
+ }
+ 
+--- /dev/null
++++ b/include/eagle_identity_trace.h
+@@ -0,0 +1,19 @@
++#ifndef __WINE_EAGLE_IDENTITY_TRACE_H
++#define __WINE_EAGLE_IDENTITY_TRACE_H
++
++#include "eagle_trace.h"
++
++#define EAGLE_IDENTITY_BEGIN 1
++#define EAGLE_IDENTITY_TRANSPORT 2
++#define EAGLE_IDENTITY_RESPONSE 3
++#define EAGLE_IDENTITY_COMPLETE 4
++
++static inline void eagle_trace_identity(ULONG request, unsigned operation, unsigned stage,
++                                       HRESULT result, const void *caller)
++{
++    if (!request || (operation != 2 && operation != 3 && operation != 5) ||
++        stage < EAGLE_IDENTITY_BEGIN || stage > EAGLE_IDENTITY_COMPLETE) return;
++    eagle_trace_event(1, "identity.stage", result, operation, 1, request, stage, NULL, NULL, caller);
++}
++
++#endif
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -1,4 +1,5 @@
+ SOURCES = \
++	eagle_identity_trace.h \
+ 	eagle_trace.h \
+ 	accctrl.h \
+ 	access.idl \

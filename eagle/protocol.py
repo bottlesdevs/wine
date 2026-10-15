@@ -41,7 +41,9 @@ def capabilities():
         "capture_profiles": ["crash", "process", "debug"] if architectures else [],
         "provider_profiles": {"winrt": "requires patched runner provider manifest", "dwrite": "requires patched runner provider manifest", "wait": "observed KernelBase mutex handles within each process; partial coverage; requires patched runner manifest", "com": "class object/instance activation, initialization/uninitialization and activation-only QI; requires patched runner manifest"} if architectures else {},
         "condition_language": "unsigned register or hit-count comparison with an integer constant" if architectures else None,
-        "unsupported": ["arbitrary-expression-evaluation", "wait-ownership-graph", "COM-wide-QI", "identity-stages", "host-adapters", "instruction-replay", "CLR", "ARM64-debug"],
+        "identity_stages": {"schema": 1, "profile": "winrt", "scope": "patched host bridge exchanges only; native flow pending",
+                            "fields": ["request_id", "operation", "transport", "stage", "hresult", "caller"]},
+        "unsupported": ["arbitrary-expression-evaluation", "wait-ownership-graph", "COM-wide-QI", "native-identity-stages", "host-adapters", "instruction-replay", "CLR", "ARM64-debug"],
     }
 
 def read_message(stream):

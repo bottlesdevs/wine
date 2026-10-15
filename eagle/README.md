@@ -89,6 +89,12 @@ through capabilities and keeps its existing analyzer for older runners.
 Debugger architectures in capabilities reflect the collectors included in the
 package. Analysis availability is independent of those collectors.
 
+Patched host identity bridge exchanges emit `identity.stage` through the WinRT
+profile. Reports retain a process-local request ID, operation, transport, stage,
+HRESULT and caller. The producer accepts no account or token strings. Native
+identity paths are not instrumented by this bridge provider; the complete identity
+stage contract and combined Wine DLL build still require qualification.
+
 ## Bottle tracing
 
 The command below works with the released runner. The Bottles integration is

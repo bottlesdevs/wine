@@ -30,7 +30,7 @@ for architecture in $architectures; do
         -ffile-prefix-map="$root"=/usr/src/soda/eagle \
         "$root/native/debugger.c" -ldbghelp -Wl,--no-insert-timestamp -o "$destination/lib/eagle/native/eagle-debug$bits.exe"
 done
-for module in cli session capture_history session_reports session_symbols protocol symbols dwarf sources build_sources provenance dap errors waits tracing analysis; do
+for module in cli session capture_history session_reports session_symbols protocol symbols dwarf sources build_sources provenance dap errors waits tracing analysis identity_stages; do
     cp "$root/$module.py" "$destination/lib/eagle/"
 done
 cp "$root/eagle" "$root/COPYING.md" "$destination/lib/eagle/"

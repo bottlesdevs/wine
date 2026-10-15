@@ -48,6 +48,13 @@ for architecture in x86_64 i686; do
     ln -s ../prefix "$directory/prefix"
     export EAGLE_STATE_TEST_ROOT="$directory"
     python3 "$root/eagle/tests/test_provider_state.py" > "$directory/integration.log" 2>&1
+    directory="$work/tests/i$bits"
+    mkdir -p "$directory"
+    "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror -D__WINESRC__ \
+        -I"$runner/include/wine/windows" "$root/eagle/tests/identity_provider.c" -o "$directory/target.exe"
+    ln -s ../prefix "$directory/prefix"
+    export EAGLE_IDENTITY_TEST_ROOT="$directory"
+    python3 "$root/eagle/tests/test_identity_provider.py" > "$directory/integration.log" 2>&1
 done
 directory="$work/tests/d"
 mkdir -p "$directory"
@@ -99,4 +106,5 @@ python3 -S "$root/eagle/tests/test_protocol_budget.py" > "$work/tests/e/protocol
 python3 -S "$root/eagle/tests/test_debugger_package.py" > "$work/tests/e/package.log" 2>&1
 python3 -S "$root/eagle/tests/test_native_build.py" > "$work/tests/e/native-build.log" 2>&1
 python3 -S "$root/eagle/tests/test_capabilities.py" > "$work/tests/e/capabilities.log" 2>&1
+python3 -S "$root/eagle/tests/test_identity_stages.py" > "$work/tests/e/identity-stages.log" 2>&1
 printf '%s\n' 'Eagle package, debugger, automatic tracing and x86/x64 provider controls passed'
