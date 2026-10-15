@@ -51,10 +51,10 @@ int main(int argc, char **argv)
     UINT32 count = 0, error_code = 0;
     BOOL token, interactive, record;
     FILE *file;
-    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive") && strcmp(argv[2], "record")))) return 1;
+    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive") && strcmp(argv[2], "record") && strcmp(argv[2], "refresh") && strcmp(argv[2], "refresh-interactive")))) return 1;
     record = argc == 3 && !strcmp(argv[2], "record");
-    token = argc == 3 && (!strcmp(argv[2], "silent") || !strcmp(argv[2], "interactive"));
-    interactive = token && !strcmp(argv[2], "interactive");
+    token = argc == 3 && (!strcmp(argv[2], "silent") || !strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh") || !strcmp(argv[2], "refresh-interactive"));
+    interactive = token && (!strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh-interactive"));
     CHECK(RoInitialize(RO_INIT_MULTITHREADED));
     module = LoadLibraryW(L"windows.security.authentication.onlineid.dll");
     if (!module) { fprintf(stderr, "LoadLibrary error=%lu\n", GetLastError()); return 2; }
@@ -92,9 +92,26 @@ int main(int argc, char **argv)
         CHECK(wait_result((IUnknown *)token_operation));
         CHECK(IAsyncOperation_WebTokenRequestResult_GetResults(token_operation, &token_result));
         CHECK(IWebTokenRequestResult_get_ResponseStatus(token_result, &token_status));
-        CHECK(IWebTokenRequestResult_get_ResponseError(token_result, &error));
-        CHECK(IWebProviderError_get_ErrorCode(error, &error_code));
-        IWebProviderError_Release(error);
+        if (token_status == WebTokenRequestStatus_Success)
+        {
+            IVectorView_WebTokenResponse *responses;
+            IWebTokenResponse *response;
+            HSTRING access;
+            CHECK(IWebTokenRequestResult_get_ResponseData(token_result, &responses));
+            CHECK(IVectorView_WebTokenResponse_get_Size(responses, &count));
+            if (count != 1) return 8;
+            CHECK(IVectorView_WebTokenResponse_GetAt(responses, 0, &response));
+            CHECK(IWebTokenResponse_get_Token(response, &access));
+            if (wcscmp(WindowsGetStringRawBuffer(access, NULL), L"fixture-access-not-a-token")) return 9;
+            WindowsDeleteString(access);
+            IWebTokenResponse_Release(response);IVectorView_WebTokenResponse_Release(responses);
+        }
+        else
+        {
+            CHECK(IWebTokenRequestResult_get_ResponseError(token_result, &error));
+            CHECK(IWebProviderError_get_ErrorCode(error, &error_code));
+            IWebProviderError_Release(error);
+        }
         status = (FindAllWebAccountsStatus)token_status;
         IWebTokenRequestResult_Release(token_result);
         IAsyncOperation_WebTokenRequestResult_Release(token_operation);

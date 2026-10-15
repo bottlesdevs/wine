@@ -68,6 +68,14 @@ for architecture in x86_64 i686; do
     export EAGLE_IDENTITY_BRIDGE_TEST_ROOT="$directory" EAGLE_IDENTITY_BRIDGE_BITS="$bits"
     python3 "$root/eagle/tests/test_identity_bridge.py" > "$directory/integration.log" 2>&1
     python3 "$root/eagle/tests/test_identity_native.py" > "$directory/native.log" 2>&1
+    directory="$work/tests/k$bits"
+    mkdir -p "$directory"
+    "$architecture-w64-mingw32-gcc" -shared -O0 -g -gdwarf-4 -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$runner/include/wine/windows" "$root/eagle/tests/identity_http.c" -Wl,--kill-at -o "$directory/winhttp.dll"
+    ln -s ../j$bits/target.exe "$directory/target.exe"
+    ln -s ../prefix "$directory/prefix"
+    export EAGLE_IDENTITY_HTTP_TEST_ROOT="$directory"
+    python3 "$root/eagle/tests/test_identity_http.py" > "$directory/integration.log" 2>&1
 done
 directory="$work/tests/d"
 mkdir -p "$directory"

@@ -1158,6 +1158,12 @@ jobs:
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j32/s*/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j64/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/j64/s*/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/k32/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/k32/*/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/k32/*/session/*.json*
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/k64/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/k64/*/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/k64/*/session/*.json*
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/d/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/t/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/e/*.log
@@ -1672,10 +1678,10 @@ jobs:
         if: always()
         run: |
           work="$RECOVERY_WORK"
-          for log in "$work"/eagle/tests/{32,64,p32,p64,c32,c64,d,t,e}/*.log; do
+          for log in "$work"/eagle/tests/{32,64,p32,p64,c32,c64,s32,s64,i32,i64,j32,j64,k32,k64,d,t,e}/*.log "$work"/eagle/tests/{j32,j64,k32,k64}/*/*.log; do
             test -f "$log" || continue
-            directory="$(basename "$(dirname "$log")")"
-            cp "$log" "$work/logs/$directory-$(basename "$log")"
+            relative=${log#"$work/eagle/tests/"}
+            cp "$log" "$work/logs/${relative//\//-}"
           done
 
       - name: upload package test logs
@@ -1683,7 +1689,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: eagle-recovery-test-logs-${{ github.sha }}
-          path: ${{ env.RECOVERY_WORK }}/logs/*.log
+          path: |
+            ${{ env.RECOVERY_WORK }}/logs/*.log
+            ${{ env.RECOVERY_WORK }}/eagle/tests/k32/*/session/*.json*
+            ${{ env.RECOVERY_WORK }}/eagle/tests/k64/*/session/*.json*
           if-no-files-found: error
 
       - name: upload verified packages
