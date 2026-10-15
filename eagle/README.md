@@ -108,6 +108,10 @@ application identifiers, class names and other trace text can contain private
 information. Share the `.log`, runner version and reproduction steps.
 The adjacent `.session` directory contains raw events and can contain dumps;
 it is private diagnostic data, not the upload file.
+Exports are written to a private temporary file in the destination directory,
+flushed, then linked to the final name without replacing existing files.
+Write or flush failures leave no partial final file; tracing retains its live
+log and raw bundle. The destination filesystem must support hard links.
 
 Tracing adds debugger and observer overhead. It does not fix application
 compatibility. The tested target architectures are x86 and x64. Mixed

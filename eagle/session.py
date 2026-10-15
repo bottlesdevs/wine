@@ -10,6 +10,7 @@ import subprocess
 import time
 import re
 import math
+import tempfile
 
 SCHEMA = 1
 
@@ -286,8 +287,17 @@ def export(root, destination, symbol_images=None):
     report = summary(root, symbol_images)
     output = redact(report)
     output["export"] = {"redaction": "paths and launch arguments removed", "review_required": True, "memory_and_dumps_included": False}
-    with os.fdopen(os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w', encoding='utf-8') as file:
-        file.write(json.dumps(output, indent=2) + "\n")
+    destination = Path(destination)
+    descriptor, temporary = tempfile.mkstemp(prefix='.eagle-export-', dir=destination.parent)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as file:
+            json.dump(output, file, indent=2)
+            file.write('\n')
+            file.flush()
+            os.fsync(file.fileno())
+        os.link(temporary, destination)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
     return output
 
 def send_command(root, command):
