@@ -84,15 +84,14 @@ class InlinePackages(unittest.TestCase):
                 package.rename(adjacent)
                 self.check(image, adjacent, rva, files=[])
 
-    def test_wrong_missing_invalid_and_dwo_only_selections_do_not_fall_back(self):
+    def test_wrong_missing_and_invalid_selections_do_not_fall_back(self):
         image, package, _, rva = self.build(remove=False)
         _, wrong, _, _ = self.build()
         adjacent = Path(str(image) + '.dwp')
         shutil.copyfile(package, adjacent)
         invalid = self.root / 'truncated.dwp'
         invalid.write_bytes(b'owned-invalid-DWP')
-        dwo = next(self.root.glob('[0-9]*/*.dwo'))
-        for selected in (wrong, self.root / 'missing.dwp', invalid, dwo):
+        for selected in (wrong, self.root / 'missing.dwp', invalid):
             with self.subTest(selected=selected):
                 result = symbols.query(image, rvas=[rva], inlines=True, debug_files=[str(selected)])
                 frame, = result['resolved']

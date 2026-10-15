@@ -142,13 +142,18 @@ def debug_image(image, metadata, deadline):
         selected_image, identity, selected_state = matches[0]
     return selected_image, identity, selected_state
 
-def inline_package(image, paths, tool, deadline):
+def package_ids(text):
+    index = text.partition('.debug_cu_index contents:')[2].partition('.debug_tu_index contents:')[0]
+    return {unit_id(value) for value in re.findall(r'(?m)^\s+[0-9]+\s+(0x[0-9a-fA-F]+)\s+\[', index)}
+
+def inline_package(image, paths, tool, deadline, directory):
     if not tool:
         raise ValueError('selected inline packages require host llvm-dwarfdump')
     needed = {unit['dwo_id'] for unit in references(dump(tool, image, deadline))}
     if not needed:
-        return None, None
+        return None, {}, None
     matches = []
+    units = {}
     reasons = []
     for path in dict.fromkeys(paths):
         if time.monotonic() >= deadline:
@@ -157,22 +162,62 @@ def inline_package(image, paths, tool, deadline):
             path = Path(path).resolve(strict=True)
             identity, before = file_identity(path, deadline)
             text = dump(tool, path, deadline)
-            indexes = re.findall(r'(?m)^\s+[0-9]+\s+(0x[0-9a-fA-F]+)\s+\[',
-                                 text.partition('.debug_cu_index contents:')[2].partition('.debug_tu_index contents:')[0])
-            ids = {unit_id(value) for value in indexes}
+            ids = package_ids(text)
             if before != file_state(path.stat()):
                 raise ValueError('inline package changed during inspection')
-            if not needed <= ids:
+            if needed <= ids:
+                matches.append((dict(path=str(path), sha256=identity['sha256'], dwo_ids=sorted(needed),
+                                     status='matched', scope='selected DWP unit identities'), {path: before}, path))
+            elif not ids:
+                split = text.partition('.debug_info.dwo contents:')[2]
+                found = {unit_id(value) for value in re.findall(r'(?:DWO_id\s*=\s*|DW_AT_GNU_dwo_id\s+\()(0x[0-9a-fA-F]+)', split)}
+                for identifier in needed & found:
+                    units.setdefault(identifier, []).append((path, identity['sha256'], before))
+            else:
                 raise ValueError('inline package does not contain all image DWO identities')
-            matches.append((dict(path=str(path), sha256=identity['sha256'], dwo_ids=sorted(needed),
-                                 status='matched', scope='selected DWP unit identities'), before))
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             reasons.append(str(error))
-    if not matches:
-        raise ValueError('no matching inline DWP: ' + '; '.join(reasons)[:1024])
-    if len({record['sha256'] for record, _ in matches}) != 1:
-        raise ValueError('ambiguous matching inline DWP packages')
-    return matches[0]
+    if matches:
+        if len({record['sha256'] for record, _, _ in matches}) != 1:
+            raise ValueError('ambiguous matching inline DWP packages')
+        return matches[0]
+    if not needed <= units.keys():
+        raise ValueError('no matching inline DWP or complete DWO set: ' + '; '.join(reasons)[:1024])
+    selected = {}
+    for identifier in sorted(needed):
+        candidates = units[identifier]
+        if len({digest for _, digest, _ in candidates}) != 1:
+            raise ValueError('ambiguous matching inline DWO inputs')
+        path, digest, state = candidates[0]
+        selected[path] = (digest, state)
+    if sum(path.stat().st_size for path in selected) > 256 * 1024 * 1024:
+        raise ValueError('inline DWO inputs exceed limit')
+    from symbols import host_tool, inline_output
+    packager = host_tool('llvm-dwp')
+    if not packager:
+        raise ValueError('selected inline DWO inputs require host llvm-dwp')
+    target = Path(directory) / 'selected.dwp'
+    response = Path(directory) / 'inputs.txt'
+    if any(ord(character) < 32 for path in selected for character in str(path)):
+        raise ValueError('inline DWO path contains a control character')
+    response.write_text(''.join(json.dumps(str(path), ensure_ascii=False) + '\n' for path in selected))
+    try:
+        result = inline_output([packager, '@' + str(response), '-o', str(target)], dict(os.environ, LC_ALL='C'))
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise ValueError('inline DWO package assembly failed: ' + str(error)) from error
+    if result.returncode:
+        raise ValueError('inline DWO package assembly failed')
+    if target.stat().st_size > 256 * 1024 * 1024:
+        raise ValueError('inline DWO package exceeds limit')
+    identity, state = file_identity(target, deadline)
+    if not needed <= package_ids(dump(tool, target, deadline)):
+        raise ValueError('assembled inline DWP is missing image DWO identities')
+    states = {path: before for path, (_, before) in selected.items()}
+    states[target] = state
+    record = dict(sha256=identity['sha256'], dwo_ids=sorted(needed), status='matched',
+                  scope='selected DWO unit identities; temporary DWP assembly',
+                  inputs=[dict(path=str(path), sha256=digest) for path, (digest, _) in selected.items()])
+    return record, states, target
 
 def artifacts(image, tool, debug_files):
     result = {'scope': 'split unit identities; not full type/inline verification', 'units': [], 'files': []}

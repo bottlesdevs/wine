@@ -224,11 +224,21 @@ packages. Without explicit choices, existing `<debug-image>.dwp` and
 `llvm-dwarfdump`; the package path, SHA-256 and requested unit IDs appear in
 `inline_artifacts` only after successful lookup with that exact DWP.
 
-Individual DWO selections remain available for identity inspection. They do
-not select a package for inline lookup. Without a selected or adjacent DWP,
-LLVM can still use its own DWO discovery; no `inline_artifacts` verification
-is claimed for that path. DWP unit identities do not certify source content,
-complete type information or symbol authenticity.
+Explicit DWO files also work with `--inlines --debug-file`. If no complete
+DWP is selected, Eagle requires a matching DWO for every skeleton unit and
+uses host `llvm-dwp` to assemble a temporary package. It verifies the new CU
+index before lookup, checks the original inputs after lookup and removes the
+package on success or failure. Identical copies are deduplicated; different
+contents for the same unit are ambiguous. `inline_artifacts.inputs` records
+the selected original paths and SHA-256 values, plus the assembled package
+SHA-256. Temporary paths are omitted. Input and generated package sizes are
+limited to 256 MiB; assembly uses the same 10-second tool/output budget.
+The existing LLVM21 optimized GCC DWARF5 packing limit still applies.
+
+Without selected DWO files or a selected/adjacent DWP, LLVM can still use its
+own DWO discovery; no `inline_artifacts` verification is claimed for that path.
+DWO/DWP unit identities do not certify source content, complete type
+information or symbol authenticity.
 
 Inspect split-DWARF companion identities separately from address lookup:
 

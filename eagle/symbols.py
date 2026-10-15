@@ -225,6 +225,10 @@ def resolve_pdb(image, pdb, names, rvas, inlines=False):
             raise ValueError('PDB source resolver failed') from error
 
 def resolve_inlines(image, rvas, pdb, names, expected_sha256, debug_files=None):
+    with tempfile.TemporaryDirectory(prefix='eagle-inlines-') as directory:
+        return resolve_inline_files(image, rvas, pdb, names, expected_sha256, debug_files, directory)
+
+def resolve_inline_files(image, rvas, pdb, names, expected_sha256, debug_files, directory):
     from dwarf import debug_image, file_identity, file_state, inline_package
     tool = host_tool('llvm-symbolizer')
     if not tool:
@@ -236,6 +240,7 @@ def resolve_inlines(image, rvas, pdb, names, expected_sha256, debug_files=None):
         raise ValueError('image changed during inline lookup')
     states = {image: state}
     package = None
+    package_path = None
     metadata = image_metadata(image)
     if pdb:
         pdb = Path(pdb).resolve(strict=True)
@@ -254,11 +259,10 @@ def resolve_inlines(image, rvas, pdb, names, expected_sha256, debug_files=None):
             paths = debug_files or [path for path in dict.fromkeys((Path(str(selected) + '.dwp'), Path(str(image) + '.dwp')))
                                     if path.exists() or path.is_symlink()]
             if paths:
-                package, state = inline_package(selected, paths, host_tool('llvm-dwarfdump'), deadline)
-                if package:
-                    states[Path(package['path'])] = state
+                package, selected_states, package_path = inline_package(selected, paths, host_tool('llvm-dwarfdump'), deadline, directory)
+                states.update(selected_states)
         addresses = [hex(int(metadata['image_base'], 0) + int(value, 0)) for value in rvas] if metadata.get('format') == 'ELF' else rvas
-        options = {'dwp': package['path']} if package else {}
+        options = {'dwp': package_path} if package_path else {}
         values = resolve_llvm(selected, addresses, tool, 'llvm-exact-image', inlines=True, **options)
     if any(state != file_state(path.stat()) for path, state in states.items()):
         raise ValueError('inline debug artifacts changed during lookup')
