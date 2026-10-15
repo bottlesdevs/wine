@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import uuid
 
-from session import capture, export, redact
+from session import capture, export, redact, windows_path
 from symbols import host_path
 
 
@@ -17,10 +17,11 @@ def trace(wine, prefix, logs, arguments, cwd=None):
     command = arguments[0]
     target = host_path(command, prefix)
     if target is None:
-        target = cwd / command
-        if not target.is_file():
-            name = command if command.lower().endswith('.exe') else command + '.exe'
-            target = prefix / 'drive_c/windows/system32' / name
+        name = command if command.lower().endswith('.exe') else command + '.exe'
+        for candidate in (cwd / command, cwd / name, prefix / 'drive_c/windows/system32' / name):
+            target = host_path(windows_path(candidate, prefix), prefix)
+            if target is not None and target.is_file():
+                break
     target = target.resolve(strict=True)
     directory = Path(logs).resolve()
     if directory != prefix / 'logs/runs':

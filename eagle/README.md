@@ -94,6 +94,9 @@ still in development. When that integration is available, enable **Eagle Tracing
 Performance settings. Reproduce the problem once, close the application, then
 turn tracing off. **Open Trace Logs** opens `logs/runs` inside the bottle.
 Each launch writes a separate `.log` after its process tree exits.
+Relative program names are resolved in the requested working directory before
+the bottle's system32 directory, including an implicit `.exe` suffix and
+case-insensitive Windows path components. Explicit Unix paths stay exact.
 While the application is open, a `.running.log` is readable in the same folder.
 If the application hangs, this file can be reviewed and shared before closing
 it. It uses JSON lines, is marked incomplete and stops at a 16 MiB limit.
