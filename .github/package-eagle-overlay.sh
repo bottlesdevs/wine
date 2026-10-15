@@ -13,7 +13,7 @@ component=soda-11.0-27-experimental-x86_64
 tar -C "$work" -xJf "$archive"
 mv "$work/soda-11.0-25-experimental-x86_64" "$work/$component"
 for architecture in i386 x86_64; do
-    for module in combase dwrite kernelbase; do
+    for module in combase dwrite d2d1 kernelbase; do
         source="$build/dlls/$module/$architecture-windows/$module.dll"
         test -f "$source"
         grep -aFq EAGLE/1 "$source"

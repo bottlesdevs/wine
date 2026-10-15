@@ -176,6 +176,10 @@ jobs:
             libopenxr-dev:amd64 \
             "libopenxr1-monado=$MONADO_VERSION" \
             mesa-vulkan-drivers \
+            libgl1-mesa-dri:amd64 \
+            libgl1-mesa-dri:i386 \
+            libglx-mesa0:amd64 \
+            libglx-mesa0:i386 \
             "monado-service=$MONADO_VERSION" \
             ninja-build \
             xvfb

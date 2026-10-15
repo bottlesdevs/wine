@@ -40,6 +40,14 @@ for architecture in x86_64 i686; do
     ln -s ../prefix "$directory/prefix"
     export EAGLE_PROVIDER_TEST_ROOT="$directory" EAGLE_PROVIDER_BITS="$bits"
     python3 "$root/eagle/tests/test_providers.py" > "$directory/integration.log" 2>&1
+    directory="$work/tests/d2d$bits"
+    mkdir -p "$directory"
+    "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror -D__WINESRC__ \
+        -I"$runner/include/wine/windows" "$root/eagle/tests/d2d_provider.c" \
+        -ld2d1 -ld3d11 -ldxgi -o "$directory/target.exe"
+    ln -s ../prefix "$directory/prefix"
+    EAGLE_D2D_TEST_ROOT="$directory" python3 "$root/eagle/tests/test_d2d_provider.py" \
+        > "$directory/integration.log" 2>&1
     directory="$work/tests/c$bits"
     mkdir -p "$directory"
     "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror         "$root/eagle/tests/com_provider.c" -lole32 -o "$directory/target.exe"

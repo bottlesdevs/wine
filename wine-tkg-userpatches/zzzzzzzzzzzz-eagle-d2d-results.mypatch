@@ -1,0 +1,63 @@
+--- a/dlls/d2d1/device.c
++++ b/dlls/d2d1/device.c
+@@ -17,6 +17,7 @@
+  */
+ 
+ #include "d2d1_private.h"
++#include "eagle_trace.h"
+ #include <d3dcompiler.h>
+ #include <d2d1effects.h>
+ 
+@@ -2462,6 +2463,28 @@
+         d2d_command_list_pop_layer(context->target.command_list);
+ }
+ 
++static void d2d_trace_result(struct d2d_device_context *context, const char *name,
++        HRESULT hr, const void *caller)
++{
++    static LONG emitted;
++    char text[512];
++    LONG count;
++    DWORD saved_error = GetLastError();
++
++    if (!eagle_trace_enabled(16) || !IsDebuggerPresent()) return;
++    if (InterlockedCompareExchange(&emitted, 0, 0) >= 4097) return;
++    count = InterlockedIncrement(&emitted);
++    if (count > 4097) return;
++    if (count == 4097)
++        snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":16,\"event\":\"ObserverBudgetExceeded\",\"limit\":4096}");
++    else
++        snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":16,\"event\":\"%s\",\"hresult\":\"0x%08lx\","
++                "\"object\":\"%p\",\"tag1\":\"0x%016llx\",\"tag2\":\"0x%016llx\",\"caller\":\"%p\"}",
++                name, hr, context, context->error.tag1, context->error.tag2, caller);
++    OutputDebugStringA(text);
++    SetLastError(saved_error);
++}
++
+ static HRESULT STDMETHODCALLTYPE d2d_device_context_Flush(ID2D1DeviceContext6 *iface, D2D1_TAG *tag1, D2D1_TAG *tag2)
+ {
+     struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
+@@ -2482,6 +2505,7 @@
+     if (tag2)
+         *tag2 = context->error.tag2;
+     hr = context->error.code;
++    d2d_trace_result(context, "d2d.flush", hr, __builtin_return_address(0));
+     memset(&context->error, 0, sizeof(context->error));
+ 
+     return hr;
+@@ -2690,6 +2714,7 @@
+ 
+     if (context->target.type == D2D_TARGET_COMMAND_LIST)
+     {
++        d2d_trace_result(context, "d2d.end_draw", context->error.code, __builtin_return_address(0));
+         return context->error.code;
+     }
+ 
+@@ -2705,6 +2730,7 @@
+     if (tag2)
+         *tag2 = context->error.tag2;
+ 
++    d2d_trace_result(context, "d2d.end_draw", context->error.code, __builtin_return_address(0));
+     return context->error.code;
+ }
+ 

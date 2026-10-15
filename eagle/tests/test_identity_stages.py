@@ -17,14 +17,23 @@ class IdentityStages(unittest.TestCase):
         architectures = ('aarch64',) if platform.machine() == 'aarch64' else ('i386', 'x86_64')
         for architecture in architectures:
             directory = root / f'lib/wine/{architecture}-windows';directory.mkdir(parents=True)
-            for module in ('combase', 'dwrite', 'kernelbase', 'windows.security.authentication.onlineid'):
-                (directory / (module + '.dll')).write_bytes(b'EAGLE/1 identity.stage identity.native.stage')
+            for module in ('combase', 'dwrite', 'd2d1', 'kernelbase', 'windows.security.authentication.onlineid'):
+                (directory / (module + '.dll')).write_bytes(b'EAGLE/1 identity.stage identity.native.stage d2d.end_draw d2d.flush')
         return architectures
 
     def test_installer_rejects_missing_identity_instrumentation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory);architectures = self.runner(root)
             (root / f'lib/wine/{architectures[0]}-windows/windows.security.authentication.onlineid.dll').write_bytes(b'EAGLE/1')
+            result = subprocess.run([sys.executable, '-S', str(Path(__file__).resolve().parents[1] / 'install.py'), str(root)],
+                                    capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / 'share/eagle/providers.json').exists())
+
+    def test_installer_rejects_missing_d2d_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory);architectures = self.runner(root)
+            (root / f'lib/wine/{architectures[0]}-windows/d2d1.dll').write_bytes(b'EAGLE/1')
             result = subprocess.run([sys.executable, '-S', str(Path(__file__).resolve().parents[1] / 'install.py'), str(root)],
                                     capture_output=True, text=True, timeout=5)
             self.assertNotEqual(result.returncode, 0)
@@ -37,10 +46,12 @@ class IdentityStages(unittest.TestCase):
                                     capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads((root / 'share/eagle/providers.json').read_text())
+            self.assertEqual(data['profiles']['d2d'], ['32', '64'])
+            self.assertIn('4096', data['scopes']['d2d'])
             self.assertEqual(data['identity_stages'], {'schema': 1, 'provider': 1, 'transports': ['host-bridge', 'native'], 'native_flow': True})
             for architecture in architectures:
                 name = f'{architecture}/windows.security.authentication.onlineid'
-                self.assertEqual(data['provider_sha256'][name], hashlib.sha256(b'EAGLE/1 identity.stage identity.native.stage').hexdigest())
+                self.assertEqual(data['provider_sha256'][name], hashlib.sha256(b'EAGLE/1 identity.stage identity.native.stage d2d.end_draw d2d.flush').hexdigest())
 
     def payload(self):
         return dict(provider=1, event='identity.stage', hresult='0x8000000a', a=2, b=1,

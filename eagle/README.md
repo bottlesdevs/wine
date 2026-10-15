@@ -173,10 +173,14 @@ For an interactive session, use a new, short session path:
     /path/to/application/app.exe
 ```
 
-Profiles `winrt`, `dwrite`, `com` and `wait` enable the corresponding Wine
-observers; `trace` enables all four. HRESULT triggers are available with
-`winrt`, `dwrite` and `com`, for example
+Profiles `winrt`, `dwrite`, `d2d`, `com` and `wait` enable the corresponding Wine
+observers; `trace` enables all five. HRESULT triggers are available with
+`winrt`, `dwrite`, `d2d` and `com`, for example
 `--on-hresult 0x80040154 --trigger-action snapshot`.
+
+The Direct2D observer records `EndDraw` and `Flush` results, the context address
+and full-width error tags. It emits at most 4096 events per process, followed
+by one `ObserverBudgetExceeded` marker. It does not capture document contents.
 
 The COM observer covers activation, requested apartments and activation-time
 interface queries. The wait graph covers observed KernelBase mutex handles
@@ -488,9 +492,9 @@ is in `tests/test_tracing.py`. Their environment variables select an immutable
 candidate, private Wine prefix and test directory.
 
 The diagnostic release keeps the published Soda 25 runtime and replaces
-`combase`, `dwrite` and `kernelbase` for both target architectures. Build those
-DLLs from the pinned Wine source with the Soda patches and
-`zzz-eagle-debug-providers.mypatch` applied. Use
+`combase`, `dwrite`, `d2d1` and `kernelbase` for both target architectures. Build those
+DLLs from the pinned Wine source with the complete Soda patch set applied,
+including the native Eagle providers. Use
 `-ffile-prefix-map=BUILD_ROOT=/usr/src/soda` for the provider DLLs and their
 static Wine libraries to keep local build paths out of the symbols.
 `.github/package-eagle-overlay.sh BASELINE_ARCHIVE WINE_BUILD WORK` verifies

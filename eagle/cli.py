@@ -34,7 +34,7 @@ def main():
         run.add_argument("--session", required=True)
         run.add_argument("--timeout", type=float, default=120)
         run.add_argument("--interactive", action="store_true")
-        run.add_argument("--profile", choices=["crash", "process", "debug", "winrt", "dwrite", "com", "wait"], default="crash")
+        run.add_argument("--profile", choices=["crash", "process", "debug", "winrt", "dwrite", "d2d", "com", "wait"], default="crash")
         run.add_argument("--break", dest="breakpoint")
         run.add_argument('--on-hresult')
         run.add_argument('--trigger-action', choices=['snapshot', 'dump', 'stop'], default='snapshot')

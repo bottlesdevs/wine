@@ -117,7 +117,7 @@ class CaptureHistory(unittest.TestCase):
             wine.write_bytes(b'owned nonexecuted launcher fixture')
             wine.chmod(0o700)
             (root / 'share/eagle').mkdir(parents=True)
-            (root / 'share/eagle/providers.json').write_text(json.dumps({'profiles': {name: ['64'] for name in ['com', 'winrt', 'dwrite', 'wait']}}))
+            (root / 'share/eagle/providers.json').write_text(json.dumps({'profiles': {name: ['64'] for name in ['com', 'winrt', 'dwrite', 'd2d', 'wait']}}))
             events = self.events() + [dict(kind='process_exit', pid=1, code=37), dict(kind='finished')]
             events = [dict(event, seq=index, pid=event.get('pid', 0), tid=event.get('tid', 1)) for index, event in enumerate(events)]
             collector = Collector(events)
