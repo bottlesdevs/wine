@@ -123,6 +123,22 @@ def module_records(inventory, name):
         raise ValueError("invalid session module inventory: " + name)
     return inventory.values()
 
+def frame_key(frame):
+    if not isinstance(frame, dict) or not isinstance(frame.get('module'), (str, type(None))):
+        raise ValueError('invalid frame')
+    rva = frame.get('rva')
+    if rva is not None:
+        if type(rva) not in (str, int) or (isinstance(rva, str) and len(rva) > 32):
+            raise ValueError('invalid frame RVA')
+        try:
+            rva = int(rva, 0) if isinstance(rva, str) else rva
+        except ValueError as error:
+            raise ValueError('invalid frame RVA') from error
+        if not 0 <= rva <= 0xffffffffffffffff:
+            raise ValueError('invalid frame RVA')
+        rva = hex(rva)
+    return frame.get('module'), rva
+
 def read_bundle(root):
     root = Path(root)
     manifest = json.loads((root / "manifest.json").read_text())
@@ -148,10 +164,20 @@ def read_bundle(root):
             for key, expected in (("path", str), ("code", (str, int)), ("first_chance", bool)):
                 if key in event and not isinstance(event[key], expected):
                     raise ValueError(error + ": " + key)
-            frame = event.get("frame")
-            if frame is not None:
-                if not isinstance(frame, dict) or not isinstance(frame.get("module"), (str, type(None))) or not isinstance(frame.get("rva"), (str, int, type(None))):
-                    raise ValueError(error + ": invalid frame")
+            try:
+                if event.get('frame') is not None:
+                    frame_key(event['frame'])
+                if 'frames' in event:
+                    if not isinstance(event['frames'], list) or len(event['frames']) > 4096:
+                        raise ValueError('invalid frame stack')
+                    for frame in event['frames']:
+                        frame_key(frame)
+                    if event.get('unwind') is not None and not isinstance(event['unwind'], str):
+                        raise ValueError('invalid unwind method')
+                    if event.get('truncated') is not None and type(event['truncated']) is not bool:
+                        raise ValueError('invalid stack truncation')
+            except ValueError as detail:
+                raise ValueError(error + ': ' + str(detail)) from detail
             if event["kind"] == "provider":
                 data = event.get("data")
                 if not isinstance(data, dict) or ("provider" in data and type(data["provider"]) not in (str, int)):
@@ -185,7 +211,9 @@ def summary(root):
 
 def fingerprint(event):
     frame = event.get("frame", {}) or {}
-    key = (event["kind"], event.get("code"), event.get("first_chance"), Path(event.get("path", "").replace("\\", "/")).name, frame.get("module"), frame.get("rva"))
+    key = (event["kind"], event.get("code"), event.get("first_chance"), Path(event.get("path", "").replace("\\", "/")).name, *frame_key(frame))
+    if 'frames' in event:
+        key += (('stack', tuple(frame_key(frame) for frame in event['frames']), event.get('unwind'), event.get('truncated')),)
     if event["kind"] == "provider":
         data = {name: value for name, value in event.get("data", {}).items() if name not in ("caller", "object")}
         return key + (json.dumps(data, sort_keys=True),)

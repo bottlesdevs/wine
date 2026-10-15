@@ -146,6 +146,23 @@ within each process. A cycle is evidence of an observed wait relationship,
 not proof of a permanent deadlock. Missing symbols stay marked unavailable.
 Caller frames can report function and source line when matching symbols exist.
 
+## Session comparison
+
+`eagle compare BASELINE CANDIDATE` compares recorded event counts. Snapshot
+fingerprints retain the ordered `(module, RVA)` stack, unwind method and
+truncation flag. Caller, order, depth and recorded unwind changes are visible.
+RVAs use canonical hexadecimal values, including integer inputs. Absolute
+addresses, registers, process/thread IDs, times and resolved source/symbol
+names do not create differences. Existing provider payload comparisons remain.
+
+Session readers validate single frames and frame arrays before inspect,
+compare or export. Malformed stacks and RVAs return a structured error;
+exports are not created. Partial frames and empty stacks remain readable.
+The reader accepts up to 4096 frames per event; native snapshots capture up
+to 128. Missing stack data differs from an explicitly recorded empty stack.
+Unknown frames remain unknown. Matching fingerprints do not prove identical
+execution or matching module contents; compare inputs and module identities.
+
 ## Backend messages
 
 `eagle serve` uses Content-Length frames with a 1 MiB body limit. Request IDs

@@ -37,6 +37,133 @@ class SessionComparison(unittest.TestCase):
         return dict(kind='provider', pid=1, tid=2, seq=3, time_ms=4, data=data,
                     frame={'module': 'fixture.dll', 'rva': '0x120'})
 
+    def snapshot(self):
+        return dict(kind='snapshot', pid=1, tid=2, seq=3, time_ms=4,
+                    registers={'ip': '0x401120', 'sp': '0x7000'}, unwind='dbghelp', truncated=False,
+                    frames=[{'module': 'fixture', 'rva': '0x120', 'address': '0x401120'},
+                            {'module': 'caller', 'rva': '0x220', 'address': '0x501220'}])
+
+    def test_stack_callers_order_depth_and_unwind_quality_change_comparison(self):
+        original = self.snapshot()
+        baseline = self.bundle('baseline', [original, original])
+        changes = []
+        for field, value in [('module', 'other'), ('rva', '0x330')]:
+            event = copy.deepcopy(original)
+            event['frames'][1][field] = value
+            changes.append(event)
+        event = copy.deepcopy(original)
+        event['frames'].reverse()
+        changes.append(event)
+        event = copy.deepcopy(original)
+        event['frames'].pop()
+        changes.append(event)
+        for field, value in [('truncated', True), ('unwind', 'other-engine')]:
+            event = copy.deepcopy(original)
+            event[field] = value
+            changes.append(event)
+        for index, event in enumerate(changes):
+            with self.subTest(change=index):
+                candidate = self.bundle('candidate-' + str(index), [original, event])
+                result = compare(baseline, candidate)
+                self.assertTrue(result['matching_inputs'])
+                self.assertEqual([item['count'] for item in result['added']], [1])
+                self.assertEqual([item['count'] for item in result['removed']], [1])
+
+    def test_stack_aslr_symbols_paths_and_numeric_rva_spelling_do_not_change_comparison(self):
+        original = self.snapshot()
+        changed = copy.deepcopy(original)
+        changed.update(pid=10, tid=20, seq=30, time_ms=40, registers={'ip': '0x801120', 'sp': '0x9000'})
+        changed['frames'][0].update(rva=288, address='0x801120', symbol='resolved-name', file='/reviewed/fixture.c', line=7)
+        changed['frames'][1].update(rva='0X00000220', address='0x901220', image='/other/caller.dll')
+        baseline = self.bundle('baseline', [original])
+        candidate = self.bundle('candidate', [changed])
+        result = compare(baseline, candidate)
+        self.assertEqual(result['added'], [])
+        self.assertEqual(result['removed'], [])
+        original = self.provider()
+        changed = copy.deepcopy(original)
+        changed['frame']['rva'] = 288
+        self.assertEqual(compare(self.bundle('provider-a', [original]), self.bundle('provider-b', [changed]))['added'], [])
+
+    def test_invalid_stacks_and_rvas_fail_before_export_creation(self):
+        events = []
+        for value in [None, {}, [None], [42], [{'module': []}], [{'rva': True}],
+                      [{'rva': -1}], [{'rva': 'not-an-address'}], [{'rva': 1 << 64}], [{}] * 4097]:
+            event = self.snapshot()
+            event['frames'] = value
+            events.append(event)
+        for field, value in [('unwind', []), ('truncated', 1)]:
+            event = self.snapshot()
+            event[field] = value
+            events.append(event)
+        for rva in [False, -1, 'bad-rva', 1 << 64, '0x' + '0' * 40]:
+            events.append(dict(kind='fixture', frame={'module': 'fixture', 'rva': rva}))
+        for index, event in enumerate(events):
+            with self.subTest(case=index):
+                root = self.bundle('bad-' + str(index), [event])
+                destination = self.root / ('bad-export-' + str(index) + '.json')
+                with self.assertRaisesRegex(ValueError, 'line 1'):
+                    summary(root)
+                with self.assertRaises(ValueError):
+                    export(root, destination)
+                self.assertFalse(destination.exists())
+
+    def test_partial_stacks_remain_readable_without_mutating_saved_events(self):
+        maximum = self.bundle('maximum-stack', [dict(kind='snapshot', frames=[{}] * 4096)])
+        self.assertEqual(len(read_bundle(maximum)[1][0]['frames']), 4096)
+        events = [dict(kind='snapshot', frames=[]), dict(kind='snapshot', frames=[{}, {'module': None, 'rva': None}]),
+                  dict(kind='fixture', frame=None), dict(kind='snapshot')]
+        root = self.bundle('partial-stacks', events)
+        original = (root / 'events.jsonl').read_bytes()
+        self.assertEqual(read_bundle(root)[1], events)
+        self.assertEqual(summary(root)['snapshots'], [events[0], events[1], events[3]])
+        self.assertEqual(compare(root, root)['added'], [])
+        self.assertTrue(export(root, self.root / 'partial-stacks.json')['export']['review_required'])
+        self.assertEqual((root / 'events.jsonl').read_bytes(), original)
+        result = compare(self.bundle('unknown-a', [events[0]]), self.bundle('unknown-b', [events[3]]))
+        self.assertEqual(len(result['added']), 1)
+
+    def test_provider_payload_and_stack_changes_are_both_retained(self):
+        original = self.provider()
+        original['frames'] = self.snapshot()['frames']
+        changed = copy.deepcopy(original)
+        changed['data']['hresult'] = '0x80040111'
+        baseline = self.bundle('baseline', [original])
+        candidate = self.bundle('candidate', [changed])
+        result = compare(baseline, candidate)
+        self.assertEqual(len(result['added']), 1)
+        self.assertEqual(result['added'][0]['fingerprint'][6][0], 'stack')
+        self.assertIn('0x80040111', result['added'][0]['fingerprint'][7])
+
+    def test_cli_stdio_stack_comparison_and_invalid_stack_recovery(self):
+        original = self.snapshot()
+        changed = copy.deepcopy(original)
+        changed['frames'][1]['rva'] = '0x330'
+        baseline = self.bundle('baseline', [original])
+        candidate = self.bundle('candidate', [changed])
+        invalid = self.bundle('invalid', [dict(kind='snapshot', frames=[42])])
+        expected = json.loads(json.dumps(compare(baseline, candidate)))
+        cli = subprocess.run([sys.executable, '-S', str(PACKAGE / 'eagle'), 'compare', str(baseline), str(candidate)],
+                             capture_output=True, text=True, timeout=10)
+        self.assertEqual(cli.returncode, 0, cli.stderr)
+        self.assertEqual(json.loads(cli.stdout)['data'], expected)
+        destination = self.root / 'invalid-stack-export.json'
+        requests = [(1, 'initialize', {'schema': 1}), (2, 'compare', {'baseline': str(baseline), 'candidate': str(candidate)}),
+                    (3, 'inspect', {'session': str(invalid)}), (4, 'export', {'session': str(invalid), 'output': str(destination)}),
+                    (5, 'compare', {'baseline': str(baseline), 'candidate': str(candidate)}), (6, 'shutdown', {})]
+        stream = io.BytesIO()
+        for i, method, params in requests:
+            write_message(stream, dict(id=i, method=method, params=params))
+        result = subprocess.run([sys.executable, '-S', str(PACKAGE / 'eagle'), 'serve'], input=stream.getvalue(), capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stream = io.BytesIO(result.stdout)
+        replies = [read_message(stream) for _ in requests]
+        self.assertEqual(replies[1]['result'], expected)
+        self.assertEqual(replies[2]['error']['code'], -32602)
+        self.assertEqual(replies[3]['error']['code'], -32602)
+        self.assertEqual(replies[4]['result'], expected)
+        self.assertFalse(destination.exists())
+
     def test_provider_changes_are_reported(self):
         baseline = self.bundle('baseline', [self.provider()])
         for field, value in [('provider', 1), ('event', 'CoGetClassObject'),
