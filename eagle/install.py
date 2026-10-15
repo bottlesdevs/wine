@@ -16,7 +16,7 @@ for architecture in architectures:
         identities[f'{architecture}/{module}'] = hashlib.sha256(data).hexdigest()
     path = runner / f'lib/wine/{architecture}-windows/windows.security.authentication.onlineid.dll'
     data = path.read_bytes()
-    if b'identity.stage' not in data or b'EAGLE/1' not in data:
+    if any(marker not in data for marker in (b'identity.stage', b'identity.native.stage', b'EAGLE/1')):
         raise ValueError(f'{architecture} onlineid does not include Eagle identity stages')
     identities[f'{architecture}/windows.security.authentication.onlineid'] = hashlib.sha256(data).hexdigest()
 manifest = {
@@ -28,7 +28,7 @@ manifest = {
         'wait': 'observed KernelBase mutex handles within each process; partial coverage',
     },
     'provider_sha256': identities,
-    'identity_stages': {'schema': 1, 'provider': 1, 'transports': ['host-bridge'], 'native_flow': False},
+    'identity_stages': {'schema': 1, 'provider': 1, 'transports': ['host-bridge', 'native'], 'native_flow': True},
 }
 destination = runner / 'share/eagle/providers.json'
 destination.parent.mkdir(parents=True, exist_ok=True)

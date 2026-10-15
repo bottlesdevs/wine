@@ -12,6 +12,7 @@
 #include <windows.security.authentication.web.core.h>
 #include <roapi.h>
 #include <stdio.h>
+#include <string.h>
 
 static HRESULT wait_result(IUnknown *value)
 {
@@ -48,8 +49,11 @@ int main(int argc, char **argv)
     HSTRING name, provider_id, authority, client_id;
     FindAllWebAccountsStatus status;
     UINT32 count = 0, error_code = 0;
+    BOOL token, interactive;
     FILE *file;
-    if (argc != 2) return 1;
+    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive")))) return 1;
+    token = argc == 3 && strcmp(argv[2], "invalid");
+    interactive = token && !strcmp(argv[2], "interactive");
     CHECK(RoInitialize(RO_INIT_MULTITHREADED));
     module = LoadLibraryW(L"windows.security.authentication.onlineid.dll");
     if (!module) { fprintf(stderr, "LoadLibrary error=%lu\n", GetLastError()); return 2; }
@@ -61,31 +65,67 @@ int main(int argc, char **argv)
     CHECK(IWebAuthenticationCoreManagerStatics_QueryInterface(manager, &IID_IWebAuthenticationCoreManagerStatics4, (void **)&manager4));
     CHECK(WindowsCreateString(L"https://login.microsoft.com", 27, &provider_id));
     CHECK(WindowsCreateString(L"common", 6, &authority));
-    CHECK(WindowsCreateString(L"11111111-1111-1111-1111-111111111111", 36, &client_id));
+    if (argc == 3 && !token) CHECK(WindowsCreateString(L"invalid", 7, &client_id));
+    else CHECK(WindowsCreateString(L"11111111-1111-1111-1111-111111111111", 36, &client_id));
     CHECK(IWebAuthenticationCoreManagerStatics_FindAccountProviderWithAuthorityAsync(manager, provider_id, authority, &provider_operation));
     CHECK(wait_result((IUnknown *)provider_operation));
     CHECK(IAsyncOperation_WebAccountProvider_GetResults(provider_operation, &provider));
-    CHECK(IWebAuthenticationCoreManagerStatics4_FindAllAccountsWithClientIdAsync(manager4, provider, client_id, &operation));
-    CHECK(wait_result((IUnknown *)operation));
-    CHECK(IAsyncOperation_FindAllAccountsResult_GetResults(operation, &result));
-    CHECK(IFindAllAccountsResult_get_Status(result, &status));
-    if (status == FindAllWebAccountsStatus_Success)
+    if (token)
     {
-        CHECK(IFindAllAccountsResult_get_Accounts(result, &accounts));
-        CHECK(IVectorView_WebAccount_get_Size(accounts, &count));
-        IVectorView_WebAccount_Release(accounts);
+        IActivationFactory *request_factory;
+        IWebTokenRequestFactory *constructor;
+        IWebTokenRequest *request;
+        IAsyncOperation_WebTokenRequestResult *token_operation;
+        IWebTokenRequestResult *token_result;
+        WebTokenRequestStatus token_status;
+        HSTRING request_name, scope;
+        static const WCHAR request_class[] = L"Windows.Security.Authentication.Web.Core.WebTokenRequest";
+
+        CHECK(WindowsCreateString(request_class, sizeof(request_class)/sizeof(WCHAR)-1, &request_name));
+        CHECK(get_factory(request_name, &request_factory));
+        CHECK(IActivationFactory_QueryInterface(request_factory, &IID_IWebTokenRequestFactory, (void **)&constructor));
+        CHECK(WindowsCreateString(L"openid", 6, &scope));
+        CHECK(IWebTokenRequestFactory_Create(constructor, provider, scope, client_id, &request));
+        if (interactive) CHECK(IWebAuthenticationCoreManagerStatics_RequestTokenAsync(manager, request, &token_operation));
+        else CHECK(IWebAuthenticationCoreManagerStatics_GetTokenSilentlyAsync(manager, request, &token_operation));
+        CHECK(wait_result((IUnknown *)token_operation));
+        CHECK(IAsyncOperation_WebTokenRequestResult_GetResults(token_operation, &token_result));
+        CHECK(IWebTokenRequestResult_get_ResponseStatus(token_result, &token_status));
+        CHECK(IWebTokenRequestResult_get_ResponseError(token_result, &error));
+        CHECK(IWebProviderError_get_ErrorCode(error, &error_code));
+        IWebProviderError_Release(error);
+        status = (FindAllWebAccountsStatus)token_status;
+        IWebTokenRequestResult_Release(token_result);
+        IAsyncOperation_WebTokenRequestResult_Release(token_operation);
+        IWebTokenRequest_Release(request);
+        IWebTokenRequestFactory_Release(constructor);
+        IActivationFactory_Release(request_factory);
+        WindowsDeleteString(scope);WindowsDeleteString(request_name);
     }
     else
     {
-        CHECK(IFindAllAccountsResult_get_ProviderError(result, &error));
-        CHECK(IWebProviderError_get_ErrorCode(error, &error_code));
-        IWebProviderError_Release(error);
+        CHECK(IWebAuthenticationCoreManagerStatics4_FindAllAccountsWithClientIdAsync(manager4, provider, client_id, &operation));
+        CHECK(wait_result((IUnknown *)operation));
+        CHECK(IAsyncOperation_FindAllAccountsResult_GetResults(operation, &result));
+        CHECK(IFindAllAccountsResult_get_Status(result, &status));
+        if (status == FindAllWebAccountsStatus_Success)
+        {
+            CHECK(IFindAllAccountsResult_get_Accounts(result, &accounts));
+            CHECK(IVectorView_WebAccount_get_Size(accounts, &count));
+            IVectorView_WebAccount_Release(accounts);
+        }
+        else
+        {
+            CHECK(IFindAllAccountsResult_get_ProviderError(result, &error));
+            CHECK(IWebProviderError_get_ErrorCode(error, &error_code));
+            IWebProviderError_Release(error);
+        }
+        IFindAllAccountsResult_Release(result);
+        IAsyncOperation_FindAllAccountsResult_Release(operation);
     }
     if (!(file = fopen(argv[1], "wb"))) return 4;
     fprintf(file, "%lu %u %08x %u\n", GetCurrentProcessId(), status, (unsigned)error_code, (unsigned)count);
     if (fclose(file)) return 5;
-    IFindAllAccountsResult_Release(result);
-    IAsyncOperation_FindAllAccountsResult_Release(operation);
     IWebAccountProvider_Release(provider);
     IAsyncOperation_WebAccountProvider_Release(provider_operation);
     IWebAuthenticationCoreManagerStatics4_Release(manager4);

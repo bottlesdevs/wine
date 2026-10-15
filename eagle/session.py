@@ -530,7 +530,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                             if not isinstance(payload, dict) or payload.get("provider") not in (1, 2, 4, 8):
                                 raise ValueError("unsupported provider payload")
                             if payload["provider"] == 1:
-                                if payload.get('event') == 'identity.stage':
+                                if payload.get('event') in ('identity.stage', 'identity.native.stage'):
                                     from identity_stages import decode
                                     payload = decode(payload)
                                 else:

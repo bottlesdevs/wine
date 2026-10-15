@@ -18,7 +18,7 @@ class IdentityStages(unittest.TestCase):
         for architecture in architectures:
             directory = root / f'lib/wine/{architecture}-windows';directory.mkdir(parents=True)
             for module in ('combase', 'dwrite', 'kernelbase', 'windows.security.authentication.onlineid'):
-                (directory / (module + '.dll')).write_bytes(b'EAGLE/1 identity.stage')
+                (directory / (module + '.dll')).write_bytes(b'EAGLE/1 identity.stage identity.native.stage')
         return architectures
 
     def test_installer_rejects_missing_identity_instrumentation(self):
@@ -30,17 +30,17 @@ class IdentityStages(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse((root / 'share/eagle/providers.json').exists())
 
-    def test_installer_records_bridge_scope_and_module_hashes(self):
+    def test_installer_records_identity_scope_and_module_hashes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory);architectures = self.runner(root)
             result = subprocess.run([sys.executable, '-S', str(Path(__file__).resolve().parents[1] / 'install.py'), str(root)],
                                     capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads((root / 'share/eagle/providers.json').read_text())
-            self.assertEqual(data['identity_stages'], {'schema': 1, 'provider': 1, 'transports': ['host-bridge'], 'native_flow': False})
+            self.assertEqual(data['identity_stages'], {'schema': 1, 'provider': 1, 'transports': ['host-bridge', 'native'], 'native_flow': True})
             for architecture in architectures:
                 name = f'{architecture}/windows.security.authentication.onlineid'
-                self.assertEqual(data['provider_sha256'][name], hashlib.sha256(b'EAGLE/1 identity.stage').hexdigest())
+                self.assertEqual(data['provider_sha256'][name], hashlib.sha256(b'EAGLE/1 identity.stage identity.native.stage').hexdigest())
 
     def payload(self):
         return dict(provider=1, event='identity.stage', hresult='0x8000000a', a=2, b=1,
@@ -57,6 +57,29 @@ class IdentityStages(unittest.TestCase):
                 self.assertEqual(data['transport'], 'host-bridge')
                 self.assertNotIn('subject', data)
                 self.assertNotIn('iid', data)
+
+    def test_native_stages_are_distinct_and_have_fixed_names(self):
+        for operation in (2, 3, 5):
+            for stage, name in ((1, 'begin'), (3, 'response'), (4, 'complete'), (5, 'cache'),
+                                (6, 'request'), (7, 'prompt'), (8, 'persist')):
+                value = self.payload();value.update(event='identity.native.stage', a=operation, b=2, d=stage)
+                data = decode(value)
+                self.assertEqual(data['transport'], 'native')
+                self.assertEqual(data['stage'], name)
+                self.assertEqual(data['event'], 'identity.stage')
+                self.assertNotEqual(fingerprint({'kind': 'provider', 'data': data}), fingerprint({'kind': 'provider', 'data': dict(data, transport='host-bridge')}))
+        for changes in ({'b': 1}, {'d': 2}, {'d': 9}, {'subject': 'private-sentinel'}, {'token': 'private-sentinel'}):
+            value = self.payload();value.update(event='identity.native.stage', b=2);value.update(changes)
+            with self.assertRaises(ValueError):decode(value)
+
+    def test_installer_rejects_bridge_only_onlineid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory);architectures = self.runner(root)
+            (root / f'lib/wine/{architectures[0]}-windows/windows.security.authentication.onlineid.dll').write_bytes(b'EAGLE/1 identity.stage')
+            result = subprocess.run([sys.executable, '-S', str(Path(__file__).resolve().parents[1] / 'install.py'), str(root)],
+                                    capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / 'share/eagle/providers.json').exists())
 
     def test_account_and_token_fields_are_rejected_without_echo(self):
         for field in ('access_token', 'account_id', 'client_id', 'authority', 'payload', 'code'):

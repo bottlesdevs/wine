@@ -62,6 +62,7 @@ for architecture in x86_64 i686; do
     ln -s ../prefix "$directory/prefix"
     export EAGLE_IDENTITY_BRIDGE_TEST_ROOT="$directory" EAGLE_IDENTITY_BRIDGE_BITS="$bits"
     python3 "$root/eagle/tests/test_identity_bridge.py" > "$directory/integration.log" 2>&1
+    python3 "$root/eagle/tests/test_identity_native.py" > "$directory/native.log" 2>&1
 done
 directory="$work/tests/d"
 mkdir -p "$directory"

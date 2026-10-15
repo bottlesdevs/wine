@@ -32,12 +32,16 @@ class IdentityProvider(unittest.TestCase):
                 bundle = sessions.pop()
             events = [json.loads(line) for line in (bundle / 'events.jsonl').read_text().splitlines()]
             values = [event['data'] for event in events if event['kind'] == 'provider' and event['data']['event'] == 'identity.stage']
-            self.assertEqual(len(values), 0 if profile == 'crash' else 7)
+            self.assertEqual(len(values), 0 if profile == 'crash' else 14)
             self.assertEqual(next(event['code'] for event in events if event['kind'] == 'process_exit' and event['pid'] == int(fields[1])), 0)
             if values:
-                self.assertEqual([value['stage'] for value in values if value['request_id'] == 41], ['begin', 'transport', 'response', 'complete'])
-                self.assertEqual([value['stage'] for value in values if value['request_id'] == 42], ['begin', 'transport', 'complete'])
-                self.assertEqual(values[-1]['hresult'], '0x80070005')
+                bridge = [value for value in values if value['transport'] == 'host-bridge']
+                native = [value for value in values if value['transport'] == 'native']
+                self.assertEqual([value['stage'] for value in native], ['begin', 'cache', 'request', 'response', 'prompt', 'persist', 'complete'])
+                self.assertTrue(all(value['request_id'] == 41 for value in native))
+                self.assertEqual([value['stage'] for value in bridge if value['request_id'] == 41], ['begin', 'transport', 'response', 'complete'])
+                self.assertEqual([value['stage'] for value in bridge if value['request_id'] == 42], ['begin', 'transport', 'complete'])
+                self.assertEqual(bridge[-1]['hresult'], '0x80070005')
                 self.assertTrue(all(set(value) == {'provider', 'event', 'hresult', 'request_id', 'operation', 'transport', 'stage', 'caller'} for value in values))
 
 
