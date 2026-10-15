@@ -9,7 +9,7 @@ import stat
 import subprocess
 import time
 
-from dwarf import dump, file_identity, file_state
+from dwarf import debug_image, dump, file_identity, file_state
 
 
 def line_files(text):
@@ -72,24 +72,9 @@ def inspect_sources(image, tool, files, expected_sha256=None):
         if expected_sha256 is not None and image_identity['sha256'] != expected_sha256:
             raise ValueError('image changed during source query')
         metadata = image_metadata(image)
-        selected = image
-        selected_state = image_state
-        if not metadata.get('debug_info') and metadata.get('debuglink'):
-            name = metadata['debuglink']
-            if not name or Path(name).name != name or name in ('.', '..') or '\\' in name:
-                raise ValueError('invalid separate debug filename')
-            matches = []
-            for candidate in (image.parent / name, image.parent / '.debug' / name):
-                if not candidate.exists() and not candidate.is_symlink():
-                    continue
-                identity, state = file_identity(candidate, deadline)
-                if identity['crc32'] == metadata['debuglink_crc']:
-                    matches.append((candidate, identity, state))
-            if not matches:
-                raise ValueError('matching separate debug image is missing')
-            if len({identity['sha256'] for _, identity, _ in matches}) != 1:
-                raise ValueError('ambiguous separate debug images')
-            selected, identity, selected_state = matches[0]
+        selected, identity, selected_state = debug_image(image, metadata, deadline)
+        selected_state = selected_state if selected_state is not None else image_state
+        if identity is not None:
             result['debug_image'] = dict(path=str(selected), **identity)
         keep = True
         def header(line):

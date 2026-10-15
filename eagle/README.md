@@ -191,6 +191,29 @@ The offline PDB fixture tests require `clang-cl`, `lld-link` and
 `llvm-symbolizer`. They report a skip if these optional host tools are absent;
 `EAGLE_TEST_LLD_LINK` can select a linker executable for the tests.
 
+Include compiler inline contexts with `--inlines` (stdio `inlines: true`):
+
+```sh
+eagle symbols ./module --rva 0x1120 --inlines
+```
+
+This requires host `llvm-symbolizer` and requested RVAs. The original result
+stays present; `inline_frames` adds up to 64 contexts, innermost first, with
+function, file, line, column and an `inlined` flag. `inline_status` distinguishes
+`available` chains, a single `not-reported` context, `unresolved` addresses and
+`unavailable` lookups with an explicit reason. A single context does not prove
+that the function has no inlines. Matching PDB selection and GNU debug-link CRC
+checks apply. Symbolizer output is limited to 16 MiB and 10 seconds.
+
+Owned optimized fixtures cover GCC/Clang DWARF 4/5 ELF, x86/x64 PE DWARF and
+x86/x64/ARM64 PDBs. These are static symbol lookups, not target execution.
+LLVM 21 reports no inline chain for legacy `.zdebug_*` GNU compression in the
+local fixtures; ELF `SHF_COMPRESSED` zlib works. The local LLVM DWP 21 tool
+also times out packing the optimized GCC DWARF 5 fixture. Relocated split
+chains are verified with GCC DWARF 4 and Clang DWARF 5 instead. DWO/DWP identity
+inspection remains separate; inline lookup does not certify complete types,
+all split companions or mixed CodeView/DWARF precedence.
+
 Inspect split-DWARF companion identities separately from address lookup:
 
 ```sh

@@ -118,6 +118,30 @@ def companion(tool, path, deadline, output_limit=1024 * 1024):
         result.update(status='invalid', reason=str(error))
     return result
 
+def debug_image(image, metadata, deadline):
+    selected_image = image
+    identity = None
+    selected_state = None
+    if not metadata.get('debug_info') and metadata.get('debuglink'):
+        name = metadata['debuglink']
+        if not name or Path(name).name != name or name in ('.', '..') or '\\' in name:
+            raise ValueError('invalid separate debug filename')
+        matches = []
+        found = False
+        for path in (image.parent / name, image.parent / '.debug' / name):
+            if not path.exists() and not path.is_symlink():
+                continue
+            found = True
+            identity, state = file_identity(path, deadline)
+            if identity['crc32'] == metadata['debuglink_crc']:
+                matches.append((path, identity, state))
+        if not matches:
+            raise ValueError('separate debug file CRC does not match image' if found else 'separate debug file is missing')
+        if len({identity['sha256'] for _, identity, _ in matches}) != 1:
+            raise ValueError('ambiguous separate debug files')
+        selected_image, identity, selected_state = matches[0]
+    return selected_image, identity, selected_state
+
 def artifacts(image, tool, debug_files):
     result = {'scope': 'split unit identities; not full type/inline verification', 'units': [], 'files': []}
     if not tool:
@@ -127,26 +151,8 @@ def artifacts(image, tool, debug_files):
         image = Path(image).resolve(strict=True)
         from symbols import image_metadata
         metadata = image_metadata(image)
-        selected_image = image
-        selected_state = None
-        if not metadata.get('debug_info') and metadata.get('debuglink'):
-            name = metadata['debuglink']
-            if not name or Path(name).name != name or name in ('.', '..') or '\\' in name:
-                raise ValueError('invalid separate debug filename')
-            matches = []
-            found = False
-            for path in (image.parent / name, image.parent / '.debug' / name):
-                if not path.exists() and not path.is_symlink():
-                    continue
-                found = True
-                identity, state = file_identity(path, deadline)
-                if identity['crc32'] == metadata['debuglink_crc']:
-                    matches.append((path, identity, state))
-            if not matches:
-                raise ValueError('separate debug file CRC does not match image' if found else 'separate debug file is missing')
-            if len({identity['sha256'] for _, identity, _ in matches}) != 1:
-                raise ValueError('ambiguous separate debug files')
-            selected_image, identity, selected_state = matches[0]
+        selected_image, identity, selected_state = debug_image(image, metadata, deadline)
+        if identity is not None:
             result['debug_image'] = dict(path=str(selected_image), **identity)
         units = references(dump(tool, selected_image, deadline))
         if selected_state is not None and selected_state != file_state(selected_image.stat()):

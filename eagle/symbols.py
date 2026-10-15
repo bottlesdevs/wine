@@ -6,7 +6,9 @@ import struct
 import uuid
 import json
 import re
+import selectors
 import tempfile
+import time
 from pathlib import Path, PureWindowsPath
 
 def host_path(value, prefix):
@@ -134,11 +136,37 @@ def host_tool(name):
 def pdb_resolver():
     return host_tool('llvm-symbolizer')
 
-def resolve_llvm(image, rvas, tool, origin):
-    result = subprocess.run([tool, '--obj=' + str(image), '--relative-address',
-                             '--output-style=JSON', '--no-inlines', '--no-debuginfod', *rvas],
-                            capture_output=True, text=True, timeout=10,
-                            env={key: value for key, value in os.environ.items() if key != 'LLVM_SYMBOLIZER_OPTS'})
+def inline_output(arguments, environment):
+    process = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=environment)
+    deadline = time.monotonic() + 10
+    output = bytearray()
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise ValueError('inline resolver timed out')
+                block = os.read(process.stdout.fileno(), 65536)
+                if not block:
+                    break
+                output.extend(block)
+                if len(output) > 16 * 1024 * 1024:
+                    raise ValueError('inline resolver output exceeds limit')
+        code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+        return subprocess.CompletedProcess(arguments, code, output.decode('utf-8'), '')
+    finally:
+        process.stdout.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+def resolve_llvm(image, rvas, tool, origin, inlines=False):
+    flags = [] if inlines else ['--no-inlines']
+    arguments = [tool, '--obj=' + str(image), '--relative-address', '--output-style=JSON', *flags, '--no-debuginfod', *rvas]
+    environment = {key: value for key, value in os.environ.items() if key != 'LLVM_SYMBOLIZER_OPTS'}
+    result = inline_output(arguments, environment) if inlines else subprocess.run(
+        arguments, capture_output=True, text=True, timeout=10, env=environment)
     try:
         values = json.loads(result.stdout)
         if result.returncode or not isinstance(values, list) or len(values) != len(rvas):
@@ -147,18 +175,33 @@ def resolve_llvm(image, rvas, tool, origin):
         for address, value in zip(rvas, values):
             if int(value['Address'], 0) != int(address, 0) or 'Error' in value:
                 raise ValueError('invalid resolver address')
-            frame, = value['Symbol']
-            name = frame['FunctionName']
-            filename, line = frame['FileName'], frame['Line']
-            item = {'symbol': None if name in ('', '??') else name, 'source': None, 'resolver': origin}
-            if filename and filename != '??' and type(line) is int and line > 0:
-                item.update(file=filename, line=line, source=filename + ':' + str(line))
+            frames = value['Symbol']
+            if not isinstance(frames, list) or not frames or len(frames) > (64 if inlines else 1):
+                raise ValueError('invalid inline frame count')
+            parsed = []
+            for frame in frames:
+                name, filename, line = frame['FunctionName'], frame['FileName'], frame['Line']
+                if not isinstance(name, str) or not isinstance(filename, str) or type(line) is not int or line < 0:
+                    raise ValueError('invalid source frame')
+                item = {'symbol': None if name in ('', '??') else name, 'source': None, 'resolver': origin}
+                if filename and filename != '??' and line > 0:
+                    item.update(file=filename, line=line, source=filename + ':' + str(line))
+                if inlines:
+                    column = frame.get('Column', 0)
+                    if type(column) is not int or column < 0:
+                        raise ValueError('invalid source column')
+                    item.update(column=column, inlined=len(parsed) < len(frames) - 1,
+                                status='source-resolved' if item.get('file') else 'symbol-only' if item['symbol'] else 'unresolved')
+                parsed.append(item)
+            item = dict(parsed[0])
+            if inlines:
+                item['inline_frames'] = parsed
             output.append(item)
         return output
     except (ValueError, KeyError, TypeError) as error:
-        raise ValueError('source resolver failed') from error
+        raise ValueError('inline source resolver failed: ' + str(error) if inlines else 'source resolver failed') from error
 
-def resolve_pdb(image, pdb, names, rvas):
+def resolve_pdb(image, pdb, names, rvas, inlines=False):
     if not rvas:
         return []
     tool = pdb_resolver()
@@ -175,12 +218,47 @@ def resolve_pdb(image, pdb, names, rvas):
         for name in set(names):
             (root / name).symlink_to(Path(pdb).resolve(strict=True))
         try:
-            return resolve_llvm(selected, rvas, tool, 'llvm-matched-pdb')
+            return resolve_llvm(selected, rvas, tool, 'llvm-matched-pdb', inlines=inlines)
         except ValueError as error:
             raise ValueError('PDB source resolver failed') from error
 
+def resolve_inlines(image, rvas, pdb, names, expected_sha256):
+    from dwarf import debug_image, file_identity, file_state
+    tool = host_tool('llvm-symbolizer')
+    if not tool:
+        raise ValueError('inline lookup requires host llvm-symbolizer')
+    deadline = time.monotonic() + 20
+    image = Path(image).resolve(strict=True)
+    identity, state = file_identity(image, deadline)
+    if identity['sha256'] != expected_sha256:
+        raise ValueError('image changed during inline lookup')
+    states = {image: state}
+    metadata = image_metadata(image)
+    if pdb:
+        pdb = Path(pdb).resolve(strict=True)
+        _, states[pdb] = file_identity(pdb, deadline)
+        selected = pdb_identity(pdb)
+        if any((value['guid'], value['age']) != (selected['guid'], selected['age']) for value in metadata.get('codeview', [])):
+            raise ValueError('PDB changed during inline lookup')
+        values = resolve_pdb(image, pdb, names, rvas, inlines=True)
+    else:
+        if metadata.get('codeview'):
+            raise ValueError('CodeView inline lookup requires a selected matching PDB')
+        selected, _, state = debug_image(image, metadata, deadline)
+        if state is not None:
+            states[selected] = state
+        addresses = [hex(int(metadata['image_base'], 0) + int(value, 0)) for value in rvas] if metadata.get('format') == 'ELF' else rvas
+        values = resolve_llvm(selected, addresses, tool, 'llvm-exact-image', inlines=True)
+    if any(state != file_state(path.stat()) for path, state in states.items()):
+        raise ValueError('inline debug artifacts changed during lookup')
+    if time.monotonic() >= deadline:
+        raise ValueError('inline lookup timed out')
+    return [value['inline_frames'] for value in values]
+
 def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None, sources=False, source_files=None,
-          runner_root=None, source_maps=None):
+          runner_root=None, source_maps=None, inlines=False):
+    if type(inlines) is not bool or (inlines and rvas is None):
+        raise ValueError('inlines must be a boolean and requires rvas')
     if runner_root is not None and (not isinstance(runner_root, (str, os.PathLike)) or not str(runner_root) or len(str(runner_root)) > 4096):
         raise ValueError('runner_root must be a path')
     if source_maps is not None:
@@ -237,6 +315,16 @@ def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None, sources
         for offset, frame in zip(offsets, frames):
             status = 'source-resolved' if frame.get('file') and frame.get('line') else 'symbol-only' if frame.get('symbol') else 'unresolved'
             result['resolved'].append(dict(frame, rva=hex(offset), status=status))
+        if inlines:
+            result['inline_order'] = 'innermost-to-outermost'
+            try:
+                chains = resolve_inlines(image, addresses, pdb, names if pdb else [], result['sha256']) if addresses else []
+                for frame, chain in zip(result['resolved'], chains):
+                    status = 'available' if len(chain) > 1 and any(value['symbol'] for value in chain[:-1]) else 'not-reported' if any(value['symbol'] or value.get('file') for value in chain) else 'unresolved'
+                    frame.update(inline_frames=chain, inline_status=status)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                for frame in result['resolved']:
+                    frame.update(inline_frames=[], inline_status='unavailable', inline_reason=str(error))
     if artifacts or debug_files is not None:
         if result.get('format') != 'ELF':
             raise ValueError('split-DWARF artifacts require an ELF image')

@@ -18,6 +18,7 @@ def capabilities():
     analyzer = available()
     return {
         "schema": 1,
+        "inline_frames": {"requires": "host llvm-symbolizer", "maximum_depth": 64, "order": "innermost-to-outermost"},
         "stdio": {"maximum_message_bytes": MAX_MESSAGE, "maximum_id_bytes": MAX_ID, "large_results": "CLI or file export"},
         "symbol_queries": {"maximum": 256, "addresses": "RVA", "resolver": "requires host binutils", "pdb": "GUID/age verification; source lookup requires host llvm-symbolizer", "arm_pe": "DWARF source lookup requires host llvm-symbolizer"},
         "split_dwarf": {"inspection": "requires host llvm-dwarfdump", "maximum_units": 256, "maximum_files": 256, "scope": "unit identity only"},
@@ -173,7 +174,8 @@ def serve():
             elif method == "symbols":
                 from symbols import query
                 result = query(params["path"], params.get("pdb"), params.get("rvas"), params.get("artifacts", False), params.get("debug_files"),
-                               params.get('sources', False), params.get('source_files'), params.get('runner_root'), params.get('source_maps'))
+                               params.get('sources', False), params.get('source_files'), params.get('runner_root'), params.get('source_maps'),
+                               params.get('inlines', False))
             elif method == "compare": result = compare(params["baseline"], params["candidate"])
             elif method == "export": result = export(params["session"], params["output"])
             elif method == "control": result = send_command(params["session"], params["command"])

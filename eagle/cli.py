@@ -56,6 +56,7 @@ def main():
             item.add_argument('--source-file', action='append', help='check an explicitly selected source file')
             item.add_argument('--runner-root', help='verify recorded Soda build inventories')
             item.add_argument('--source-map', action='append', help='check a recorded LABEL:RELATIVE=FILE source mapping')
+            item.add_argument('--inlines', action='store_true', help='include compiler inline frame chains for requested RVAs')
     comparison = commands.add_parser("compare")
     comparison.add_argument("baseline"); comparison.add_argument("candidate")
     report = commands.add_parser("export")
@@ -96,7 +97,7 @@ def main():
             from build_sources import source_map
             mappings = [source_map(value) for value in args.source_map] if args.source_map is not None else None
             result = query(args.path, args.pdb, args.rva, args.artifacts, args.debug_file, args.sources, args.source_file,
-                           args.runner_root, mappings)
+                           args.runner_root, mappings, args.inlines)
         elif args.command == "compare": result = compare(args.baseline, args.candidate)
         elif args.command == "export": result = export(args.session, args.output)
         elif args.command == "control": result = send_command(args.session, " ".join(args.action))

@@ -69,6 +69,7 @@ export EAGLE_TRACE_EXPORT_ROOT="$work/tests/e"
 python3 -S "$root/eagle/tests/test_trace_export.py" > "$work/tests/e/integration.log" 2>&1
 python3 -S "$root/eagle/tests/test_session_compare.py" > "$work/tests/e/comparison.log" 2>&1
 python3 -S "$root/eagle/tests/test_symbols_offline.py" > "$work/tests/e/symbols-offline.log" 2>&1
+python3 -S "$root/eagle/tests/test_inline_symbols.py" > "$work/tests/e/inline-symbols.log" 2>&1
 python3 -S "$root/eagle/tests/test_symbols_pdb.py" > "$work/tests/e/symbols-pdb.log" 2>&1
 python3 -S "$root/eagle/tests/test_split_dwarf.py" > "$work/tests/e/split-dwarf.log" 2>&1
 python3 -S "$root/eagle/tests/test_provenance.py" > "$work/tests/e/provenance.log" 2>&1
