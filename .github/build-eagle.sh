@@ -82,5 +82,6 @@ python3 -S "$root/eagle/tests/test_split_bundle.py" > "$work/tests/e/split-bundl
 python3 -S "$root/eagle/tests/test_split_lookup.py" > "$work/tests/e/split-lookup.log" 2>&1
 python3 -S "$root/eagle/tests/test_source_checksums.py" > "$work/tests/e/source-checksums.log" 2>&1
 python3 -S "$root/eagle/tests/test_build_sources.py" > "$work/tests/e/build-sources.log" 2>&1
+python3 -S "$root/eagle/tests/test_protocol_budget.py" > "$work/tests/e/protocol-budget.log" 2>&1
 python3 -S "$root/eagle/tests/test_debugger_package.py" > "$work/tests/e/package.log" 2>&1
 printf '%s\n' 'Eagle package, debugger, automatic tracing and x86/x64 provider controls passed'

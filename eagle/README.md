@@ -146,6 +146,22 @@ within each process. A cycle is evidence of an observed wait relationship,
 not proof of a permanent deadlock. Missing symbols stay marked unavailable.
 Caller frames can report function and source line when matching symbols exist.
 
+## Backend messages
+
+`eagle serve` uses Content-Length frames with a 1 MiB body limit. Request IDs
+are strings or integers of at most 1024 bytes after JSON encoding; synchronous
+requests may also use null. Invalid IDs receive `-32600` with a null ID before
+dispatch, and valid following requests still work. The initialize response
+advertises these limits under `stdio`.
+
+Oversized results receive `-32603` without a partial or truncated result. Large
+error details receive a bounded diagnostic with the original error code. An
+oversized output event fails its capture job and closes the collector; data
+already written to the session remain available. Reports beyond the stdio limit
+can be read with CLI commands or file export. Invalid input framing receives
+`-32700` and ends that stream; no frame resynchronization is attempted.
+CLI output and the DAP adapter keep their existing transport behavior.
+
 ## Offline symbols (development)
 
 Look up function names and source lines by RVA without launching the target:

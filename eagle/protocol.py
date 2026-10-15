@@ -8,12 +8,17 @@ from session import compare, export, send_command, summary
 from errors import Cancelled
 
 MAX_MESSAGE = 1024 * 1024
+MAX_ID = 1024
+
+class MessageTooLarge(ValueError):
+    pass
 
 def capabilities():
     from analysis import available
     analyzer = available()
     return {
         "schema": 1,
+        "stdio": {"maximum_message_bytes": MAX_MESSAGE, "maximum_id_bytes": MAX_ID, "large_results": "CLI or file export"},
         "symbol_queries": {"maximum": 256, "addresses": "RVA", "resolver": "requires host binutils", "pdb": "GUID/age verification; source lookup requires host llvm-symbolizer", "arm_pe": "DWARF source lookup requires host llvm-symbolizer"},
         "split_dwarf": {"inspection": "requires host llvm-dwarfdump", "maximum_units": 256, "maximum_files": 256, "scope": "unit identity only"},
         "source_checksums": {"format": "DWARF MD5", "requires": "host llvm-dwarfdump", "maximum_files": 256, "reads": "explicit source_files only"},
@@ -59,8 +64,10 @@ def read_message(stream):
         raise ValueError("request must be an object")
     return value
 
-def write_message(stream, message):
+def write_message(stream, message, limit=None):
     data = json.dumps(message).encode()
+    if limit is not None and len(data) > limit:
+        raise MessageTooLarge('message exceeds size limit; use CLI or file export for the full result')
     stream.write(f"Content-Length: {len(data)}\r\n\r\n".encode() + data)
     stream.flush()
 
@@ -70,7 +77,13 @@ def serve():
     lock = threading.Lock()
     def send(value):
         with lock:
-            write_message(sys.stdout.buffer, value)
+            try:
+                write_message(sys.stdout.buffer, value, limit=MAX_MESSAGE)
+            except MessageTooLarge:
+                if 'error' not in value:
+                    raise
+                write_message(sys.stdout.buffer, {'id': value.get('id'), 'error': {
+                    'code': value['error']['code'], 'message': 'error detail exceeds message size limit'}}, limit=MAX_MESSAGE)
 
     def start_job(request_id, method, params):
         if method == 'analyze' and not capabilities()['analysis']['available']:
@@ -111,7 +124,7 @@ def serve():
                     raise RuntimeError("analysis cancelled")
                 send({"id": request_id, "result": result})
             except (KeyError, TypeError, ValueError, OSError, RuntimeError, subprocess.SubprocessError, Cancelled) as error:
-                send({"id": request_id, "error": {"code": -32800 if cancelled.is_set() else -32602, "message": str(error)}})
+                send({"id": request_id, "error": {"code": -32800 if cancelled.is_set() else -32603 if isinstance(error, MessageTooLarge) else -32602, "message": str(error)}})
         thread = threading.Thread(target=run, daemon=True)
         jobs[request_id] = (thread, cancelled)
         thread.start()
@@ -131,6 +144,9 @@ def serve():
                 thread.join(timeout=35)
             return
         request_id = request.get("id")
+        if request_id is not None and (type(request_id) not in (str, int) or len(json.dumps(request_id).encode()) > MAX_ID):
+            send({'id': None, 'error': {'code': -32600, 'message': 'request id must be a string or integer of at most 1024 encoded bytes'}})
+            continue
         try:
             method = request["method"]
             params = request.get("params", {})
@@ -170,4 +186,4 @@ def serve():
             else: raise ValueError("unknown method")
             send({"id": request_id, "result": result})
         except (KeyError, TypeError, ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
-            send({"id": request_id, "error": {"code": -32602, "message": str(error)}})
+            send({"id": request_id, "error": {"code": -32603 if isinstance(error, MessageTooLarge) else -32602, "message": str(error)}})
