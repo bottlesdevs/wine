@@ -1,0 +1,4 @@
+LIBRARY EagleLoaderFixture
+EXPORTS
+    EagleLoaderValue @7
+    EagleLoaderOrdinal @9 NONAME

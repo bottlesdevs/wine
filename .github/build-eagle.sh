@@ -48,6 +48,16 @@ for architecture in x86_64 i686; do
     ln -s ../prefix "$directory/prefix"
     EAGLE_D2D_TEST_ROOT="$directory" python3 "$root/eagle/tests/test_d2d_provider.py" \
         > "$directory/integration.log" 2>&1
+    directory="$work/tests/loader$bits"
+    mkdir -p "$directory/private-path-sentinel"
+    "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror -D__WINESRC__ \
+        -I"$runner/include/wine/windows" "$root/eagle/tests/loader_provider.c" -o "$directory/target.exe"
+    "$architecture-w64-mingw32-gcc" -shared -O0 -g -gdwarf-4 -Wall -Wextra -Werror \
+        "$root/eagle/tests/loader_library.c" "$root/eagle/tests/loader_library.def" \
+        -o "$directory/private-path-sentinel/EagleLoaderFixture.dll"
+    ln -s ../prefix "$directory/prefix"
+    EAGLE_LOADER_TEST_ROOT="$directory" python3 "$root/eagle/tests/test_loader_provider.py" \
+        > "$directory/integration.log" 2>&1
     directory="$work/tests/c$bits"
     mkdir -p "$directory"
     "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror         "$root/eagle/tests/com_provider.c" -lole32 -o "$directory/target.exe"
@@ -145,5 +155,6 @@ python3 -S "$root/eagle/tests/test_protocol_budget.py" > "$work/tests/e/protocol
 python3 -S "$root/eagle/tests/test_debugger_package.py" > "$work/tests/e/package.log" 2>&1
 python3 -S "$root/eagle/tests/test_native_build.py" > "$work/tests/e/native-build.log" 2>&1
 python3 -S "$root/eagle/tests/test_capabilities.py" > "$work/tests/e/capabilities.log" 2>&1
+python3 -S "$root/eagle/tests/test_loader_contract.py" > "$work/tests/e/loader-contract.log" 2>&1
 python3 -S "$root/eagle/tests/test_identity_stages.py" > "$work/tests/e/identity-stages.log" 2>&1
 printf '%s\n' 'Eagle package, debugger, automatic tracing and x86/x64 provider controls passed'

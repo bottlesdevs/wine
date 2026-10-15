@@ -261,6 +261,8 @@ def fingerprint(event):
         key += (('stack', tuple(frame_key(frame) for frame in event['frames']), event.get('unwind'), event.get('truncated')),)
     if event["kind"] == "provider":
         ignored = ('caller', 'object', 'request_id') if event.get('data', {}).get('event') == 'identity.stage' else ('caller', 'object')
+        if event.get('data', {}).get('provider') == 32:
+            ignored += ('module', 'address')
         data = {name: value for name, value in event.get("data", {}).items() if name not in ignored}
         return key + (json.dumps(data, sort_keys=True),)
     return key
@@ -275,7 +277,9 @@ def compare(first, second):
     same_input = bool(a.get("target_identity")) and all(a.get(key) == b.get(key) for key in ('target_identity', 'arguments', 'target_cwd', 'profile', 'trigger', 'interactive'))
     partial = any(manifest.get('dropped_events') or manifest.get('capture_history', {}).get('coverage') == 'partial' for manifest in (a, b))
     partial = partial or any(event['kind'] == 'capture_gap' for events in (left, right) for event in events)
-    verdict = 'inconclusive: capture history is incomplete' if partial else "comparable" if same_input else "inconclusive: inputs or observers differ"
+    exhausted = any(event['kind'] == 'provider' and event.get('data', {}).get('event') == 'ObserverBudgetExceeded'
+                    for events in (left, right) for event in events)
+    verdict = 'inconclusive: capture history is incomplete' if partial else 'inconclusive: provider event budget exhausted' if exhausted else "comparable" if same_input else "inconclusive: inputs or observers differ"
     return {"matching_inputs": same_input, "verdict": verdict, "added": [{"fingerprint": list(key), "count": count} for key, count in (y-x).items()], "removed": [{"fingerprint": list(key), "count": count} for key, count in (x-y).items()]}
 
 def redact(value, key=""):
@@ -363,7 +367,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
     collector = Path(__file__).resolve().parent / "native" / f"eagle-debug{bits}.exe"
     if not collector.is_file():
         raise FileNotFoundError(f"native collector is not built: {collector}")
-    if profile not in ("crash", "process", "debug", "winrt", "dwrite", "d2d", "com", "wait", "trace"):
+    if profile not in ("crash", "process", "debug", "winrt", "dwrite", "d2d", "loader", "com", "wait", "trace"):
         raise ValueError("unsupported capture profile")
     from waits import WaitGraph
     waits = WaitGraph()
@@ -371,19 +375,19 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
     env['WINEDLLOVERRIDES'] = ';'.join(value for value in (env.get('WINEDLLOVERRIDES'), 'winemenubuilder.exe=d') if value)
     for name in ('EAGLE_PROVIDER_MASK', 'EAGLE_TRIGGER_HRESULT', 'EAGLE_TRIGGER_ACTION', 'EAGLE_TARGET_CWD', 'EAGLE_TRACE_EXCLUDE_WINE_CONHOST', 'EAGLE_TRACE_DETACH_WINE_SERVICES'):
         env.pop(name, None)
-    if profile in ("winrt", "dwrite", "d2d", "com", "wait", "trace"):
+    if profile in ("winrt", "dwrite", "d2d", "loader", "com", "wait", "trace"):
         providers = json.loads((wine.parent.parent / "share/eagle/providers.json").read_text())
-        requested = ('winrt', 'dwrite', 'd2d', 'com', 'wait') if profile == 'trace' else (profile,)
+        requested = ('winrt', 'dwrite', 'd2d', 'loader', 'com', 'wait') if profile == 'trace' else (profile,)
         if any(bits not in providers.get('profiles', {}).get(name, []) for name in requested):
             raise ValueError("provider is not available for this runner and architecture")
-        env["EAGLE_PROVIDER_MASK"] = {"winrt": "1", "dwrite": "2", "com": "4", "wait": "8", "d2d": "16", "trace": "31"}[profile]
+        env["EAGLE_PROVIDER_MASK"] = {"winrt": "1", "dwrite": "2", "com": "4", "wait": "8", "d2d": "16", "loader": "32", "trace": "63"}[profile]
     if profile == 'trace':
         env['EAGLE_TRACE_EXCLUDE_WINE_CONHOST'] = '1'
         env['EAGLE_TRACE_DETACH_WINE_SERVICES'] = '1'
     if target:
         env["EAGLE_TARGET_CWD"] = windows_path(Path(target_cwd).resolve(strict=True) if target_cwd else Path(target).resolve().parent, prefix)
     if on_hresult:
-        if profile not in ('winrt', 'dwrite', 'd2d', 'com') or not re.fullmatch(r'0x[0-9a-fA-F]{8}', on_hresult):
+        if profile not in ('winrt', 'dwrite', 'd2d', 'loader', 'com') or not re.fullmatch(r'0x[0-9a-fA-F]{8}', on_hresult):
             raise ValueError('HRESULT trigger requires a provider profile and an eight-digit hexadecimal value')
         if trigger_action not in ('snapshot', 'dump', 'stop'):
             raise ValueError('unsupported trigger action')
@@ -527,7 +531,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                                 manifest['unix_inventory']['unavailable'] = manifest['unix_inventory'].get('unavailable', 0) + 1
                         if event["kind"] == "provider":
                             payload = json.loads(event.pop("payload"))
-                            if not isinstance(payload, dict) or payload.get("provider") not in (1, 2, 4, 8, 16):
+                            if not isinstance(payload, dict) or payload.get("provider") not in (1, 2, 4, 8, 16, 32):
                                 raise ValueError("unsupported provider payload")
                             if payload["provider"] == 1:
                                 if payload.get('event') in ('identity.stage', 'identity.native.stage'):

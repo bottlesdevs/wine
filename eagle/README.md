@@ -173,14 +173,24 @@ For an interactive session, use a new, short session path:
     /path/to/application/app.exe
 ```
 
-Profiles `winrt`, `dwrite`, `d2d`, `com` and `wait` enable the corresponding Wine
-observers; `trace` enables all five. HRESULT triggers are available with
-`winrt`, `dwrite`, `d2d` and `com`, for example
+Profiles `winrt`, `dwrite`, `d2d`, `loader`, `com` and `wait` enable the corresponding Wine
+observers; `trace` enables all six. HRESULT triggers are available with
+`winrt`, `dwrite`, `d2d`, `loader` and `com`, for example
 `--on-hresult 0x80040154 --trigger-action snapshot`.
 
 The Direct2D observer records `EndDraw` and `Flush` results, the context address
 and full-width error tags. It emits at most 4096 events per process, followed
 by one `ObserverBudgetExceeded` marker. It does not capture document contents.
+
+The loader observer covers Win32 `LoadLibraryA/W`, `LoadLibraryExA/W`,
+`FreeLibrary`, `GetProcAddress` in both Kernel32 and KernelBase, and
+`LoadPackagedLibrary` results. It records the Win32 error, HRESULT, flags,
+module/address, requested ordinal or bounded name and caller. Library names
+contain only the basename. Inputs without a readable terminator within 512 characters have no name.
+Labels are capped at 127 characters; sanitation and truncation are explicit. Delegated API calls can produce several
+events. Both DLLs share a 4096-event budget and one limit marker per process.
+Native `Ldr*` failures and transitive dependency failures are not observed by
+this provider; module-load/unload debug events remain separate.
 
 The COM observer covers activation, requested apartments and activation-time
 interface queries. The wait graph covers observed KernelBase mutex handles
@@ -189,6 +199,10 @@ not proof of a permanent deadlock. Missing symbols stay marked unavailable.
 Caller frames can report function and source line when matching symbols exist.
 
 ## Session comparison
+
+A provider event-budget marker makes a comparison inconclusive, even when the
+retained capture history is complete. Loader module and function addresses
+are excluded from event fingerprints; requested names and ordinals remain.
 
 `eagle compare BASELINE CANDIDATE` compares recorded event counts. Snapshot
 fingerprints retain the ordered `(module, RVA)` stack, unwind method and
@@ -492,7 +506,7 @@ is in `tests/test_tracing.py`. Their environment variables select an immutable
 candidate, private Wine prefix and test directory.
 
 The diagnostic release keeps the published Soda 25 runtime and replaces
-`combase`, `dwrite`, `d2d1` and `kernelbase` for both target architectures. Build those
+`combase`, `dwrite`, `d2d1`, `kernelbase` and `kernel32` for both target architectures. Build those
 DLLs from the pinned Wine source with the complete Soda patch set applied,
 including the native Eagle providers. Use
 `-ffile-prefix-map=BUILD_ROOT=/usr/src/soda` for the provider DLLs and their

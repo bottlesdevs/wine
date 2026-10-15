@@ -1,0 +1,284 @@
+--- a/dlls/kernelbase/loader.c
++++ b/dlls/kernelbase/loader.c
+@@ -30,6 +30,7 @@
+ #include "winternl.h"
+ #include "ddk/ntddk.h"
+ #include "kernelbase.h"
++#include "eagle_trace.h"
+ #include "wine/list.h"
+ #include "wine/asm.h"
+ #include "wine/debug.h"
+@@ -61,10 +62,99 @@
+  ***********************************************************************/
+ 
+ 
++static BOOL loader_trace_name(const void *name, BOOL wide, BOOL basename, char *label,
++        BOOL *sanitized, BOOL *truncated)
++{
++    union { WCHAR wide[16]; char narrow[16]; } block;
++    SIZE_T read, offset = 0, width = wide ? sizeof(WCHAR) : 1;
++    unsigned i, length = 0;
++    WCHAR ch;
++
++    *sanitized = *truncated = FALSE;
++    while (name && offset < 512)
++    {
++        read = 0;
++        ReadProcessMemory(GetCurrentProcess(), (const char *)name + offset * width,
++                &block, 16 * width, &read);
++        if (!(read /= width)) break;
++        for (i = 0; i < read; ++i)
++        {
++            ch = wide ? block.wide[i] : (unsigned char)block.narrow[i];
++            if (!ch)
++            {
++                label[length] = 0;
++                return TRUE;
++            }
++            if (basename && (ch == '/' || ch == '\\' || ch == ':'))
++            {
++                length = 0;
++                *sanitized = *truncated = FALSE;
++            }
++            else if (length < 127)
++            {
++                BOOL plain = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
++                        || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-' || ch == '@' || ch == '$';
++                label[length++] = plain ? ch : '?';
++                if (!plain) *sanitized = TRUE;
++            }
++            else *truncated = TRUE;
++        }
++        offset += read;
++    }
++    label[0] = 0;
++    return FALSE;
++}
++
++void WINAPI __wine_eagle_loader_result(const char *operation, const void *name, BOOL wide, BOOL basename,
++        HMODULE module, const void *address, DWORD flags, BOOL success, const void *caller)
++{
++    static LONG tls_index = TLS_OUT_OF_INDEXES, emitted;
++    DWORD saved_error = GetLastError(), error = success ? 0 : saved_error;
++    ULONG saved_status = NtCurrentTeb()->LastStatusValue;
++    char text[768], label[128];
++    BOOL active = FALSE, available, sanitized, truncated;
++    LONG index, count;
++    unsigned ordinal = !basename && (ULONG_PTR)name <= 0xffff ? (ULONG_PTR)name : 0;
++
++    if (!eagle_trace_enabled(32) || !IsDebuggerPresent()) goto done;
++    if (InterlockedCompareExchange(&emitted, 0, 0) >= 4097) goto done;
++    index = InterlockedCompareExchange(&tls_index, TLS_OUT_OF_INDEXES, TLS_OUT_OF_INDEXES);
++    if (index == (LONG)TLS_OUT_OF_INDEXES)
++    {
++        DWORD created = TlsAlloc();
++        if (created == TLS_OUT_OF_INDEXES) goto done;
++        index = InterlockedCompareExchange(&tls_index, created, TLS_OUT_OF_INDEXES);
++        if (index == (LONG)TLS_OUT_OF_INDEXES) index = created;
++        else TlsFree(created);
++    }
++    if (TlsGetValue(index) || !TlsSetValue(index, (void *)1)) goto done;
++    active = TRUE;
++    count = InterlockedIncrement(&emitted);
++    if (count > 4097) goto done;
++    if (count == 4097)
++        snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":32,\"event\":\"ObserverBudgetExceeded\",\"limit\":4096}");
++    else
++    {
++        available = loader_trace_name(ordinal ? NULL : name, wide, basename, label, &sanitized, &truncated);
++        snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":32,\"event\":\"%s\",\"hresult\":\"0x%08lx\","
++                "\"win32_error\":%lu,\"success\":%s,\"name\":\"%s\",\"name_available\":%s,"
++                "\"name_sanitized\":%s,\"name_truncated\":%s,\"ordinal\":%u,\"module\":\"%p\","
++                "\"address\":\"%p\",\"flags\":%lu,\"caller\":\"%p\"}",
++                operation, HRESULT_FROM_WIN32(error), error, success ? "true" : "false", label,
++                available ? "true" : "false", sanitized ? "true" : "false", truncated ? "true" : "false",
++                ordinal, module, address, flags, caller);
++    }
++    OutputDebugStringA(text);
++done:
++    if (active) TlsSetValue(index, NULL);
++    SetLastError(saved_error);
++    NtCurrentTeb()->LastStatusValue = saved_status;
++}
++
+ /******************************************************************
+  *      get_proc_address
+  */
+-FARPROC WINAPI get_proc_address( HMODULE module, LPCSTR function )
++static FARPROC get_proc_address_impl( HMODULE module, LPCSTR function )
+ {
+     FARPROC proc;
+     ANSI_STRING str;
+@@ -80,6 +170,13 @@
+         return NULL;
+ 
+     return proc;
++}
++
++FARPROC WINAPI get_proc_address( HMODULE module, LPCSTR function )
++{
++    FARPROC result = get_proc_address_impl( module, function );
++    __wine_eagle_loader_result("loader.GetProcAddress", function, FALSE, FALSE, module, (const void *)result, 0, !!result, __builtin_return_address(0));
++    return result;
+ }
+ 
+ 
+@@ -230,7 +327,7 @@
+ /***********************************************************************
+  *	FreeLibrary   (kernelbase.@)
+  */
+-BOOL WINAPI DECLSPEC_HOTPATCH FreeLibrary( HINSTANCE module )
++static BOOL free_library( HINSTANCE module )
+ {
+     if (!module)
+     {
+@@ -266,6 +363,13 @@
+     }
+ 
+     return set_ntstatus( LdrUnloadDll( module ));
++}
++
++BOOL WINAPI DECLSPEC_HOTPATCH FreeLibrary( HINSTANCE module )
++{
++    BOOL result = free_library( module );
++    __wine_eagle_loader_result("loader.FreeLibrary", NULL, FALSE, TRUE, module, NULL, 0, result, __builtin_return_address(0));
++    return result;
+ }
+ 
+ 
+@@ -516,25 +620,39 @@
+ /***********************************************************************
+  *	LoadLibraryA   (kernelbase.@)
+  */
++static HMODULE load_library_a( LPCSTR name )
++{
++    return LoadLibraryExA( name, 0, 0 );
++}
++
+ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryA( LPCSTR name )
+ {
+-    return LoadLibraryExA( name, 0, 0 );
++    HMODULE result = load_library_a( name );
++    __wine_eagle_loader_result("loader.LoadLibraryA", name, FALSE, TRUE, result, NULL, 0, !!result, __builtin_return_address(0));
++    return result;
+ }
+ 
+ 
+ /***********************************************************************
+  *	LoadLibraryW   (kernelbase.@)
+  */
++static HMODULE load_library_w( LPCWSTR name )
++{
++    return LoadLibraryExW( name, 0, 0 );
++}
++
+ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryW( LPCWSTR name )
+ {
+-    return LoadLibraryExW( name, 0, 0 );
++    HMODULE result = load_library_w( name );
++    __wine_eagle_loader_result("loader.LoadLibraryW", name, TRUE, TRUE, result, NULL, 0, !!result, __builtin_return_address(0));
++    return result;
+ }
+ 
+ 
+ /******************************************************************
+  *	LoadLibraryExA   (kernelbase.@)
+  */
+-HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExA( LPCSTR name, HANDLE file, DWORD flags )
++static HMODULE load_library_ex_a( LPCSTR name, HANDLE file, DWORD flags )
+ {
+     WCHAR *nameW;
+     HMODULE module;
+@@ -549,11 +667,18 @@
+     return module;
+ }
+ 
++HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExA( LPCSTR name, HANDLE file, DWORD flags )
++{
++    HMODULE result = load_library_ex_a( name, file, flags );
++    __wine_eagle_loader_result("loader.LoadLibraryExA", name, FALSE, TRUE, result, NULL, flags, !!result, __builtin_return_address(0));
++    return result;
++}
++
+ 
+ /***********************************************************************
+  *	LoadLibraryExW   (kernelbase.@)
+  */
+-HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExW( LPCWSTR name, HANDLE file, DWORD flags )
++static HMODULE load_library_ex_w( LPCWSTR name, HANDLE file, DWORD flags )
+ {
+     UNICODE_STRING str;
+     HMODULE module;
+@@ -585,15 +710,29 @@
+     return module;
+ }
+ 
++HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExW( LPCWSTR name, HANDLE file, DWORD flags )
++{
++    HMODULE result = load_library_ex_w( name, file, flags );
++    __wine_eagle_loader_result("loader.LoadLibraryExW", name, TRUE, TRUE, result, NULL, flags, !!result, __builtin_return_address(0));
++    return result;
++}
++
+ 
+ /***********************************************************************
+  *      LoadPackagedLibrary    (kernelbase.@)
+  */
+-HMODULE WINAPI /* DECLSPEC_HOTPATCH */ LoadPackagedLibrary( LPCWSTR name, DWORD reserved )
++static HMODULE load_packaged_library( LPCWSTR name, DWORD reserved )
+ {
+     FIXME( "semi-stub, name %s, reserved %#lx.\n", debugstr_w(name), reserved );
+     SetLastError( APPMODEL_ERROR_NO_PACKAGE );
+     return NULL;
++}
++
++HMODULE WINAPI /* DECLSPEC_HOTPATCH */ LoadPackagedLibrary( LPCWSTR name, DWORD reserved )
++{
++    HMODULE result = load_packaged_library( name, reserved );
++    __wine_eagle_loader_result("loader.LoadPackagedLibrary", name, TRUE, TRUE, result, NULL, reserved, !!result, __builtin_return_address(0));
++    return result;
+ }
+ 
+ 
+--- a/dlls/kernel32/module.c
++++ b/dlls/kernel32/module.c
+@@ -32,6 +32,9 @@
+ #include "winbase.h"
+ #include "winternl.h"
+ #include "kernel_private.h"
++
++extern void WINAPI __wine_eagle_loader_result(const char *operation, const void *name, BOOL wide, BOOL basename,
++        HMODULE module, const void *address, DWORD flags, BOOL success, const void *caller);
+ #include "psapi.h"
+ 
+ #include "wine/list.h"
+@@ -275,7 +278,7 @@
+  *  Success: A pointer to the symbol in the process address space.
+  *  Failure: NULL. Use GetLastError() to determine the cause.
+  */
+-FARPROC get_proc_address( HMODULE hModule, LPCSTR function )
++static FARPROC get_proc_address_impl( HMODULE hModule, LPCSTR function )
+ {
+     FARPROC     fp;
+ 
+@@ -293,6 +296,12 @@
+             return NULL;
+ 
+     return fp;
++}
++FARPROC get_proc_address( HMODULE hModule, LPCSTR function )
++{
++    FARPROC result = get_proc_address_impl( hModule, function );
++    __wine_eagle_loader_result("loader.GetProcAddress", function, FALSE, FALSE, hModule, (const void *)result, 0, !!result, __builtin_return_address(0));
++    return result;
+ }
+ 
+ /*
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -1830,3 +1830,5 @@
+ @ stdcall lstrlenW(wstr) KERNELBASE_lstrlenW
+ # @ stub time
+ # @ stub wprintf
++
++@ stdcall -norelay __wine_eagle_loader_result(ptr ptr long long ptr ptr long long ptr)

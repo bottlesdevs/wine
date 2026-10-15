@@ -43,6 +43,17 @@ class SessionComparison(unittest.TestCase):
                     frames=[{'module': 'fixture', 'rva': '0x120', 'address': '0x401120'},
                             {'module': 'caller', 'rva': '0x220', 'address': '0x501220'}])
 
+    def test_provider_budget_makes_complete_history_inconclusive(self):
+        for provider in (8, 16, 32):
+            event = dict(kind='provider', pid=1, tid=2, seq=3, time_ms=4,
+                         data=dict(provider=provider, event='ObserverBudgetExceeded', limit=4096))
+            root = self.bundle('budget-' + str(provider), [event])
+            result = compare(root, root)
+            self.assertTrue(result['matching_inputs'])
+            self.assertEqual(result['verdict'], 'inconclusive: provider event budget exhausted')
+            self.assertEqual(result['added'], [])
+            self.assertEqual(result['removed'], [])
+
     def test_stack_callers_order_depth_and_unwind_quality_change_comparison(self):
         original = self.snapshot()
         baseline = self.bundle('baseline', [original, original])

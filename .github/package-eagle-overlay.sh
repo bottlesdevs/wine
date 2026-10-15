@@ -19,6 +19,10 @@ for architecture in i386 x86_64; do
         grep -aFq EAGLE/1 "$source"
         cp "$source" "$work/$component/lib/wine/$architecture-windows/$module.dll"
     done
+    source="$build/dlls/kernel32/$architecture-windows/kernel32.dll"
+    grep -aFq __wine_eagle_loader_result "$source"
+    grep -aFq loader.GetProcAddress "$source"
+    cp "$source" "$work/$component/lib/wine/$architecture-windows/kernel32.dll"
 done
 sh "$root/.github/build-eagle.sh" "$work/$component" "$work/acceptance"
 python3 - "$work/$component" <<'PYTHON'
