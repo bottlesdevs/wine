@@ -7,7 +7,7 @@ mkdir -p "$work/t"
 work=$(CDPATH= cd -- "$work" && pwd)
 export TMPDIR="$work/t" TMP="$work/t" TEMP="$work/t"
 test -x "$runner/bin/wine"
-sh "$root/eagle/build-debugger.sh" "$work/package"
+sh "$root/eagle/build-native.sh" "$work/package" - "$work/native"
 cp -a "$work/package/." "$runner/"
 python3 "$root/eagle/install.py" "$runner"
 mkdir -p "$work/tests"
@@ -96,4 +96,5 @@ python3 -S "$root/eagle/tests/test_source_checksums.py" > "$work/tests/e/source-
 python3 -S "$root/eagle/tests/test_build_sources.py" > "$work/tests/e/build-sources.log" 2>&1
 python3 -S "$root/eagle/tests/test_protocol_budget.py" > "$work/tests/e/protocol-budget.log" 2>&1
 python3 -S "$root/eagle/tests/test_debugger_package.py" > "$work/tests/e/package.log" 2>&1
+python3 -S "$root/eagle/tests/test_native_build.py" > "$work/tests/e/native-build.log" 2>&1
 printf '%s\n' 'Eagle package, debugger, automatic tracing and x86/x64 provider controls passed'

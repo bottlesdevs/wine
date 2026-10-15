@@ -27,6 +27,15 @@ PYTHON
 mkdir -p "$work/t"
 work=$(CDPATH= cd -- "$work" && pwd)
 export TMPDIR="$work/t" TMP="$work/t" TEMP="$work/t"
+if test "$source" = -; then
+    source="$work/yara-source"
+    revision=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["yara_revision"])' "$root/sources.json")
+    git init "$source"
+    git -C "$source" remote add origin https://github.com/VirusTotal/yara.git
+    git -C "$source" fetch --no-tags --depth=1 origin "$revision"
+    git -C "$source" checkout --detach "$revision"
+    test "$(git -C "$source" rev-parse HEAD)" = "$revision"
+fi
 sh "$root/prepare-yara.sh" "$source" "$work/yara"
 sh "$root/build-analysis.sh" "$work/analysis"
 sh "$root/build-debugger.sh" "$work/debugger"

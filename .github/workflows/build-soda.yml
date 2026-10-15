@@ -163,6 +163,12 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/soda-secret-headers.sh" "$GITHUB_WORKSPACE/.soda-secret-i386" i386
           sudo apt-get install -y \
             g++ \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            libjson-c-dev:amd64 \
+            libsqlite3-dev:amd64 \
             cmake \
             file \
             g++-mingw-w64-i686 \
@@ -1574,6 +1580,12 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/soda-secret-headers.sh" "$GITHUB_WORKSPACE/.soda-secret-i386" i386
           sudo apt-get install -y \
             g++ \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            libjson-c-dev:amd64 \
+            libsqlite3-dev:amd64 \
             cmake \
             file \
             g++-mingw-w64-i686 \

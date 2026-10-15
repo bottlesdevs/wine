@@ -84,8 +84,8 @@ Combined source-query responses are limited to 768 KiB before CLI/backend output
 
 Soda 11.0-26 Experimental includes the debugger and tracing commands on Linux
 x86_64. It supports x86 and x64 targets. Bottles keeps its existing analyzer.
-The native analyzer replacement is still in development and is not included
-in this release.
+The x86_64 runner build includes the native analyzer. Bottles selects it
+through capabilities and keeps its existing analyzer for older runners.
 
 ## Bottle tracing
 
@@ -412,8 +412,8 @@ are not rehashed on each launch.
 
 ## Build and verification
 
-`.github/build-eagle.sh RUNNER WORK` builds and installs the debugger/tracing
-package into an existing Wine runner and tests observer-off/on behavior for
+`.github/build-eagle.sh RUNNER WORK` builds and installs the debugger, tracing
+and native analyzer into an existing Wine runner and tests observer-off/on behavior for
 WinRT, DirectWrite, COM and mutex waits on x86 and x64. `WORK` must be a new
 persistent build directory. `build-debugger.sh DESTINATION` builds the package
 separately.
@@ -436,17 +436,21 @@ When the driver, helpers, configuration, rules and Intel database are present,
 `eagle analyze` and the stdio `analyze` method use the native driver. The Python
 adapter forwards progress, returns the report and sends interruption requests
 to the driver on cancellation. Incomplete packages do not advertise analysis.
-This adapter does not certify full feature parity or enable the analyzer in
-the debugger-only runner package.
+The shared x86_64 release and recovery assembly paths include the complete analyzer;
+full feature parity and host support still require their own qualification.
 
-`sh build-native.sh DESTINATION YARA_SOURCE WORK` builds an optional development
+`sh build-native.sh DESTINATION YARA_SOURCE WORK` builds the complete
 package containing the debugger and native analyzer. `YARA_SOURCE` must be a
 local checkout at the revision in `sources.json`; `DESTINATION` and `WORK` must
 not exist, and `WORK` must be outside `DESTINATION`. The build exports that
 revision into its own tree, builds a static
 scanner with two jobs by default, checks the bundled data hashes and includes
 the database notices and scanner license. It neither downloads dependencies
-nor installs libraries on the host. The package contains no Python analysis
+nor installs libraries on the host when a local source checkout is supplied.
+Passing `-` as `YARA_SOURCE` fetches only the revision in `sources.json`, verifies
+the checkout and builds it in `WORK`. The release and recovery jobs use this
+path and install the build dependencies already required by the native builder.
+The package contains no Python analysis
 engine. Full parity, ARM and portability checks remain separate requirements.
 
 Manifest inspection reads XML elements and attribute values. DPI recommendations
