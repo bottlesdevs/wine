@@ -118,6 +118,10 @@ dump metadata, provider groups and snapshots. Event counts remain unchanged;
 `export.omitted_records` counts size omissions per view, including earlier
 exports. The complete raw session is retained. Metadata alone above the limit
 fails explicitly and leaves the live log available. Small exports are unchanged.
+Tracing tracks the original process exit while receiving events, including
+after the live log limit. It releases the capture summary before exporting and
+does not reread the complete event file just to recover the exit code. Raw
+session inspection and export still materialize their selected event data.
 
 Tracing adds debugger and observer overhead. It does not fix application
 compatibility. The tested target architectures are x86 and x64. Mixed

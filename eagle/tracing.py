@@ -38,8 +38,14 @@ def trace(wine, prefix, logs, arguments, cwd=None):
         live.flush()
         size = 0
         omitted = 0
+        root_pid = None
+        exit_code = None
         def observe(event):
-            nonlocal size, omitted
+            nonlocal size, omitted, root_pid, exit_code
+            if event['kind'] == 'process_create' and root_pid is None:
+                root_pid = event['pid']
+            if event['kind'] == 'process_exit' and root_pid is not None and event['pid'] == root_pid and exit_code is None:
+                exit_code = event['code']
             if event['kind'] in ('memory', 'dump'):
                 return
             line = json.dumps(redact(event)) + '\n'
@@ -54,7 +60,7 @@ def trace(wine, prefix, logs, arguments, cwd=None):
             live.write(line)
             live.flush()
         try:
-            result = capture(wine, prefix, bundle, target=target, arguments=arguments[1:], timeout=86400, profile='trace', target_cwd=cwd, control_enabled=False, observer=observe)
+            counts = capture(wine, prefix, bundle, target=target, arguments=arguments[1:], timeout=86400, profile='trace', target_cwd=cwd, control_enabled=False, observer=observe)['counts']
         except Exception as error:
             live.write(json.dumps({'kind': 'capture_error', 'error_type': type(error).__name__, 'completed': False}) + '\n')
             live.flush()
@@ -66,12 +72,8 @@ def trace(wine, prefix, logs, arguments, cwd=None):
                 export(bundle, report)
                 running.unlink()
             raise
-    export(bundle, report)
+    completed = export(bundle, report)['manifest']['completed']
     running.unlink()
-    from session import read_bundle
-    manifest, events = read_bundle(bundle)
-    pid = next((event['pid'] for event in events if event['kind'] == 'process_create'), None)
-    code = next((event['code'] for event in events if event['kind'] == 'process_exit' and event['pid'] == pid), None)
-    if not manifest['completed'] or code is None:
+    if not completed or exit_code is None:
         raise RuntimeError(f'Trace incomplete; review {report}')
-    return {'log': str(report), 'review_required': True, 'exit_code': code, 'counts': result['counts']}
+    return {'log': str(report), 'review_required': True, 'exit_code': exit_code, 'counts': counts}
