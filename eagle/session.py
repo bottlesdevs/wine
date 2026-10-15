@@ -187,7 +187,7 @@ def read_bundle(root):
             events.append(event)
     return manifest, events
 
-def summary(root):
+def summary(root, symbol_images=None):
     manifest, events = read_bundle(root)
     exits = [{key: event[key] for key in ("pid", "code")} for event in events if event["kind"] == "process_exit"]
     faults = [event for event in events if event["kind"] == "exception" and not event["first_chance"]]
@@ -207,7 +207,11 @@ def summary(root):
     cycles = [event for event in providers if event.get('wait_graph', {}).get('cycles')]
     timeline = [event for event in events if event['kind'] not in ('provider', 'snapshot', 'dump', 'memory') and not (event['kind'] == 'exception' and event.get('internal'))]
     dumps = [{key: event[key] for key in ('seq', 'time_ms', 'kind', 'pid', 'tid', 'path', 'size') if key in event} for event in events if event['kind'] == 'dump']
-    return {"manifest": manifest, "counts": dict(collections.Counter(event["kind"] for event in events)), "exits": exits, "terminal_exceptions": faults, "snapshots": [event for event in events if event["kind"] == "snapshot"], "dumps": dumps, 'providers': selected_providers, 'provider_selection': 'up to 2000 recent events balanced across providers', 'timeline': timeline[-4096:], 'timeline_events_omitted': max(0, len(timeline) - 4096), 'provider_events_omitted': len(providers) - len(selected_providers), 'observed_wait_cycles': cycles[:100], 'wait_cycles_omitted': max(0, len(cycles) - 100)}
+    report = {"manifest": manifest, "counts": dict(collections.Counter(event["kind"] for event in events)), "exits": exits, "terminal_exceptions": faults, "snapshots": [event for event in events if event["kind"] == "snapshot"], "dumps": dumps, 'providers': selected_providers, 'provider_selection': 'up to 2000 recent events balanced across providers', 'timeline': timeline[-4096:], 'timeline_events_omitted': max(0, len(timeline) - 4096), 'provider_events_omitted': len(providers) - len(selected_providers), 'observed_wait_cycles': cycles[:100], 'wait_cycles_omitted': max(0, len(cycles) - 100)}
+    if symbol_images is not None:
+        from session_symbols import enrich
+        report['offline_symbolization'] = enrich(manifest, events, symbol_images)
+    return report
 
 def fingerprint(event):
     frame = event.get("frame", {}) or {}
@@ -228,7 +232,7 @@ def compare(first, second):
     return {"matching_inputs": same_input, "verdict": "comparable" if same_input else "inconclusive: inputs or observers differ", "added": [{"fingerprint": list(key), "count": count} for key, count in (y-x).items()], "removed": [{"fingerprint": list(key), "count": count} for key, count in (x-y).items()]}
 
 def redact(value, key=""):
-    path_keys = {"path", "image", "file", "prefix", "wine", "arguments", "target", "pdb", "loaded_pdb", "source", "target_cwd"}
+    path_keys = {"path", "image", "file", "prefix", "wine", "arguments", "target", "pdb", "loaded_pdb", "source", "target_cwd", "offline_diagnostic"}
     if key in path_keys:
         return "[redacted]"
     if key in ('modules', 'unix_modules'):
@@ -239,8 +243,8 @@ def redact(value, key=""):
         return [redact(item) for item in value]
     return value
 
-def export(root, destination):
-    report = summary(root)
+def export(root, destination, symbol_images=None):
+    report = summary(root, symbol_images)
     output = redact(report)
     output["export"] = {"redaction": "paths and launch arguments removed", "review_required": True, "memory_and_dumps_included": False}
     with os.fdopen(os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w', encoding='utf-8') as file:

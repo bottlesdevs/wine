@@ -18,6 +18,7 @@ def capabilities():
     analyzer = available()
     return {
         "schema": 1,
+        "saved_frame_symbols": {"selection": "explicit SHA256/image mappings", "maximum_addresses": 256, "capture_values": "preserved"},
         "inline_frames": {"requires": "host llvm-symbolizer", "maximum_depth": 64, "order": "innermost-to-outermost",
                           "split_packages": "debug_files selects matching DWP/DWO inputs; requires host llvm-dwarfdump and llvm-dwp for DWO assembly",
                           "gnu_compression": "temporary ELF normalization requires host llvm-objcopy or objcopy"},
@@ -172,14 +173,14 @@ def serve():
                 job[1].set()
                 result = {"requested": True}
             elif method == "capabilities": result = capabilities()
-            elif method == "inspect": result = summary(params["session"])
+            elif method == "inspect": result = summary(params["session"], params.get("symbol_images"))
             elif method == "symbols":
                 from symbols import query
                 result = query(params["path"], params.get("pdb"), params.get("rvas"), params.get("artifacts", False), params.get("debug_files"),
                                params.get('sources', False), params.get('source_files'), params.get('runner_root'), params.get('source_maps'),
                                params.get('inlines', False))
             elif method == "compare": result = compare(params["baseline"], params["candidate"])
-            elif method == "export": result = export(params["session"], params["output"])
+            elif method == "export": result = export(params["session"], params["output"], params.get("symbol_images"))
             elif method == "control": result = send_command(params["session"], params["command"])
             elif method == "shutdown":
                 for thread, cancelled in jobs.values():

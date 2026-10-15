@@ -47,6 +47,8 @@ def main():
     for name in ("inspect", "symbols"):
         item = commands.add_parser(name)
         item.add_argument("path")
+        if name == "inspect":
+            item.add_argument("--symbol-images", help="JSON list of reviewed image SHA256/path selections")
         if name == "symbols":
             item.add_argument("--pdb")
             item.add_argument("--rva", action="append", help="resolve an RVA with host binutils; repeat for multiple addresses")
@@ -61,6 +63,7 @@ def main():
     comparison.add_argument("baseline"); comparison.add_argument("candidate")
     report = commands.add_parser("export")
     report.add_argument("session"); report.add_argument("output")
+    report.add_argument("--symbol-images", help="JSON list of reviewed image SHA256/path selections")
     control = commands.add_parser("control")
     control.add_argument("session"); control.add_argument("action", nargs="+")
     commands.add_parser("capabilities")
@@ -91,7 +94,9 @@ def main():
             if args.timeout <= 0:
                 raise ValueError("timeout must be positive")
             result = capture(args.wine, args.prefix, args.session, target=getattr(args, "target", None), arguments=getattr(args, "arguments", []), pid=getattr(args, "pid", None), interactive=args.interactive, timeout=args.timeout, profile=args.profile, breakpoint=args.breakpoint, architecture=getattr(args, "arch", "x86_64"), on_hresult=args.on_hresult, trigger_action=args.trigger_action, observer=lambda event: print(json.dumps({"event": "debug", "data": event}), file=sys.stderr, flush=True))
-        elif args.command == "inspect": result = summary(args.path)
+        elif args.command == "inspect":
+            from session_symbols import read_images
+            result = summary(args.path, read_images(args.symbol_images) if args.symbol_images else None)
         elif args.command == "symbols":
             from symbols import query
             from build_sources import source_map
@@ -99,7 +104,9 @@ def main():
             result = query(args.path, args.pdb, args.rva, args.artifacts, args.debug_file, args.sources, args.source_file,
                            args.runner_root, mappings, args.inlines)
         elif args.command == "compare": result = compare(args.baseline, args.candidate)
-        elif args.command == "export": result = export(args.session, args.output)
+        elif args.command == "export":
+            from session_symbols import read_images
+            result = export(args.session, args.output, read_images(args.symbol_images) if args.symbol_images else None)
         elif args.command == "control": result = send_command(args.session, " ".join(args.action))
         elif args.command == "capabilities":
             from protocol import capabilities

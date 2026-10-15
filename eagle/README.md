@@ -163,6 +163,38 @@ to 128. Missing stack data differs from an explicitly recorded empty stack.
 Unknown frames remain unknown. Matching fingerprints do not prove identical
 execution or matching module contents; compare inputs and module identities.
 
+## Saved-session symbols
+
+`inspect` and `export` accept `--symbol-images reviewed.json`. The file is a
+JSON list of explicitly reviewed image selections:
+
+```json
+[{"sha256":"<64-character recorded SHA256>","image":"/reviewed/module.dll","pdb":"/reviewed/module.pdb"}]
+```
+
+The stdio methods accept the same list as `symbol_images`. `pdb` and
+`debug_files` (DWO/DWP paths) are optional; `inlines` defaults to true.
+Selections accept up to 256 images and a 1 MiB JSON file. Empty debug-file
+lists select no explicit companions. Default inspect/export output is unchanged.
+
+Enrichment uses recorded per-load identities with exact image paths, process
+IDs and load bases. Unload, exit and PID reuse remove old associations; an
+ambiguous load or missing identity stays unavailable. Sessions without load
+history can use exact manifest paths, marked `runtime unverified`. Paths
+encoded in a session are never opened. Only selected image paths are read,
+and their SHA-256 and file state must match before/after symbol lookup.
+
+Original capture fields remain present. `offline_symbols` adds separate
+source/inline results; `offline_symbolization` reports selected artifact
+identities and counts. At most 256 unique addresses are queried, with terminal
+exceptions first, then recent snapshots, then other frames. Duplicates reuse
+results. Other frames retain an explicit unavailable reason. Existing bounded
+symbol queries run under an overall deadline checked between operations.
+
+Exports remove selected paths, source paths and `offline_diagnostic` details,
+keep mode 0600 and still require review. Image hashes match recorded files;
+they do not certify that a prefix-file fallback was the actual runtime image.
+
 ## Backend messages
 
 `eagle serve` uses Content-Length frames with a 1 MiB body limit. Request IDs
