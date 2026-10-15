@@ -639,6 +639,11 @@ jobs:
               -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
               -lole32 -lruntimeobject -luser32 -lgdi32 -luuid \
               -o "$RUNNER_TEMP/soda-composition-clamping$bits.exe"
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-composition-overloads-smoke.c" \
+              -I"$runner_dir/include/wine/windows" -D__WINESRC__ \
+              -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
+              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid \
+              -o "$RUNNER_TEMP/soda-composition-overloads$bits.exe"
           done
           export WINEDEBUG=-all
           export WINEPREFIX="$RUNNER_TEMP/soda-composition-tracker-prefix"
@@ -660,6 +665,9 @@ jobs:
             xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-clamping$bits.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-clamping$bits.log"
             grep -E '^CLAMP_FAILURES=0$' "$RUNNER_TEMP/soda-composition-clamping$bits.log"
+            xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-overloads$bits.exe" \
+              | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-overloads$bits.log"
+            grep -E '^OVERLOAD_FAILURES=0$' "$RUNNER_TEMP/soda-composition-overloads$bits.log"
           done
           "$runner_dir/bin/wineserver" -w
 
