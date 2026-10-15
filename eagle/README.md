@@ -112,6 +112,12 @@ Exports are written to a private temporary file in the destination directory,
 flushed, then linked to the final name without replacing existing files.
 Write or flush failures leave no partial final file; tracing retains its live
 log and raw bundle. The destination filesystem must support hard links.
+Final summaries fit the same 32 MiB limit as the standalone report reader.
+Oversized views retain recent records across faults, exits, waits, timeline,
+dump metadata, provider groups and snapshots. Event counts remain unchanged;
+`export.omitted_records` counts size omissions per view, including earlier
+exports. The complete raw session is retained. Metadata alone above the limit
+fails explicitly and leaves the live log available. Small exports are unchanged.
 
 Tracing adds debugger and observer overhead. It does not fix application
 compatibility. The tested target architectures are x86 and x64. Mixed

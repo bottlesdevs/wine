@@ -287,6 +287,11 @@ def export(root, destination, symbol_images=None):
     report = summary(root, symbol_images)
     output = redact(report)
     output["export"] = {"redaction": "paths and launch arguments removed", "review_required": True, "memory_and_dumps_included": False}
+    from session_reports import bound_export, export_omissions
+    omitted = export_omissions(report)
+    if omitted:
+        output['export'].update(summary_limit_bytes=report['export']['summary_limit_bytes'], omitted_records=omitted)
+    output = bound_export(output)
     destination = Path(destination)
     descriptor, temporary = tempfile.mkstemp(prefix='.eagle-export-', dir=destination.parent)
     try:
