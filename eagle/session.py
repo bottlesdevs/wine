@@ -165,6 +165,9 @@ def validate_manifest(manifest):
         raise ValueError("unsupported session schema")
     for name in ("modules", "unix_modules"):
         module_records(manifest.get(name, {}), name)
+    for name in ('capture_history', 'capture_root'):
+        if name in manifest and not isinstance(manifest[name], dict):
+            raise ValueError('invalid session ' + name)
 
 def validate_event(event, error):
     if not isinstance(event, dict) or not isinstance(event.get("kind"), str) or not event["kind"]:
@@ -269,7 +272,10 @@ def compare(first, second):
     x = collections.Counter(map(fingerprint, left))
     y = collections.Counter(map(fingerprint, right))
     same_input = bool(a.get("target_identity")) and all(a.get(key) == b.get(key) for key in ('target_identity', 'arguments', 'target_cwd', 'profile', 'trigger', 'interactive'))
-    return {"matching_inputs": same_input, "verdict": "comparable" if same_input else "inconclusive: inputs or observers differ", "added": [{"fingerprint": list(key), "count": count} for key, count in (y-x).items()], "removed": [{"fingerprint": list(key), "count": count} for key, count in (x-y).items()]}
+    partial = any(manifest.get('dropped_events') or manifest.get('capture_history', {}).get('coverage') == 'partial' for manifest in (a, b))
+    partial = partial or any(event['kind'] == 'capture_gap' for events in (left, right) for event in events)
+    verdict = 'inconclusive: capture history is incomplete' if partial else "comparable" if same_input else "inconclusive: inputs or observers differ"
+    return {"matching_inputs": same_input, "verdict": verdict, "added": [{"fingerprint": list(key), "count": count} for key, count in (y-x).items()], "removed": [{"fingerprint": list(key), "count": count} for key, count in (x-y).items()]}
 
 def redact(value, key=""):
     path_keys = {"path", "image", "file", "prefix", "wine", "arguments", "target", "pdb", "loaded_pdb", "source", "target_cwd", "offline_diagnostic"}
@@ -421,7 +427,6 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
     buffers = {"stdout": b"", "stderr": b""}
     deadline = time.monotonic() + timeout
     drain_deadline = None
-    count = 0
     initialized_breakpoint = False
     complete_event = False
     verified_images = {}
@@ -452,7 +457,8 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
             raise ValueError('invalid debugger command')
         process.stdin.write(command.encode() + b"\n"); process.stdin.flush()
     try:
-        with (root / "events.jsonl").open("a", encoding="utf-8") as output:
+        from capture_history import CaptureHistory
+        with (root / "events.jsonl").open("a", encoding="utf-8") as output, CaptureHistory(output, manifest, profile == 'trace') as history:
             while process.poll() is None or any(key.data != "control" for key in selector.get_map().values()):
                 if process.poll() is not None:
                     if drain_deadline is None:
@@ -610,11 +616,8 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                         elif event['kind'] == 'process_exit':
                             unix_pids.pop(event['pid'], None)
                             loaded_images = {key: value for key, value in loaded_images.items() if key[0] != event['pid']}
-                        count += 1
-                        if count > 1000000:
-                            manifest["dropped_events"] += 1
+                        if not history.write(event) and profile != 'trace':
                             continue
-                        output.write(json.dumps(event) + "\n"); output.flush()
                         if observer:
                             observer(event)
                         if breakpoint and event["kind"] == "stopped" and not initialized_breakpoint:

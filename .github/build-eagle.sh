@@ -73,6 +73,7 @@ python3 -S "$root/eagle/tests/test_trace_targets.py" > "$work/tests/e/trace-targ
 python3 -S "$root/eagle/tests/test_export_finalization.py" > "$work/tests/e/export-finalization.log" 2>&1
 python3 -S "$root/eagle/tests/test_report_size.py" > "$work/tests/e/report-size.log" 2>&1
 python3 -S "$root/eagle/tests/test_trace_memory.py" > "$work/tests/e/trace-memory.log" 2>&1
+python3 -S "$root/eagle/tests/test_capture_history.py" > "$work/tests/e/capture-history.log" 2>&1
 python3 -S "$root/eagle/tests/test_session_symbols.py" > "$work/tests/e/session-symbols.log" 2>&1
 python3 -S "$root/eagle/tests/test_session_compare.py" > "$work/tests/e/comparison.log" 2>&1
 python3 -S "$root/eagle/tests/test_symbols_offline.py" > "$work/tests/e/symbols-offline.log" 2>&1

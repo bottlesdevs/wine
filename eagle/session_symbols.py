@@ -69,7 +69,7 @@ def recorded_frames(manifest, events, ordered=True):
         return
     active = {}
     names = collections.defaultdict(dict)
-    timeline = any(event['kind'] in ('process_create', 'module_load', 'module_unload') for event in events)
+    timeline = bool(manifest.get('dropped_events')) or manifest.get('capture_history', {}).get('coverage') == 'partial' or any(event['kind'] in ('process_create', 'module_load', 'module_unload') for event in events)
     inventory = {path_key(path): value for path, value in manifest.get('modules', {}).items()}
     ended = set()
     def remove(pid, base=None):
@@ -82,6 +82,12 @@ def recorded_frames(manifest, events, ordered=True):
                 if not names[(pid, alias)]:
                     del names[(pid, alias)]
     for event in events:
+        if event['kind'] == 'capture_gap':
+            active.clear()
+            names.clear()
+            ended.clear()
+            timeline = True
+            continue
         pid = event.get('pid')
         kind = event['kind']
         if type(pid) is not int or pid <= 0:
