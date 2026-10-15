@@ -95,6 +95,28 @@ def resolve(image, rvas):
         if location and not source.startswith('??'):
             value.update(file=location[1], line=int(location[2]))
         output.append(value)
+    located = [index for index, frame in enumerate(output) if frame.get('file')]
+    if metadata.get('format') == 'ELF' and located:
+        llvm = host_tool('llvm-symbolizer')
+        reason = 'requires host llvm-symbolizer'
+        resolved = []
+        if llvm:
+            try:
+                resolved = resolve_llvm(image, addresses, llvm, 'llvm-exact-image')
+                reason = 'matching function name unavailable'
+            except (OSError, ValueError, subprocess.SubprocessError):
+                reason = 'LLVM source resolver failed'
+        for index in located:
+            frame = output[index]
+            if resolved and resolved[index]['symbol']:
+                selected = resolved[index]
+                if (selected.get('file'), selected.get('line')) == (frame['file'], frame['line']):
+                    if selected['symbol'] != frame['symbol']:
+                        output[index] = selected
+                    continue
+                frame['symbol_reason'] = 'resolver source locations disagree'
+            elif llvm or not frame['symbol']:
+                frame['symbol_reason'] = reason
     return output
 
 def host_tool(name):

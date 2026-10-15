@@ -32,6 +32,14 @@ against its runner before packaging. Recovered older prebuilt runners may lack
 symbols that were already discarded. Symbol archives do not certify target
 architecture execution or complete source/type/inline coverage.
 
+ELF address queries first use host binutils. For available source locations,
+Eagle also checks host `llvm-symbolizer`. Matching DWARF names can complete a
+missing name or replace a nearby ELF symbol selected by binutils. This covers
+split packages without ordinary ELF symbol names. A replacement requires both
+resolvers to agree on the source file and line. Missing or failed LLVM tools
+preserve the GNU result; incomplete or failed lookups include `symbol_reason`.
+Unresolved addresses do not start another resolver.
+
 Soda 11.0-26 Experimental includes the debugger and tracing commands on Linux
 x86_64. It supports x86 and x64 targets. Bottles keeps its existing analyzer.
 The native analyzer replacement is still in development and is not included
