@@ -608,6 +608,33 @@ jobs:
           done
           "$runner_dir/bin/wineserver" -w
 
+      - name: verify Composition scalar expressions and tracker bounds
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          for bits in 64 32; do
+            if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-composition-tracker-smoke.c" \
+              -I"$runner_dir/include/wine/windows" -D__WINESRC__ \
+              -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
+              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid \
+              -o "$RUNNER_TEMP/soda-composition-tracker$bits.exe"
+          done
+          export WINEDEBUG=-all
+          export WINEPREFIX="$RUNNER_TEMP/soda-composition-tracker-prefix"
+          export WINEARCH=win64
+          export WINEDLLOVERRIDES="dxgi,d3d11,d3d10core,windows.ui=b;winewayland.drv=d;winemenubuilder.exe=d"
+          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          xvfb-run -a "$runner_dir/bin/wine" reg add 'HKCU\Software\Wine\Direct3D' \
+            /v renderer /t REG_SZ /d gl /f
+          for bits in 64 32; do
+            xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-tracker$bits.exe" candidate \
+              | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-tracker$bits.log"
+            grep -E '^TRACKER_DONE$' "$RUNNER_TEMP/soda-composition-tracker$bits.log"
+          done
+          "$runner_dir/bin/wineserver" -w
+
       - name: verify InkDesktopHost and value objects
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
