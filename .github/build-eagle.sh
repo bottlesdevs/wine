@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export PYTHONDONTWRITEBYTECODE=1
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 runner=$(CDPATH= cd -- "${1:?usage: build-eagle.sh RUNNER WORK}" && pwd)
 work=${2:?usage: build-eagle.sh RUNNER WORK}

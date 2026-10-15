@@ -84,28 +84,33 @@ class NativeBuild(unittest.TestCase):
                              ['fetch', '--no-tags', '--depth=1', 'origin', revision])
             self.assertFalse(any('checkout' in command for command in commands))
 
-    def test_runner_build_routes_through_complete_assembly_before_installation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / '.github').mkdir()
-            (root / 'eagle').mkdir()
-            shutil.copyfile(SOURCE.parent / '.github/build-eagle.sh', root / '.github/build-eagle.sh')
-            receipt = root / 'called.json'
-            (root / 'eagle/build-native.sh').write_text('python3 - "$@" <<\'PYTHON\'\n'
-                'import json,sys\nfrom pathlib import Path\n'
-                'Path(' + repr(str(receipt)) + ').write_text(json.dumps(sys.argv[1:]))\n'
-                'raise SystemExit(73)\nPYTHON\n')
-            runner = root / 'runner'
-            (runner / 'bin').mkdir(parents=True)
-            wine = runner / 'bin/wine'
-            wine.write_text('#!/bin/sh\nexit 99\n')
-            wine.chmod(0o700)
-            work = root / 'work'
-            result = self.invoke(root / '.github/build-eagle.sh', runner, work)
-            self.assertEqual(result.returncode, 73, result.stderr)
-            self.assertEqual(json.loads(receipt.read_text()), [str(work / 'package'), '-', str(work / 'native')])
-            self.assertEqual(list(runner.iterdir()), [runner / 'bin'])
-            self.assertEqual(wine.read_text(), '#!/bin/sh\nexit 99\n')
+    def test_runner_build_routes_through_requested_assembly_before_installation(self):
+        for script, extra in (('build-eagle.sh', []), ('build-eagle-analyzer.sh', ['analyzer-only'])):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / '.github').mkdir()
+                (root / 'eagle').mkdir()
+                shutil.copyfile(SOURCE.parent / '.github' / script, root / '.github' / script)
+                receipt = root / 'called.json'
+                (root / 'eagle/build-native.sh').write_text('python3 - "$@" <<\'PYTHON\'\n'
+                    'import json,sys,os\nfrom pathlib import Path\n'
+                    'assert os.environ.get("PYTHONDONTWRITEBYTECODE") == "1"\n'
+                    'Path(' + repr(str(receipt)) + ').write_text(json.dumps(sys.argv[1:]))\n'
+                    'raise SystemExit(73)\nPYTHON\n')
+                runner = root / 'runner'
+                (runner / 'bin').mkdir(parents=True)
+                wine = runner / 'bin/wine'
+                wine.write_text('#!/bin/sh\nexit 99\n')
+                wine.chmod(0o700)
+                work = root / 'work'
+                env = dict(os.environ)
+                env.pop('PYTHONDONTWRITEBYTECODE', None)
+                result = subprocess.run(['sh', str(root / '.github' / script), str(runner), str(work)],
+                                        env=env, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 73, result.stderr)
+                self.assertEqual(json.loads(receipt.read_text()), [str(work / 'package'), '-', str(work / 'native')] + extra)
+                self.assertEqual(list(runner.iterdir()), [runner / 'bin'])
+                self.assertEqual(wine.read_text(), '#!/bin/sh\nexit 99\n')
 
     def test_build_tree_cannot_become_package_content(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -115,6 +120,17 @@ class NativeBuild(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('outside the package', result.stderr)
                 self.assertFalse(destination.exists())
+
+    def test_unknown_package_mode_fails_before_creating_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for script, arguments in (('build-native.sh', [root / 'package', '-', root / 'work']),
+                                      ('build-debugger.sh', [root / 'package'])):
+                with self.subTest(script=script):
+                    result = self.invoke(SOURCE / script, *arguments, 'unknown')
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('Unknown package mode', result.stderr)
+                    self.assertEqual(list(root.iterdir()), [])
 
 
 if __name__ == '__main__':

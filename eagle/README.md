@@ -439,7 +439,9 @@ When the driver, helpers, configuration, rules and Intel database are present,
 adapter forwards progress, returns the report and sends interruption requests
 to the driver on cancellation. Incomplete packages do not advertise analysis.
 The shared x86_64 release and recovery assembly paths include the complete analyzer;
-full feature parity and host support still require their own qualification.
+the ARM64 job includes the host-native analyzer without Windows collectors.
+Its capabilities leave debug architectures empty until those collectors are qualified.
+Full feature parity and host support still require their own qualification.
 
 `sh build-native.sh DESTINATION YARA_SOURCE WORK` builds the complete
 package containing the debugger and native analyzer. `YARA_SOURCE` must be a
@@ -452,6 +454,8 @@ nor installs libraries on the host when a local source checkout is supplied.
 Passing `-` as `YARA_SOURCE` fetches only the revision in `sources.json`, verifies
 the checkout and builds it in `WORK`. The release and recovery jobs use this
 path and install the build dependencies already required by the native builder.
+An optional fourth argument, `analyzer-only`, omits Windows collectors and records
+only the host compiler in package provenance. The ARM64 job uses this mode.
 The package contains no Python analysis
 engine. Full parity, ARM and portability checks remain separate requirements.
 

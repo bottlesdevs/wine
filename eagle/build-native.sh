@@ -1,9 +1,15 @@
 #!/bin/sh
 set -eu
+export PYTHONDONTWRITEBYTECODE=1
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 destination=${1:?usage: build-native.sh DESTINATION YARA_SOURCE WORK}
 source=${2:?usage: build-native.sh DESTINATION YARA_SOURCE WORK}
 work=${3:?usage: build-native.sh DESTINATION YARA_SOURCE WORK}
+mode=${4:-complete}
+case "$mode" in
+    complete|analyzer-only) ;;
+    *) printf 'Unknown package mode: %s\n' "$mode" >&2; exit 1 ;;
+esac
 for directory in "$destination" "$work"; do
     if test -e "$directory"; then
         printf 'Build destination already exists: %s\n' "$directory" >&2
@@ -38,7 +44,7 @@ if test "$source" = -; then
 fi
 sh "$root/prepare-yara.sh" "$source" "$work/yara"
 sh "$root/build-analysis.sh" "$work/analysis"
-sh "$root/build-debugger.sh" "$work/debugger"
+sh "$root/build-debugger.sh" "$work/debugger" "$mode"
 mkdir -p "$destination"
 destination=$(CDPATH= cd -- "$destination" && pwd)
 cp -a "$work/debugger/." "$destination/"
@@ -55,5 +61,10 @@ cp "$root/engine/eagle.yar" "$root/engine/eagle-intel.sqlite" \
     "$root/engine/eagle-intel-data-license.txt" "$destination/lib/eagle/engine/"
 cp "$root/native/vendor/YARA-COPYING" "$destination/share/eagle/licenses/"
 cp "$root/sources.json" "$destination/share/eagle/"
-python3 -S "$root/provenance.py" "$root" "$destination" g++ x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc
+set -- g++
+if test "$mode" = complete; then set -- "$@" x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc; fi
+python3 -S "$root/provenance.py" "$root" "$destination" "$@"
 EAGLE_PACKAGE="$destination" python3 -S "$root/tests/test_native_package.py"
+if test "$mode" = analyzer-only; then
+    EAGLE_PACKAGE="$destination" python3 -S "$root/tests/test_analyzer_package.py"
+fi

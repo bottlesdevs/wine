@@ -13,6 +13,13 @@ ROOT = PACKAGE / 'lib/eagle'
 
 
 class NativePackage(unittest.TestCase):
+    def test_provenance_covers_every_package_file(self):
+        manifest = PACKAGE / 'share/eagle/build.json'
+        expected = json.loads(manifest.read_text())['files']
+        actual = {str(path.relative_to(PACKAGE)): hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in PACKAGE.rglob('*') if path.is_file() and path != manifest}
+        self.assertEqual(actual, expected)
+
     def cli(self, *arguments):
         return subprocess.run([sys.executable, str(ROOT / 'eagle'), *arguments],
                               capture_output=True, text=True, timeout=15)

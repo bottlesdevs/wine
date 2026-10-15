@@ -1202,6 +1202,13 @@ jobs:
           test "$(uname -m)" = aarch64
           sudo apt-get update
           sudo apt-get install -y \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            libjson-c-dev \
+            libsqlite3-dev \
+            libglib2.0-dev \
             g++ \
             file \
             gcc-mingw-w64-i686 \
@@ -1326,6 +1333,15 @@ jobs:
           if ldd "$runner_dir/bin/wine" | grep -F 'not found'; then
             exit 1
           fi
+          eagle_work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64-eagle"
+          mkdir -p "$eagle_work"
+          if ! sh "$GITHUB_WORKSPACE/.github/build-eagle-analyzer.sh" "$runner_dir" "$eagle_work" > "$eagle_work/build.log" 2>&1; then
+            cat "$eagle_work/build.log"
+            exit 1
+          fi
+          for helper in pe elf analysis intel driver yara; do
+            file "$runner_dir/lib/eagle/native/eagle-$helper" | grep -F 'ARM aarch64'
+          done
           sh "$GITHUB_WORKSPACE/.github/soda-provenance.sh" "$runner_dir" \
             "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64-provenance" \
             --name "$COMPONENT_NAME" \
@@ -1350,6 +1366,14 @@ jobs:
           cp "$runner_dir/share/soda/"{build,files,sources}.json "$symbols_root/$COMPONENT_NAME/share/soda/"
           tar -C "$symbols_root" -cJf "/tmp/$COMPONENT_NAME-symbols.tar.xz" "$COMPONENT_NAME"
           tar -C /tmp -cJf "/tmp/$ARCHIVE_NAME" "$COMPONENT_NAME"
+
+      - name: upload ARM Eagle build log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eagle-arm64-build-${{ github.sha }}
+          path: /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}-arm64-eagle/build.log
+          if-no-files-found: ignore
 
       - name: upload
         uses: actions/upload-artifact@v7

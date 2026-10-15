@@ -1,7 +1,14 @@
 #!/bin/sh
 set -eu
+export PYTHONDONTWRITEBYTECODE=1
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 destination=${1:?usage: build-debugger.sh DESTINATION}
+mode=${2:-complete}
+case "$mode" in
+    complete) architectures='x86_64 i686' ;;
+    analyzer-only) architectures='' ;;
+    *) printf 'Unknown package mode: %s\n' "$mode" >&2; exit 1 ;;
+esac
 case "$destination" in
     /*) ;;
     *) destination="$PWD/$destination" ;;
@@ -17,7 +24,7 @@ for module in pe elf; do
         -ffile-prefix-map="$root"=/usr/src/soda/eagle \
         "$root/native/$module.cpp" -o "$destination/lib/eagle/native/eagle-$module"
 done
-for architecture in x86_64 i686; do
+for architecture in $architectures; do
     if test "$architecture" = x86_64; then bits=64; else bits=32; fi
     "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
         -ffile-prefix-map="$root"=/usr/src/soda/eagle \
@@ -31,4 +38,6 @@ cp "$root/native/vendor/PEFILE-COPYING" "$destination/share/eagle/licenses/"
 cp "$root/README.md" "$destination/share/eagle/"
 printf '%s\n' '#!/bin/sh' 'root=$(CDPATH= cd -- "$(dirname -- "$0")/../lib/eagle" && pwd)' 'exec python3 "$root/eagle" "$@"' > "$destination/bin/eagle"
 chmod 755 "$destination/bin/eagle"
-python3 -S "$root/provenance.py" "$root" "$destination" g++ x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc
+set -- g++
+for architecture in $architectures; do set -- "$@" "$architecture-w64-mingw32-gcc"; done
+python3 -S "$root/provenance.py" "$root" "$destination" "$@"
