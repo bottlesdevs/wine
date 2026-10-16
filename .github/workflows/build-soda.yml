@@ -1351,6 +1351,8 @@ jobs:
 
       - name: configure
         run: |
+          sed -i 's/^WINE_CFLAGS += -Wno-discarded-qualifiers$/& -gdwarf-4/' /tmp/proton/Makefile.in
+          grep -Fx 'WINE_CFLAGS += -Wno-discarded-qualifiers -gdwarf-4' /tmp/proton/Makefile.in
           mkdir /tmp/proton-build
           cd /tmp/proton-build
           /tmp/proton/configure.sh --build-name=soda-arm64 --target-arch=arm64 \
@@ -1359,10 +1361,10 @@ jobs:
       - name: build Wine and FEX
         working-directory: /tmp/proton-build
         run: |
-          make WINE_CFLAGS="-gdwarf-4 -Wno-discarded-qualifiers" UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= wine
-          make WINE_CFLAGS="-gdwarf-4 -Wno-discarded-qualifiers" UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= fex
-          make WINE_CFLAGS="-gdwarf-4 -Wno-discarded-qualifiers" UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= fex_unixlib
-          make WINE_CFLAGS="-gdwarf-4 -Wno-discarded-qualifiers" UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= wineopenxr
+          make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= wine
+          make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= fex
+          make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= fex_unixlib
+          make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= wineopenxr
 
       - name: package
         env:
