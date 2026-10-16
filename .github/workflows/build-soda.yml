@@ -59,7 +59,7 @@ env:
     - Preserved composition target layers across repaint and resize.
     - Fixed rectangular framebuffer height and synchronized native client resizes.
     - Honored requests to authenticate again through the identity bridge.
-    - Added the native Eagle analyzer and its Bottles backend.
+    - Added the native Eagle analyzer.
     - Added offline source and symbol lookup, PDB and split-DWARF companions, inline frames and recorded-stack comparison.
     - Preserved matching Wine symbols and source identities in runner symbol bundles.
     - Added Direct2D, library, export and native loader details to Eagle traces.

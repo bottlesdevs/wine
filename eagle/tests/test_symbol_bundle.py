@@ -76,6 +76,45 @@ class SymbolBundle(unittest.TestCase):
             self.assertEqual(after['status'], 'source-resolved')
         self.assertEqual(producer.verify(self.runner, self.bundle, self.tools), result)
 
+    def test_eagle_build_identity_tracks_separated_symbols(self):
+        from provenance import capture_identity
+        for machine in ('elf', 'i686', 'x86_64'):
+            self.image(machine, machine)
+        metadata = {'schema': 1,
+                    'source': {'revision': 'a' * 40, 'dirty': False, 'tree_sha256': 'b' * 64},
+                    'tools': {}, 'files': {}, 'symbols': {}}
+        for image in (self.runner / 'bin').iterdir():
+            relative = str(image.relative_to(self.runner))
+            metadata['files'][relative] = producer.digest(image)
+            metadata['symbols'][relative] = {'sha256': producer.digest(image), 'debug_info': True}
+        path = self.runner / 'share/eagle/build.json'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(metadata))
+        self.image('wine')
+        result = self.stage()
+        after = json.loads(path.read_text())
+        self.assertEqual(after['source'], metadata['source'])
+        self.assertNotIn('bin/wine', after['files'])
+        for relative in metadata['files']:
+            image = self.runner / relative
+            record = result['images'][relative]
+            self.assertNotEqual(metadata['files'][relative], after['files'][relative])
+            self.assertEqual(after['files'][relative], producer.digest(image))
+            self.assertEqual(after['symbols'][relative]['sha256'], producer.digest(image))
+            self.assertFalse(after['symbols'][relative]['debug_info'])
+            self.assertEqual(after['symbols'][relative]['debuglink_crc'], record['debuglink_crc32'])
+            self.assertEqual(capture_identity(self.runner, image, image)['status'], 'matched')
+
+    def test_eagle_manifest_rejects_a_different_input(self):
+        path = self.runner / 'share/eagle/build.json'
+        path.parent.mkdir(parents=True)
+        original = json.dumps({'files': {'bin/fixture': 'a' * 64}, 'symbols': {}})
+        path.write_text(original)
+        with self.assertRaisesRegex(ValueError, 'Eagle build input does not match image'):
+            producer.refresh_eagle_manifest(self.runner, {
+                'bin/fixture': {'input_sha256': 'b' * 64, 'image_sha256': 'c' * 64}})
+        self.assertEqual(path.read_text(), original)
+
     def test_existing_proton_style_debuglink_is_moved_without_changing_image(self):
         for machine in ('elf', 'i686', 'x86_64'):
             image = self.image(machine, machine)
