@@ -1,0 +1,1475 @@
+--- a/dlls/windows.ui/interactions.c
++++ b/dlls/windows.ui/interactions.c
+@@ -10,6 +10,8 @@
+  */
+ 
+ #include "private.h"
++#include <math.h>
++#include <float.h>
+ #include "roapi.h"
+ #include "objbase.h"
+ 
+@@ -719,6 +721,9 @@
+     struct interaction_tracker *peer;
+     enum InteractionBindingAxisModes axis_mode;
+ };
++
++struct tracker_inertia_operation;
++struct tracker_decay_value;
+ 
+ struct interaction_tracker
+ {
+@@ -734,11 +739,19 @@
+     CO_MTA_USAGE_COOKIE owner_mta_cookie;
+     BOOL notifications_closed;
+     BOOL clamp_position;
++    struct tracker_inertia_operation *inertia;
++    struct Vector3 position_velocity;
++    struct Vector3 natural_position;
++    struct Vector3 position_decay;
++    FLOAT scale_decay;
++    FLOAT scale_velocity;
++    FLOAT natural_scale;
++    struct Vector3 scale_center;
+     struct list bindings;
+     struct list update_entry;
+     struct list changed_entry;
+-    IInspectable *position_decay_rate;
+-    IInspectable *scale_decay_rate;
++    struct tracker_decay_value *position_decay_rate;
++    struct tracker_decay_value *scale_decay_rate;
+     CRITICAL_SECTION animation_cs;
+     IExpressionAnimation *expressions[6];
+     UINT animation_revision;
+@@ -753,6 +766,33 @@
+     LONG ref;
+ };
+ 
++struct tracker_decay_value
++{
++    LONG ref;
++    IInspectable *value;
++};
++
++static void tracker_decay_release( struct tracker_decay_value *value );
++
++struct tracker_inertia_operation
++{
++    struct list entry;
++    struct list pending_entry;
++    LONG ref;
++    struct interaction_tracker *tracker;
++    ULONGLONG last_tick;
++    INT32 request_id;
++};
++
++static struct list tracker_inertia_operations = LIST_INIT(tracker_inertia_operations);
++static BOOL tracker_inertia_worker_active;
++static void tracker_inertia_predict_locked( struct interaction_tracker *impl );
++static void interaction_tracker_clamp_scale( struct interaction_tracker *impl );
++static void tracker_inertia_cancel_locked( struct interaction_tracker *impl, struct list *released );
++static void tracker_inertia_free_list( struct list *released );
++static void tracker_inertia_advance_locked( struct interaction_tracker *impl, ULONGLONG now,
++        struct list *released, struct list *discarded );
++
+ static inline struct interaction_tracker *impl_from_IInteractionTracker( IInteractionTracker *iface )
+ {
+     return CONTAINING_RECORD( iface, struct interaction_tracker, IInteractionTracker_iface );
+@@ -803,10 +843,437 @@
+     INT32 request_id;
+ };
+ 
++enum tracker_notification_kind
++{
++    TRACKER_VALUES,
++    TRACKER_FRAME,
++    TRACKER_INERTIA,
++    TRACKER_IDLE,
++};
++
++struct tracker_state_args
++{
++    IInteractionTrackerInertiaStateEnteredArgs IInteractionTrackerInertiaStateEnteredArgs_iface;
++    IInteractionTrackerInertiaStateEnteredArgs2 IInteractionTrackerInertiaStateEnteredArgs2_iface;
++    IInteractionTrackerInertiaStateEnteredArgs3 IInteractionTrackerInertiaStateEnteredArgs3_iface;
++    IInteractionTrackerIdleStateEnteredArgs IInteractionTrackerIdleStateEnteredArgs_iface;
++    IInteractionTrackerIdleStateEnteredArgs2 IInteractionTrackerIdleStateEnteredArgs2_iface;
++    enum tracker_notification_kind kind;
++    LONG ref;
++    INT32 request_id;
++    struct Vector3 natural_position;
++    struct Vector3 velocity;
++    FLOAT scale;
++    FLOAT scale_velocity;
++    boolean impulse;
++    boolean from_binding;
++};
++
++static HRESULT tracker_state_query( struct tracker_state_args *impl, REFIID iid, void **out )
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) || IsEqualGUID( iid, &IID_IAgileObject ))
++        *out = impl->kind == TRACKER_INERTIA ? (void *)&impl->IInteractionTrackerInertiaStateEnteredArgs_iface :
++                (void *)&impl->IInteractionTrackerIdleStateEnteredArgs_iface;
++    else if (impl->kind == TRACKER_INERTIA)
++    {
++        if (IsEqualGUID( iid, &IID_IInteractionTrackerInertiaStateEnteredArgs ))
++            *out = &impl->IInteractionTrackerInertiaStateEnteredArgs_iface;
++        else if (IsEqualGUID( iid, &IID_IInteractionTrackerInertiaStateEnteredArgs2 ))
++            *out = &impl->IInteractionTrackerInertiaStateEnteredArgs2_iface;
++        else if (IsEqualGUID( iid, &IID_IInteractionTrackerInertiaStateEnteredArgs3 ))
++            *out = &impl->IInteractionTrackerInertiaStateEnteredArgs3_iface;
++    }
++    else if (IsEqualGUID( iid, &IID_IInteractionTrackerIdleStateEnteredArgs ))
++        *out = &impl->IInteractionTrackerIdleStateEnteredArgs_iface;
++    else if (IsEqualGUID( iid, &IID_IInteractionTrackerIdleStateEnteredArgs2 ))
++        *out = &impl->IInteractionTrackerIdleStateEnteredArgs2_iface;
++    if (!*out) return E_NOINTERFACE;
++    InterlockedIncrement( &impl->ref );
++    return S_OK;
++}
++
++static ULONG tracker_state_release( struct tracker_state_args *impl )
++{
++    ULONG ref = InterlockedDecrement( &impl->ref );
++    if (!ref) free( impl );
++    return ref;
++}
++
++static HRESULT tracker_state_iids( struct tracker_state_args *impl, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = impl->kind == TRACKER_INERTIA ? 3 : 2;
++    if (!(*iids = CoTaskMemAlloc( *count * sizeof(**iids) ))) return E_OUTOFMEMORY;
++    if (impl->kind == TRACKER_INERTIA)
++    {
++        (*iids)[0] = IID_IInteractionTrackerInertiaStateEnteredArgs;
++        (*iids)[1] = IID_IInteractionTrackerInertiaStateEnteredArgs2;
++        (*iids)[2] = IID_IInteractionTrackerInertiaStateEnteredArgs3;
++    }
++    else
++    {
++        (*iids)[0] = IID_IInteractionTrackerIdleStateEnteredArgs;
++        (*iids)[1] = IID_IInteractionTrackerIdleStateEnteredArgs2;
++    }
++    return S_OK;
++}
++
++static HRESULT tracker_state_name( struct tracker_state_args *impl, HSTRING *name )
++{
++    const WCHAR *value = impl->kind == TRACKER_INERTIA ?
++            RuntimeClass_Windows_UI_Composition_Interactions_InteractionTrackerInertiaStateEnteredArgs :
++            RuntimeClass_Windows_UI_Composition_Interactions_InteractionTrackerIdleStateEnteredArgs;
++    if (!name) return E_POINTER;
++    return WindowsCreateString( value, wcslen( value ), name );
++}
++
++static inline struct tracker_state_args *tracker_inertia_args_impl( IInteractionTrackerInertiaStateEnteredArgs *iface )
++{
++    return CONTAINING_RECORD( iface, struct tracker_state_args, IInteractionTrackerInertiaStateEnteredArgs_iface );
++}
++
++static HRESULT WINAPI tracker_inertia_args_QueryInterface( IInteractionTrackerInertiaStateEnteredArgs *iface, REFIID iid, void **out )
++{
++    return tracker_state_query( tracker_inertia_args_impl( iface ), iid, out );
++}
++
++static ULONG WINAPI tracker_inertia_args_AddRef( IInteractionTrackerInertiaStateEnteredArgs *iface )
++{
++    return InterlockedIncrement( &tracker_inertia_args_impl( iface )->ref );
++}
++
++static ULONG WINAPI tracker_inertia_args_Release( IInteractionTrackerInertiaStateEnteredArgs *iface )
++{
++    return tracker_state_release( tracker_inertia_args_impl( iface ) );
++}
++
++static HRESULT WINAPI tracker_inertia_args_GetIids( IInteractionTrackerInertiaStateEnteredArgs *iface, ULONG *count, IID **iids )
++{
++    return tracker_state_iids( tracker_inertia_args_impl( iface ), count, iids );
++}
++
++static HRESULT WINAPI tracker_inertia_args_GetRuntimeClassName( IInteractionTrackerInertiaStateEnteredArgs *iface, HSTRING *name )
++{
++    return tracker_state_name( tracker_inertia_args_impl( iface ), name );
++}
++
++static HRESULT WINAPI tracker_inertia_args_GetTrustLevel( IInteractionTrackerInertiaStateEnteredArgs *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_inertia_args_get_ModifiedRestingPosition( IInteractionTrackerInertiaStateEnteredArgs *iface, __FIReference_1_Vector3 * *value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_inertia_args_get_ModifiedRestingScale( IInteractionTrackerInertiaStateEnteredArgs *iface, __FIReference_1_FLOAT * *value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_inertia_args_get_NaturalRestingPosition( IInteractionTrackerInertiaStateEnteredArgs *iface, struct Vector3 *value )
++{
++    struct tracker_state_args *impl = tracker_inertia_args_impl( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->natural_position;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_inertia_args_get_NaturalRestingScale( IInteractionTrackerInertiaStateEnteredArgs *iface, FLOAT *value )
++{
++    struct tracker_state_args *impl = tracker_inertia_args_impl( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->scale;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_inertia_args_get_PositionVelocityInPixelsPerSecond( IInteractionTrackerInertiaStateEnteredArgs *iface, struct Vector3 *value )
++{
++    struct tracker_state_args *impl = tracker_inertia_args_impl( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->velocity;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_inertia_args_get_RequestId( IInteractionTrackerInertiaStateEnteredArgs *iface, INT32 *value )
++{
++    struct tracker_state_args *impl = tracker_inertia_args_impl( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->request_id;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_inertia_args_get_ScaleVelocityInPercentPerSecond( IInteractionTrackerInertiaStateEnteredArgs *iface, FLOAT *value )
++{
++    if (!value) return E_POINTER;
++    *value = tracker_inertia_args_impl( iface )->scale_velocity;
++    return S_OK;
++}
++
++static const IInteractionTrackerInertiaStateEnteredArgsVtbl tracker_inertia_args_vtbl =
++{
++    tracker_inertia_args_QueryInterface,
++    tracker_inertia_args_AddRef,
++    tracker_inertia_args_Release,
++    tracker_inertia_args_GetIids,
++    tracker_inertia_args_GetRuntimeClassName,
++    tracker_inertia_args_GetTrustLevel,
++    tracker_inertia_args_get_ModifiedRestingPosition,
++    tracker_inertia_args_get_ModifiedRestingScale,
++    tracker_inertia_args_get_NaturalRestingPosition,
++    tracker_inertia_args_get_NaturalRestingScale,
++    tracker_inertia_args_get_PositionVelocityInPixelsPerSecond,
++    tracker_inertia_args_get_RequestId,
++    tracker_inertia_args_get_ScaleVelocityInPercentPerSecond,
++};
++
++static inline struct tracker_state_args *tracker_inertia_args2_impl( IInteractionTrackerInertiaStateEnteredArgs2 *iface )
++{
++    return CONTAINING_RECORD( iface, struct tracker_state_args, IInteractionTrackerInertiaStateEnteredArgs2_iface );
++}
++
++static HRESULT WINAPI tracker_inertia_args2_QueryInterface( IInteractionTrackerInertiaStateEnteredArgs2 *iface, REFIID iid, void **out )
++{
++    return tracker_state_query( tracker_inertia_args2_impl( iface ), iid, out );
++}
++
++static ULONG WINAPI tracker_inertia_args2_AddRef( IInteractionTrackerInertiaStateEnteredArgs2 *iface )
++{
++    return InterlockedIncrement( &tracker_inertia_args2_impl( iface )->ref );
++}
++
++static ULONG WINAPI tracker_inertia_args2_Release( IInteractionTrackerInertiaStateEnteredArgs2 *iface )
++{
++    return tracker_state_release( tracker_inertia_args2_impl( iface ) );
++}
++
++static HRESULT WINAPI tracker_inertia_args2_GetIids( IInteractionTrackerInertiaStateEnteredArgs2 *iface, ULONG *count, IID **iids )
++{
++    return tracker_state_iids( tracker_inertia_args2_impl( iface ), count, iids );
++}
++
++static HRESULT WINAPI tracker_inertia_args2_GetRuntimeClassName( IInteractionTrackerInertiaStateEnteredArgs2 *iface, HSTRING *name )
++{
++    return tracker_state_name( tracker_inertia_args2_impl( iface ), name );
++}
++
++static HRESULT WINAPI tracker_inertia_args2_GetTrustLevel( IInteractionTrackerInertiaStateEnteredArgs2 *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_inertia_args2_get_IsInertiaFromImpulse( IInteractionTrackerInertiaStateEnteredArgs2 *iface, boolean *value )
++{
++    struct tracker_state_args *impl = tracker_inertia_args2_impl( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->impulse;
++    return S_OK;
++}
++
++static const IInteractionTrackerInertiaStateEnteredArgs2Vtbl tracker_inertia_args2_vtbl =
++{
++    tracker_inertia_args2_QueryInterface,
++    tracker_inertia_args2_AddRef,
++    tracker_inertia_args2_Release,
++    tracker_inertia_args2_GetIids,
++    tracker_inertia_args2_GetRuntimeClassName,
++    tracker_inertia_args2_GetTrustLevel,
++    tracker_inertia_args2_get_IsInertiaFromImpulse,
++};
++
++static inline struct tracker_state_args *tracker_inertia_args3_impl( IInteractionTrackerInertiaStateEnteredArgs3 *iface )
++{
++    return CONTAINING_RECORD( iface, struct tracker_state_args, IInteractionTrackerInertiaStateEnteredArgs3_iface );
++}
++
++static HRESULT WINAPI tracker_inertia_args3_QueryInterface( IInteractionTrackerInertiaStateEnteredArgs3 *iface, REFIID iid, void **out )
++{
++    return tracker_state_query( tracker_inertia_args3_impl( iface ), iid, out );
++}
++
++static ULONG WINAPI tracker_inertia_args3_AddRef( IInteractionTrackerInertiaStateEnteredArgs3 *iface )
++{
++    return InterlockedIncrement( &tracker_inertia_args3_impl( iface )->ref );
++}
++
++static ULONG WINAPI tracker_inertia_args3_Release( IInteractionTrackerInertiaStateEnteredArgs3 *iface )
++{
++    return tracker_state_release( tracker_inertia_args3_impl( iface ) );
++}
++
++static HRESULT WINAPI tracker_inertia_args3_GetIids( IInteractionTrackerInertiaStateEnteredArgs3 *iface, ULONG *count, IID **iids )
++{
++    return tracker_state_iids( tracker_inertia_args3_impl( iface ), count, iids );
++}
++
++static HRESULT WINAPI tracker_inertia_args3_GetRuntimeClassName( IInteractionTrackerInertiaStateEnteredArgs3 *iface, HSTRING *name )
++{
++    return tracker_state_name( tracker_inertia_args3_impl( iface ), name );
++}
++
++static HRESULT WINAPI tracker_inertia_args3_GetTrustLevel( IInteractionTrackerInertiaStateEnteredArgs3 *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_inertia_args3_get_IsFromBinding( IInteractionTrackerInertiaStateEnteredArgs3 *iface, boolean *value )
++{
++    struct tracker_state_args *impl = tracker_inertia_args3_impl( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->from_binding;
++    return S_OK;
++}
++
++static const IInteractionTrackerInertiaStateEnteredArgs3Vtbl tracker_inertia_args3_vtbl =
++{
++    tracker_inertia_args3_QueryInterface,
++    tracker_inertia_args3_AddRef,
++    tracker_inertia_args3_Release,
++    tracker_inertia_args3_GetIids,
++    tracker_inertia_args3_GetRuntimeClassName,
++    tracker_inertia_args3_GetTrustLevel,
++    tracker_inertia_args3_get_IsFromBinding,
++};
++
++static inline struct tracker_state_args *tracker_idle_args_impl( IInteractionTrackerIdleStateEnteredArgs *iface )
++{
++    return CONTAINING_RECORD( iface, struct tracker_state_args, IInteractionTrackerIdleStateEnteredArgs_iface );
++}
++
++static HRESULT WINAPI tracker_idle_args_QueryInterface( IInteractionTrackerIdleStateEnteredArgs *iface, REFIID iid, void **out )
++{
++    return tracker_state_query( tracker_idle_args_impl( iface ), iid, out );
++}
++
++static ULONG WINAPI tracker_idle_args_AddRef( IInteractionTrackerIdleStateEnteredArgs *iface )
++{
++    return InterlockedIncrement( &tracker_idle_args_impl( iface )->ref );
++}
++
++static ULONG WINAPI tracker_idle_args_Release( IInteractionTrackerIdleStateEnteredArgs *iface )
++{
++    return tracker_state_release( tracker_idle_args_impl( iface ) );
++}
++
++static HRESULT WINAPI tracker_idle_args_GetIids( IInteractionTrackerIdleStateEnteredArgs *iface, ULONG *count, IID **iids )
++{
++    return tracker_state_iids( tracker_idle_args_impl( iface ), count, iids );
++}
++
++static HRESULT WINAPI tracker_idle_args_GetRuntimeClassName( IInteractionTrackerIdleStateEnteredArgs *iface, HSTRING *name )
++{
++    return tracker_state_name( tracker_idle_args_impl( iface ), name );
++}
++
++static HRESULT WINAPI tracker_idle_args_GetTrustLevel( IInteractionTrackerIdleStateEnteredArgs *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_idle_args_get_RequestId( IInteractionTrackerIdleStateEnteredArgs *iface, INT32 *value )
++{
++    struct tracker_state_args *impl = tracker_idle_args_impl( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->request_id;
++    return S_OK;
++}
++
++static const IInteractionTrackerIdleStateEnteredArgsVtbl tracker_idle_args_vtbl =
++{
++    tracker_idle_args_QueryInterface,
++    tracker_idle_args_AddRef,
++    tracker_idle_args_Release,
++    tracker_idle_args_GetIids,
++    tracker_idle_args_GetRuntimeClassName,
++    tracker_idle_args_GetTrustLevel,
++    tracker_idle_args_get_RequestId,
++};
++
++static inline struct tracker_state_args *tracker_idle_args2_impl( IInteractionTrackerIdleStateEnteredArgs2 *iface )
++{
++    return CONTAINING_RECORD( iface, struct tracker_state_args, IInteractionTrackerIdleStateEnteredArgs2_iface );
++}
++
++static HRESULT WINAPI tracker_idle_args2_QueryInterface( IInteractionTrackerIdleStateEnteredArgs2 *iface, REFIID iid, void **out )
++{
++    return tracker_state_query( tracker_idle_args2_impl( iface ), iid, out );
++}
++
++static ULONG WINAPI tracker_idle_args2_AddRef( IInteractionTrackerIdleStateEnteredArgs2 *iface )
++{
++    return InterlockedIncrement( &tracker_idle_args2_impl( iface )->ref );
++}
++
++static ULONG WINAPI tracker_idle_args2_Release( IInteractionTrackerIdleStateEnteredArgs2 *iface )
++{
++    return tracker_state_release( tracker_idle_args2_impl( iface ) );
++}
++
++static HRESULT WINAPI tracker_idle_args2_GetIids( IInteractionTrackerIdleStateEnteredArgs2 *iface, ULONG *count, IID **iids )
++{
++    return tracker_state_iids( tracker_idle_args2_impl( iface ), count, iids );
++}
++
++static HRESULT WINAPI tracker_idle_args2_GetRuntimeClassName( IInteractionTrackerIdleStateEnteredArgs2 *iface, HSTRING *name )
++{
++    return tracker_state_name( tracker_idle_args2_impl( iface ), name );
++}
++
++static HRESULT WINAPI tracker_idle_args2_GetTrustLevel( IInteractionTrackerIdleStateEnteredArgs2 *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI tracker_idle_args2_get_IsFromBinding( IInteractionTrackerIdleStateEnteredArgs2 *iface, boolean *value )
++{
++    struct tracker_state_args *impl = tracker_idle_args2_impl( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->from_binding;
++    return S_OK;
++}
++
++static const IInteractionTrackerIdleStateEnteredArgs2Vtbl tracker_idle_args2_vtbl =
++{
++    tracker_idle_args2_QueryInterface,
++    tracker_idle_args2_AddRef,
++    tracker_idle_args2_Release,
++    tracker_idle_args2_GetIids,
++    tracker_idle_args2_GetRuntimeClassName,
++    tracker_idle_args2_GetTrustLevel,
++    tracker_idle_args2_get_IsFromBinding,
++};
++
+ struct tracker_notification
+ {
+     struct list entry;
+-    struct tracker_values_changed_args *args;
++    IInspectable *args;
++    enum tracker_notification_kind kind;
++    INT32 request_id;
+     IInteractionTracker *sender;
+     IAgileReference *owner;
+ };
+@@ -918,7 +1385,7 @@
+ 
+ static void tracker_notification_free( struct tracker_notification *notification )
+ {
+-    IInteractionTrackerValuesChangedArgs_Release( &notification->args->IInteractionTrackerValuesChangedArgs_iface );
++    IInspectable_Release( notification->args );
+     IAgileReference_Release( notification->owner );
+     IInteractionTracker_Release( notification->sender );
+     free( notification );
+@@ -967,11 +1434,18 @@
+             hr = IAgileReference_Resolve( notification->owner, &IID_IInteractionTrackerOwner, (void **)&owner );
+         if (SUCCEEDED(hr))
+         {
+-            hr = IInteractionTrackerOwner_ValuesChanged( owner, notification->sender,
+-                    &notification->args->IInteractionTrackerValuesChangedArgs_iface );
++            if (notification->kind == TRACKER_INERTIA)
++                hr = IInteractionTrackerOwner_InertiaStateEntered( owner, notification->sender,
++                        (IInteractionTrackerInertiaStateEnteredArgs *)notification->args );
++            else if (notification->kind == TRACKER_IDLE)
++                hr = IInteractionTrackerOwner_IdleStateEntered( owner, notification->sender,
++                        (IInteractionTrackerIdleStateEnteredArgs *)notification->args );
++            else
++                hr = IInteractionTrackerOwner_ValuesChanged( owner, notification->sender,
++                        (IInteractionTrackerValuesChangedArgs *)notification->args );
+             IInteractionTrackerOwner_Release( owner );
+         }
+-        if (FAILED(hr) && hr != RO_E_CLOSED) WARN( "ValuesChanged delivery failed, hr %#lx.\n", hr );
++        if (FAILED(hr) && hr != RO_E_CLOSED) WARN( "Tracker notification %u failed, hr %#lx.\n", notification->kind, hr );
+         tracker_notification_free( notification );
+     }
+     if (SUCCEEDED(initialized)) CoUninitialize();
+@@ -990,43 +1464,24 @@
+     return FALSE;
+ }
+ 
+-static void interaction_tracker_queue_notification( struct interaction_tracker *impl, INT32 request_id,
+-        struct list *discarded )
+-{
+-    struct tracker_notification *notification;
+-    struct tracker_values_changed_args *args;
+-    BOOL enabled;
+-
+-    EnterCriticalSection( &impl->animation_cs );
+-    enabled = impl->owner && !impl->notifications_closed;
+-    LeaveCriticalSection( &impl->animation_cs );
+-    if (!enabled) return;
+-    if (!(notification = calloc( 1, sizeof(*notification) ))) return;
+-    if (!(args = calloc( 1, sizeof(*args) )))
+-    {
+-        free( notification );
+-        return;
+-    }
+-    EnterCriticalSection( &impl->animation_cs );
+-    if (impl->notifications_closed || !impl->owner || !interaction_tracker_try_addref( impl ))
+-    {
+-        LeaveCriticalSection( &impl->animation_cs );
+-        free( args );
+-        free( notification );
+-        return;
+-    }
+-    args->IInteractionTrackerValuesChangedArgs_iface.lpVtbl = &tracker_values_vtbl;
+-    args->ref = 1;
+-    args->position = impl->position;
+-    args->scale = impl->scale;
+-    args->request_id = request_id;
+-    notification->args = args;
+-    notification->sender = &impl->IInteractionTracker_iface;
+-    notification->owner = impl->owner;
+-    IAgileReference_AddRef( notification->owner );
+-    LeaveCriticalSection( &impl->animation_cs );
++static void tracker_notification_submit( struct tracker_notification *notification, struct list *discarded )
++{
++    struct tracker_notification *previous;
+ 
+     EnterCriticalSection( &tracker_notification_cs );
++    if (notification->kind == TRACKER_FRAME)
++    {
++        LIST_FOR_EACH_ENTRY_REV( previous, &tracker_notifications, struct tracker_notification, entry )
++        {
++            if (previous->sender != notification->sender) continue;
++            if (previous->kind == TRACKER_FRAME && previous->request_id == notification->request_id)
++            {
++                list_remove( &previous->entry );
++                list_add_tail( discarded, &previous->entry );
++            }
++            break;
++        }
++    }
+     list_add_tail( &tracker_notifications, &notification->entry );
+     if (!tracker_notification_worker_active)
+     {
+@@ -1040,6 +1495,91 @@
+         }
+     }
+     LeaveCriticalSection( &tracker_notification_cs );
++}
++
++static void interaction_tracker_queue_notification( struct interaction_tracker *impl, INT32 request_id,
++        BOOL frame, struct list *discarded )
++{
++    struct tracker_notification *notification;
++    struct tracker_values_changed_args *args;
++    BOOL enabled;
++
++    EnterCriticalSection( &impl->animation_cs );
++    enabled = impl->owner && !impl->notifications_closed;
++    LeaveCriticalSection( &impl->animation_cs );
++    if (!enabled) return;
++    if (!(notification = calloc( 1, sizeof(*notification) ))) return;
++    if (!(args = calloc( 1, sizeof(*args) )))
++    {
++        free( notification );
++        return;
++    }
++    EnterCriticalSection( &impl->animation_cs );
++    if (impl->notifications_closed || !impl->owner || !interaction_tracker_try_addref( impl ))
++    {
++        LeaveCriticalSection( &impl->animation_cs );
++        free( args );
++        free( notification );
++        return;
++    }
++    args->IInteractionTrackerValuesChangedArgs_iface.lpVtbl = &tracker_values_vtbl;
++    args->ref = 1;
++    args->position = impl->position;
++    args->scale = impl->scale;
++    args->request_id = request_id;
++    notification->kind = frame ? TRACKER_FRAME : TRACKER_VALUES;
++    notification->request_id = request_id;
++    notification->args = (IInspectable *)&args->IInteractionTrackerValuesChangedArgs_iface;
++    notification->sender = &impl->IInteractionTracker_iface;
++    notification->owner = impl->owner;
++    IAgileReference_AddRef( notification->owner );
++    LeaveCriticalSection( &impl->animation_cs );
++
++    tracker_notification_submit( notification, discarded );
++}
++
++static void interaction_tracker_queue_state( struct interaction_tracker *impl,
++        enum tracker_notification_kind kind, INT32 request_id, boolean from_binding, struct list *discarded )
++{
++    struct tracker_state_args *args;
++    struct tracker_notification *notification;
++
++    if (!(args = calloc( 1, sizeof(*args) ))) return;
++    if (!(notification = calloc( 1, sizeof(*notification) )))
++    {
++        free( args );
++        return;
++    }
++    EnterCriticalSection( &impl->animation_cs );
++    if (impl->notifications_closed || !impl->owner || !interaction_tracker_try_addref( impl ))
++    {
++        LeaveCriticalSection( &impl->animation_cs );
++        free( args );
++        free( notification );
++        return;
++    }
++    args->IInteractionTrackerInertiaStateEnteredArgs_iface.lpVtbl = &tracker_inertia_args_vtbl;
++    args->IInteractionTrackerInertiaStateEnteredArgs2_iface.lpVtbl = &tracker_inertia_args2_vtbl;
++    args->IInteractionTrackerInertiaStateEnteredArgs3_iface.lpVtbl = &tracker_inertia_args3_vtbl;
++    args->IInteractionTrackerIdleStateEnteredArgs_iface.lpVtbl = &tracker_idle_args_vtbl;
++    args->IInteractionTrackerIdleStateEnteredArgs2_iface.lpVtbl = &tracker_idle_args2_vtbl;
++    args->ref = 1;
++    args->kind = kind;
++    args->request_id = request_id;
++    args->natural_position = impl->natural_position;
++    args->velocity = impl->position_velocity;
++    args->scale = impl->natural_scale;
++    args->scale_velocity = impl->scale_velocity;
++    args->impulse = kind == TRACKER_INERTIA;
++    args->from_binding = from_binding;
++    notification->args = kind == TRACKER_INERTIA ? (IInspectable *)&args->IInteractionTrackerInertiaStateEnteredArgs_iface :
++            (IInspectable *)&args->IInteractionTrackerIdleStateEnteredArgs_iface;
++    notification->kind = kind;
++    notification->sender = &impl->IInteractionTracker_iface;
++    notification->owner = impl->owner;
++    IAgileReference_AddRef( notification->owner );
++    LeaveCriticalSection( &impl->animation_cs );
++    tracker_notification_submit( notification, discarded );
+ }
+ 
+ static void interaction_tracker_cancel_notifications( struct interaction_tracker *impl )
+@@ -1065,7 +1605,7 @@
+ }
+ 
+ static void interaction_tracker_notify_changes( struct interaction_tracker *impl, INT32 request_id,
+-        struct list *changed, struct list *discarded )
++        BOOL frame, struct list *changed, struct list *discarded )
+ {
+     struct interaction_tracker *tracker;
+ 
+@@ -1074,7 +1614,7 @@
+         tracker = LIST_ENTRY( list_head( changed ), struct interaction_tracker, changed_entry );
+         list_remove( &tracker->changed_entry );
+         list_init( &tracker->changed_entry );
+-        interaction_tracker_queue_notification( tracker, tracker == impl ? request_id : 0, discarded );
++        interaction_tracker_queue_notification( tracker, tracker == impl ? request_id : 0, frame, discarded );
+     }
+ }
+ 
+@@ -1235,8 +1775,8 @@
+         ICompositor_Release( impl->compositor );
+         if (impl->owner) IAgileReference_Release( impl->owner );
+         if (impl->owner_mta_cookie) CoDecrementMTAUsage( impl->owner_mta_cookie );
+-        if (impl->position_decay_rate) IInspectable_Release( impl->position_decay_rate );
+-        if (impl->scale_decay_rate) IInspectable_Release( impl->scale_decay_rate );
++        tracker_decay_release( impl->position_decay_rate );
++        tracker_decay_release( impl->scale_decay_rate );
+         DeleteCriticalSection( &impl->animation_cs );
+         free( impl );
+     }
+@@ -1325,7 +1865,7 @@
+ 
+     if (!value) return E_POINTER;
+     EnterCriticalSection( &impl->animation_cs );
+-    *value = impl->position;
++    *value = impl->inertia ? impl->natural_position : impl->position;
+     LeaveCriticalSection( &impl->animation_cs );
+     return S_OK;
+ }
+@@ -1335,8 +1875,9 @@
+     struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
+ 
+     if (!value) return E_POINTER;
++    interaction_tracker_clamp_scale( impl );
+     EnterCriticalSection( &impl->animation_cs );
+-    *value = impl->scale;
++    *value = impl->inertia ? impl->natural_scale : impl->scale;
+     LeaveCriticalSection( &impl->animation_cs );
+     return S_OK;
+ }
+@@ -1377,41 +1918,110 @@
+     return S_OK;
+ }
+ 
+-static HRESULT interaction_tracker_get_decay_rate( IInspectable *rate, IInspectable **value )
+-{
+-    if (!value) return E_POINTER;
+-    if (rate) IInspectable_AddRef( rate );
+-    *value = rate;
+-    return S_OK;
+-}
+-
+-static HRESULT interaction_tracker_put_decay_rate( IInspectable **current, IInspectable *value )
+-{
+-    if (value) IInspectable_AddRef( value );
+-    if (*current) IInspectable_Release( *current );
+-    *current = value;
++static void tracker_decay_release( struct tracker_decay_value *value )
++{
++    if (value && !InterlockedDecrement( &value->ref ))
++    {
++        IInspectable_Release( value->value );
++        free( value );
++    }
++}
++
++static HRESULT tracker_inertia_get_decay( struct interaction_tracker *impl, BOOL position, IInspectable **value )
++{
++    struct tracker_decay_value *current;
++
++    if (!value) return E_POINTER;
++    EnterCriticalSection( &impl->animation_cs );
++    current = position ? impl->position_decay_rate : impl->scale_decay_rate;
++    if (current) InterlockedIncrement( &current->ref );
++    LeaveCriticalSection( &impl->animation_cs );
++    *value = current ? current->value : NULL;
++    if (*value) IInspectable_AddRef( *value );
++    tracker_decay_release( current );
++    return S_OK;
++}
++
++static HRESULT tracker_inertia_set_decay( struct interaction_tracker *impl, BOOL position, IInspectable *value )
++{
++    struct Vector3 rate = {0.95f,0.95f,0.95f};
++    FLOAT scalar_rate = 0.985f;
++    __FIReference_1_Vector3 *vector;
++    __FIReference_1_FLOAT *scalar;
++    struct tracker_decay_value *current = NULL, *previous;
++    struct list released, discarded;
++    HRESULT hr = S_OK;
++
++    if (value)
++    {
++        if (position)
++        {
++            if (FAILED(hr = IInspectable_QueryInterface( value, &IID___FIReference_1_Vector3, (void **)&vector ))) return hr;
++            hr = __FIReference_1_Vector3_get_Value( vector, &rate );
++            __FIReference_1_Vector3_Release( vector );
++        }
++        else
++        {
++            if (FAILED(hr = IInspectable_QueryInterface( value, &IID___FIReference_1_FLOAT, (void **)&scalar ))) return hr;
++            hr = __FIReference_1_FLOAT_get_Value( scalar, &scalar_rate );
++            __FIReference_1_FLOAT_Release( scalar );
++        }
++        if (FAILED(hr)) return hr;
++        if (!isfinite( rate.X ) || !isfinite( rate.Y ) || !isfinite( rate.Z ) ||
++                rate.X < 0.0f || rate.X > 1.0f || rate.Y < 0.0f || rate.Y > 1.0f ||
++                rate.Z < 0.0f || rate.Z > 1.0f || !isfinite( scalar_rate ) ||
++                scalar_rate < 0.0f || scalar_rate > 1.0f) return E_INVALIDARG;
++        if (!(current = calloc( 1, sizeof(*current) ))) return E_OUTOFMEMORY;
++        current->ref = 1;
++        current->value = value;
++        IInspectable_AddRef( value );
++    }
++    list_init( &released );
++    list_init( &discarded );
++    EnterCriticalSection( &tracker_binding_cs );
++    tracker_inertia_advance_locked( impl, GetTickCount64(), &released, &discarded );
++    EnterCriticalSection( &impl->animation_cs );
++    previous = position ? impl->position_decay_rate : impl->scale_decay_rate;
++    if (position)
++    {
++        impl->position_decay_rate = current;
++        impl->position_decay = rate;
++    }
++    else
++    {
++        impl->scale_decay_rate = current;
++        impl->scale_decay = scalar_rate;
++    }
++    if (impl->inertia) tracker_inertia_predict_locked( impl );
++    LeaveCriticalSection( &impl->animation_cs );
++    LeaveCriticalSection( &tracker_binding_cs );
++    tracker_decay_release( previous );
++    tracker_notifications_free( &discarded );
++    tracker_inertia_free_list( &released );
+     return S_OK;
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_get_PositionInertiaDecayRate( IInteractionTracker *iface,
+         IInspectable **value )
+ {
+-    return interaction_tracker_get_decay_rate( impl_from_IInteractionTracker( iface )->position_decay_rate,
+-                                               value );
++    return tracker_inertia_get_decay( impl_from_IInteractionTracker( iface ), TRUE, value );
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_put_PositionInertiaDecayRate( IInteractionTracker *iface,
+         IInspectable *value )
+ {
+-    return interaction_tracker_put_decay_rate(
+-            &impl_from_IInteractionTracker( iface )->position_decay_rate, value );
++    return tracker_inertia_set_decay( impl_from_IInteractionTracker( iface ), TRUE, value );
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_get_PositionVelocityInPixelsPerSecond(
+         IInteractionTracker *iface, struct Vector3 *value )
+ {
+-    if (!value) return E_POINTER;
+-    memset( value, 0, sizeof(*value) );
++    struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
++
++    if (!value) return E_POINTER;
++    EnterCriticalSection( &impl->animation_cs );
++    *value = impl->position_velocity;
++    LeaveCriticalSection( &impl->animation_cs );
+     return S_OK;
+ }
+ 
+@@ -1420,6 +2030,7 @@
+     struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
+ 
+     if (!value) return E_POINTER;
++    interaction_tracker_clamp_scale( impl );
+     EnterCriticalSection( &impl->animation_cs );
+     *value = impl->scale;
+     LeaveCriticalSection( &impl->animation_cs );
+@@ -1429,21 +2040,23 @@
+ static HRESULT WINAPI interaction_tracker_get_ScaleInertiaDecayRate( IInteractionTracker *iface,
+         IInspectable **value )
+ {
+-    return interaction_tracker_get_decay_rate( impl_from_IInteractionTracker( iface )->scale_decay_rate, value );
++    return tracker_inertia_get_decay( impl_from_IInteractionTracker( iface ), FALSE, value );
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_put_ScaleInertiaDecayRate( IInteractionTracker *iface,
+         IInspectable *value )
+ {
+-    return interaction_tracker_put_decay_rate( &impl_from_IInteractionTracker( iface )->scale_decay_rate,
+-                                               value );
+-}
+-
+-static HRESULT WINAPI interaction_tracker_get_ScaleVelocityInPercentPerSecond(
+-        IInteractionTracker *iface, FLOAT *value )
+-{
+-    if (!value) return E_POINTER;
+-    *value = 0.0f;
++    return tracker_inertia_set_decay( impl_from_IInteractionTracker( iface ), FALSE, value );
++}
++
++static HRESULT WINAPI interaction_tracker_get_ScaleVelocityInPercentPerSecond( IInteractionTracker *iface, FLOAT *value )
++{
++    struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
++
++    if (!value) return E_POINTER;
++    EnterCriticalSection( &impl->animation_cs );
++    *value = impl->scale_velocity;
++    LeaveCriticalSection( &impl->animation_cs );
+     return S_OK;
+ }
+ 
+@@ -1516,16 +2129,322 @@
+     }
+ }
+ 
+-static HRESULT interaction_tracker_update_position( struct interaction_tracker *impl,
+-        struct Vector3 value, BOOL relative, BOOL clamp, INT32 *request_id )
++static void interaction_tracker_clamp_scale( struct interaction_tracker *impl )
+ {
+     struct list changed, discarded;
+-    HRESULT hr;
+-
+-    if (clamp && FAILED(hr = interaction_tracker_evaluate_bounds( impl ))) return hr;
++    FLOAT value, previous;
++
+     list_init( &changed );
+     list_init( &discarded );
+     EnterCriticalSection( &tracker_binding_cs );
++    EnterCriticalSection( &impl->animation_cs );
++    previous = value = impl->scale;
++    if (!impl->inertia) value = min( max( value, impl->min_scale ), impl->max_scale );
++    LeaveCriticalSection( &impl->animation_cs );
++    if (value != previous)
++    {
++        interaction_tracker_update_axis( impl, InteractionBindingAxisModes_Scale, value, &changed );
++        interaction_tracker_notify_changes( impl, 0, FALSE, &changed, &discarded );
++    }
++    LeaveCriticalSection( &tracker_binding_cs );
++    tracker_notifications_free( &discarded );
++}
++
++static double tracker_inertia_rest( FLOAT position, FLOAT velocity, FLOAT decay )
++{
++    if (!velocity || decay >= 1.0f) return position;
++    if (decay <= 0.0f) return velocity > 0 ? INFINITY : -INFINITY;
++    return position + velocity / -log1p( -(double)decay );
++}
++
++static struct Vector3 tracker_scale_position( struct Vector3 position, struct Vector3 center,
++        FLOAT before, FLOAT after )
++{
++    double ratio, x, y, z;
++
++    if (!before || before == after) return position;
++    ratio = (double)after / before;
++    x = (double)position.X + center.X;
++    y = (double)position.Y + center.Y;
++    z = (double)position.Z + center.Z;
++    return (struct Vector3){x ? x * ratio - center.X : -center.X,
++            y ? y * ratio - center.Y : -center.Y,
++            z ? z * ratio - center.Z : -center.Z};
++}
++
++static void tracker_inertia_predict_locked( struct interaction_tracker *impl )
++{
++    impl->natural_position.X = tracker_inertia_rest( impl->position.X, impl->position_velocity.X, impl->position_decay.X );
++    impl->natural_position.Y = tracker_inertia_rest( impl->position.Y, impl->position_velocity.Y, impl->position_decay.Y );
++    impl->natural_position.Z = tracker_inertia_rest( impl->position.Z, impl->position_velocity.Z, impl->position_decay.Z );
++    impl->natural_scale = tracker_inertia_rest( impl->scale, impl->scale_velocity, impl->scale_decay );
++    if (impl->scale_velocity)
++        impl->natural_position = tracker_scale_position( impl->natural_position, impl->scale_center,
++                impl->scale, impl->natural_scale );
++}
++
++static void tracker_inertia_release( struct tracker_inertia_operation *operation )
++{
++    IInteractionTracker *tracker;
++
++    if (!InterlockedDecrement( &operation->ref ))
++    {
++        tracker = &operation->tracker->IInteractionTracker_iface;
++        free( operation );
++        IInteractionTracker_Release( tracker );
++    }
++}
++
++static void tracker_inertia_free_list( struct list *released )
++{
++    struct tracker_inertia_operation *operation;
++
++    while (!list_empty( released ))
++    {
++        operation = LIST_ENTRY( list_head( released ), struct tracker_inertia_operation, entry );
++        list_remove( &operation->entry );
++        tracker_inertia_release( operation );
++    }
++}
++
++static void tracker_inertia_cancel_locked( struct interaction_tracker *impl, struct list *released )
++{
++    EnterCriticalSection( &impl->animation_cs );
++    if (impl->inertia)
++    {
++        list_remove( &impl->inertia->entry );
++        list_add_tail( released, &impl->inertia->entry );
++        impl->inertia = NULL;
++    }
++    impl->position_velocity = (struct Vector3){0};
++    impl->scale_velocity = 0.0f;
++    LeaveCriticalSection( &impl->animation_cs );
++}
++
++static FLOAT tracker_inertia_axis( FLOAT position, FLOAT *velocity, FLOAT decay,
++        FLOAT lower, FLOAT upper, double elapsed )
++{
++    double value = position, speed = *velocity, lambda, attenuation;
++
++    if (decay >= 1.0f) speed = 0.0;
++    else if (decay <= 0.0f) value += speed * elapsed;
++    else
++    {
++        lambda = -log1p( -(double)decay );
++        attenuation = exp( -lambda * elapsed );
++        value += speed * -expm1( -lambda * elapsed ) / lambda;
++        speed *= attenuation;
++        if (fabs( speed / lambda ) <= FLT_EPSILON * max( 1.0, fabs( value ) ))
++        {
++            value += speed / lambda;
++            speed = 0.0;
++        }
++    }
++    value = min( max( value, lower ), upper );
++    if ((value <= lower && speed < 0.0) || (value >= upper && speed > 0.0)) speed = 0.0;
++    *velocity = speed;
++    return value;
++}
++
++static void tracker_inertia_advance_locked( struct interaction_tracker *impl, ULONGLONG now,
++        struct list *released, struct list *discarded )
++{
++    struct tracker_inertia_operation *operation;
++    struct Vector3 position;
++    struct list changed;
++    INT32 request_id;
++    double elapsed;
++    FLOAT scale;
++    BOOL finished;
++
++    list_init( &changed );
++    EnterCriticalSection( &impl->animation_cs );
++    operation = impl->inertia;
++    if (!operation || now <= operation->last_tick)
++    {
++        LeaveCriticalSection( &impl->animation_cs );
++        return;
++    }
++    elapsed = (now - operation->last_tick) / 1000.0;
++    operation->last_tick = now;
++    request_id = operation->request_id;
++    position.X = tracker_inertia_axis( impl->position.X, &impl->position_velocity.X,
++            impl->position_decay.X, impl->min_position.X, impl->max_position.X, elapsed );
++    position.Y = tracker_inertia_axis( impl->position.Y, &impl->position_velocity.Y,
++            impl->position_decay.Y, impl->min_position.Y, impl->max_position.Y, elapsed );
++    position.Z = tracker_inertia_axis( impl->position.Z, &impl->position_velocity.Z,
++            impl->position_decay.Z, impl->min_position.Z, impl->max_position.Z, elapsed );
++    scale = tracker_inertia_axis( impl->scale, &impl->scale_velocity, impl->scale_decay,
++            impl->min_scale, impl->max_scale, elapsed );
++    position = tracker_scale_position( position, impl->scale_center, impl->scale, scale );
++    position.X = min( max( position.X, impl->min_position.X ), impl->max_position.X );
++    position.Y = min( max( position.Y, impl->min_position.Y ), impl->max_position.Y );
++    position.Z = min( max( position.Z, impl->min_position.Z ), impl->max_position.Z );
++    if (impl->position.Z != position.Z) interaction_tracker_mark_changed( impl, &changed );
++    impl->position.Z = position.Z;
++    ++impl->animation_revision;
++    LeaveCriticalSection( &impl->animation_cs );
++    interaction_tracker_update_axis( impl, InteractionBindingAxisModes_Scale, scale, &changed );
++    interaction_tracker_update_axis( impl, InteractionBindingAxisModes_PositionX, position.X, &changed );
++    interaction_tracker_update_axis( impl, InteractionBindingAxisModes_PositionY, position.Y, &changed );
++    EnterCriticalSection( &impl->animation_cs );
++    tracker_inertia_predict_locked( impl );
++    finished = !impl->position_velocity.X && !impl->position_velocity.Y && !impl->position_velocity.Z &&
++            !impl->scale_velocity;
++    if (finished) impl->clamp_position = TRUE;
++    LeaveCriticalSection( &impl->animation_cs );
++    interaction_tracker_notify_changes( impl, request_id, TRUE, &changed, discarded );
++    if (finished)
++    {
++        tracker_inertia_cancel_locked( impl, released );
++        interaction_tracker_queue_state( impl, TRACKER_IDLE, request_id, FALSE, discarded );
++    }
++}
++
++static void CALLBACK tracker_inertia_worker( PTP_CALLBACK_INSTANCE instance, void *context )
++{
++    struct tracker_inertia_operation *operation;
++    struct list pending, released, discarded;
++    HRESULT initialized;
++    ULONGLONG now;
++
++    initialized = CoInitializeEx( NULL, COINIT_MULTITHREADED );
++    for (;;)
++    {
++        list_init( &pending );
++        list_init( &released );
++        list_init( &discarded );
++        EnterCriticalSection( &tracker_binding_cs );
++        if (list_empty( &tracker_inertia_operations ))
++        {
++            tracker_inertia_worker_active = FALSE;
++            LeaveCriticalSection( &tracker_binding_cs );
++            break;
++        }
++        LIST_FOR_EACH_ENTRY( operation, &tracker_inertia_operations, struct tracker_inertia_operation, entry )
++        {
++            InterlockedIncrement( &operation->ref );
++            list_add_tail( &pending, &operation->pending_entry );
++        }
++        LeaveCriticalSection( &tracker_binding_cs );
++
++        LIST_FOR_EACH_ENTRY( operation, &pending, struct tracker_inertia_operation, pending_entry )
++            interaction_tracker_evaluate_bounds( operation->tracker );
++
++        EnterCriticalSection( &tracker_binding_cs );
++        now = GetTickCount64();
++        LIST_FOR_EACH_ENTRY( operation, &pending, struct tracker_inertia_operation, pending_entry )
++            if (operation->tracker->inertia == operation)
++                tracker_inertia_advance_locked( operation->tracker, now, &released, &discarded );
++        LeaveCriticalSection( &tracker_binding_cs );
++        tracker_notifications_free( &discarded );
++        tracker_inertia_free_list( &released );
++        while (!list_empty( &pending ))
++        {
++            operation = LIST_ENTRY( list_head( &pending ), struct tracker_inertia_operation, pending_entry );
++            list_remove( &operation->pending_entry );
++            tracker_inertia_release( operation );
++        }
++        Sleep( 16 );
++    }
++    if (SUCCEEDED(initialized)) CoUninitialize();
++}
++
++static HRESULT tracker_inertia_add_velocity( struct interaction_tracker *impl,
++        struct Vector3 velocity, FLOAT scale_velocity, const struct Vector3 *center_point, INT32 *request_id )
++{
++    struct tracker_inertia_operation *operation;
++    struct Vector3 combined;
++    FLOAT combined_scale;
++    struct list released, discarded;
++    ULONGLONG now;
++    HRESULT hr = S_OK;
++
++    if (!request_id) return E_POINTER;
++    if (!isfinite( velocity.X ) || !isfinite( velocity.Y ) || !isfinite( velocity.Z ) ||
++            !isfinite( scale_velocity )) return E_INVALIDARG;
++    if (center_point && (!isfinite( center_point->X ) || !isfinite( center_point->Y ) ||
++            !isfinite( center_point->Z ))) return E_INVALIDARG;
++    interaction_tracker_clamp_scale( impl );
++    list_init( &released );
++    list_init( &discarded );
++    EnterCriticalSection( &tracker_binding_cs );
++    now = GetTickCount64();
++    tracker_inertia_advance_locked( impl, now, &released, &discarded );
++    EnterCriticalSection( &impl->animation_cs );
++    combined = (struct Vector3){impl->position_velocity.X + velocity.X,
++            impl->position_velocity.Y + velocity.Y, impl->position_velocity.Z + velocity.Z};
++    combined_scale = impl->scale_velocity + scale_velocity;
++    if (impl->notifications_closed) hr = RO_E_CLOSED;
++    else if (!isfinite( combined.X ) || !isfinite( combined.Y ) || !isfinite( combined.Z ) ||
++            !isfinite( combined_scale )) hr = E_INVALIDARG;
++    if (SUCCEEDED(hr) && !impl->inertia)
++    {
++        if (!(operation = calloc( 1, sizeof(*operation) ))) hr = E_OUTOFMEMORY;
++        else
++        {
++            operation->ref = 1;
++            operation->tracker = impl;
++            operation->last_tick = now;
++            IInteractionTracker_AddRef( &impl->IInteractionTracker_iface );
++            impl->inertia = operation;
++            list_add_tail( &tracker_inertia_operations, &operation->entry );
++        }
++    }
++    if (SUCCEEDED(hr) && !tracker_inertia_worker_active)
++    {
++        tracker_inertia_worker_active = TRUE;
++        if (!TrySubmitThreadpoolCallback( tracker_inertia_worker, NULL, NULL ))
++        {
++            tracker_inertia_worker_active = FALSE;
++            hr = HRESULT_FROM_WIN32( GetLastError() );
++            if (SUCCEEDED(hr)) hr = E_FAIL;
++        }
++    }
++    if (SUCCEEDED(hr))
++    {
++        impl->position_velocity = combined;
++        impl->scale_velocity = combined_scale;
++        if (center_point) impl->scale_center = *center_point;
++        impl->clamp_position = FALSE;
++        *request_id = impl->inertia->request_id = interaction_tracker_next_request_id( impl );
++        tracker_inertia_predict_locked( impl );
++    }
++    LeaveCriticalSection( &impl->animation_cs );
++    if (SUCCEEDED(hr)) interaction_tracker_queue_state( impl, TRACKER_INERTIA, *request_id, FALSE, &discarded );
++    else if (impl->inertia && !tracker_inertia_worker_active) tracker_inertia_cancel_locked( impl, &released );
++    LeaveCriticalSection( &tracker_binding_cs );
++    tracker_notifications_free( &discarded );
++    tracker_inertia_free_list( &released );
++    return hr;
++}
++
++static HRESULT interaction_tracker_update_position( struct interaction_tracker *impl,
++        struct Vector3 value, BOOL relative, BOOL clamp, INT32 *request_id )
++{
++    struct list changed, discarded, released;
++    BOOL was_active, closed;
++    HRESULT hr;
++
++    EnterCriticalSection( &impl->animation_cs );
++    closed = impl->notifications_closed;
++    LeaveCriticalSection( &impl->animation_cs );
++    if (closed) return RO_E_CLOSED;
++    if (clamp && FAILED(hr = interaction_tracker_evaluate_bounds( impl ))) return hr;
++    list_init( &released );
++    list_init( &changed );
++    list_init( &discarded );
++    EnterCriticalSection( &tracker_binding_cs );
++    EnterCriticalSection( &impl->animation_cs );
++    if (impl->notifications_closed)
++    {
++        LeaveCriticalSection( &impl->animation_cs );
++        LeaveCriticalSection( &tracker_binding_cs );
++        return RO_E_CLOSED;
++    }
++    LeaveCriticalSection( &impl->animation_cs );
++    was_active = impl->inertia != NULL;
++    tracker_inertia_cancel_locked( impl, &released );
+     *request_id = interaction_tracker_next_request_id( impl );
+     EnterCriticalSection( &impl->animation_cs );
+     if (relative)
+@@ -1547,9 +2466,11 @@
+     LeaveCriticalSection( &impl->animation_cs );
+     interaction_tracker_update_axis( impl, InteractionBindingAxisModes_PositionX, value.X, &changed );
+     interaction_tracker_update_axis( impl, InteractionBindingAxisModes_PositionY, value.Y, &changed );
+-    interaction_tracker_notify_changes( impl, *request_id, &changed, &discarded );
++    interaction_tracker_notify_changes( impl, *request_id, FALSE, &changed, &discarded );
++    if (was_active) interaction_tracker_queue_state( impl, TRACKER_IDLE, *request_id, FALSE, &discarded );
+     LeaveCriticalSection( &tracker_binding_cs );
+     tracker_notifications_free( &discarded );
++    tracker_inertia_free_list( &released );
+     return S_OK;
+ }
+ 
+@@ -1574,17 +2495,21 @@
+ static HRESULT WINAPI interaction_tracker_TryUpdatePositionWithAnimation( IInteractionTracker *iface,
+         IInspectable *animation, INT32 *request_id )
+ {
++    struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
++    HRESULT hr = S_OK;
++
+     if (!request_id) return E_POINTER;
+-    *request_id = interaction_tracker_next_request_id( impl_from_IInteractionTracker( iface ) );
+-    return S_OK;
++    EnterCriticalSection( &impl->animation_cs );
++    if (impl->notifications_closed) hr = RO_E_CLOSED;
++    else *request_id = interaction_tracker_next_request_id( impl );
++    LeaveCriticalSection( &impl->animation_cs );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_TryUpdatePositionWithAdditionalVelocity(
+         IInteractionTracker *iface, struct Vector3 velocity, INT32 *request_id )
+ {
+-    if (!request_id) return E_POINTER;
+-    *request_id = interaction_tracker_next_request_id( impl_from_IInteractionTracker( iface ) );
+-    return S_OK;
++    return tracker_inertia_add_velocity( impl_from_IInteractionTracker( iface ), velocity, 0.0f, NULL, request_id );
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_TryUpdateScale( IInteractionTracker *iface, FLOAT value,
+@@ -1592,37 +2517,59 @@
+ {
+     struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
+ 
+-    struct list changed, discarded;
++    struct list changed, discarded, released;
++    BOOL was_active;
+ 
+     if (!request_id) return E_POINTER;
++    if (!isfinite( value ) || value <= 0.0f || !isfinite( center_point.X ) ||
++            !isfinite( center_point.Y ) || !isfinite( center_point.Z )) return E_INVALIDARG;
++    list_init( &released );
+     list_init( &changed );
+     list_init( &discarded );
+     EnterCriticalSection( &tracker_binding_cs );
++    EnterCriticalSection( &impl->animation_cs );
++    if (impl->notifications_closed)
++    {
++        LeaveCriticalSection( &impl->animation_cs );
++        LeaveCriticalSection( &tracker_binding_cs );
++        return RO_E_CLOSED;
++    }
++    LeaveCriticalSection( &impl->animation_cs );
++    was_active = impl->inertia != NULL;
++    tracker_inertia_cancel_locked( impl, &released );
+     *request_id = interaction_tracker_next_request_id( impl );
+     EnterCriticalSection( &impl->animation_cs );
+     value = min( max( value, impl->min_scale ), impl->max_scale );
++    impl->clamp_position = TRUE;
+     LeaveCriticalSection( &impl->animation_cs );
+     interaction_tracker_update_axis( impl, InteractionBindingAxisModes_Scale, value, &changed );
+-    interaction_tracker_notify_changes( impl, *request_id, &changed, &discarded );
++    interaction_tracker_notify_changes( impl, *request_id, FALSE, &changed, &discarded );
++    if (was_active) interaction_tracker_queue_state( impl, TRACKER_IDLE, *request_id, FALSE, &discarded );
+     LeaveCriticalSection( &tracker_binding_cs );
+     tracker_notifications_free( &discarded );
++    tracker_inertia_free_list( &released );
+     return S_OK;
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_TryUpdateScaleWithAnimation( IInteractionTracker *iface,
+         IInspectable *animation, struct Vector3 center_point, INT32 *request_id )
+ {
++    struct interaction_tracker *impl = impl_from_IInteractionTracker( iface );
++    HRESULT hr = S_OK;
++
+     if (!request_id) return E_POINTER;
+-    *request_id = interaction_tracker_next_request_id( impl_from_IInteractionTracker( iface ) );
+-    return S_OK;
++    EnterCriticalSection( &impl->animation_cs );
++    if (impl->notifications_closed) hr = RO_E_CLOSED;
++    else *request_id = interaction_tracker_next_request_id( impl );
++    LeaveCriticalSection( &impl->animation_cs );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI interaction_tracker_TryUpdateScaleWithAdditionalVelocity(
+         IInteractionTracker *iface, FLOAT velocity, struct Vector3 center_point, INT32 *request_id )
+ {
+-    if (!request_id) return E_POINTER;
+-    *request_id = interaction_tracker_next_request_id( impl_from_IInteractionTracker( iface ) );
+-    return S_OK;
++    return tracker_inertia_add_velocity( impl_from_IInteractionTracker( iface ), (struct Vector3){0},
++            velocity, &center_point, request_id );
+ }
+ 
+ static HRESULT WINAPI interaction_tracker5_QueryInterface( IInteractionTracker5 *iface,
+@@ -1745,8 +2692,12 @@
+ static HRESULT WINAPI interaction_tracker4_get_IsInertiaFromImpulse( IInteractionTracker4 *iface,
+         boolean *value )
+ {
+-    if (!value) return E_POINTER;
+-    *value = FALSE;
++    struct interaction_tracker *impl = impl_from_IInteractionTracker4( iface );
++
++    if (!value) return E_POINTER;
++    EnterCriticalSection( &impl->animation_cs );
++    *value = impl->inertia != NULL;
++    LeaveCriticalSection( &impl->animation_cs );
+     return S_OK;
+ }
+ 
+@@ -1987,7 +2938,9 @@
+     struct interaction_tracker *impl = tracker_from_IClosable( iface );
+     IAgileReference *owner;
+     CO_MTA_USAGE_COOKIE cookie;
+-
++    struct list released;
++
++    list_init( &released );
+     TRACE( "iface %p.\n", iface );
+     EnterCriticalSection( &impl->animation_cs );
+     impl->notifications_closed = TRUE;
+@@ -1996,6 +2949,10 @@
+     cookie = impl->owner_mta_cookie;
+     impl->owner_mta_cookie = NULL;
+     LeaveCriticalSection( &impl->animation_cs );
++    EnterCriticalSection( &tracker_binding_cs );
++    tracker_inertia_cancel_locked( impl, &released );
++    LeaveCriticalSection( &tracker_binding_cs );
++    tracker_inertia_free_list( &released );
+     interaction_tracker_cancel_notifications( impl );
+     interaction_tracker_clear_animations( impl );
+     interaction_tracker_clear_bindings( impl );
+@@ -2039,6 +2996,8 @@
+     impl->min_scale = 1.0f;
+     impl->scale = 1.0f;
+     impl->clamp_position = TRUE;
++    impl->position_decay = (struct Vector3){0.95f,0.95f,0.95f};
++    impl->scale_decay = 0.985f;
+     impl->ref = 1;
+     ICompositor_AddRef( compositor );
+     if (owner)
+--- a/include/windows.ui.composition.interactions.idl
++++ b/include/windows.ui.composition.interactions.idl
+@@ -83,7 +83,10 @@
+     interface IInteractionTrackerOwner;
+     interface IInteractionTrackerCustomAnimationStateEnteredArgs;
+     interface IInteractionTrackerIdleStateEnteredArgs;
++    interface IInteractionTrackerIdleStateEnteredArgs2;
+     interface IInteractionTrackerInertiaStateEnteredArgs;
++    interface IInteractionTrackerInertiaStateEnteredArgs3;
++    interface IInteractionTrackerInertiaStateEnteredArgs2;
+     interface IInteractionTrackerInteractingStateEnteredArgs;
+     interface IInteractionTrackerRequestIgnoredArgs;
+     interface IInteractionTrackerValuesChangedArgs;
+@@ -135,6 +138,16 @@
+     }
+ 
+     [
++        contract(Windows.Foundation.UniversalApiContract, 8.0),
++        exclusiveto(Windows.UI.Composition.Interactions.InteractionTrackerIdleStateEnteredArgs),
++        uuid(f2e771ed-b803-5137-9435-1c96e48721e9)
++    ]
++    interface IInteractionTrackerIdleStateEnteredArgs2 : IInspectable
++    {
++        [propget] HRESULT IsFromBinding([out, retval] boolean *value);
++    }
++
++    [
+         contract(Windows.Foundation.UniversalApiContract, 3.0),
+         marshaling_behavior(agile),
+         threading(both)
+@@ -142,6 +155,7 @@
+     runtimeclass InteractionTrackerIdleStateEnteredArgs
+     {
+         [default] interface Windows.UI.Composition.Interactions.IInteractionTrackerIdleStateEnteredArgs;
++        interface Windows.UI.Composition.Interactions.IInteractionTrackerIdleStateEnteredArgs2;
+     }
+ 
+     [
+@@ -161,6 +175,26 @@
+     }
+ 
+     [
++        contract(Windows.Foundation.UniversalApiContract, 7.0),
++        exclusiveto(Windows.UI.Composition.Interactions.InteractionTrackerInertiaStateEnteredArgs),
++        uuid(b1eb32f6-c26c-41f6-a189-fabc22b323cc)
++    ]
++    interface IInteractionTrackerInertiaStateEnteredArgs2 : IInspectable
++    {
++        [propget] HRESULT IsInertiaFromImpulse([out, retval] boolean *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 8.0),
++        exclusiveto(Windows.UI.Composition.Interactions.InteractionTrackerInertiaStateEnteredArgs),
++        uuid(48ac1c2f-47bd-59af-a58c-79bd2eb9ef71)
++    ]
++    interface IInteractionTrackerInertiaStateEnteredArgs3 : IInspectable
++    {
++        [propget] HRESULT IsFromBinding([out, retval] boolean *value);
++    }
++
++    [
+         contract(Windows.Foundation.UniversalApiContract, 3.0),
+         marshaling_behavior(agile),
+         threading(both)
+@@ -168,6 +202,8 @@
+     runtimeclass InteractionTrackerInertiaStateEnteredArgs
+     {
+         [default] interface Windows.UI.Composition.Interactions.IInteractionTrackerInertiaStateEnteredArgs;
++        interface Windows.UI.Composition.Interactions.IInteractionTrackerInertiaStateEnteredArgs3;
++        interface Windows.UI.Composition.Interactions.IInteractionTrackerInertiaStateEnteredArgs2;
+     }
+ 
+     [
