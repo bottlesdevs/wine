@@ -149,8 +149,12 @@ def crc32(path):
 def inspect(path, tools, debug_only=False):
     regular(path)
     with path.open('rb') as file:
-        magic = file.read(4)
-    kind = 'elf' if magic == b'\x7fELF' else 'pe' if magic[:2] == b'MZ' else None
+        header = file.read(64)
+        pe = False
+        if header[:2] == b'MZ' and len(header) == 64:
+            file.seek(int.from_bytes(header[60:64], 'little'))
+            pe = file.read(4) == b'PE\0\0'
+    kind = 'elf' if header[:4] == b'\x7fELF' else 'pe' if pe else None
     if kind is None:
         return None
     arguments = ['--debug'] if kind == 'pe' and debug_only else []

@@ -48,6 +48,19 @@ class SymbolBundle(unittest.TestCase):
     def stage(self, **options):
         return producer.stage(self.runner, self.bundle, self.tools, 'soda-fixture', **options)
 
+    def test_ne_fonts_are_not_treated_as_pe_images(self):
+        self.image()
+        font = self.runner / 'font.fon'
+        data = bytearray(128)
+        data[:2] = b'MZ'
+        data[60:64] = (64).to_bytes(4, 'little')
+        data[64:66] = b'NE'
+        font.write_bytes(data)
+        self.assertIsNone(producer.inspect(font, self.tools))
+        result = self.stage()
+        self.assertNotIn('font.fon', result['images'])
+        self.assertEqual(font.read_bytes(), data)
+
     def test_source_lines_survive_optional_bundle_for_elf_and_both_pe_architectures(self):
         for machine in ('elf', 'i686', 'x86_64'):
             for dwarf in (4, 5):
