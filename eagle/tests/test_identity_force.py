@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shutil
 import subprocess
 import time
 import unittest
@@ -76,8 +77,20 @@ class IdentityForce(unittest.TestCase):
             if bus is not None:bus.stdout.close()
 
     def test_forced_login_does_not_refresh_cached_credentials(self):
-        self.capture(False)
-        self.capture(True)
+        destination = ROOT / 'prefix/drive_c/windows' / ('system32' if BITS == 64 else 'syswow64') / 'winhttp.dll'
+        self.assertTrue(destination.parent.resolve().is_relative_to((ROOT / 'prefix').resolve()))
+        link = os.readlink(destination) if destination.is_symlink() else None
+        backup = ROOT / 'force-original-winhttp.dll'
+        if link is not None:destination.unlink()
+        elif destination.exists():destination.rename(backup)
+        try:
+            shutil.copy2(ROOT / 'winhttp.dll', destination)
+            self.capture(False)
+            self.capture(True)
+        finally:
+            destination.unlink(missing_ok=True)
+            if link is not None:destination.symlink_to(link)
+            elif backup.exists():backup.rename(destination)
 
 
 if __name__ == '__main__':
