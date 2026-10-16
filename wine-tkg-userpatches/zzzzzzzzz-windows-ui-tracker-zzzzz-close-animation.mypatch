@@ -1,0 +1,38 @@
+--- a/dlls/windows.ui/interactions.c
++++ b/dlls/windows.ui/interactions.c
+@@ -2805,6 +2805,10 @@
+ 
+     TRACE( "iface %p, name %s, animation %p.\n", iface, debugstr_hstring( name ), animation );
+     if (!name || !animation) return E_INVALIDARG;
++    EnterCriticalSection( &impl->animation_cs );
++    hr = impl->notifications_closed ? RO_E_CLOSED : S_OK;
++    LeaveCriticalSection( &impl->animation_cs );
++    if (FAILED(hr)) return hr;
+     index = tracker_component_index( name );
+     if (index == ARRAY_SIZE(tracker_component_names)) return E_NOTIMPL;
+     if (FAILED(hr = ICompositionAnimation_QueryInterface( animation, &IID_IExpressionAnimation, (void **)&expression ))) return hr;
+@@ -2812,6 +2816,12 @@
+     IExpressionAnimation_Release( expression );
+     if (FAILED(hr)) return hr;
+     EnterCriticalSection( &impl->animation_cs );
++    if (impl->notifications_closed)
++    {
++        LeaveCriticalSection( &impl->animation_cs );
++        IExpressionAnimation_Release( copy );
++        return RO_E_CLOSED;
++    }
+     previous = impl->expressions[index];
+     impl->expressions[index] = copy;
+     ++impl->animation_revision;
+@@ -2831,6 +2841,11 @@
+     index = tracker_component_index( name );
+     if (index == ARRAY_SIZE(tracker_component_names)) return E_NOTIMPL;
+     EnterCriticalSection( &impl->animation_cs );
++    if (impl->notifications_closed)
++    {
++        LeaveCriticalSection( &impl->animation_cs );
++        return RO_E_CLOSED;
++    }
+     previous = impl->expressions[index];
+     impl->expressions[index] = NULL;
+     ++impl->animation_revision;
