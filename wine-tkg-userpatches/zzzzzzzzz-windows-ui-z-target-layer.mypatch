@@ -1,0 +1,360 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -237,14 +237,36 @@
+     ID2D1Device *render_device;
+     ID2D1DeviceContext *render_context;
+     ID2D1Bitmap1 *render_bitmap;
++    ID2D1Bitmap1 *render_snapshot;
+     struct list entry;
++    struct list layer_entry;
++    CRITICAL_SECTION render_cs;
+     HWND hwnd;
++    HWND render_hwnd;
+     UINT width;
+     UINT height;
+     BOOL topmost;
+     BOOL linked;
++    BOOL layer_linked;
++    BOOL rendering;
+     LONG ref;
+ };
++
++static CRITICAL_SECTION layer_cs;
++static CRITICAL_SECTION_DEBUG layer_cs_debug =
++{
++    0, 0, &layer_cs,
++    { &layer_cs_debug.ProcessLocksList, &layer_cs_debug.ProcessLocksList },
++    0, 0, { (DWORD_PTR)(__FILE__ ": layer_cs") }
++};
++static CRITICAL_SECTION layer_cs = { &layer_cs_debug, -1, 0, 0, 0, 0 };
++static struct list layer_targets = LIST_INIT( layer_targets );
++static INIT_ONCE layer_class_once = INIT_ONCE_STATIC_INIT;
++static HINSTANCE layer_instance;
++static const WCHAR layer_class_name[] = L"Wine.UI.Composition.Layer";
++
++static HRESULT desktop_window_target_render( struct desktop_window_target *target );
++static void desktop_window_target_repaint( struct desktop_window_target *target );
+ 
+ static inline struct desktop_window_target *impl_from_IDesktopWindowTarget( IDesktopWindowTarget *iface )
+ {
+@@ -290,11 +312,13 @@
+ 
+ static void desktop_window_target_reset_renderer( struct desktop_window_target *impl )
+ {
++    if (impl->render_snapshot) ID2D1Bitmap1_Release( impl->render_snapshot );
+     if (impl->render_bitmap) ID2D1Bitmap1_Release( impl->render_bitmap );
+     if (impl->render_context) ID2D1DeviceContext_Release( impl->render_context );
+     if (impl->render_device) ID2D1Device_Release( impl->render_device );
+     if (impl->swapchain) IDXGISwapChain1_Release( impl->swapchain );
+     impl->render_bitmap = NULL;
++    impl->render_snapshot = NULL;
+     impl->render_context = NULL;
+     impl->render_device = NULL;
+     impl->swapchain = NULL;
+@@ -304,17 +328,84 @@
+ 
+ static ULONG desktop_window_target_release( struct desktop_window_target *impl )
+ {
+-    ULONG ref = InterlockedDecrement( &impl->ref );
++    ULONG ref;
++
++    EnterCriticalSection( &layer_cs );
++    ref = InterlockedDecrement( &impl->ref );
++    if (!ref && impl->layer_linked)
++    {
++        list_remove( &impl->layer_entry );
++        impl->layer_linked = FALSE;
++    }
++    LeaveCriticalSection( &layer_cs );
+ 
+     if (!ref)
+     {
+         if (impl->linked) list_remove( &impl->entry );
+         desktop_window_target_reset_renderer( impl );
++        if (impl->render_hwnd && GetParent( impl->render_hwnd ) == impl->hwnd)
++        {
++            if (GetWindowThreadProcessId( impl->render_hwnd, NULL ) == GetCurrentThreadId())
++                DestroyWindow( impl->render_hwnd );
++            else
++                PostMessageW( impl->render_hwnd, WM_CLOSE, 0, 0 );
++        }
+         if (impl->root) IVisual_Release( impl->root );
+         if (impl->dcomp_target) IDCompositionTarget_Release( impl->dcomp_target );
++        DeleteCriticalSection( &impl->render_cs );
+         free( impl );
+     }
+     return ref;
++}
++
++static LRESULT CALLBACK composition_layer_proc( HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam )
++{
++    struct desktop_window_target *target, *found = NULL;
++    PAINTSTRUCT paint;
++
++    if (message == WM_ERASEBKGND) return 1;
++    if (message != WM_PAINT && message != WM_NCDESTROY)
++        return DefWindowProcW( hwnd, message, wparam, lparam );
++
++    EnterCriticalSection( &layer_cs );
++    LIST_FOR_EACH_ENTRY( target, &layer_targets, struct desktop_window_target, layer_entry )
++    {
++        if (target->render_hwnd != hwnd) continue;
++        if (message == WM_NCDESTROY)
++        {
++            target->render_hwnd = NULL;
++            list_remove( &target->layer_entry );
++            target->layer_linked = FALSE;
++        }
++        else
++        {
++            desktop_window_target_add_ref( target );
++            found = target;
++        }
++        break;
++    }
++    LeaveCriticalSection( &layer_cs );
++
++    if (message == WM_NCDESTROY) return DefWindowProcW( hwnd, message, wparam, lparam );
++    BeginPaint( hwnd, &paint );
++    EndPaint( hwnd, &paint );
++    if (found)
++    {
++        desktop_window_target_repaint( found );
++        desktop_window_target_release( found );
++    }
++    return 0;
++}
++
++static BOOL CALLBACK composition_layer_register_class( INIT_ONCE *once, void *param, void **context )
++{
++    WNDCLASSW class = { .lpfnWndProc = composition_layer_proc, .lpszClassName = layer_class_name };
++
++    /* The registered window procedure can outlive the last composition object. */
++    if (!GetModuleHandleExW( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
++            (const WCHAR *)composition_layer_proc, &layer_instance )) return FALSE;
++    class.hInstance = layer_instance;
++    return RegisterClassW( &class ) || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+ }
+ 
+ static HRESULT desktop_window_target_get_iids( ULONG *count, IID **iids )
+@@ -434,8 +525,10 @@
+     struct desktop_window_target *impl = target_from_ICompositionTarget( iface );
+ 
+     if (!value) return E_POINTER;
++    EnterCriticalSection( &impl->render_cs );
+     if (impl->root) IVisual_AddRef( impl->root );
+     *value = impl->root;
++    LeaveCriticalSection( &impl->render_cs );
+     return S_OK;
+ }
+ 
+@@ -443,15 +536,23 @@
+ {
+     struct desktop_window_target *impl = target_from_ICompositionTarget( iface );
+     IDCompositionVisual *dcomp_visual = NULL;
+-    HRESULT hr;
++    IVisual *previous;
++    HRESULT hr = S_OK;
+ 
+     if (value) dcomp_visual = dcomp_visual_from_visual( value );
++    EnterCriticalSection( &impl->render_cs );
+     if (impl->dcomp_target && FAILED(hr = IDCompositionTarget_SetRoot( impl->dcomp_target,
+-            dcomp_visual ))) return hr;
++            dcomp_visual )))
++    {
++        LeaveCriticalSection( &impl->render_cs );
++        return hr;
++    }
+ 
+     if (value) IVisual_AddRef( value );
+-    if (impl->root) IVisual_Release( impl->root );
++    previous = impl->root;
+     impl->root = value;
++    LeaveCriticalSection( &impl->render_cs );
++    if (previous) IVisual_Release( previous );
+     return S_OK;
+ }
+ 
+@@ -502,11 +603,13 @@
+         HWND hwnd, BOOL topmost, IDesktopWindowTarget **result )
+ {
+     struct desktop_window_target *impl;
++    RECT rect;
+     HRESULT hr;
+ 
+     if (!result) return E_POINTER;
+     *result = NULL;
+     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    InitializeCriticalSection( &impl->render_cs );
+     impl->IDesktopWindowTarget_iface.lpVtbl = &desktop_window_target_vtbl;
+     impl->ICompositionTarget_iface.lpVtbl = &composition_target_vtbl;
+     impl->IDesktopWindowTargetInterop_iface.lpVtbl = &desktop_target_interop_vtbl;
+@@ -516,13 +619,40 @@
+     if (device && FAILED(hr = IDCompositionDevice_CreateTargetForHwnd( device, hwnd, topmost,
+             &impl->dcomp_target )))
+     {
+-        free( impl );
+-        return hr;
+-    }
++        goto failed;
++    }
++    if (!GetClientRect( hwnd, &rect ))
++    {
++        hr = HRESULT_FROM_WIN32( GetLastError() );
++        goto failed;
++    }
++    if (!InitOnceExecuteOnce( &layer_class_once, composition_layer_register_class, NULL, NULL ))
++    {
++        hr = HRESULT_FROM_WIN32( GetLastError() );
++        goto failed;
++    }
++    impl->render_hwnd = CreateWindowExW( WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_NOPARENTNOTIFY,
++            layer_class_name, NULL, WS_CHILD | WS_DISABLED | WS_CLIPSIBLINGS, 0, 0,
++            max( 1, rect.right ), max( 1, rect.bottom ), hwnd, NULL, layer_instance, NULL );
++    if (!impl->render_hwnd)
++    {
++        hr = HRESULT_FROM_WIN32( GetLastError() );
++        goto failed;
++    }
++    EnterCriticalSection( &layer_cs );
++    list_add_tail( &layer_targets, &impl->layer_entry );
++    impl->layer_linked = TRUE;
++    LeaveCriticalSection( &layer_cs );
+     list_add_tail( targets, &impl->entry );
+     impl->linked = TRUE;
+     *result = &impl->IDesktopWindowTarget_iface;
+     return S_OK;
++
++failed:
++    if (impl->dcomp_target) IDCompositionTarget_Release( impl->dcomp_target );
++    DeleteCriticalSection( &impl->render_cs );
++    free( impl );
++    return hr;
+ }
+ 
+ struct compositor
+@@ -11579,7 +11709,7 @@
+     return NULL;
+ }
+ 
+-static HRESULT desktop_window_target_render( struct desktop_window_target *target )
++static HRESULT desktop_window_target_render_locked( struct desktop_window_target *target )
+ {
+     struct composition_drawing_surface *source;
+     ID2D1Bitmap1 *source_bitmap;
+@@ -11597,14 +11727,42 @@
+     const char *stage = "initialization";
+     HRESULT hr, draw;
+ 
+-    if (!target->root || !IsWindow( target->hwnd )) return S_FALSE;
++    if (!IsWindow( target->hwnd ) || !IsWindow( target->render_hwnd ) ||
++            GetParent( target->render_hwnd ) != target->hwnd) return S_FALSE;
++    if (!target->root)
++    {
++        if (target->render_snapshot) ID2D1Bitmap1_Release( target->render_snapshot );
++        target->render_snapshot = NULL;
++        ShowWindowAsync( target->render_hwnd, SW_HIDE );
++        return S_FALSE;
++    }
+     source = find_visual_drawing_surface( target->root, 0 );
+     GetClientRect( target->hwnd, &client );
+     width = max( 1, client.right - client.left );
+     height = max( 1, client.bottom - client.top );
+-    if ((target->width && (target->width != width || target->height != height)) ||
+-            (source && target->render_device && target->render_device != source->device))
++    stage = "position composition layer";
++    if (!SetWindowPos( target->render_hwnd, target->topmost ? HWND_TOP : HWND_BOTTOM,
++            0, 0, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_ASYNCWINDOWPOS ))
++    {
++        hr = HRESULT_FROM_WIN32( GetLastError() );
++        goto done;
++    }
++    if (source && target->render_device && target->render_device != source->device)
+         desktop_window_target_reset_renderer( target );
++    if (target->swapchain && (target->width != width || target->height != height))
++    {
++        stage = "resize composition buffers";
++        if (target->render_context) ID2D1DeviceContext_SetTarget( target->render_context, NULL );
++        if (target->render_bitmap) ID2D1Bitmap1_Release( target->render_bitmap );
++        if (target->render_snapshot) ID2D1Bitmap1_Release( target->render_snapshot );
++        target->render_bitmap = NULL;
++        target->render_snapshot = NULL;
++        hr = IDXGISwapChain1_ResizeBuffers( target->swapchain, 1, width, height,
++                DXGI_FORMAT_B8G8R8A8_UNORM, 0 );
++        if (FAILED(hr)) goto done;
++        target->width = width;
++        target->height = height;
++    }
+ 
+     if (!target->swapchain)
+     {
+@@ -11650,7 +11808,7 @@
+         desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+         stage = "create swapchain";
+         if (FAILED(hr = IDXGIFactory2_CreateSwapChainForHwnd( factory, (IUnknown *)d3d_device,
+-                target->hwnd, &desc, NULL, NULL, &target->swapchain ))) goto done;
++                target->render_hwnd, &desc, NULL, NULL, &target->swapchain ))) goto done;
+         target->width = width;
+         target->height = height;
+     }
+@@ -11689,6 +11847,19 @@
+     hr = ID2D1DeviceContext_EndDraw( target->render_context, NULL, NULL );
+     if (SUCCEEDED(hr)) hr = draw;
+     if (FAILED(hr)) goto done;
++    stage = "retain committed frame";
++    if (!target->render_snapshot)
++    {
++        properties.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
++        properties.pixelFormat.alphaMode = D2D1_ALPHA_MODE_IGNORE;
++        properties.dpiX = properties.dpiY = 96.0f;
++        properties.bitmapOptions = D2D1_BITMAP_OPTIONS_NONE;
++        hr = ID2D1DeviceContext_CreateBitmap( target->render_context, (D2D1_SIZE_U){width, height},
++                NULL, 0, &properties, &target->render_snapshot );
++        if (FAILED(hr)) goto done;
++    }
++    if (FAILED(hr = ID2D1Bitmap1_CopyFromBitmap( target->render_snapshot, NULL,
++            (ID2D1Bitmap *)target->render_bitmap, NULL ))) goto done;
+     stage = "present";
+     hr = IDXGISwapChain1_Present( target->swapchain, 0, 0 );
+ 
+@@ -11706,6 +11877,40 @@
+         desktop_window_target_reset_renderer( target );
+     }
+     return hr;
++}
++
++static HRESULT desktop_window_target_render( struct desktop_window_target *target )
++{
++    HRESULT hr = S_FALSE;
++
++    EnterCriticalSection( &target->render_cs );
++    if (!target->rendering)
++    {
++        target->rendering = TRUE;
++        hr = desktop_window_target_render_locked( target );
++        target->rendering = FALSE;
++    }
++    LeaveCriticalSection( &target->render_cs );
++    return hr;
++}
++
++static void desktop_window_target_repaint( struct desktop_window_target *target )
++{
++    HRESULT hr;
++
++    EnterCriticalSection( &target->render_cs );
++    if (!target->rendering && target->render_snapshot && target->swapchain &&
++            IsWindow( target->render_hwnd ))
++    {
++        target->rendering = TRUE;
++        /* Present discards the backbuffer; repaint only the last committed image. */
++        hr = ID2D1Bitmap1_CopyFromBitmap( target->render_bitmap, NULL,
++                (ID2D1Bitmap *)target->render_snapshot, NULL );
++        if (SUCCEEDED(hr)) hr = IDXGISwapChain1_Present( target->swapchain, 0, 0 );
++        if (FAILED(hr)) WARN( "composition layer repaint failed, hr %#lx.\n", hr );
++        target->rendering = FALSE;
++    }
++    LeaveCriticalSection( &target->render_cs );
+ }
+ 
+ static HRESULT drawing_surface_update_tiles( struct composition_drawing_surface *surface )
