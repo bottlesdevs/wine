@@ -1,0 +1,12 @@
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -507,7 +507,7 @@
+         if (surface->base.format == ctx->share->fbo_drawable_format)
+         {
+             surface->width = ctx->share->fbo_surface_width;
+-            surface->height = ctx->share->fbo_surface_width;
++            surface->height = ctx->share->fbo_surface_height;
+         }
+         else
+         {
