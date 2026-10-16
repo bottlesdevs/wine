@@ -672,6 +672,8 @@ jobs:
           "$runner_dir/bin/wineserver" -w
 
       - name: verify InkDesktopHost and value objects
+        timeout-minutes: 5
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -695,13 +697,13 @@ jobs:
           export WINEDEBUG=-all
           export WINEPREFIX="$RUNNER_TEMP/soda-ink-host-prefix"
           export WINEARCH=win64
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          "$runner_dir/bin/wineboot" -u
           for bits in 64 32; do
             for apartment in sta mta; do
-              xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-ink-host$bits.exe" "$apartment" \
+              "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-ink-host$bits.exe" "$apartment" \
                 | tr -d '\r' | tee "$RUNNER_TEMP/soda-ink-host$bits-$apartment.log"
               grep -Fx 'QUEUE_RESULT callbacks=64 destroyed=64 failures=0' "$RUNNER_TEMP/soda-ink-host$bits-$apartment.log"
-              xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-ink-values$bits.exe" "$apartment" \
+              "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-ink-values$bits.exe" "$apartment" \
                 | tr -d '\r' | tee "$RUNNER_TEMP/soda-ink-values$bits-$apartment.log"
               grep -E '^INK_VALUE_RESULT checks=[1-9][0-9]* failures=0$' "$RUNNER_TEMP/soda-ink-values$bits-$apartment.log"
             done
@@ -709,6 +711,8 @@ jobs:
           "$runner_dir/bin/wineserver" -w
 
       - name: verify CoreInk host objects
+        timeout-minutes: 5
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -725,11 +729,11 @@ jobs:
           export WINEDEBUG=-all
           export WINEPREFIX="$RUNNER_TEMP/soda-ink-core-prefix"
           export WINEARCH=win64
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          "$runner_dir/bin/wineboot" -u
           for bits in 64 32; do
             for apartment in sta mta; do
               for probe in source input drying; do
-                xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-ink-core-$probe$bits.exe" "$apartment" \
+                "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-ink-core-$probe$bits.exe" "$apartment" \
                   | tr -d '\r' | tee "$RUNNER_TEMP/soda-ink-core-$probe$bits-$apartment.log"
                 grep -E "^INK_${probe^^}_RESULT checks=[1-9][0-9]* failures=0$" "$RUNNER_TEMP/soda-ink-core-$probe$bits-$apartment.log"
               done
@@ -1493,6 +1497,8 @@ jobs:
           if-no-files-found: error
 
       - name: verify Windows architectures
+        timeout-minutes: 10
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
         env:
           COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
         run: |
@@ -1505,11 +1511,11 @@ jobs:
           export WINEPREFIX=/tmp/soda-arm64-prefix
           runtime_log=/tmp/soda-arm64-runtime.log
           mkdir -p "$WINEPREFIX"
-          if ! xvfb-run -a "$runner_dir/bin/wine" wineboot -u >"$runtime_log" 2>&1; then
+          if ! "$runner_dir/bin/wine" wineboot -u >"$runtime_log" 2>&1; then
             cat "$runtime_log"
             exit 1
           fi
-          if ! native_arch="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r' | grep -E '^(ARM64|AMD64|x86)$' | tail -1)"; then
+          if ! native_arch="$("$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r' | grep -E '^(ARM64|AMD64|x86)$' | tail -1)"; then
             cat "$runtime_log"
             exit 1
           fi
@@ -1520,7 +1526,7 @@ jobs:
           fi
           x64_cmd="$runner_dir/lib/wine/x86_64-windows/cmd.exe"
           test -f "$x64_cmd"
-          if ! x64_arch="$(xvfb-run -a "$runner_dir/bin/wine" "$x64_cmd" /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r' | grep -E '^(ARM64|AMD64|x86)$' | tail -1)"; then
+          if ! x64_arch="$("$runner_dir/bin/wine" "$x64_cmd" /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r' | grep -E '^(ARM64|AMD64|x86)$' | tail -1)"; then
             cat "$runtime_log"
             exit 1
           fi
@@ -1531,7 +1537,7 @@ jobs:
           fi
           x86_cmd="$runner_dir/lib/wine/i386-windows/cmd.exe"
           test -f "$x86_cmd"
-          if ! x86_arch="$(xvfb-run -a "$runner_dir/bin/wine" "$x86_cmd" /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r' | grep -E '^(ARM64|AMD64|x86)$' | tail -1)"; then
+          if ! x86_arch="$("$runner_dir/bin/wine" "$x86_cmd" /c echo '%PROCESSOR_ARCHITECTURE%' 2>>"$runtime_log" | tr -d '\r' | grep -E '^(ARM64|AMD64|x86)$' | tail -1)"; then
             cat "$runtime_log"
             exit 1
           fi

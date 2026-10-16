@@ -154,6 +154,7 @@ int main(int argc, char **argv)
     unsigned int i;
     BOOL sta = argc > 1 && argv[1][0] == 's';
 
+    setvbuf(stdout, NULL, _IONBF, 0);
     check(RoInitialize(sta ? RO_INIT_SINGLETHREADED : RO_INIT_MULTITHREADED) == S_OK);
     check(WindowsCreateString(RuntimeClass_Windows_UI_Input_Inking_InkPoint,
             wcslen(RuntimeClass_Windows_UI_Input_Inking_InkPoint), &name) == S_OK);
