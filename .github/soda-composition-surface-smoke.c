@@ -114,6 +114,8 @@ int main(void)
     ID3D11Device *d3d = NULL;
     IDXGIDevice *dxgi = NULL;
     ID2D1Device *d2d = NULL;
+    HRESULT (WINAPI *create_device)(IDXGIDevice *, const D2D1_CREATION_PROPERTIES *, ID2D1Device **);
+    HMODULE module;
     HSTRING name = NULL;
     EventRegistrationToken token;
     RECT rect = {256, 256, 288, 272};
@@ -134,7 +136,13 @@ int main(void)
                             D3D11_SDK_VERSION, &d3d, NULL, NULL) == S_OK);
     if (!d3d) return 2;
     check(ID3D11Device_QueryInterface(d3d, &IID_IDXGIDevice, (void **)&dxgi) == S_OK);
-    check(D2D1CreateDevice(dxgi, NULL, &d2d) == S_OK);
+    module = LoadLibraryW(L"d2d1.dll");
+    check(module != NULL);
+    if (!module) return 2;
+    create_device = (void *)GetProcAddress(module, "D2D1CreateDevice");
+    check(create_device != NULL);
+    if (!create_device) return 2;
+    check(create_device(dxgi, NULL, &d2d) == S_OK);
     check(ICompositorInterop_CreateGraphicsDevice(interop, (IUnknown *)d2d, &graphics) == S_OK);
     check(ICompositionGraphicsDevice_QueryInterface(graphics, &IID_ICompositionGraphicsDevice2, (void **)&graphics2) ==
           S_OK);
@@ -168,6 +176,7 @@ int main(void)
     ICompositionDrawingSurface_Release(surface);
     ICompositionVirtualDrawingSurface_Release(virtual);
     ID2D1Device_Release(d2d);
+    FreeLibrary(module);
     IDXGIDevice_Release(dxgi);
     ID3D11Device_Release(d3d);
     RoUninitialize();
