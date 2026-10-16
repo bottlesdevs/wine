@@ -1358,13 +1358,11 @@ jobs:
 
       - name: build Wine and FEX
         working-directory: /tmp/proton-build
-        env:
-          WINE_CFLAGS: -gdwarf-4
         run: |
-          make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= wine
-          make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= fex
-          make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= fex_unixlib
-          make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= wineopenxr
+          make WINE_CFLAGS="-gdwarf-4 -Wno-discarded-qualifiers" UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= wine
+          make WINE_CFLAGS="-gdwarf-4 -Wno-discarded-qualifiers" UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= fex
+          make WINE_CFLAGS="-gdwarf-4 -Wno-discarded-qualifiers" UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= fex_unixlib
+          make WINE_CFLAGS="-gdwarf-4 -Wno-discarded-qualifiers" UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= wineopenxr
 
       - name: package
         env:
