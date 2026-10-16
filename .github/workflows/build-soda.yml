@@ -31,7 +31,7 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  REVISION: '30-experimental'
+  REVISION: '31-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -49,21 +49,21 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-30 Experimental, codenamed Windows Escape, updates Direct2D, GDI and Windows.UI.Composition rendering. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-31 Experimental, codenamed Windows Escape, updates composition, drawing surfaces, shared textures and Eagle. It remains a prerelease and does not replace the current stable Soda build.
 
-    - Deferred Direct2D HWND presentation until EndDraw and flushed GDI window surfaces.
-    - Preserved Direct2D command-list drawing state and checked render target support.
-    - Aligned virtual drawing surface updates, preserved existing content and published changes on EndDraw.
-    - Implemented the Direct2D arithmetic image effect and preserved WIC drawing errors and tags.
-    - Handled DXGI presentation regions and swapchain buffer lifetime.
-    - Selected registered type library versions by major and minor version.
-    - Added Haptics waveform constants and activation interfaces.
-    - Added Composition effect factories, vector expressions and visual transforms.
-    - Implemented Composition gradient brushes and Direct2D gradient gamma and extend modes.
-    - Added RedirectVisual rendering, source changes and source retention.
-    - Added CompositionObject2 metadata and implicit-animation collection association.
-    - Added native animation-group and implicit-animation collection interfaces, iteration and disposal.
-    - Preserved application window styles when creating composition targets.
+    - Added native WineD3D shared resources and keyed mutex support.
+    - Added Ink points, drawing attributes, desktop work queues and CoreInk host interfaces.
+    - Preserved composition brush lifetime and notified composition commits after surface updates.
+    - Added component expressions, tracker bounds, position and scale bindings, value callbacks and timed inertia.
+    - Rejected updates, animations and new bindings after closing an interaction tracker.
+    - Preserved composition target layers across repaint and resize.
+    - Fixed rectangular framebuffer height and synchronized native client resizes.
+    - Honored requests to authenticate again through the identity bridge.
+    - Added the native Eagle analyzer and its Bottles backend.
+    - Added offline source and symbol lookup, PDB and split-DWARF companions, inline frames and recorded-stack comparison.
+    - Preserved matching Wine symbols and source identities in runner symbol bundles.
+    - Added Direct2D, library, export and native loader details to Eagle traces.
+    - Improved Eagle capture cleanup, session history, report export and target exit handling.
 
 jobs:
   patches:
