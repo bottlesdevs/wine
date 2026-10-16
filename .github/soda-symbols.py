@@ -166,7 +166,7 @@ def write_manifest(path, value):
     path.chmod(0o644)
 
 
-def stage(runner, destination, tools, name, required=(), objcopy='objcopy', debug_roots=()):
+def stage(runner, destination, tools, name, required=(), objcopy=None, debug_roots=()):
     runner = Path(runner).resolve(strict=True)
     destination = Path(destination).absolute()
     if destination.exists() or destination.resolve() != destination or destination.resolve() == runner or runner in destination.resolve().parents:
@@ -204,7 +204,7 @@ def stage(runner, destination, tools, name, required=(), objcopy='objcopy', debu
                 if len(identities) != 1:
                     raise ValueError('ambiguous PDB identities: ' + relative)
                 names = {Path(entry['pdb']).name if entry['pdb'].startswith('/') else PureWindowsPath(entry['pdb']).name
-                         for entry in metadata['codeview']}
+                         for entry in metadata['codeview'] if entry['pdb']}
                 if any(not name or name in ('.', '..') for name in names):
                     raise ValueError('invalid image PDB name: ' + relative)
                 candidates = {path for name in names for path in (image.parent / name, image.parent / '.debug' / name)}
@@ -271,6 +271,8 @@ def stage(runner, destination, tools, name, required=(), objcopy='objcopy', debu
                 raise ValueError('debug companion changed during symbol staging: ' + relative)
         else:
             if llvm_objcopy is None:
+                if objcopy is None:
+                    objcopy = host_tool('llvm-objcopy') or 'objcopy'
                 version = subprocess.check_output([objcopy, '--version'], text=True, timeout=10)
                 llvm_objcopy = version.splitlines()[0].lower().startswith('llvm')
             flags = [] if llvm_objcopy and before.get('format') != 'ELF' else ['--preserve-dates']
@@ -388,7 +390,7 @@ def main():
     parser.add_argument('--tools', required=True, type=Path)
     parser.add_argument('--name', default='soda')
     parser.add_argument('--require', action='append', default=[])
-    parser.add_argument('--objcopy', default='objcopy')
+    parser.add_argument('--objcopy')
     parser.add_argument('--debug-root', action='append', default=[], type=Path)
     parser.add_argument('--verify', action='store_true')
     options = parser.parse_args()

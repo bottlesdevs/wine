@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 PACKAGE = Path(os.environ['EAGLE_PACKAGE'])
 sys.path.insert(0, str(PACKAGE / 'lib/eagle'))
@@ -29,7 +30,7 @@ class SymbolBundle(unittest.TestCase):
         self.tools = PACKAGE / 'lib/eagle/native'
         (self.runner / 'bin').mkdir(parents=True)
 
-    def image(self, name='fixture', machine='elf', dwarf=5, debug=True):
+    def image(self, name='fixture', machine='elf', dwarf=5, debug=True, build_id=False):
         compiler = 'gcc' if machine == 'elf' else machine + '-w64-mingw32-gcc'
         if not shutil.which(compiler):
             self.skipTest('owned fixtures require ' + compiler)
@@ -39,6 +40,8 @@ class SymbolBundle(unittest.TestCase):
         command = [compiler, '-O2'] + (['-g', '-gdwarf-' + str(dwarf)] if debug else [])
         if machine != 'elf':
             command.append('-Wl,--no-insert-timestamp')
+        if build_id:
+            command.append('-Wl,--build-id')
         subprocess.run([*command, str(source), '-o', str(image)], check=True, capture_output=True, timeout=30)
         return image
 
@@ -87,6 +90,27 @@ class SymbolBundle(unittest.TestCase):
             self.assertEqual(producer.digest(self.runner / 'bin' / name), expected)
             self.assertFalse((self.runner / 'bin' / (name + '.debug')).exists())
             self.assertTrue((self.bundle / 'bin' / (name + '.debug')).is_file())
+
+    def test_pe_build_id_without_pdb_name_retains_dwarf(self):
+        for machine in ('i686', 'x86_64'):
+            image = self.image(machine, machine, build_id=True)
+            metadata = producer.inspect(image, self.tools)
+            self.assertTrue(metadata['debug_info'])
+            self.assertTrue(metadata['codeview'])
+            self.assertTrue(all(entry['pdb'] == '' for entry in metadata['codeview']))
+        result = self.stage(required=['bin/i686.exe', 'bin/x86_64.exe'])
+        self.assertEqual(result['retained'], 2)
+        for record in result['images'].values():
+            self.assertEqual(record['pdb_status'], 'unavailable')
+            self.assertEqual(record['coverage'], 'dwarf')
+        self.assertEqual(producer.verify(self.runner, self.bundle, self.tools), result)
+
+    def test_gnu_objcopy_retains_symbols_when_llvm_is_absent(self):
+        self.image()
+        with patch.object(producer, 'host_tool', return_value=None):
+            result = self.stage(required=['bin/fixture'])
+        self.assertEqual(result['retained'], 1)
+        self.assertEqual(producer.verify(self.runner, self.bundle, self.tools), result)
 
     def test_required_coverage_fails_before_mutation(self):
         image = self.image(debug=False)
