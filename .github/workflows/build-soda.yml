@@ -1358,6 +1358,8 @@ jobs:
 
       - name: build Wine and FEX
         working-directory: /tmp/proton-build
+        env:
+          WINE_CFLAGS: -gdwarf-4
         run: |
           make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= wine
           make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= fex
@@ -1449,6 +1451,25 @@ jobs:
           cp "$runner_dir/share/soda/"{build,files,sources}.json "$symbols_root/$COMPONENT_NAME/share/soda/"
           tar -C "$symbols_root" -cJf "/tmp/$COMPONENT_NAME-symbols.tar.xz" "$COMPONENT_NAME"
           tar -C /tmp -cJf "/tmp/$ARCHIVE_NAME" "$COMPONENT_NAME"
+
+      - name: retain failed ARM package inputs
+        if: failure()
+        run: |
+          if test -d /tmp/proton-build/dist/files; then
+            work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64-inputs"
+            mkdir -p "$work"
+            tar -C /tmp/proton-build/dist -cf "$work/files.tar" files
+          fi
+
+      - name: upload failed ARM package inputs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: arm64-package-inputs-${{ github.sha }}
+          path: /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}-arm64-inputs/files.tar
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 1
 
       - name: upload ARM Eagle build log
         if: always()
