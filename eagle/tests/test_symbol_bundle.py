@@ -86,7 +86,9 @@ class SymbolBundle(unittest.TestCase):
         for image in (self.runner / 'bin').iterdir():
             relative = str(image.relative_to(self.runner))
             metadata['files'][relative] = producer.digest(image)
-            metadata['symbols'][relative] = {'sha256': producer.digest(image), 'debug_info': True}
+            identity = producer.inspect(image, self.tools)
+            metadata['symbols'][relative] = {'sha256': producer.digest(image),
+                **{key: identity[key] for key in ('format', 'machine', 'size', 'debug_info') if key in identity}}
         path = self.runner / 'share/eagle/build.json'
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps(metadata))
@@ -101,7 +103,9 @@ class SymbolBundle(unittest.TestCase):
             self.assertNotEqual(metadata['files'][relative], after['files'][relative])
             self.assertEqual(after['files'][relative], producer.digest(image))
             self.assertEqual(after['symbols'][relative]['sha256'], producer.digest(image))
-            self.assertFalse(after['symbols'][relative]['debug_info'])
+            identity = producer.inspect(image, self.tools)
+            for key in ('format', 'machine', 'size', 'debug_info'):
+                self.assertEqual(after['symbols'][relative].get(key), identity.get(key))
             self.assertEqual(after['symbols'][relative]['debuglink_crc'], record['debuglink_crc32'])
             self.assertEqual(capture_identity(self.runner, image, image)['status'], 'matched')
 
@@ -112,7 +116,7 @@ class SymbolBundle(unittest.TestCase):
         path.write_text(original)
         with self.assertRaisesRegex(ValueError, 'Eagle build input does not match image'):
             producer.refresh_eagle_manifest(self.runner, {
-                'bin/fixture': {'input_sha256': 'b' * 64, 'image_sha256': 'c' * 64}})
+                'bin/fixture': {'input_sha256': 'b' * 64, 'image_sha256': 'c' * 64}}, self.tools)
         self.assertEqual(path.read_text(), original)
 
     def test_existing_proton_style_debuglink_is_moved_without_changing_image(self):

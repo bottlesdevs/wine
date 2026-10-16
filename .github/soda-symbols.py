@@ -166,7 +166,7 @@ def write_manifest(path, value):
     path.chmod(0o644)
 
 
-def refresh_eagle_manifest(runner, records):
+def refresh_eagle_manifest(runner, records, tools):
     path = runner / 'share/eagle/build.json'
     if not path.exists():
         return
@@ -180,11 +180,11 @@ def refresh_eagle_manifest(runner, records):
             raise ValueError('Eagle build input does not match image: ' + relative)
         metadata['files'][relative] = record['image_sha256']
         if relative in metadata['symbols']:
-            metadata['symbols'][relative]['sha256'] = record['image_sha256']
-            if 'debug_file' in record:
-                metadata['symbols'][relative].update(debug_info=False,
-                    debuglink=Path(record['debug_file']).name,
-                    debuglink_crc=record['debuglink_crc32'])
+            identity = inspect(runner / relative, tools)
+            names = ('format', 'machine', 'timestamp', 'size', 'image_base', 'build_id',
+                     'codeview', 'debug_info', 'debuglink', 'debuglink_crc')
+            metadata['symbols'][relative] = {'sha256': record['image_sha256'],
+                **{key: identity[key] for key in names if key in identity}}
     temporary = path.with_name(path.name + ".next")
     write_manifest(temporary, metadata)
     temporary.replace(path)
@@ -343,7 +343,7 @@ def stage(runner, destination, tools, name, required=(), objcopy=None, debug_roo
         pdb.unlink()
     for path in {path for plan in split.values() for path, _ in plan['inputs'] if runner in path.parents}:
         path.unlink()
-    refresh_eagle_manifest(runner, records)
+    refresh_eagle_manifest(runner, records, tools)
     verify(runner, destination, tools)
     return manifest
 
