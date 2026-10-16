@@ -90,6 +90,18 @@ class RunnerProvenance(unittest.TestCase):
                 records = json.loads((self.runner / 'share/soda/files.json').read_text())
                 self.assertEqual(records['lib/wine/x86_64-windows/fixture.exe']['identity']['machine'], machine)
 
+    def test_pe_debug_companion_does_not_read_removed_runtime_sections(self):
+        target = self.runner / 'lib/wine/x86_64-windows/fixture.exe'
+        debug = target.with_suffix('.exe.debug')
+        subprocess.run(['x86_64-w64-mingw32-objcopy', '--only-keep-debug', str(target), str(debug)],
+                       check=True, capture_output=True, timeout=20)
+        self.build()
+        records = json.loads((self.runner / 'share/soda/files.json').read_text())
+        record = records[str(debug.relative_to(self.runner))]
+        self.assertEqual(record['kind'], 'pe')
+        self.assertTrue(record['identity']['debug_info'])
+        self.assertEqual(record['sha256'], provenance.digest(debug))
+
     def test_source_revision_mismatch_does_not_create_a_manifest(self):
         with self.assertRaisesRegex(ValueError, 'source revision mismatch'):
             self.build(expected={'wine': 'a' * 40})

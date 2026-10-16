@@ -64,7 +64,8 @@ def file_inventory(runner, tools):
                     pe = False
             kind = 'elf' if header[:4] == b'\x7fELF' else 'pe' if pe else None
             if kind:
-                output = subprocess.check_output([str(tools / ('eagle-' + kind)), str(path)], text=True, timeout=10)
+                arguments = ['--debug'] if kind == 'pe' and path.suffix == '.debug' else []
+                output = subprocess.check_output([str(tools / ('eagle-' + kind)), *arguments, str(path)], text=True, timeout=10)
                 metadata = json.loads(output)
                 record.update(kind=kind, identity={key: metadata[key] for key in fields if key in metadata})
             after = path.stat()
