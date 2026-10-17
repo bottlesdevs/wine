@@ -1832,6 +1832,12 @@ jobs:
           gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
             --name "pre-test-symbols-$component-x86_64" --dir "$work/symbols/$component-x86_64"
           chmod +x "$runner"/bin/*
+          for arch in i386 x86_64; do
+            for loader in wine wine64 wine-preloader wine64-preloader; do
+              path="$runner/lib/wine/$arch-unix/$loader"
+              if test -f "$path"; then chmod +x "$path"; fi
+            done
+          done
           for name in msidb msiexec notepad regedit regsvr32 wineboot winecfg wineconsole winedbg winefile winemine winepath; do
             cmp "$runner/bin/$name" "$runner/bin/wine"
             ln -sf wine "$runner/bin/$name"
