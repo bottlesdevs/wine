@@ -507,8 +507,8 @@ jobs:
             printf 'Expected x86, got:\n%s\n' "$architecture_output" >&2
             exit 1
           fi
-          grep -F '#arch=win32' "$WINEPREFIX/system.reg"
           "$runner_dir/bin/wineserver" -w
+          grep -F '#arch=win32' "$WINEPREFIX/system.reg"
 
       - name: verify Office WinRT classes
         shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
