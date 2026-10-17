@@ -45,6 +45,7 @@ int main(void)
     int failures = 0;
     HRESULT hr;
 
+    setvbuf(stdout, NULL, _IONBF, 0);
     hr = RoInitialize(RO_INIT_MULTITHREADED);
     if (FAILED(hr))
     {

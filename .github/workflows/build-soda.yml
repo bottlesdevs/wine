@@ -245,6 +245,7 @@ jobs:
         run: yes|./non-makepkg-build.sh
 
       - name: verify packaged Unix runtime
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -380,6 +381,7 @@ jobs:
           grep -E '[#/]+server[#/]+' /tmp/soda-pgo/evidence/consumed-profiles.txt
 
       - name: verify packaged PGO Unix runtime
+        timeout-minutes: 5
         if: steps.identity.outputs.pgo == 'true'
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
@@ -458,6 +460,8 @@ jobs:
           if-no-files-found: error
 
       - name: verify prefix username
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -469,11 +473,11 @@ jobs:
           unset WINEUSERNAME
           runtime_log=/tmp/soda-username.log
           mkdir -p "$WINEPREFIX"
-          if ! WINEDEBUG=err+all xvfb-run -a "$runner_dir/bin/wineboot" -u >"$runtime_log" 2>&1; then
+          if ! WINEDEBUG=err+all "$runner_dir/bin/wineboot" -u >"$runtime_log" 2>&1; then
             cat "$runtime_log"
             exit 1
           fi
-          username_output="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%USERNAME%' | tr -d '\r')"
+          username_output="$("$runner_dir/bin/wine" cmd /c echo '%USERNAME%' | tr -d '\r')"
           username="$(printf '%s\n' "$username_output" | sed -n '/^soda-ci$/p' | tail -1)"
           if [[ "$username" != soda-ci ]]; then
             printf 'Expected username soda-ci, got:\n%s\n' "$username_output" >&2
@@ -486,6 +490,8 @@ jobs:
           "$runner_dir/bin/wineserver" -w
 
       - name: verify pure 32-bit prefix
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -494,8 +500,8 @@ jobs:
           export WINEPREFIX=/tmp/soda-win32-prefix
           export WINEARCH=win32
           mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
-          architecture_output="$(xvfb-run -a "$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' | tr -d '\r')"
+          "$runner_dir/bin/wineboot" -u
+          architecture_output="$("$runner_dir/bin/wine" cmd /c echo '%PROCESSOR_ARCHITECTURE%' | tr -d '\r')"
           architecture="$(printf '%s\n' "$architecture_output" | sed -n '/^x86$/p' | tail -1)"
           if [[ "$architecture" != x86 ]]; then
             printf 'Expected x86, got:\n%s\n' "$architecture_output" >&2
@@ -505,6 +511,8 @@ jobs:
           "$runner_dir/bin/wineserver" -w
 
       - name: verify Office WinRT classes
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -539,18 +547,18 @@ jobs:
             export WINEPREFIX="$RUNNER_TEMP/soda-office-winrt-prefix-$arch"
             export WINEARCH="$arch"
             mkdir -p "$WINEPREFIX"
-            xvfb-run -a "$runner_dir/bin/wineboot" -u
-            xvfb-run -a "$runner_dir/bin/wine" "$executable" | tr -d '\r' | tee "$log"
+            "$runner_dir/bin/wineboot" -u
+            "$runner_dir/bin/wine" "$executable" | tr -d '\r' | tee "$log"
             grep -Fx 'core_application:00000000' "$log"
             grep -Fx 'message_websocket:00000000' "$log"
             grep -Fx 'protection_policy:00000000' "$log"
             grep -Fx 'retail_info:00000000' "$log"
             grep -Fx 'web_authentication_manager:00000000' "$log"
             grep -Fx 'composition_effect_source_parameter:00000000' "$log"
-            xvfb-run -a "$runner_dir/bin/wine" reg add \
+            "$runner_dir/bin/wine" reg add \
               "HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\\$(basename "$ldap_executable")" \
               /v GlobalFlag /t REG_DWORD /d 112 /f
-            xvfb-run -a "$runner_dir/bin/wine" "$ldap_executable" \
+            "$runner_dir/bin/wine" "$ldap_executable" \
               | tr -d '\r' | tee "$log.ldap"
             grep -Fx 'ldap_init_checks:1024 failures:0' "$log.ldap"
             "$runner_dir/bin/wineserver" -w
@@ -560,6 +568,8 @@ jobs:
           run_smoke win32 "$RUNNER_TEMP/soda-office-winrt-smoke32.exe" "$RUNNER_TEMP/soda-ldap-smoke32.exe"
 
       - name: verify Composition brush lifetime
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -576,14 +586,16 @@ jobs:
             export WINEDEBUG=-all
             export WINEPREFIX="$RUNNER_TEMP/soda-composition-brush-prefix-$bits"
             if [[ "$bits" == 64 ]]; then export WINEARCH=win64; else export WINEARCH=win32; fi
-            xvfb-run -a "$runner_dir/bin/wineboot" -u
-            xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-brush$bits.exe" \
+            "$runner_dir/bin/wineboot" -u
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-brush$bits.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-brush$bits.log"
             grep -E '^composition_brush_checks:[1-9][0-9]* failures:0$' "$RUNNER_TEMP/soda-composition-brush$bits.log"
             "$runner_dir/bin/wineserver" -w
           done
 
       - name: verify Composition surface commits
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -601,10 +613,10 @@ jobs:
           export WINEDEBUG=-all
           export WINEPREFIX="$RUNNER_TEMP/soda-composition-commit-prefix"
           export WINEARCH=win64
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          "$runner_dir/bin/wineboot" -u
           for bits in 64 32; do
             for probe in surface callbacks; do
-              xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-$probe$bits.exe" \
+              "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-$probe$bits.exe" \
                 | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-$probe$bits.log"
               if [[ "$probe" == surface ]]; then result=SURFACE_COMMIT_RESULT; else result=CONTROLLER_CALLBACK_RESULT; fi
               grep -E "^$result checks=[1-9][0-9]* failures=0$" "$RUNNER_TEMP/soda-composition-$probe$bits.log"
@@ -613,6 +625,8 @@ jobs:
           "$runner_dir/bin/wineserver" -w
 
       - name: verify Composition scalar expressions and tracker bounds
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -649,23 +663,23 @@ jobs:
           export WINEPREFIX="$RUNNER_TEMP/soda-composition-tracker-prefix"
           export WINEARCH=win64
           export WINEDLLOVERRIDES="dxgi,d3d11,d3d10core,windows.ui=b;winewayland.drv=d;winemenubuilder.exe=d"
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
-          xvfb-run -a "$runner_dir/bin/wine" reg add 'HKCU\Software\Wine\Direct3D' \
+          "$runner_dir/bin/wineboot" -u
+          "$runner_dir/bin/wine" reg add 'HKCU\Software\Wine\Direct3D' \
             /v renderer /t REG_SZ /d gl /f
           for bits in 64 32; do
-            xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-tracker$bits.exe" candidate \
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-tracker$bits.exe" candidate \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-tracker$bits.log"
             grep -E '^TRACKER_DONE$' "$RUNNER_TEMP/soda-composition-tracker$bits.log"
-            xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-binding$bits.exe" \
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-binding$bits.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-binding$bits.log"
             grep -E '^BINDING_DONE$' "$RUNNER_TEMP/soda-composition-binding$bits.log"
-            xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-owner$bits.exe" \
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-owner$bits.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-owner$bits.log"
             grep -E '^OWNER_EVENTS_DONE$' "$RUNNER_TEMP/soda-composition-owner$bits.log"
-            xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-clamping$bits.exe" \
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-clamping$bits.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-clamping$bits.log"
             grep -E '^CLAMP_FAILURES=0$' "$RUNNER_TEMP/soda-composition-clamping$bits.log"
-            xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-overloads$bits.exe" \
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-overloads$bits.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-overloads$bits.log"
             grep -E '^OVERLOAD_FAILURES=0$' "$RUNNER_TEMP/soda-composition-overloads$bits.log"
           done
@@ -742,6 +756,8 @@ jobs:
           "$runner_dir/bin/wineserver" -w
 
       - name: verify Direct2D Flush presentation
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -755,7 +771,7 @@ jobs:
           export WINEARCH=win64
           mkdir -p "$WINEPREFIX"
           runtime_log="$RUNNER_TEMP/soda-d2d-flush-smoke.log"
-          if ! xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-d2d-flush-smoke.exe" >"$runtime_log" 2>&1; then
+          if ! "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-d2d-flush-smoke.exe" >"$runtime_log" 2>&1; then
             tail -n 160 "$runtime_log"
             exit 1
           fi
@@ -771,6 +787,8 @@ jobs:
           if-no-files-found: ignore
 
       - name: verify GdiFlush window surfaces
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -783,10 +801,12 @@ jobs:
           export WINEPREFIX="$RUNNER_TEMP/soda-gdi-flush-prefix"
           export WINEARCH=win64
           mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-gdi-flush-smoke.exe"
+          "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-gdi-flush-smoke.exe"
           "$runner_dir/bin/wineserver" -w
 
       - name: verify registered type library versions
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -807,7 +827,7 @@ jobs:
             export WINEARCH="win$arch"
             export WINEPREFIX="$smoke_dir/prefix$arch"
             mkdir -p "$WINEPREFIX"
-            xvfb-run -a "$runner_dir/bin/wine" "$smoke_dir/smoke$arch.exe" \
+            "$runner_dir/bin/wine" "$smoke_dir/smoke$arch.exe" \
               | tr -d '\r' | tee "$smoke_dir/smoke$arch.log"
             grep -Fx 'CANDIDATE_SELECTION_PASS=00000000' "$smoke_dir/smoke$arch.log"
             grep -Fx 'REGISTERED_EXACT_VERSION=1.0' "$smoke_dir/smoke$arch.log"
@@ -818,6 +838,8 @@ jobs:
           done
 
       - name: verify WIC presentation errors
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -838,7 +860,7 @@ jobs:
             export WINEARCH="win$arch"
             export WINEPREFIX="$smoke_dir/prefix$arch"
             mkdir -p "$WINEPREFIX"
-            xvfb-run -a "$runner_dir/bin/wine" "$smoke_dir/smoke$arch.exe" \
+            "$runner_dir/bin/wine" "$smoke_dir/smoke$arch.exe" \
               | tr -d '\r' | tee "$smoke_dir/smoke$arch.log"
             grep -Fx 'WIC_LOCKED_END=88982f0d tags=1111,2222' "$smoke_dir/smoke$arch.log"
             grep -Fx 'WIC_RECOVERY=PASS' "$smoke_dir/smoke$arch.log"
@@ -848,6 +870,8 @@ jobs:
           done
 
       - name: verify Haptics waveform constants
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -868,7 +892,7 @@ jobs:
             export WINEARCH="win$arch"
             export WINEPREFIX="$smoke_dir/prefix$arch"
             mkdir -p "$WINEPREFIX"
-            xvfb-run -a "$runner_dir/bin/wine" "$smoke_dir/smoke$arch.exe" \
+            "$runner_dir/bin/wine" "$smoke_dir/smoke$arch.exe" \
               | tr -d '\r' | tee "$smoke_dir/smoke$arch.log"
             grep -Fx 'HAPTICS_FACTORY=00000000' "$smoke_dir/smoke$arch.log"
             grep -Fx 'RUNTIME_CLASS=PASS' "$smoke_dir/smoke$arch.log"
@@ -878,6 +902,8 @@ jobs:
           done
 
       - name: verify MS-ICU runtime
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -888,8 +914,8 @@ jobs:
           export WINEPREFIX=/tmp/soda-icu-prefix64
           export WINEARCH=win64
           mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
-          xvfb-run -a "$runner_dir/bin/wine" /tmp/soda-icu/smoke64.exe \
+          "$runner_dir/bin/wineboot" -u
+          "$runner_dir/bin/wine" /tmp/soda-icu/smoke64.exe \
             | tr -d '\r' | tee /tmp/soda-icu/runtime64.log
           grep -F 'ICU 72.1 timezone=America/Denver' /tmp/soda-icu/runtime64.log
           "$runner_dir/bin/wineserver" -w
@@ -897,13 +923,14 @@ jobs:
           export WINEPREFIX=/tmp/soda-icu-prefix32
           export WINEARCH=win32
           mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
-          xvfb-run -a "$runner_dir/bin/wine" /tmp/soda-icu/smoke32.exe \
+          "$runner_dir/bin/wineboot" -u
+          "$runner_dir/bin/wine" /tmp/soda-icu/smoke32.exe \
             | tr -d '\r' | tee /tmp/soda-icu/runtime32.log
           grep -F 'ICU 72.1 timezone=America/Denver' /tmp/soda-icu/runtime32.log
           "$runner_dir/bin/wineserver" -w
 
       - name: verify compatibility fixes
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -980,6 +1007,8 @@ jobs:
           trap - EXIT
 
       - name: verify file security mappings
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -990,13 +1019,15 @@ jobs:
           export WINEPREFIX=/tmp/soda-file-security-prefix
           export WINEARCH=win64
           mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
-          xvfb-run -a "$runner_dir/bin/wine" /tmp/soda-file-security-smoke.exe \
+          "$runner_dir/bin/wineboot" -u
+          "$runner_dir/bin/wine" /tmp/soda-file-security-smoke.exe \
             | tr -d '\r' | tee /tmp/soda-file-security-smoke.log
           grep -Fx 'reopen:ok' /tmp/soda-file-security-smoke.log
           "$runner_dir/bin/wineserver" -w
 
       - name: verify OpenXR outside Steam
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
@@ -1063,21 +1094,22 @@ jobs:
           export SODA_OPENXR_RUNTIME=host
           export WINEDEBUG=+openxr
           mkdir -p "$WINEPREFIX"
-          xvfb-run -a "$runner_dir/bin/wineboot" -u
+          "$runner_dir/bin/wineboot" -u
           install -Dm644 /tmp/proton/wineopenxr/wineopenxr64.json \
             "$WINEPREFIX/drive_c/openxr/wineopenxr64.json"
-          xvfb-run -a "$runner_dir/bin/wine" reg query 'HKLM\Software\Khronos\OpenXR\1' \
+          "$runner_dir/bin/wine" reg query 'HKLM\Software\Khronos\OpenXR\1' \
             /v ActiveRuntime >/tmp/soda-openxr/registry.log
           grep -F 'C:\openxr\wineopenxr64.json' /tmp/soda-openxr/registry.log
           (
             cd /tmp/soda-openxr/app
-            xvfb-run -a "$runner_dir/bin/wine" soda-openxr-smoke.exe
+            "$runner_dir/bin/wine" soda-openxr-smoke.exe
           ) >/tmp/soda-openxr/application.log 2>&1
           grep -F 'runtime=Monado' /tmp/soda-openxr/application.log
           grep -F 'system=Monado: Simulated HMD' /tmp/soda-openxr/application.log
           "$runner_dir/bin/wineserver" -w
 
       - name: verify Valve Wine source
+        timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: test "$(git -C src/ValveSoftware-winegit rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
 
@@ -1166,6 +1198,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: package
+        timeout-minutes: 30
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/non-makepkg-builds/
         env:
           ARCHIVE_NAME: ${{ steps.identity.outputs.archive_name }}
