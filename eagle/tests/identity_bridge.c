@@ -131,9 +131,11 @@ int main(int argc, char **argv)
     HSTRING name, provider_id, authority, client_id;
     FindAllWebAccountsStatus status;
     UINT32 count = 0, error_code = 0;
-    BOOL token, interactive, record, force;
+    BOOL token, interactive, record, force, personal, batch;
     FILE *file;
-    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive") && strcmp(argv[2], "record") && strcmp(argv[2], "refresh") && strcmp(argv[2], "refresh-interactive") && strcmp(argv[2], "device") && strcmp(argv[2], "forced") && strcmp(argv[2], "forced-silent")))) return 1;
+    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive") && strcmp(argv[2], "record") && strcmp(argv[2], "refresh") && strcmp(argv[2], "refresh-interactive") && strcmp(argv[2], "device") && strcmp(argv[2], "forced") && strcmp(argv[2], "forced-silent") && strcmp(argv[2], "batch") && strcmp(argv[2], "personal") && strcmp(argv[2], "organization")))) return 1;
+    batch = argc == 3 && !strcmp(argv[2], "batch");
+    personal = batch || (argc == 3 && (!strcmp(argv[2], "personal") || !strcmp(argv[2], "organization")));
     device = argc == 3 && !strcmp(argv[2], "device");
     if (device)
     {
@@ -144,8 +146,8 @@ int main(int argc, char **argv)
     }
     force = argc == 3 && (!strcmp(argv[2], "forced") || !strcmp(argv[2], "forced-silent"));
     record = argc == 3 && !strcmp(argv[2], "record");
-    token = force || device || (argc == 3 && (!strcmp(argv[2], "silent") || !strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh") || !strcmp(argv[2], "refresh-interactive")));
-    interactive = (force && !strcmp(argv[2], "forced")) || device || (token && (!strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh-interactive")));
+    token = personal || force || device || (argc == 3 && (!strcmp(argv[2], "silent") || !strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh") || !strcmp(argv[2], "refresh-interactive")));
+    interactive = personal || (force && !strcmp(argv[2], "forced")) || device || (token && (!strcmp(argv[2], "interactive") || !strcmp(argv[2], "refresh-interactive")));
     CHECK(RoInitialize(RO_INIT_MULTITHREADED));
     module = LoadLibraryW(L"windows.security.authentication.onlineid.dll");
     if (!module) { fprintf(stderr, "LoadLibrary error=%lu\n", GetLastError()); return 2; }
@@ -180,6 +182,18 @@ int main(int argc, char **argv)
         CHECK(WindowsCreateString(L"openid", 6, &scope));
         CHECK(IWebTokenRequestFactory_CreateWithPromptType(constructor, provider, scope, client_id,
                 force ? WebTokenRequestPromptType_ForceAuthentication : WebTokenRequestPromptType_Default, &request));
+        if (batch)
+        {
+            IMap_HSTRING_HSTRING *properties;
+            HSTRING key, value;
+            boolean replaced;
+            CHECK(IWebTokenRequest_get_Properties(request, &properties));
+            CHECK(WindowsCreateString(L"oauth2_batch", 12, &key));
+            CHECK(WindowsCreateString(L"1", 1, &value));
+            CHECK(IMap_HSTRING_HSTRING_Insert(properties, key, value, &replaced));
+            WindowsDeleteString(key);WindowsDeleteString(value);
+            IMap_HSTRING_HSTRING_Release(properties);
+        }
         if (interactive) CHECK(IWebAuthenticationCoreManagerStatics_RequestTokenAsync(manager, request, &token_operation));
         else CHECK(IWebAuthenticationCoreManagerStatics_GetTokenSilentlyAsync(manager, request, &token_operation));
         if (device)
@@ -216,7 +230,35 @@ int main(int argc, char **argv)
                 if (count != 1) return 8;
                 CHECK(IVectorView_WebTokenResponse_GetAt(responses, 0, &response));
                 CHECK(IWebTokenResponse_get_Token(response, &access));
-                if (wcscmp(WindowsGetStringRawBuffer(access, NULL), L"fixture-access-not-a-token")) return 9;
+                if (batch)
+                {
+                    const WCHAR *text = WindowsGetStringRawBuffer(access, NULL);
+                    if (!wcsstr(text, L"access_token=fixture-access-not-a-token&") ||
+                        !wcsstr(text, L"&id_token=fixture-id-not-a-token&") ||
+                        !wcsstr(text, L"&client_info=fixture-client-info&") ||
+                        !wcsstr(text, L"&scope=openid%20profile&token_type=Bearer&expires_in=")) return 9;
+                }
+                else if (wcscmp(WindowsGetStringRawBuffer(access, NULL), L"fixture-access-not-a-token")) return 9;
+                if (personal)
+                {
+                    IWebAccount *account;
+                    IWebAccount2 *account2;
+                    IMapView_HSTRING_HSTRING *properties;
+                    HSTRING key, value = NULL;
+                    HRESULT hr;
+                    CHECK(IWebTokenResponse_get_WebAccount(response, &account));
+                    CHECK(IWebAccount_QueryInterface(account, &IID_IWebAccount2, (void **)&account2));
+                    CHECK(IWebAccount2_get_Properties(account2, &properties));
+                    CHECK(WindowsCreateString(L"SafeCustomerId", 14, &key));
+                    hr = IMapView_HSTRING_HSTRING_Lookup(properties, key, &value);
+                    if (!strcmp(argv[2], "organization"))
+                    {
+                        if (hr != E_BOUNDS || value) return 15;
+                    }
+                    else if (FAILED(hr) || wcscmp(WindowsGetStringRawBuffer(value, NULL), L"123456789abcdef0")) return 15;
+                    WindowsDeleteString(key);WindowsDeleteString(value);
+                    IMapView_HSTRING_HSTRING_Release(properties);IWebAccount2_Release(account2);IWebAccount_Release(account);
+                }
                 WindowsDeleteString(access);
                 IWebTokenResponse_Release(response);IVectorView_WebTokenResponse_Release(responses);
             }

@@ -25,6 +25,7 @@ class IdentityBridge(unittest.TestCase):
         requests, errors = [], []
         expected_opcode = 3 if mode and mode.endswith('silent') else 2 if mode else 5
         no_request = mode == 'forced-silent'
+        personal = mode in ('batch', 'personal', 'organization')
 
         def serve():
             try:
@@ -57,6 +58,15 @@ class IdentityBridge(unittest.TestCase):
                         self.assertEqual(fields.get(23), b'login' if mode == 'forced' else None)
                     requests.append(request_id)
                     payload = struct.pack('<HHII', 22, 0, 4, 0) if status == 0 else b''
+                    if personal:
+                        values = {10: b'fixture-access-not-a-token', 11: b'fixture-id-not-a-token',
+                                  12: b'4102444800', 13: b'00000000-0000-0000-1234-56789abcdef0',
+                                  14: b'fixture-user@example.invalid', 17: b'Fixture User',
+                                  19: b'fixture-client-info', 2: b'openid profile',
+                                  18: b'00000000-0000-0000-0000-000000000001' if mode == 'organization'
+                                      else b'9188040d-6c67-4c5b-b112-36a304b66dad'}
+                        payload = b''.join(struct.pack('<HHI', kind, 0, len(value)) + value
+                                           for kind, value in values.items())
                     connection.sendall(struct.pack('<IHHIIi', magic, version, opcode | 0x8000,
                                                    request_id + int(wrong_id), len(payload), status) + payload)
             except Exception as error:
@@ -81,9 +91,9 @@ class IdentityBridge(unittest.TestCase):
         self.assertEqual(len(requests), 0 if no_request else 1)
         fields = marker.read_text().split()
         expected = (0, '00000000') if status == 0 and not wrong_id else (3, '80070057' if wrong_id else '80070005')
-        if mode:expected = (3 if mode.endswith('silent') else 5, '80004005' if no_request else '80070005')
+        if mode and not personal:expected = (3 if mode.endswith('silent') else 5, '80004005' if no_request else '80070005')
         self.assertEqual((int(fields[1]), fields[2]), expected)
-        self.assertEqual(fields[3], '0')
+        self.assertEqual(fields[3], '1' if personal else '0')
         events = [json.loads(line) for line in (bundle / 'events.jsonl').read_text().splitlines()]
         self.assertEqual(next(event['code'] for event in events if event['kind'] == 'process_exit' and event['pid'] == int(fields[0])), 0)
         architecture = 'x86_64' if BITS == 64 else 'i386'
@@ -110,6 +120,10 @@ class IdentityBridge(unittest.TestCase):
     def test_forced_authentication_reaches_the_bridge(self):
         for mode in ('interactive', 'forced', 'silent', 'forced-silent'):
             with self.subTest(mode=mode):self.capture(mode, 'winrt', 4, mode=mode)
+
+    def test_personal_account_response_formats(self):
+        for mode in ('batch', 'personal', 'organization'):
+            with self.subTest(mode=mode):self.capture(mode, 'winrt', 0, mode=mode)
 
 
 if __name__ == '__main__':

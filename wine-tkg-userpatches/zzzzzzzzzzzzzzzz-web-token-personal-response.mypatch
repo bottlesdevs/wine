@@ -1,0 +1,211 @@
+diff --git a/dlls/windows.security.authentication.onlineid/private.h b/dlls/windows.security.authentication.onlineid/private.h
+--- a/dlls/windows.security.authentication.onlineid/private.h
++++ b/dlls/windows.security.authentication.onlineid/private.h
+@@ -97,7 +97,7 @@
+ extern HRESULT web_token_response_create( HSTRING token, IWebAccount *account, IWebProviderError *error,
+                                           IWebTokenResponse **out );
+ extern HRESULT web_provider_error_create( HRESULT error, HSTRING message, IWebProviderError **out );
+-extern HRESULT web_token_result_create( IWebAccountProvider *provider, const struct identity_reply *reply,
++extern HRESULT web_token_result_create( IWebTokenRequest *request, IWebAccountProvider *provider, const struct identity_reply *reply,
+                                         WebTokenRequestStatus status, IWebTokenRequestResult **out );
+ extern HRESULT web_async_token_create( IWebTokenRequest *request, IWebAccount *account, boolean silent,
+                                        IAsyncOperation_WebTokenRequestResult **out );
+diff --git a/dlls/windows.security.authentication.onlineid/web_async.c b/dlls/windows.security.authentication.onlineid/web_async.c
+--- a/dlls/windows.security.authentication.onlineid/web_async.c
++++ b/dlls/windows.security.authentication.onlineid/web_async.c
+@@ -419,7 +419,7 @@
+     }
+     if (impl->u.token.silent && prompt == WebTokenRequestPromptType_ForceAuthentication)
+     {
+-        hr = web_token_result_create( provider, NULL, WebTokenRequestStatus_UserInteractionRequired, &token_result );
++        hr = web_token_result_create( impl->u.token.request, provider, NULL, WebTokenRequestStatus_UserInteractionRequired, &token_result );
+         goto done;
+     }
+     if (impl->u.token.account && impl->u.token.silent)
+@@ -442,13 +442,13 @@
+     else
+         hr = identity_bridge_authorize_client( client_id, scopes, authority, login_hint, policy, prompt == WebTokenRequestPromptType_ForceAuthentication, impl->cancel, &reply );
+     if (SUCCEEDED(hr))
+-        hr = web_token_result_create( provider, &reply, WebTokenRequestStatus_Success, &token_result );
++        hr = web_token_result_create( impl->u.token.request, provider, &reply, WebTokenRequestStatus_Success, &token_result );
+     else if (hr == HRESULT_FROM_WIN32( ERROR_CANCELLED ))
+-        hr = web_token_result_create( provider, &reply, WebTokenRequestStatus_UserCancel, &token_result );
++        hr = web_token_result_create( impl->u.token.request, provider, &reply, WebTokenRequestStatus_UserCancel, &token_result );
+     else if (impl->u.token.silent)
+-        hr = web_token_result_create( provider, &reply, WebTokenRequestStatus_UserInteractionRequired, &token_result );
++        hr = web_token_result_create( impl->u.token.request, provider, &reply, WebTokenRequestStatus_UserInteractionRequired, &token_result );
+     else
+-        hr = web_token_result_create( provider, &reply, WebTokenRequestStatus_ProviderError, &token_result );
++        hr = web_token_result_create( impl->u.token.request, provider, &reply, WebTokenRequestStatus_ProviderError, &token_result );
+ 
+ done:
+     if (account2) IWebAccount2_Release( account2 );
+diff --git a/dlls/windows.security.authentication.onlineid/web_token.c b/dlls/windows.security.authentication.onlineid/web_token.c
+--- a/dlls/windows.security.authentication.onlineid/web_token.c
++++ b/dlls/windows.security.authentication.onlineid/web_token.c
+@@ -1025,6 +1025,36 @@
+     return hr;
+ }
+ 
++static HRESULT response_set_customer_id( IWebAccount *account, const struct identity_reply *reply )
++{
++    static const WCHAR personal_tenant[] = L"9188040d-6c67-4c5b-b112-36a304b66dad";
++    const WCHAR *id = WindowsGetStringRawBuffer( reply->account_id, NULL );
++    WCHAR buffer[16];
++    HSTRING value;
++    UINT32 i, count = 0;
++    HRESULT hr;
++
++    if (wcsicmp( WindowsGetStringRawBuffer(reply->tenant_id, NULL), personal_tenant ) ||
++        WindowsGetStringLen( reply->account_id ) != 36 || wcsncmp( id, L"00000000-0000-0000-", 19 ))
++        return S_OK;
++    for (i = 19; i < 36; ++i)
++    {
++        WCHAR c = id[i];
++        if (i == 23)
++        {
++            if (c != '-') return S_OK;
++            continue;
++        }
++        if (c >= 'A' && c <= 'F') c += 'a' - 'A';
++        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return S_OK;
++        buffer[count++] = c;
++    }
++    if (FAILED(hr = WindowsCreateString( buffer, count, &value ))) return hr;
++    hr = web_account_set_property( account, L"SafeCustomerId", value );
++    WindowsDeleteString( value );
++    return hr;
++}
++
+ static HRESULT response_set_identity( IWebAccountProvider *provider, const struct identity_reply *reply,
+                                       IWebAccount *account, IWebTokenResponse *response )
+ {
+@@ -1081,7 +1111,8 @@
+         FAILED(hr = response_set_property( properties, L"wamcompat_scopes", reply->scopes )) ||
+         FAILED(hr = web_account_set_property( account, L"Authority", authority )) ||
+         FAILED(hr = web_account_set_property( account, L"OID", reply->account_id )) ||
+-        FAILED(hr = web_account_set_property( account, L"TenantId", reply->tenant_id ))) goto done;
++        FAILED(hr = web_account_set_property( account, L"TenantId", reply->tenant_id )) ||
++        FAILED(hr = response_set_customer_id( account, reply ))) goto done;
+ 
+ done:
+     if (provider2) IWebAccountProvider2_Release( provider2 );
+@@ -1092,12 +1123,95 @@
+     return hr;
+ }
+ 
+-HRESULT web_token_result_create( IWebAccountProvider *provider, const struct identity_reply *reply,
++static HRESULT response_get_token( IWebTokenRequest *request, const struct identity_reply *reply, HSTRING *token )
++{
++    static const char hex[] = "0123456789ABCDEF";
++    static const char *names[] = {"access_token", "id_token", "client_info", "scope"};
++    HSTRING values[] = {reply->access_token, reply->id_token, reply->client_info, reply->scopes};
++    IMap_HSTRING_HSTRING *properties;
++    HSTRING key, value = NULL;
++    FILETIME now;
++    ULARGE_INTEGER ticks;
++    UINT64 seconds, remaining;
++    char *buffer, *cursor;
++    WCHAR *wide;
++    SIZE_T capacity = 128;
++    UINT32 i, j;
++    int length;
++    HRESULT hr;
++
++    if (!request) return WindowsDuplicateString( reply->access_token, token );
++    if (FAILED(hr = IWebTokenRequest_get_Properties( request, &properties ))) return hr;
++    hr = WindowsCreateString( L"oauth2_batch", 12, &key );
++    if (SUCCEEDED(hr))
++    {
++        hr = IMap_HSTRING_HSTRING_Lookup( properties, key, &value );
++        WindowsDeleteString( key );
++    }
++    IMap_HSTRING_HSTRING_Release( properties );
++    if (hr == E_BOUNDS) return WindowsDuplicateString( reply->access_token, token );
++    if (FAILED(hr)) return hr;
++    i = !wcscmp( WindowsGetStringRawBuffer( value, NULL ), L"1" );
++    WindowsDeleteString( value );
++    if (!i) return WindowsDuplicateString( reply->access_token, token );
++
++    for (i = 0; i < ARRAY_SIZE(values); ++i)
++    {
++        length = WideCharToMultiByte( CP_UTF8, 0, WindowsGetStringRawBuffer(values[i], NULL),
++                                      WindowsGetStringLen(values[i]), NULL, 0, NULL, NULL );
++        capacity += strlen(names[i]) + 2 + (SIZE_T)length * 3;
++    }
++    if (!(buffer = malloc( capacity ))) return E_OUTOFMEMORY;
++    cursor = buffer;
++    for (i = 0; i < ARRAY_SIZE(values); ++i)
++    {
++        const WCHAR *text = WindowsGetStringRawBuffer( values[i], NULL );
++        UINT32 count = WindowsGetStringLen( values[i] );
++        char *utf8;
++        length = WideCharToMultiByte( CP_UTF8, 0, text, count, NULL, 0, NULL, NULL );
++        if (!(utf8 = malloc( length ? length : 1 ))) { free( buffer ); return E_OUTOFMEMORY; }
++        WideCharToMultiByte( CP_UTF8, 0, text, count, utf8, length, NULL, NULL );
++        if (i) *cursor++ = '&';
++        memcpy( cursor, names[i], strlen(names[i]) );
++        cursor += strlen(names[i]);
++        *cursor++ = '=';
++        for (j = 0; j < length; ++j)
++        {
++            unsigned char c = utf8[j];
++            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
++                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
++                *cursor++ = c;
++            else
++            {
++                *cursor++ = '%';
++                *cursor++ = hex[c >> 4];
++                *cursor++ = hex[c & 15];
++            }
++        }
++        free( utf8 );
++    }
++    GetSystemTimeAsFileTime( &now );
++    ticks.LowPart = now.dwLowDateTime;
++    ticks.HighPart = now.dwHighDateTime;
++    seconds = ticks.QuadPart / 10000000 - 11644473600ULL;
++    remaining = reply->expires_at > seconds ? reply->expires_at - seconds : 0;
++    cursor += sprintf( cursor, "&token_type=Bearer&expires_in=%llu", (unsigned long long)remaining );
++    length = MultiByteToWideChar( CP_UTF8, 0, buffer, cursor - buffer, NULL, 0 );
++    if (!(wide = malloc( length * sizeof(*wide) ))) { free( buffer ); return E_OUTOFMEMORY; }
++    MultiByteToWideChar( CP_UTF8, 0, buffer, cursor - buffer, wide, length );
++    hr = WindowsCreateString( wide, length, token );
++    free( wide );
++    free( buffer );
++    return hr;
++}
++
++HRESULT web_token_result_create( IWebTokenRequest *request, IWebAccountProvider *provider, const struct identity_reply *reply,
+                                  WebTokenRequestStatus status, IWebTokenRequestResult **out )
+ {
+     struct web_token_result *impl;
+     IWebAccount *account = NULL;
+     IWebTokenResponse *response = NULL;
++    HSTRING token = NULL;
+     HRESULT hr;
+ 
+     if (!out) return E_POINTER;
+@@ -1117,10 +1231,11 @@
+             hr = E_INVALIDARG;
+             goto failed;
+         }
+-        if (FAILED(hr = web_account_create( provider, reply->account_id,
++        if (FAILED(hr = response_get_token( request, reply, &token )) ||
++            FAILED(hr = web_account_create( provider, reply->account_id,
+                                             reply->username ? reply->username : reply->account_id,
+                                             WebAccountState_Connected, &account )) ||
+-            FAILED(hr = web_token_response_create( reply->access_token, account, NULL, &response )) ||
++            FAILED(hr = web_token_response_create( token, account, NULL, &response )) ||
+             FAILED(hr = response_set_identity( provider, reply, account, response )))
+             goto failed;
+     }
+@@ -1131,6 +1246,7 @@
+ failed:
+     if (account) IWebAccount_Release( account );
+     if (response) IWebTokenResponse_Release( response );
++    WindowsDeleteString( token );
+     if (FAILED(hr)) result_Release( &impl->IWebTokenRequestResult_iface );
+     return hr;
+ }
