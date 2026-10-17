@@ -32,7 +32,7 @@ permissions:
 env:
   WINE_VERSION: '11.0'
   LLVM_TOOLS_VERSION: '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80'
-  REVISION: '31-experimental'
+  REVISION: '32-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -50,21 +50,11 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-31 Experimental, codenamed Windows Escape, updates composition, drawing surfaces, shared textures and Eagle. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-32 Experimental, codenamed Windows Escape, updates personal-account sign-in responses and Eagle symbol caching. It remains a prerelease and does not replace the current stable Soda build.
 
-    - Added native WineD3D shared resources and keyed mutex support.
-    - Added Ink points, drawing attributes, desktop work queues and CoreInk host interfaces.
-    - Preserved composition brush lifetime and notified composition commits after surface updates.
-    - Added component expressions, tracker bounds, position and scale bindings, value callbacks and timed inertia.
-    - Rejected updates, animations and new bindings after closing an interaction tracker.
-    - Preserved composition target layers across repaint and resize.
-    - Fixed rectangular framebuffer height and synchronized native client resizes.
-    - Honored requests to authenticate again through the identity bridge.
-    - Added the native Eagle analyzer.
-    - Added offline source and symbol lookup, PDB and split-DWARF companions, inline frames and recorded-stack comparison.
-    - Preserved matching Wine symbols and source identities in runner symbol bundles.
-    - Added Direct2D, library, export and native loader details to Eagle traces.
-    - Improved Eagle capture cleanup, session history, report export and target exit handling.
+    - Returned OAuth token fields when personal-account requests ask for a batch response.
+    - Added the customer ID to personal-account responses.
+    - Preserved Eagle symbol frames when unrelated processes or libraries change.
 
 jobs:
   patches:
