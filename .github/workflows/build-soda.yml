@@ -1859,6 +1859,22 @@ jobs:
           for image in "$runner/bin/wine" "$runner/bin/wineserver" "$runner/lib/wine/x86_64-unix/ntdll.so" "$runner/lib/wine/i386-unix/ntdll.so"; do
             ldd "$image"
           done
+          for arch in i386 x86_64; do
+            LD_LIBRARY_PATH="$runner/lib/wine/$arch-unix" ldd "$runner/lib/wine/$arch-unix/win32u.so"
+            LD_LIBRARY_PATH="$runner/lib/wine/$arch-unix" ldd "$runner/lib/wine/$arch-unix/winex11.so"
+          done
+          command -v strace
+          mkdir -p "$work/probe/t"
+          if ! WINEPREFIX="$work/probe/prefix" WINEARCH=win64 WINEDEBUG=+all \
+            TMPDIR="$work/probe/t" TMP="$work/probe/t" TEMP="$work/probe/t" \
+            xvfb-run -a timeout 180 strace -f -s 128 -e trace=file,process,network \
+              -o "$work/logs/prefix-syscalls.log" "$runner/bin/wine" wineboot -u \
+              > "$work/logs/prefix-loader.log" 2>&1; then
+            tail -n 60 "$work/logs/prefix-loader.log" "$work/logs/prefix-syscalls.log"
+            exit 1
+          fi
+          WINEPREFIX="$work/probe/prefix" "$runner/bin/wineserver" -k || true
+          WINEPREFIX="$work/probe/prefix" timeout 30 "$runner/bin/wineserver" -w
           eagle_work="$HOME/artifacts/Eagle-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           ln -s "$eagle_work" "$work/eagle"
           WINEDEBUG=+module,+process PATH="/usr/lib/llvm-22/bin:$PATH" xvfb-run -a sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner" "$eagle_work"
