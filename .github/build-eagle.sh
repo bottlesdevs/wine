@@ -27,6 +27,10 @@ WINEPREFIX="$work/tests/prefix" WINEDEBUG=-all "$runner/bin/wine" wineboot -u
 export EAGLE_CANDIDATE="$runner" EAGLE_WAIT_TEST_ROOT="$work/tests"
 for architecture in x86_64 i686; do
     if test "$architecture" = x86_64; then bits=64; else bits=32; fi
+    "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
+        "$root/eagle/tests/frame_cache.c" -ldbghelp -o "$work/tests/frame-cache$bits.exe"
+    WINEPREFIX="$work/tests/prefix" WINEDEBUG=-all "$runner/bin/wine" \
+        "$work/tests/frame-cache$bits.exe" > "$work/tests/frame-cache$bits.log" 2>&1
     directory="$work/tests/$bits"
     mkdir -p "$directory"
     "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror \

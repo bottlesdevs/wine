@@ -238,10 +238,12 @@ struct frame_info
 static struct frame_info frame_cache[256];
 static unsigned frame_next;
 
-static void invalidate_frames(void)
+static void invalidate_frames(HANDLE handle, DWORD64 base)
 {
-    memset(frame_cache, 0, sizeof(frame_cache));
-    frame_next = 0;
+    unsigned i;
+    for (i = 0; i < 256; i++) if (frame_cache[i].handle == handle &&
+        (!base || !frame_cache[i].has_module || frame_cache[i].module.BaseOfImage == base))
+        memset(frame_cache + i, 0, sizeof(frame_cache[i]));
 }
 
 static void frame(HANDLE handle, DWORD64 address)
@@ -742,7 +744,6 @@ int main(int argc, char **argv)
         status = DBG_CONTINUE;
         if (debug.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT)
         {
-            invalidate_frames();
             CREATE_PROCESS_DEBUG_INFO *info = &debug.u.CreateProcessInfo;
             char path[32768] = "";
             DWORD parent = 0, unix_pid = 0;
@@ -763,6 +764,7 @@ int main(int argc, char **argv)
             }
             for (i = 0; i < MAX_PROCESSES; i++) if (!processes[i].id) break;
             if (i == MAX_PROCESSES) { error("process_capacity", ERROR_NOT_ENOUGH_MEMORY); ContinueDebugEvent(debug.dwProcessId, debug.dwThreadId, DBG_CONTINUE); DebugActiveProcessStop(debug.dwProcessId); continue; }
+            invalidate_frames(info->hProcess, 0);
             processes[i] = (struct process){.id = debug.dwProcessId, .handle = info->hProcess, .initial_break = TRUE,
                                           .wine_service = debug.dwProcessId != primary_pid && wine_service_host(info, path)}; active++;
 #ifdef _WIN64
@@ -810,11 +812,11 @@ int main(int argc, char **argv)
         }
         else if (debug.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT)
         {
-            invalidate_frames();
             struct process *p = process(debug.dwProcessId);
             if (p)
             {
                 char path[32768] = "";
+                invalidate_frames(p->handle, (DWORD64)(uintptr_t)debug.u.LoadDll.lpBaseOfDll);
                 if (debug.u.LoadDll.hFile) GetFinalPathNameByHandleA(debug.u.LoadDll.hFile, path, sizeof(path), FILE_NAME_NORMALIZED);
                 SymLoadModuleEx(p->handle, debug.u.LoadDll.hFile, *path ? path : NULL, NULL, (DWORD64)(uintptr_t)debug.u.LoadDll.lpBaseOfDll, 0, NULL, 0);
                 event("module_load", debug.dwProcessId, debug.dwThreadId);
@@ -829,9 +831,12 @@ int main(int argc, char **argv)
         }
         else if (debug.dwDebugEventCode == UNLOAD_DLL_DEBUG_EVENT)
         {
-            invalidate_frames();
             struct process *p = process(debug.dwProcessId);
-            if (p) SymUnloadModule64(p->handle, (DWORD64)(uintptr_t)debug.u.UnloadDll.lpBaseOfDll);
+            if (p)
+            {
+                invalidate_frames(p->handle, (DWORD64)(uintptr_t)debug.u.UnloadDll.lpBaseOfDll);
+                SymUnloadModule64(p->handle, (DWORD64)(uintptr_t)debug.u.UnloadDll.lpBaseOfDll);
+            }
             event("module_unload", debug.dwProcessId, debug.dwThreadId); printf(",\"base\":\"0x%llx\"", (DWORD64)(uintptr_t)debug.u.UnloadDll.lpBaseOfDll); end_event();
         }
         else if (debug.dwDebugEventCode == OUTPUT_DEBUG_STRING_EVENT)
@@ -999,10 +1004,9 @@ int main(int argc, char **argv)
         }
         else if (debug.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT)
         {
-            invalidate_frames();
             struct process *p = process(debug.dwProcessId);
             event("process_exit", debug.dwProcessId, debug.dwThreadId); printf(",\"code\":%lu", debug.u.ExitProcess.dwExitCode); end_event();
-            if (p) { SymCleanup(p->handle); CloseHandle(p->handle); memset(p, 0, sizeof(*p)); active--; }
+            if (p) { invalidate_frames(p->handle, 0); SymCleanup(p->handle); CloseHandle(p->handle); memset(p, 0, sizeof(*p)); active--; }
             for (i = 0; i < MAX_THREADS; i++) if (threads[i].pid == debug.dwProcessId) { CloseHandle(threads[i].handle); memset(threads + i, 0, sizeof(threads[i])); }
             for (i = 0; i < MAX_BREAKPOINTS; i++) if (breakpoints[i].pid == debug.dwProcessId) memset(breakpoints + i, 0, sizeof(breakpoints[i]));
         }
