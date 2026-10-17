@@ -1850,7 +1850,12 @@ jobs:
             test -f "$runner/lib/wine/$arch-unix/windows.security.authentication.onlineid.so"
           done
           test -f "$runner/lib/wine/x86_64-unix/wineopenxr.so"
-          PATH="/usr/lib/llvm-22/bin:$PATH" xvfb-run -a sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner" "$work/eagle"
+          for image in "$runner/bin/wine" "$runner/bin/wineserver" "$runner/lib/wine/x86_64-unix/ntdll.so" "$runner/lib/wine/i386-unix/ntdll.so"; do
+            ldd "$image"
+          done
+          eagle_work="$HOME/artifacts/Eagle-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          ln -s "$eagle_work" "$work/eagle"
+          WINEDEBUG=+module,+process PATH="/usr/lib/llvm-22/bin:$PATH" xvfb-run -a sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner" "$eagle_work"
           sh "$GITHUB_WORKSPACE/.github/soda-provenance.sh" "$runner" "$work/provenance" \
             --name "$component-x86_64" --refresh --prebuilt --assembly-source "$GITHUB_WORKSPACE"
           tools="$work/provenance/native"
