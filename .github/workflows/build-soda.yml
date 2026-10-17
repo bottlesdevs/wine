@@ -31,7 +31,7 @@ permissions:
   contents: read
 env:
   WINE_VERSION: '11.0'
-  LLVM_TOOLS_VERSION: '1:21.1.8~++20251221032922+2078da43e25a-1~exp1~20251221153059.70'
+  LLVM_TOOLS_VERSION: '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80'
   REVISION: '31-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
@@ -190,11 +190,11 @@ jobs:
           curl -fL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$llvm_key"
           printf '%s  %s\n' 8b2a587ffd672c4687e7581dad4b2f6c1bb2ad6b480cd9771ba2ff48e0b8c75d "$llvm_key" | sha256sum --check -
           sudo install -m644 "$llvm_key" /usr/share/keyrings/soda-llvm.asc
-          printf '%s\n' 'deb [arch=amd64 signed-by=/usr/share/keyrings/soda-llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main' | sudo tee /etc/apt/sources.list.d/soda-llvm.list
+          printf '%s\n' 'deb [arch=amd64 signed-by=/usr/share/keyrings/soda-llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main' | sudo tee /etc/apt/sources.list.d/soda-llvm.list
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends "clang-21=$LLVM_TOOLS_VERSION" "lld-21=$LLVM_TOOLS_VERSION" "llvm-21=$LLVM_TOOLS_VERSION"
+          sudo apt-get install -y --no-install-recommends "clang-22=$LLVM_TOOLS_VERSION" "lld-22=$LLVM_TOOLS_VERSION" "llvm-22=$LLVM_TOOLS_VERSION"
           for tool in clang lld-link llvm-objcopy llvm-symbolizer; do
-            "/usr/lib/llvm-21/bin/$tool" --version
+            "/usr/lib/llvm-22/bin/$tool" --version
           done
 
       - name: clone wine-tkg-git repo
@@ -469,6 +469,15 @@ jobs:
         with:
           name: pre-test-${{ steps.identity.outputs.component_name }}
           path: /home/runner/work/wine-tkg-git/wine-tkg-git/non-makepkg-builds/wine-tkg-*
+          if-no-files-found: error
+
+      - name: upload pre-test symbols
+        if: steps.identity.outputs.prerelease == 'true' || steps.identity.outputs.publish == 'false'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pre-test-symbols-${{ steps.identity.outputs.component_name }}
+          path: /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}-symbols/${{ steps.identity.outputs.component_name }}
+          include-hidden-files: true
           if-no-files-found: error
 
       - name: verify prefix username
@@ -1237,7 +1246,7 @@ jobs:
           test -f "$runner_dir/lib/wine/x86_64-windows/wineopenxr.dll"
           test -f "$runner_dir/lib/wine/x86_64-unix/wineopenxr.so"
           install -Dm644 /tmp/proton/wineopenxr/wineopenxr64.json "$runner_dir/share/openxr/wineopenxr64.json"
-          PATH="/usr/lib/llvm-21/bin:$PATH" xvfb-run -a sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner_dir" "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          PATH="/usr/lib/llvm-22/bin:$PATH" xvfb-run -a sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner_dir" "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           sh "$GITHUB_WORKSPACE/.github/soda-provenance.sh" "$runner_dir" \
             "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-package-provenance" \
             --name "$COMPONENT_NAME" --refresh --assembly-source "$GITHUB_WORKSPACE"
