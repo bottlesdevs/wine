@@ -1,0 +1,147 @@
+diff --git a/dlls/windows.security.authentication.onlineid/private.h b/dlls/windows.security.authentication.onlineid/private.h
+--- a/dlls/windows.security.authentication.onlineid/private.h
++++ b/dlls/windows.security.authentication.onlineid/private.h
+@@ -89,6 +89,7 @@
+ extern HRESULT string_map_create( IMap_HSTRING_HSTRING **out );
+ extern HRESULT web_account_create( IWebAccountProvider *provider, HSTRING id, HSTRING username,
+                                    WebAccountState state, IWebAccount **out );
++extern HRESULT web_account_set_customer_id( IWebAccount *account, HSTRING authority );
+ extern HRESULT web_account_set_property( IWebAccount *account, const WCHAR *key, HSTRING value );
+ extern HRESULT web_account_provider_create( HSTRING id, HSTRING display_name, HSTRING authority,
+                                             boolean system_provider, IWebAccountProvider **out );
+diff --git a/dlls/windows.security.authentication.onlineid/web_account.c b/dlls/windows.security.authentication.onlineid/web_account.c
+--- a/dlls/windows.security.authentication.onlineid/web_account.c
++++ b/dlls/windows.security.authentication.onlineid/web_account.c
+@@ -455,6 +455,38 @@
+     return hr;
+ }
+ 
++HRESULT web_account_set_customer_id( IWebAccount *account, HSTRING authority )
++{
++    static const WCHAR personal_tenant[] = L"9188040d-6c67-4c5b-b112-36a304b66dad";
++    struct web_account *impl = account_from_IWebAccount( account );
++    const WCHAR *id = WindowsGetStringRawBuffer( impl->id, NULL );
++    WCHAR buffer[16];
++    HSTRING value;
++    UINT32 i, count = 0;
++    HRESULT hr;
++
++    if ((wcsicmp( WindowsGetStringRawBuffer(authority, NULL), personal_tenant ) &&
++         wcsicmp( WindowsGetStringRawBuffer(authority, NULL), L"consumers" )) ||
++        WindowsGetStringLen( impl->id ) != 36 || wcsncmp( id, L"00000000-0000-0000-", 19 ))
++        return S_OK;
++    for (i = 19; i < 36; ++i)
++    {
++        WCHAR c = id[i];
++        if (i == 23)
++        {
++            if (c != '-') return S_OK;
++            continue;
++        }
++        if (c >= 'A' && c <= 'F') c += 'a' - 'A';
++        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return S_OK;
++        buffer[count++] = c;
++    }
++    if (FAILED(hr = WindowsCreateString( buffer, count, &value ))) return hr;
++    hr = web_account_set_property( account, L"SafeCustomerId", value );
++    WindowsDeleteString( value );
++    return hr;
++}
++
+ static inline struct account_factory *account_factory_from_activation( IActivationFactory *iface )
+ {
+     return CONTAINING_RECORD( iface, struct account_factory, IActivationFactory_iface );
+diff --git a/dlls/windows.security.authentication.onlineid/web_accounts.c b/dlls/windows.security.authentication.onlineid/web_accounts.c
+--- a/dlls/windows.security.authentication.onlineid/web_accounts.c
++++ b/dlls/windows.security.authentication.onlineid/web_accounts.c
+@@ -366,9 +366,10 @@
+                                     IFindAllAccountsResult **out )
+ {
+     struct accounts_result *impl;
++    IWebAccountProvider2 *provider2;
+     const BYTE *data = reply->accounts;
+     UINT32 count, remaining = reply->accounts_size, i;
+-    HSTRING id = NULL, username = NULL;
++    HSTRING id = NULL, username = NULL, authority = NULL;
+     HRESULT hr = S_OK;
+ 
+     if (!out) return E_POINTER;
+@@ -401,6 +402,13 @@
+         hr = E_OUTOFMEMORY;
+         goto done;
+     }
++    if (count && SUCCEEDED(IWebAccountProvider_QueryInterface( provider, &IID_IWebAccountProvider2,
++                                                              (void **)&provider2 )))
++    {
++        hr = IWebAccountProvider2_get_Authority( provider2, &authority );
++        IWebAccountProvider2_Release( provider2 );
++        if (FAILED(hr)) goto done;
++    }
+     for (i = 0; i < count; ++i)
+     {
+         if (FAILED(hr = read_string( &data, &remaining, &id )) ||
+@@ -408,6 +416,7 @@
+             FAILED(hr = web_account_create( provider, id, username, WebAccountState_Connected,
+                                             &impl->accounts[impl->count] ))) goto done;
+         ++impl->count;
++        if (FAILED(hr = web_account_set_customer_id( impl->accounts[i], authority ))) goto done;
+         WindowsDeleteString( id );
+         WindowsDeleteString( username );
+         id = username = NULL;
+@@ -415,6 +424,7 @@
+     if (remaining) hr = E_INVALIDARG;
+ 
+ done:
++    WindowsDeleteString( authority );
+     WindowsDeleteString( id );
+     WindowsDeleteString( username );
+     if (FAILED(hr)) IFindAllAccountsResult_Release( &impl->IFindAllAccountsResult_iface );
+diff --git a/dlls/windows.security.authentication.onlineid/web_token.c b/dlls/windows.security.authentication.onlineid/web_token.c
+--- a/dlls/windows.security.authentication.onlineid/web_token.c
++++ b/dlls/windows.security.authentication.onlineid/web_token.c
+@@ -1025,36 +1025,6 @@
+     return hr;
+ }
+ 
+-static HRESULT response_set_customer_id( IWebAccount *account, const struct identity_reply *reply )
+-{
+-    static const WCHAR personal_tenant[] = L"9188040d-6c67-4c5b-b112-36a304b66dad";
+-    const WCHAR *id = WindowsGetStringRawBuffer( reply->account_id, NULL );
+-    WCHAR buffer[16];
+-    HSTRING value;
+-    UINT32 i, count = 0;
+-    HRESULT hr;
+-
+-    if (wcsicmp( WindowsGetStringRawBuffer(reply->tenant_id, NULL), personal_tenant ) ||
+-        WindowsGetStringLen( reply->account_id ) != 36 || wcsncmp( id, L"00000000-0000-0000-", 19 ))
+-        return S_OK;
+-    for (i = 19; i < 36; ++i)
+-    {
+-        WCHAR c = id[i];
+-        if (i == 23)
+-        {
+-            if (c != '-') return S_OK;
+-            continue;
+-        }
+-        if (c >= 'A' && c <= 'F') c += 'a' - 'A';
+-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return S_OK;
+-        buffer[count++] = c;
+-    }
+-    if (FAILED(hr = WindowsCreateString( buffer, count, &value ))) return hr;
+-    hr = web_account_set_property( account, L"SafeCustomerId", value );
+-    WindowsDeleteString( value );
+-    return hr;
+-}
+-
+ static HRESULT response_set_identity( IWebAccountProvider *provider, const struct identity_reply *reply,
+                                       IWebAccount *account, IWebTokenResponse *response )
+ {
+@@ -1112,7 +1082,7 @@
+         FAILED(hr = web_account_set_property( account, L"Authority", authority )) ||
+         FAILED(hr = web_account_set_property( account, L"OID", reply->account_id )) ||
+         FAILED(hr = web_account_set_property( account, L"TenantId", reply->tenant_id )) ||
+-        FAILED(hr = response_set_customer_id( account, reply ))) goto done;
++        FAILED(hr = web_account_set_customer_id( account, reply->tenant_id ))) goto done;
+ 
+ done:
+     if (provider2) IWebAccountProvider2_Release( provider2 );

@@ -131,9 +131,17 @@ int main(int argc, char **argv)
     HSTRING name, provider_id, authority, client_id;
     FindAllWebAccountsStatus status;
     UINT32 count = 0, error_code = 0;
-    BOOL token, interactive, record, force, personal, batch;
+    BOOL token, interactive, record, force, personal, batch, enumerate;
+    const WCHAR *account_authority = L"common";
     FILE *file;
-    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive") && strcmp(argv[2], "record") && strcmp(argv[2], "refresh") && strcmp(argv[2], "refresh-interactive") && strcmp(argv[2], "device") && strcmp(argv[2], "forced") && strcmp(argv[2], "forced-silent") && strcmp(argv[2], "batch") && strcmp(argv[2], "personal") && strcmp(argv[2], "organization")))) return 1;
+    if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive") && strcmp(argv[2], "record") && strcmp(argv[2], "refresh") && strcmp(argv[2], "refresh-interactive") && strcmp(argv[2], "device") && strcmp(argv[2], "forced") && strcmp(argv[2], "forced-silent") && strcmp(argv[2], "batch") && strcmp(argv[2], "personal") && strcmp(argv[2], "organization") && strncmp(argv[2], "accounts-", 9)))) return 1;
+    enumerate = argc == 3 && !strncmp(argv[2], "accounts-", 9);
+    if (enumerate)
+    {
+        account_authority = !strcmp(argv[2], "accounts-common") ? L"common" :
+                            !strcmp(argv[2], "accounts-organization") ? L"organizations" :
+                            !strcmp(argv[2], "accounts-tenant") ? L"9188040d-6c67-4c5b-b112-36a304b66dad" : L"consumers";
+    }
     batch = argc == 3 && !strcmp(argv[2], "batch");
     personal = batch || (argc == 3 && (!strcmp(argv[2], "personal") || !strcmp(argv[2], "organization")));
     device = argc == 3 && !strcmp(argv[2], "device");
@@ -158,8 +166,8 @@ int main(int argc, char **argv)
     CHECK(IActivationFactory_QueryInterface(factory, &IID_IWebAuthenticationCoreManagerStatics, (void **)&manager));
     CHECK(IWebAuthenticationCoreManagerStatics_QueryInterface(manager, &IID_IWebAuthenticationCoreManagerStatics4, (void **)&manager4));
     CHECK(WindowsCreateString(L"https://login.microsoft.com", 27, &provider_id));
-    CHECK(WindowsCreateString(L"common", 6, &authority));
-    if (argc == 3 && !token && !record) CHECK(WindowsCreateString(L"invalid", 7, &client_id));
+    CHECK(WindowsCreateString(account_authority, wcslen(account_authority), &authority));
+    if (argc == 3 && !token && !record && !enumerate) CHECK(WindowsCreateString(L"invalid", 7, &client_id));
     else CHECK(WindowsCreateString(L"11111111-1111-1111-1111-111111111111", 36, &client_id));
     CHECK(IWebAuthenticationCoreManagerStatics_FindAccountProviderWithAuthorityAsync(manager, provider_id, authority, &provider_operation));
     CHECK(wait_result((IUnknown *)provider_operation));
@@ -286,7 +294,10 @@ int main(int argc, char **argv)
     }
     else
     {
-        CHECK(IWebAuthenticationCoreManagerStatics4_FindAllAccountsWithClientIdAsync(manager4, provider, client_id, &operation));
+        if (enumerate && !strcmp(argv[2], "accounts-all"))
+            CHECK(IWebAuthenticationCoreManagerStatics4_FindAllAccountsAsync(manager4, provider, &operation));
+        else
+            CHECK(IWebAuthenticationCoreManagerStatics4_FindAllAccountsWithClientIdAsync(manager4, provider, client_id, &operation));
         CHECK(wait_result((IUnknown *)operation));
         CHECK(IAsyncOperation_FindAllAccountsResult_GetResults(operation, &result));
         CHECK(IFindAllAccountsResult_get_Status(result, &status));
@@ -308,6 +319,29 @@ int main(int argc, char **argv)
                     wcscmp(WindowsGetStringRawBuffer(id, NULL), L"fixture-account-id")) return 7;
                 WindowsDeleteString(username);WindowsDeleteString(id);
                 IWebAccount2_Release(account2);IWebAccount_Release(account);
+            }
+            if (enumerate)
+            {
+                IWebAccount *account;
+                IWebAccount2 *account2;
+                IMapView_HSTRING_HSTRING *properties;
+                HSTRING key, value = NULL;
+                HRESULT hr;
+                if (count != 1) return 16;
+                CHECK(IVectorView_WebAccount_GetAt(accounts, 0, &account));
+                CHECK(IWebAccount_QueryInterface(account, &IID_IWebAccount2, (void **)&account2));
+                CHECK(IWebAccount2_get_Properties(account2, &properties));
+                CHECK(WindowsCreateString(L"SafeCustomerId", 14, &key));
+                hr = IMapView_HSTRING_HSTRING_Lookup(properties, key, &value);
+                if (!strcmp(argv[2], "accounts-common") || !strcmp(argv[2], "accounts-organization") ||
+                    !strcmp(argv[2], "accounts-malformed"))
+                {
+                    if (hr != E_BOUNDS || value) return 17;
+                }
+                else if (FAILED(hr) || wcscmp(WindowsGetStringRawBuffer(value, NULL),
+                         !strcmp(argv[2], "accounts-uppercase") ? L"abcdef0123456789" : L"123456789abcdef0")) return 17;
+                WindowsDeleteString(key);WindowsDeleteString(value);
+                IMapView_HSTRING_HSTRING_Release(properties);IWebAccount2_Release(account2);IWebAccount_Release(account);
             }
             IVectorView_WebAccount_Release(accounts);
         }

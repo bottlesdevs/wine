@@ -23,7 +23,8 @@ class IdentityBridge(unittest.TestCase):
         self.addCleanup(path.unlink)
         halt = threading.Event()
         requests, errors = [], []
-        expected_opcode = 3 if mode and mode.endswith('silent') else 2 if mode else 5
+        enumerate = bool(mode and mode.startswith('accounts-'))
+        expected_opcode = 5 if enumerate else 3 if mode and mode.endswith('silent') else 2 if mode else 5
         no_request = mode == 'forced-silent'
         personal = mode in ('batch', 'personal', 'organization')
 
@@ -67,6 +68,18 @@ class IdentityBridge(unittest.TestCase):
                                       else b'9188040d-6c67-4c5b-b112-36a304b66dad'}
                         payload = b''.join(struct.pack('<HHI', kind, 0, len(value)) + value
                                            for kind, value in values.items())
+                    if enumerate:
+                        self.assertEqual(fields[3], b'common' if mode == 'accounts-common' else
+                                         b'organizations' if mode == 'accounts-organization' else
+                                         b'9188040d-6c67-4c5b-b112-36a304b66dad' if mode == 'accounts-tenant' else b'consumers')
+                        self.assertEqual(fields.get(1, b''), b'' if mode == 'accounts-all' else
+                                         b'11111111-1111-1111-1111-111111111111')
+                        account = b'00000000-0000-0000-ABCD-EF0123456789' if mode == 'accounts-uppercase' else \
+                                  b'00000000-0000-0000-1234-56789abcdeg0' if mode == 'accounts-malformed' else \
+                                  b'00000000-0000-0000-1234-56789abcdef0'
+                        user = b'fixture-user@example.invalid'
+                        data = struct.pack('<II', 1, len(account)) + account + struct.pack('<I', len(user)) + user
+                        payload = struct.pack('<HHI', 22, 0, len(data)) + data
                     connection.sendall(struct.pack('<IHHIIi', magic, version, opcode | 0x8000,
                                                    request_id + int(wrong_id), len(payload), status) + payload)
             except Exception as error:
@@ -87,13 +100,13 @@ class IdentityBridge(unittest.TestCase):
             halt.set();thread.join(timeout=12)
         self.assertFalse(thread.is_alive())
         self.assertEqual(result.returncode, 0, result.stderr[-4000:])
-        self.assertFalse(errors)
-        self.assertEqual(len(requests), 0 if no_request else 1)
+        self.assertFalse(errors, result.stderr[-4000:])
+        self.assertEqual(len(requests), 0 if no_request else 1, result.stderr[-4000:])
         fields = marker.read_text().split()
         expected = (0, '00000000') if status == 0 and not wrong_id else (3, '80070057' if wrong_id else '80070005')
-        if mode and not personal:expected = (3 if mode.endswith('silent') else 5, '80004005' if no_request else '80070005')
+        if mode and not personal and not enumerate:expected = (3 if mode.endswith('silent') else 5, '80004005' if no_request else '80070005')
         self.assertEqual((int(fields[1]), fields[2]), expected)
-        self.assertEqual(fields[3], '1' if personal else '0')
+        self.assertEqual(fields[3], '1' if personal or enumerate else '0')
         events = [json.loads(line) for line in (bundle / 'events.jsonl').read_text().splitlines()]
         self.assertEqual(next(event['code'] for event in events if event['kind'] == 'process_exit' and event['pid'] == int(fields[0])), 0)
         architecture = 'x86_64' if BITS == 64 else 'i386'
@@ -123,6 +136,11 @@ class IdentityBridge(unittest.TestCase):
 
     def test_personal_account_response_formats(self):
         for mode in ('batch', 'personal', 'organization'):
+            with self.subTest(mode=mode):self.capture(mode, 'winrt', 0, mode=mode)
+
+    def test_cached_personal_accounts(self):
+        for suffix in ('personal', 'tenant', 'common', 'organization', 'uppercase', 'malformed', 'all'):
+            mode = 'accounts-' + suffix
             with self.subTest(mode=mode):self.capture(mode, 'winrt', 0, mode=mode)
 
 
