@@ -1805,6 +1805,8 @@ jobs:
             "monado-service=$MONADO_VERSION" \
             ninja-build \
             xvfb
+          sudo apt-get install -y libgstreamer-plugins-base1.0-0:amd64 libgstreamer-plugins-base1.0-0:i386 \
+            libgstreamer-gl1.0-0:amd64 libgstreamer-gl1.0-0:i386 libavformat60:amd64 libavformat60:i386
           sudo apt-get check
           mkdir -p "$HOME/artifacts"
           llvm_key="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-llvm.asc"
@@ -1863,14 +1865,18 @@ jobs:
             LD_LIBRARY_PATH="$runner/lib/wine/$arch-unix" ldd "$runner/lib/wine/$arch-unix/win32u.so"
             LD_LIBRARY_PATH="$runner/lib/wine/$arch-unix" ldd "$runner/lib/wine/$arch-unix/winex11.so"
           done
-          command -v strace
-          mkdir -p "$work/probe/t"
-          if ! WINEPREFIX="$work/probe/prefix" WINEARCH=win64 WINEDEBUG=-all,+module,+seh,+loaddll \
-            TMPDIR="$work/probe/t" TMP="$work/probe/t" TEMP="$work/probe/t" \
-            xvfb-run -a timeout 180 strace -f -s 128 -e trace=file,process,network,memory \
-              -o "$work/logs/prefix-syscalls.log" env -u GH_TOKEN -u GITHUB_TOKEN "$runner/bin/wine" wineboot -u \
+          for arch in i386 x86_64; do
+            for module in winegstreamer winedmo; do
+              dependencies="$(LD_LIBRARY_PATH="$runner/lib/wine/$arch-unix" ldd "$runner/lib/wine/$arch-unix/$module.so")"
+              printf '%s\n' "$dependencies"
+              if grep -F 'not found' <<< "$dependencies"; then exit 1; fi
+            done
+          done
+          mkdir -p "$work/probe"
+          if ! WINEPREFIX="$work/probe/prefix" WINEARCH=win64 WINEDEBUG=-all,+module,+seh,+wineboot \
+            xvfb-run -a timeout 180 env -u GH_TOKEN -u GITHUB_TOKEN "$runner/bin/wine" wineboot -u \
               > "$work/logs/prefix-loader.log" 2>&1; then
-            tail -n 60 "$work/logs/prefix-loader.log" "$work/logs/prefix-syscalls.log"
+            tail -n 80 "$work/logs/prefix-loader.log"
             exit 1
           fi
           WINEPREFIX="$work/probe/prefix" "$runner/bin/wineserver" -k || true
