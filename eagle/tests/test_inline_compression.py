@@ -105,6 +105,9 @@ class InlineCompression(unittest.TestCase):
         subprocess.run(['clang', '--target=' + architecture + '-linux-gnu', '-O2', '-g', '-gdwarf-5', '-c', str(source), '-o', str(obj)],
                        check=True, capture_output=True, timeout=20)
         subprocess.run([self.linker, '-e', 'entry', str(obj), '-o', str(image)], check=True, capture_output=True, timeout=20)
+        if architecture == 'aarch64':
+            # LLVM section replacement corrupts ARM mapping symbols in mergeable debug strings.
+            subprocess.run([self.objcopy, '--strip-symbol=$d', str(image)], check=True, capture_output=True, timeout=20)
         listing = subprocess.check_output([symbols.host_tool('llvm-nm'), '-n', str(image)], text=True)
         address = int(next(line.split()[0] for line in listing.splitlines() if line.endswith(' outer')), 16)
         metadata = symbols.image_metadata(image)

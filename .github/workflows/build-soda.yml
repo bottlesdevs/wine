@@ -1705,7 +1705,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       SOURCE_RUN: ${{ inputs.recovery_run }}
-      SOURCE_COMMIT: '348313d6426f58cd892fc33a975919c1200f403c'
+      SOURCE_COMMIT: 'a5399634587a2c08cf076b9d146faf41f4ebeea9'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -1739,15 +1739,28 @@ jobs:
               assert next(job for job in jobs if job['name'] == name)['conclusion'] == 'success'
           steps = next(job for job in jobs if job['name'] == 'build')['steps']
           package = next(i for i, step in enumerate(steps) if step['name'] == 'package')
-          assert all(step['conclusion'] == 'success' or (step['name'] == 'Upload prepare.log on failure' and step['conclusion'] == 'skipped') for step in steps[:package + 1])
-          assert steps[package]['conclusion'] == 'success'
-          assert [step['name'] for step in steps if step['conclusion'] == 'failure'] == ['upload Eagle test logs']
-          print('Completed Wine builds and package tests verified; only log upload failed')
+          assert all(step['conclusion'] == 'success' or (step['name'] == 'Upload prepare.log on failure' and step['conclusion'] == 'skipped') for step in steps[:package])
+          assert steps[package]['conclusion'] == 'failure'
+          assert [step['name'] for step in steps if step['conclusion'] == 'failure'] == ['package']
+          print('Completed Wine builds and runtime tests verified; Eagle package tests will run again')
           PYCODE
           git merge-base --is-ancestor "$SOURCE_COMMIT" "$GITHUB_SHA"
-          test -z "$(git diff --name-only "$SOURCE_COMMIT" "$GITHUB_SHA" -- . ':(exclude).github/workflows/**')"
+          test -z "$(git diff --name-only "$SOURCE_COMMIT" "$GITHUB_SHA" -- . ':(exclude).github/workflows/build-soda.yml' ':(exclude)eagle/tests/test_inline_compression.py')"
+          python3 - <<'PYCODE'
+          import os
+          from pathlib import Path
+          import subprocess
+          path = '.github/workflows/build-soda.yml'
+          original = subprocess.check_output(['git', 'show', os.environ['SOURCE_COMMIT'] + ':' + path], text=True)
+          current = Path(path).read_text()
+          def build_inputs(text):
+              before, recovery = text.split('  recovery:\n', 1)
+              return before + '  release:\n' + recovery.split('  release:\n', 1)[1]
+          assert build_inputs(original) == build_inputs(current), 'Wine build inputs changed'
+          PYCODE
 
       - name: setup
+        timeout-minutes: 20
         working-directory: /home/runner/work/
         run: |
           mkdir -p /home/runner/.config/frogminer/
@@ -1785,12 +1798,28 @@ jobs:
             libopenxr-dev:amd64 \
             "libopenxr1-monado=$MONADO_VERSION" \
             mesa-vulkan-drivers \
+            libgl1-mesa-dri:amd64 \
+            libgl1-mesa-dri:i386 \
+            libglx-mesa0:amd64 \
+            libglx-mesa0:i386 \
             "monado-service=$MONADO_VERSION" \
             ninja-build \
             xvfb
           sudo apt-get check
+          mkdir -p "$HOME/artifacts"
+          llvm_key="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-llvm.asc"
+          curl -fL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$llvm_key"
+          printf '%s  %s\n' 8b2a587ffd672c4687e7581dad4b2f6c1bb2ad6b480cd9771ba2ff48e0b8c75d "$llvm_key" | sha256sum --check -
+          sudo install -m644 "$llvm_key" /usr/share/keyrings/soda-llvm.asc
+          printf '%s\n' 'deb [arch=amd64 signed-by=/usr/share/keyrings/soda-llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main' | sudo tee /etc/apt/sources.list.d/soda-llvm.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "clang-22=$LLVM_TOOLS_VERSION" "lld-22=$LLVM_TOOLS_VERSION" "llvm-22=$LLVM_TOOLS_VERSION"
+          for tool in clang lld-link llvm-objcopy llvm-symbolizer; do
+            "/usr/lib/llvm-22/bin/$tool" --version
+          done
 
       - name: package verified Wine artifacts
+        timeout-minutes: 30
         run: |
           work="$RECOVERY_WORK"
           component="soda-$WINE_VERSION-$REVISION"
@@ -1800,6 +1829,8 @@ jobs:
           test "$(printf '%s\n' "$wine" | wc -l)" = 1
           test -n "$wine"
           runner="${wine%/bin/wine}"
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "pre-test-symbols-$component-x86_64" --dir "$work/symbols/$component-x86_64"
           chmod +x "$runner"/bin/*
           for name in msidb msiexec notepad regedit regsvr32 wineboot winecfg wineconsole winedbg winefile winemine winepath; do
             cmp "$runner/bin/$name" "$runner/bin/wine"
@@ -1819,16 +1850,31 @@ jobs:
             test -f "$runner/lib/wine/$arch-unix/windows.security.authentication.onlineid.so"
           done
           test -f "$runner/lib/wine/x86_64-unix/wineopenxr.so"
-          xvfb-run -a sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner" "$work/eagle"
+          PATH="/usr/lib/llvm-22/bin:$PATH" xvfb-run -a sh "$GITHUB_WORKSPACE/.github/build-eagle.sh" "$runner" "$work/eagle"
           sh "$GITHUB_WORKSPACE/.github/soda-provenance.sh" "$runner" "$work/provenance" \
             --name "$component-x86_64" --refresh --prebuilt --assembly-source "$GITHUB_WORKSPACE"
+          tools="$work/provenance/native"
+          python3 -S "$GITHUB_WORKSPACE/.github/soda-symbols.py" "$runner" "$work/symbols/$component-x86_64" \
+            --tools "$tools" --verify
+          cp "$runner/share/soda/"{build,files,sources}.json "$work/symbols/$component-x86_64/share/soda/"
           mv "$runner" "$work/release/$component-x86_64"
           tar -C "$work/release" -cJf "$work/release/$component-x86_64.tar.xz" "$component-x86_64"
+          tar -C "$work/symbols" -cJf "$work/release/$component-x86_64-symbols.tar.xz" "$component-x86_64"
           gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
             --name "$component-aarch64" --dir "$work/release"
+          mkdir "$work/arm64" "$work/arm64-symbols"
+          tar -C "$work/arm64" -xJf "$work/release/$component-aarch64.tar.xz"
+          tar -C "$work/arm64-symbols" -xJf "$work/release/$component-aarch64-symbols.tar.xz"
+          runner="$work/arm64/$component-aarch64"
+          python3 -S "$GITHUB_WORKSPACE/.github/soda-symbols.py" "$runner" "$work/arm64-symbols/$component-aarch64" \
+            --tools "$tools" --verify
+          sh "$GITHUB_WORKSPACE/.github/soda-provenance.sh" "$runner" "$work/arm64-provenance" \
+            --name "$component-aarch64" --refresh --assembly-source "$GITHUB_WORKSPACE"
+          cp "$runner/share/soda/"{build,files,sources}.json "$work/arm64-symbols/$component-aarch64/share/soda/"
+          tar -C "$work/arm64" -cJf "$work/release/$component-aarch64.tar.xz" "$component-aarch64"
+          tar -C "$work/arm64-symbols" -cJf "$work/release/$component-aarch64-symbols.tar.xz" "$component-aarch64"
           cd "$work/release"
-          echo 'df670ae214ae7ac6c1934fbf2d4b25efc5753561a27a47cb48ba4a4663725f4a  soda-11.0-27-experimental-aarch64.tar.xz' | sha256sum --check -
-          sha256sum "$component-x86_64.tar.xz" "$component-aarch64.tar.xz" > SHA256SUMS
+          sha256sum "$component-"*.tar.xz > SHA256SUMS
 
       - name: collect package test logs
         if: always()
@@ -1875,7 +1921,7 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$RELEASE_NOTES" > "$RECOVERY_WORK/notes.md"
-          gh release create "$component" "$component-x86_64.tar.xz" "$component-aarch64.tar.xz" SHA256SUMS \
+          gh release create "$component" "$component-x86_64.tar.xz" "$component-x86_64-symbols.tar.xz" "$component-aarch64.tar.xz" "$component-aarch64-symbols.tar.xz" SHA256SUMS \
             --target "$GITHUB_SHA" --title "Soda $WINE_VERSION-$REVISION" \
             --notes-file "$RECOVERY_WORK/notes.md" --prerelease
 
