@@ -1,0 +1,14 @@
+winex11: refresh displays on RandR screen changes.
+
+diff --git a/dlls/winex11.drv/xrandr.c b/dlls/winex11.drv/xrandr.c
+--- a/dlls/winex11.drv/xrandr.c
++++ b/dlls/winex11.drv/xrandr.c
+@@ -1344,7 +1344,7 @@
+         return;
+ 
+     pXRRSelectInput( display, root_window,
+-                     RRCrtcChangeNotifyMask | RROutputChangeNotifyMask | RRProviderChangeNotifyMask );
++                     RRScreenChangeNotifyMask | RRCrtcChangeNotifyMask | RROutputChangeNotifyMask | RRProviderChangeNotifyMask );
+     X11DRV_register_event_handler( event_base + RRNotify_CrtcChange, xrandr14_device_change_handler,
+                                    "XRandR CrtcChange" );
+     X11DRV_register_event_handler( event_base + RRNotify_OutputChange, xrandr14_device_change_handler,
