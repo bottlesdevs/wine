@@ -1,0 +1,17 @@
+diff --git a/dlls/wldap32/init.c b/dlls/wldap32/init.c
+index d1329107c..518ea840c 100644
+--- a/dlls/wldap32/init.c
++++ b/dlls/wldap32/init.c
+@@ -146,10 +146,11 @@ static char *join_hostnames( const char *scheme, char **hostnames, ULONG portnum
+         i++;
+     }
+ 
+-    size += (i - 1) * strlen( sep );
++    if (i) size += (i - 1) * strlen( sep );
+     if (!(res = malloc( size + 1 ))) return NULL;
+ 
+     p = res;
++    *p = 0;
+     for (v = hostnames; *v; v++)
+     {
+         if (v != hostnames)

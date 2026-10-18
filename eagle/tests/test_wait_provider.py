@@ -26,6 +26,10 @@ class WaitProvider(unittest.TestCase):
                     continue
                 self.assertTrue(providers)
                 self.assertTrue(all(item['data']['provider'] == 8 for item in providers))
+                closed = [item for item in providers if item['data']['event'] == 'HandleClose']
+                self.assertLess(len(closed), 20, 'non-mutex handle churn reached the wait observer')
+                created = {item['data']['object'] for item in providers if item['data']['event'] == 'MutexCreate'}
+                self.assertTrue(created.issubset({item['data']['object'] for item in closed}))
                 graphs = [item['wait_graph'] for item in providers]
                 cycles = [graph for graph in graphs if graph['cycles']]
                 self.assertTrue(cycles, 'timed circular mutex waits were not observed')

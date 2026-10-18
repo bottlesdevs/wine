@@ -1,0 +1,48 @@
+diff --git a/dlls/wldap32/init.c b/dlls/wldap32/init.c
+--- a/dlls/wldap32/init.c
++++ b/dlls/wldap32/init.c
+@@ -53,7 +53,8 @@
+         if (isspace( *p ))
+         {
+             while (isspace( *p )) p++;
+-            if (*p) i++;
++            if (!*p) break;
++            i++;
+         }
+         p++;
+     }
+@@ -72,26 +73,17 @@
+ 
+     while (*p)
+     {
+-        if (p[1] != '\0')
+-        {
+-            if (isspace( *p ))
+-            {
+-                *p = '\0'; p++;
+-                res[i] = strdup( q );
+-                if (!res[i]) goto oom;
+-                i++;
+-
+-                while (isspace( *p )) p++;
+-                q = p;
+-            }
+-        }
+-        else
+-        {
++        if (isspace( *p ) || !p[1])
++        {
++            if (isspace( *p )) *p = '\0';
++            p++;
+             res[i] = strdup( q );
+             if (!res[i]) goto oom;
+             i++;
+-        }
+-        p++;
++            while (isspace( *p )) p++;
++            q = p;
++        }
++        else p++;
+     }
+     res[i] = NULL;
+ 

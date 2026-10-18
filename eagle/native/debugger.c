@@ -11,7 +11,7 @@
 #define MAX_THREADS 1024
 #define MAX_BREAKPOINTS 128
 
-struct process { DWORD id; HANDLE handle; BOOL initial_break, pause_requested; char stop_module[260]; };
+struct process { DWORD id; HANDLE handle; BOOL initial_break, pause_requested, wine_service; char stop_module[260]; };
 struct thread { DWORD id, pid; HANDLE handle; DWORD64 rearm, original_dr[6]; BOOL stepping, suspended, saved_dr, saved_tf, original_tf; };
 struct breakpoint { DWORD pid; DWORD64 address; BYTE original; BOOL armed, logpoint; char reg[16]; unsigned comparison; DWORD64 value, hits; };
 struct watchpoint { DWORD pid; DWORD64 address; unsigned length, mode; };
@@ -27,20 +27,46 @@ static volatile LONG dropped_commands;
 static unsigned long long sequence;
 static BOOL interactive;
 
-static BOOL wine_console_host(CREATE_PROCESS_DEBUG_INFO *info, const char *path)
+static BOOL wine_builtin_process(CREATE_PROCESS_DEBUG_INFO *info, const char *path, const char *name)
 {
     char directory[32768], marker[sizeof("Wine builtin DLL")];
-    DWORD size;
+    DWORD size, read;
     SIZE_T copied;
-    const char *option = getenv("EAGLE_TRACE_EXCLUDE_WINE_CONHOST");
-    if (!option || strcmp(option, "1")) return FALSE;
+    LARGE_INTEGER position, offset = {0};
+    BOOL builtin;
     size = GetSystemDirectoryA(directory, sizeof(directory));
     if (!size || size >= sizeof(directory)) return FALSE;
     while (*path == '\\' || *path == '?') path++;
-    if (_strnicmp(path, directory, size) || _stricmp(path + size, "\\conhost.exe")) return FALSE;
-    return ReadProcessMemory(info->hProcess, (const char *)info->lpBaseOfImage + 64,
-                             marker, sizeof(marker), &copied) && copied == sizeof(marker) &&
-           !memcmp(marker, "Wine builtin DLL", sizeof(marker));
+    if (_strnicmp(path, directory, size) || _stricmp(path + size, name))
+    {
+        size = GetSystemWow64DirectoryA(directory, sizeof(directory));
+        if (!size || size >= sizeof(directory) || _strnicmp(path, directory, size) ||
+            _stricmp(path + size, name)) return FALSE;
+    }
+    if (ReadProcessMemory(info->hProcess, (const char *)info->lpBaseOfImage + 64,
+                          marker, sizeof(marker), &copied) && copied == sizeof(marker) &&
+        !memcmp(marker, "Wine builtin DLL", sizeof(marker))) return TRUE;
+    /* A 32-bit debug event truncates the base of a 64-bit Wine service. */
+    if (!info->hFile || !SetFilePointerEx(info->hFile, offset, &position, FILE_CURRENT)) return FALSE;
+    offset.QuadPart = 64;
+    builtin = SetFilePointerEx(info->hFile, offset, NULL, FILE_BEGIN) &&
+              ReadFile(info->hFile, marker, sizeof(marker), &read, NULL) && read == sizeof(marker) &&
+              !memcmp(marker, "Wine builtin DLL", sizeof(marker));
+    SetFilePointerEx(info->hFile, position, NULL, FILE_BEGIN);
+    return builtin;
+}
+
+static BOOL wine_console_host(CREATE_PROCESS_DEBUG_INFO *info, const char *path)
+{
+    const char *option = getenv("EAGLE_TRACE_EXCLUDE_WINE_CONHOST");
+    return option && !strcmp(option, "1") && wine_builtin_process(info, path, "\\conhost.exe");
+}
+
+static BOOL wine_service_host(CREATE_PROCESS_DEBUG_INFO *info, const char *path)
+{
+    const char *option = getenv("EAGLE_TRACE_DETACH_WINE_SERVICES");
+    return option && !strcmp(option, "1") &&
+           (wine_builtin_process(info, path, "\\explorer.exe") || wine_builtin_process(info, path, "\\tabtip.exe"));
 }
 
 static BOOL register_value(const CONTEXT *context, const char *name, DWORD64 *value)
@@ -505,9 +531,10 @@ static BOOL next_command(char *line)
     return found;
 }
 
-static void detach_all(void)
+static BOOL detach_all(void)
 {
     unsigned i;
+    BOOL detached = TRUE;
     for (i = 0; i < MAX_THREADS; i++) if (threads[i].id)
     {
         CONTEXT context;
@@ -528,9 +555,10 @@ static void detach_all(void)
     {
         DWORD id = processes[i].id;
         resume_siblings(id);
-        if (!DebugActiveProcessStop(id)) error("detach", GetLastError());
+        if (!DebugActiveProcessStop(id)) { error("detach", GetLastError()); detached = FALSE; }
         else { event("detached", id, 0); end_event(); }
     }
+    return detached;
 }
 
 static int command(const char *line, DEBUG_EVENT *pending, DWORD *status)
@@ -734,7 +762,8 @@ int main(int argc, char **argv)
             }
             for (i = 0; i < MAX_PROCESSES; i++) if (!processes[i].id) break;
             if (i == MAX_PROCESSES) { error("process_capacity", ERROR_NOT_ENOUGH_MEMORY); ContinueDebugEvent(debug.dwProcessId, debug.dwThreadId, DBG_CONTINUE); DebugActiveProcessStop(debug.dwProcessId); continue; }
-            processes[i] = (struct process){.id = debug.dwProcessId, .handle = info->hProcess, .initial_break = TRUE}; active++;
+            processes[i] = (struct process){.id = debug.dwProcessId, .handle = info->hProcess, .initial_break = TRUE,
+                                          .wine_service = debug.dwProcessId != primary_pid && wine_service_host(info, path)}; active++;
 #ifdef _WIN64
             {
                 BOOL wow64 = FALSE;
@@ -978,6 +1007,13 @@ int main(int argc, char **argv)
         }
         if (!ContinueDebugEvent(debug.dwProcessId, debug.dwThreadId, status)) error("continue", GetLastError());
         if (!active) break;
+        for (i = 0; i < MAX_PROCESSES; i++) if (processes[i].id && !processes[i].wine_service) break;
+        if (i == MAX_PROCESSES)
+        {
+            if (!detach_all()) return 1;
+            event("wine_services_detached", 0, 0); printf(",\"scope\":\"Wine builtin services after application exit\""); end_event();
+            break;
+        }
     }
     event("finished", 0, 0); end_event();
     return 0;

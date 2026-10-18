@@ -1,0 +1,30 @@
+Keep unrelated handle closes outside the mutex wait observer.
+
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -420,7 +420,7 @@
+  */
+ BOOL WINAPI DECLSPEC_HOTPATCH CloseHandle( HANDLE handle )
+ {
+-    BOOL ret;
++    BOOL ret, trace_mutex = FALSE;
+     if (handle == (HANDLE)STD_INPUT_HANDLE)
+         handle = InterlockedExchangePointer( &NtCurrentTeb()->Peb->ProcessParameters->hStdInput, 0 );
+     else if (handle == (HANDLE)STD_OUTPUT_HANDLE)
+@@ -428,8 +428,15 @@
+     else if (handle == (HANDLE)STD_ERROR_HANDLE)
+         handle = InterlockedExchangePointer( &NtCurrentTeb()->Peb->ProcessParameters->hStdError, 0 );
+ 
++    if (eagle_trace_enabled(8) && IsDebuggerPresent())
++    {
++        struct { OBJECT_TYPE_INFORMATION info; WCHAR name[16]; } type;
++        if (!NtQueryObject( handle, ObjectTypeInformation, &type, sizeof(type), NULL ))
++            trace_mutex = type.info.TypeName.Length == 6 * sizeof(WCHAR) &&
++                    !memcmp( type.info.TypeName.Buffer, L"Mutant", 6 * sizeof(WCHAR) );
++    }
+     ret = set_ntstatus( NtClose( handle ));
+-    eagle_trace_wait("HandleClose", handle, ret, 0);
++    if (trace_mutex) eagle_trace_wait("HandleClose", handle, ret, 0);
+     return ret;
+ }
+ 

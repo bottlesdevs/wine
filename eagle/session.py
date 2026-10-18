@@ -43,6 +43,30 @@ def unix_modules(pid):
             skipped += 1
     return modules, skipped
 
+def mapped_image(pid, address):
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    address = int(address, 0)
+    with Path(f'/proc/{pid}/maps').open() as file:
+        for count, line in enumerate(file):
+            if count >= 65536:
+                raise ValueError('process mapping inventory exceeds limit')
+            fields = line.rstrip().split(None, 5)
+            if len(fields) < 6 or not fields[5].startswith('/') or fields[5].endswith(' (deleted)'):
+                continue
+            region, permissions, offset, device, inode, name = fields
+            if int(region.split('-')[0], 16) != address or int(offset, 16):
+                continue
+            image = Path(name)
+            stat = image.stat()
+            # A mapping device ID can differ from stat for the same file.
+            if stat.st_ino != int(inode):
+                continue
+            with image.open('rb') as mapped:
+                if mapped.read(2) == b'MZ':
+                    return image
+    return None
+
 def identity(path):
     path = Path(path).resolve(strict=True)
     digest = hashlib.sha256()
@@ -174,8 +198,9 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
         raise ValueError("unsupported capture profile")
     from waits import WaitGraph
     waits = WaitGraph()
-    env = dict(os.environ, WINEPREFIX=str(prefix), WINEDEBUG="-all", WINEDLLOVERRIDES="winemenubuilder.exe=d")
-    for name in ('EAGLE_PROVIDER_MASK', 'EAGLE_TRIGGER_HRESULT', 'EAGLE_TRIGGER_ACTION', 'EAGLE_TARGET_CWD', 'EAGLE_TRACE_EXCLUDE_WINE_CONHOST'):
+    env = dict(os.environ, WINEPREFIX=str(prefix), WINEDEBUG="-all")
+    env['WINEDLLOVERRIDES'] = ';'.join(value for value in (env.get('WINEDLLOVERRIDES'), 'winemenubuilder.exe=d') if value)
+    for name in ('EAGLE_PROVIDER_MASK', 'EAGLE_TRIGGER_HRESULT', 'EAGLE_TRIGGER_ACTION', 'EAGLE_TARGET_CWD', 'EAGLE_TRACE_EXCLUDE_WINE_CONHOST', 'EAGLE_TRACE_DETACH_WINE_SERVICES'):
         env.pop(name, None)
     if profile in ("winrt", "dwrite", "com", "wait", "trace"):
         providers = json.loads((wine.parent.parent / "share/eagle/providers.json").read_text())
@@ -185,6 +210,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
         env["EAGLE_PROVIDER_MASK"] = {"winrt": "1", "dwrite": "2", "com": "4", "wait": "8", "trace": "15"}[profile]
     if profile == 'trace':
         env['EAGLE_TRACE_EXCLUDE_WINE_CONHOST'] = '1'
+        env['EAGLE_TRACE_DETACH_WINE_SERVICES'] = '1'
     if target:
         env["EAGLE_TARGET_CWD"] = windows_path(Path(target_cwd).resolve(strict=True) if target_cwd else Path(target).resolve().parent)
     if on_hresult:
@@ -214,11 +240,19 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
         selector.register(control, selectors.EVENT_READ, "control")
     buffers = {"stdout": b"", "stderr": b""}
     deadline = time.monotonic() + timeout
+    drain_deadline = None
     count = 0
     initialized_breakpoint = False
     complete_event = False
     verified_images = {}
     resolved_frames = {}
+    unix_pids = {}
+    loaded_images = {}
+    def module_key(pid, name):
+        return pid, re.sub(r'[\\/]+', '/', name.lstrip('\\?')).casefold()
+    def frame_image(pid, frame):
+        loaded = loaded_images.get(module_key(pid, frame.get('image', '')))
+        return loaded['image'] if loaded else host_path(frame.get('image', ''), prefix)
     def image_matches(image, expected):
         stat = image.stat()
         signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
@@ -239,6 +273,12 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
     try:
         with (root / "events.jsonl").open("x", encoding="utf-8") as output:
             while process.poll() is None or any(key.data != "control" for key in selector.get_map().values()):
+                if process.poll() is not None:
+                    if drain_deadline is None:
+                        drain_deadline = min(deadline, time.monotonic() + 5)
+                    elif time.monotonic() > drain_deadline:
+                        manifest['inherited_output_streams'] = [key.data for key in selector.get_map().values() if key.data != 'control']
+                        break
                 if cancellation and cancellation.is_set() and not manifest.get('cancelled') and process.poll() is None:
                     native('detach')
                     manifest['cancelled'] = True
@@ -290,6 +330,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                         if event['kind'] == 'error':
                             manifest['debugger_errors'] = manifest.get('debugger_errors', 0) + 1
                         if event['kind'] == 'process_create' and event.get('unix_pid'):
+                            unix_pids[event['pid']] = event['unix_pid']
                             try:
                                 modules, skipped = unix_modules(event['unix_pid'])
                                 manifest['unix_modules'].update(modules)
@@ -324,11 +365,29 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                         if graph is not None: event['wait_graph'] = graph
                         from symbols import host_path, resolve, disassemble
                         if event["kind"] in ("process_create", "module_load"):
-                            image = host_path(event.get("path", ""), prefix)
+                            prefix_image = host_path(event.get("path", ""), prefix)
+                            image = None
+                            try:
+                                image = mapped_image(unix_pids.get(event['pid']), event.get('base', '0x0'))
+                            except (ValueError, OSError):
+                                pass
+                            origin = 'process mapping' if image else 'prefix file; runtime unverified'
+                            image = image or prefix_image
                             if image and image.is_file():
                                 try:
                                     event["identity"] = identity(image)
+                                    event['image'] = str(image)
+                                    event['identity_origin'] = origin
                                     manifest["modules"][str(image.resolve())] = event["identity"]
+                                    mismatch = False
+                                    if origin == 'process mapping' and (not prefix_image or prefix_image.resolve() != image.resolve()):
+                                        mismatch = True
+                                        if prefix_image and prefix_image.is_file():
+                                            try:
+                                                mismatch = identity(prefix_image) != event['identity']
+                                            except (ValueError, OSError):
+                                                pass
+                                    loaded_images[module_key(event['pid'], event.get('path', ''))] = {'image': image, 'origin': origin, 'mismatch': mismatch, 'base': event['base']}
                                     if pid and not manifest["target_identity"] and event["kind"] == "process_create":
                                         manifest["target_identity"] = event["identity"]
                                 except (ValueError, OSError):
@@ -336,13 +395,19 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                         frames = event.get("frames", [event["frame"]] if event.get("frame") else [])
                         if event['kind'] == 'exception' and not event['first_chance'] and event.get('frame'):
                             fault = event['frame']
-                            image = host_path(fault.get('image', ''), prefix)
+                            image = frame_image(event['pid'], fault)
                             if image and image.is_file() and image_matches(image, manifest['modules'].get(str(image.resolve()))):
                                 event['disassembly'] = disassemble(image, fault['rva'])
                         for frame in frames:
+                            loaded = loaded_images.get(module_key(event['pid'], frame.get('image', '')))
+                            if loaded:
+                                frame['image_origin'] = loaded['origin']
+                                if loaded['mismatch']:
+                                    for name in ('symbol', 'source', 'file', 'line', 'displacement'):
+                                        frame.pop(name, None)
                             if frame.get("symbol") or not frame.get("rva"):
                                 continue
-                            image = host_path(frame.get("image", ""), prefix)
+                            image = frame_image(event['pid'], frame)
                             if not image or not image.is_file():
                                 continue
                             expected = manifest["modules"].get(str(image.resolve()))
@@ -359,6 +424,11 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                                 frame.update(resolved[0])
                             else:
                                 frame["symbol_status"] = "symbols unavailable"
+                        if event['kind'] == 'module_unload':
+                            loaded_images = {key: value for key, value in loaded_images.items() if key[0] != event['pid'] or value['base'] != event['base']}
+                        elif event['kind'] == 'process_exit':
+                            unix_pids.pop(event['pid'], None)
+                            loaded_images = {key: value for key, value in loaded_images.items() if key[0] != event['pid']}
                         count += 1
                         if count > 1000000:
                             manifest["dropped_events"] += 1
@@ -377,6 +447,8 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
             except (OSError, subprocess.TimeoutExpired):
                 process.terminate(); process.wait(timeout=10)
         selector.close(); control.close(); (root / "control.sock").unlink(missing_ok=True)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            stream.close()
         manifest["ended"] = time.time()
         (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return summary(root)

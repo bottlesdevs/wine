@@ -1,0 +1,166 @@
+diff --git a/dlls/windows.ui/interactions.c b/dlls/windows.ui/interactions.c
+--- a/dlls/windows.ui/interactions.c
++++ b/dlls/windows.ui/interactions.c
+@@ -714,6 +714,7 @@
+     IInteractionTracker IInteractionTracker_iface;
+     IInteractionTracker5 IInteractionTracker5_iface;
+     ICompositionObject ICompositionObject_iface;
++    IClosable IClosable_iface;
+     ICompositionInteractionSourceCollection *sources;
+     ICompositionPropertySet *properties;
+     ICompositor *compositor;
+@@ -746,6 +747,11 @@
+     return CONTAINING_RECORD( iface, struct interaction_tracker, ICompositionObject_iface );
+ }
+ 
++static inline struct interaction_tracker *tracker_from_IClosable( IClosable *iface )
++{
++    return CONTAINING_RECORD( iface, struct interaction_tracker, IClosable_iface );
++}
++
+ static struct interaction_tracker_binding *interaction_tracker_find_binding(
+         struct interaction_tracker *impl, struct interaction_tracker *peer )
+ {
+@@ -790,6 +796,8 @@
+         *out = &impl_from_IInteractionTracker( iface )->IInteractionTracker5_iface;
+     else if (IsEqualGUID( iid, &IID_ICompositionObject ))
+         *out = &impl_from_IInteractionTracker( iface )->ICompositionObject_iface;
++    else if (IsEqualGUID( iid, &IID_IClosable ))
++        *out = &impl_from_IInteractionTracker( iface )->IClosable_iface;
+     else
+     {
+         *out = NULL;
+@@ -828,11 +836,12 @@
+     IID *values;
+ 
+     if (!count || !iids) return E_POINTER;
+-    if (!(values = CoTaskMemAlloc( 3 * sizeof(*values) ))) return E_OUTOFMEMORY;
++    if (!(values = CoTaskMemAlloc( 4 * sizeof(*values) ))) return E_OUTOFMEMORY;
+     values[0] = IID_IInteractionTracker;
+     values[1] = IID_IInteractionTracker5;
+     values[2] = IID_ICompositionObject;
+-    *count = 3;
++    values[3] = IID_IClosable;
++    *count = 4;
+     *iids = values;
+     return S_OK;
+ }
+@@ -1287,6 +1296,66 @@
+     interaction_tracker_TryUpdateScaleWithAdditionalVelocity,
+ };
+ 
++static HRESULT WINAPI tracker_closable_QueryInterface( IClosable *iface, REFIID iid, void **out )
++{
++    struct interaction_tracker *impl = tracker_from_IClosable( iface );
++    return IInteractionTracker_QueryInterface( &impl->IInteractionTracker_iface, iid, out );
++}
++
++static ULONG WINAPI tracker_closable_AddRef( IClosable *iface )
++{
++    struct interaction_tracker *impl = tracker_from_IClosable( iface );
++    return IInteractionTracker_AddRef( &impl->IInteractionTracker_iface );
++}
++
++static ULONG WINAPI tracker_closable_Release( IClosable *iface )
++{
++    struct interaction_tracker *impl = tracker_from_IClosable( iface );
++    return IInteractionTracker_Release( &impl->IInteractionTracker_iface );
++}
++
++static HRESULT WINAPI tracker_closable_GetIids( IClosable *iface, ULONG *count, IID **iids )
++{
++    struct interaction_tracker *impl = tracker_from_IClosable( iface );
++    return IInteractionTracker_GetIids( &impl->IInteractionTracker_iface, count, iids );
++}
++
++static HRESULT WINAPI tracker_closable_GetRuntimeClassName( IClosable *iface, HSTRING *name )
++{
++    struct interaction_tracker *impl = tracker_from_IClosable( iface );
++    return IInteractionTracker_GetRuntimeClassName( &impl->IInteractionTracker_iface, name );
++}
++
++static HRESULT WINAPI tracker_closable_GetTrustLevel( IClosable *iface, TrustLevel *level )
++{
++    struct interaction_tracker *impl = tracker_from_IClosable( iface );
++    return IInteractionTracker_GetTrustLevel( &impl->IInteractionTracker_iface, level );
++}
++
++static HRESULT WINAPI tracker_closable_Close( IClosable *iface )
++{
++    struct interaction_tracker *impl = tracker_from_IClosable( iface );
++    IInspectable *owner = impl->owner;
++
++    TRACE( "iface %p.\n", iface );
++    impl->owner = NULL;
++    interaction_tracker_clear_bindings( impl );
++    ICompositionInteractionSourceCollection_RemoveAll( impl->sources );
++    if (owner) IInspectable_Release( owner );
++    return S_OK;
++}
++
++static const IClosableVtbl tracker_closable_vtbl =
++{
++    tracker_closable_QueryInterface,
++    tracker_closable_AddRef,
++    tracker_closable_Release,
++    tracker_closable_GetIids,
++    tracker_closable_GetRuntimeClassName,
++    tracker_closable_GetTrustLevel,
++    tracker_closable_Close,
++};
++
+ static HRESULT interaction_tracker_create( ICompositor *compositor, IInspectable *owner,
+         IInteractionTracker **result )
+ {
+@@ -1299,6 +1368,7 @@
+     impl->IInteractionTracker_iface.lpVtbl = &interaction_tracker_vtbl;
+     impl->IInteractionTracker5_iface.lpVtbl = &interaction_tracker5_vtbl;
+     impl->ICompositionObject_iface.lpVtbl = &tracker_composition_object_vtbl;
++    impl->IClosable_iface.lpVtbl = &tracker_closable_vtbl;
+     impl->compositor = compositor;
+     impl->owner = owner;
+     list_init( &impl->bindings );
+diff --git a/dlls/windows.ui/tests/composition.c b/dlls/windows.ui/tests/composition.c
+--- a/dlls/windows.ui/tests/composition.c
++++ b/dlls/windows.ui/tests/composition.c
+@@ -602,6 +602,10 @@
+ static void test_interaction_tracker_bindings(void)
+ {
+     IInteractionTracker *tracker1 = NULL, *tracker2 = NULL, *tracker3 = NULL, *tracker4 = NULL;
++    IClosable *closable = NULL;
++    IUnknown *identity = NULL, *other = NULL;
++    IID *iids = NULL;
++    ULONG count = 0;
+     IInteractionTrackerStatics2 *statics2 = NULL;
+     IInteractionTrackerStatics *statics = NULL;
+     IActivationFactory *factory = NULL;
+@@ -665,6 +669,29 @@
+     check_binding_mode( statics2, tracker1, tracker2,
+                         InteractionBindingAxisModes_PositionX | InteractionBindingAxisModes_Scale );
+     check_binding_mode( statics2, tracker1, tracker4, InteractionBindingAxisModes_Scale );
++
++    hr = IInteractionTracker_QueryInterface( tracker1, &IID_IClosable, (void **)&closable );
++    ok( hr == S_OK, "Got hr %#lx.\n", hr );
++    if (closable)
++    {
++        IInteractionTracker_QueryInterface( tracker1, &IID_IUnknown, (void **)&identity );
++        IClosable_QueryInterface( closable, &IID_IUnknown, (void **)&other );
++        ok( identity == other, "Different object identities.\n" );
++        IUnknown_Release( other );
++        IUnknown_Release( identity );
++        hr = IClosable_GetIids( closable, &count, &iids );
++        ok( hr == S_OK, "Got hr %#lx.\n", hr );
++        ok( count == 4, "Got count %lu.\n", count );
++        if (count == 4) ok( IsEqualGUID( &iids[3], &IID_IClosable ), "Wrong interface.\n" );
++        CoTaskMemFree( iids );
++        hr = IClosable_Close( closable );
++        ok( hr == S_OK, "Got hr %#lx.\n", hr );
++        hr = IClosable_Close( closable );
++        ok( hr == S_OK, "Got hr %#lx.\n", hr );
++        check_binding_mode( statics2, tracker2, tracker1, InteractionBindingAxisModes_None );
++        check_binding_mode( statics2, tracker4, tracker1, InteractionBindingAxisModes_None );
++        IClosable_Release( closable );
++    }
+ 
+ done:
+     if (tracker4) IInteractionTracker_Release( tracker4 );
