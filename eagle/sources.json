@@ -1,0 +1,9 @@
+{
+  "Eagle_source_revision": "41e363c7f8dba418f0b7b6f09fa787ca5aa8ff48",
+  "YARA_headers_revision": "f44a8958e88daa75d765a52a68876f2286d57a51",
+  "YARA_headers_version": "4.5.5",
+  "YARA_runtime_version": "4.5.5",
+  "ordinal_source": "Debian python3-pefile packaged ordlookup, BSD-3-Clause",
+  "rules_sha256": "ef6fab33f115fb3a0e0539c681cd1e477fb827dcdbb605bb283563e1f4c38d98",
+  "intel_db_sha256": "35c764619d911f996632d73a8a793b9f800a55839caf5a2696d65f2885dee661"
+}

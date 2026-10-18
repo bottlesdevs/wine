@@ -1,0 +1,352 @@
+--- a/dlls/combase/combase.c
++++ b/dlls/combase/combase.c
+@@ -30,6 +30,7 @@
+ #include "combase_private.h"
+ 
+ #include "wine/debug.h"
++#include "eagle_trace.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(ole);
+ 
+@@ -1597,6 +1598,7 @@
+     for (; index < count; index++)
+     {
+         mqi[index].hr = IUnknown_QueryInterface(unk, mqi[index].pIID, (void **)&mqi[index].pItf);
++        eagle_trace_com("ActivationQueryInterface", mqi[index].hr, NULL, mqi[index].pIID, unk, 0, index, __builtin_return_address(0));
+         if (mqi[index].hr == S_OK)
+             fetched++;
+     }
+@@ -1982,7 +1984,7 @@
+ /***********************************************************************
+  *           CoCreateInstanceEx    (combase.@)
+  */
+-HRESULT WINAPI DECLSPEC_HOTPATCH CoCreateInstanceEx(REFCLSID rclsid, IUnknown *outer, DWORD cls_context,
++static HRESULT create_instance_ex(REFCLSID rclsid, IUnknown *outer, DWORD cls_context,
+         COSERVERINFO *server_info, ULONG count, MULTI_QI *results)
+ {
+     IClassFactory *factory;
+@@ -2022,15 +2024,28 @@
+     return return_multi_qi(unk, count, results, TRUE);
+ }
+ 
++HRESULT WINAPI DECLSPEC_HOTPATCH CoCreateInstanceEx(REFCLSID rclsid, IUnknown *outer, DWORD cls_context,
++        COSERVERINFO *server_info, ULONG count, MULTI_QI *results)
++{
++    HRESULT hr = create_instance_ex(rclsid, outer, cls_context, server_info, count, results);
++    eagle_trace_com("CoCreateInstanceEx", hr, rclsid, count && results ? results[0].pIID : NULL,
++                    count && results && SUCCEEDED(results[0].hr) ? results[0].pItf : NULL,
++                    cls_context, count, __builtin_return_address(0));
++    return hr;
++}
++
+ /***********************************************************************
+  *           CoGetClassObject    (combase.@)
+  */
+ HRESULT WINAPI DECLSPEC_HOTPATCH CoGetClassObject(REFCLSID rclsid, DWORD clscontext,
+         COSERVERINFO *server_info, REFIID riid, void **obj)
+ {
++    HRESULT hr;
+     TRACE("%s, %#lx, %s\n", debugstr_guid(rclsid), clscontext, debugstr_guid(riid));
+ 
+-    return com_get_class_object(rclsid, clscontext, server_info, riid, obj);
++    hr = com_get_class_object(rclsid, clscontext, server_info, riid, obj);
++    eagle_trace_com("CoGetClassObject", hr, rclsid, riid, SUCCEEDED(hr) && obj ? *obj : NULL, clscontext, 0, __builtin_return_address(0));
++    return hr;
+ }
+ 
+ /***********************************************************************
+@@ -2912,7 +2927,7 @@
+ /******************************************************************************
+  *                    CoInitializeEx    (combase.@)
+  */
+-HRESULT WINAPI DECLSPEC_HOTPATCH CoInitializeEx(void *reserved, DWORD model)
++static HRESULT initialize_ex(void *reserved, DWORD model)
+ {
+     struct tlsdata *tlsdata;
+     struct init_spy *cursor;
+@@ -2948,6 +2963,13 @@
+     return hr;
+ }
+ 
++HRESULT WINAPI DECLSPEC_HOTPATCH CoInitializeEx(void *reserved, DWORD model)
++{
++    HRESULT hr = initialize_ex(reserved, model);
++    eagle_trace_com("CoInitializeEx", hr, NULL, NULL, NULL, model, 0, __builtin_return_address(0));
++    return hr;
++}
++
+ /***********************************************************************
+  *           CoUninitialize    (combase.@)
+  */
+@@ -2984,6 +3006,7 @@
+         return;
+     }
+ 
++    eagle_trace_com("CoUninitialize", S_OK, NULL, NULL, NULL, 0, tlsdata->inits, __builtin_return_address(0));
+     leave_apartment(tlsdata);
+ 
+     /*
+--- a/dlls/combase/roapi.c
++++ b/dlls/combase/roapi.c
+@@ -17,6 +17,7 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ #define COBJMACROS
++#include "eagle_trace.h"
+ #include "objbase.h"
+ #include "initguid.h"
+ #include "roapi.h"
+@@ -155,16 +156,16 @@
+     FIXME("(%s, %s, %p): semi-stub\n", debugstr_hstring(classid), debugstr_guid(iid), class_factory);
+ 
+     if (!iid || !class_factory)
+-        return E_INVALIDARG;
++        do { HRESULT eagle_result = E_INVALIDARG; if (eagle_trace_enabled(1)) eagle_trace_event(1, "winrt.activation", eagle_result, 0, 0, 0, 0, classid && iid && class_factory ? WindowsGetStringRawBuffer(classid, NULL) : NULL, iid, __builtin_return_address(0)); return eagle_result; } while (0);
+ 
+     if (FAILED(hr = ensure_mta()))
+-        return hr;
++        do { HRESULT eagle_result = hr; if (eagle_trace_enabled(1)) eagle_trace_event(1, "winrt.activation", eagle_result, 0, 0, 0, 0, classid && iid && class_factory ? WindowsGetStringRawBuffer(classid, NULL) : NULL, iid, __builtin_return_address(0)); return eagle_result; } while (0);
+ 
+     hr = get_library_for_classid(WindowsGetStringRawBuffer(classid, NULL), &library);
+     if (FAILED(hr))
+     {
+         ERR("Failed to find library for %s\n", debugstr_hstring(classid));
+-        return hr;
++        do { HRESULT eagle_result = hr; if (eagle_trace_enabled(1)) eagle_trace_event(1, "winrt.activation", eagle_result, 0, 0, 0, 0, classid && iid && class_factory ? WindowsGetStringRawBuffer(classid, NULL) : NULL, iid, __builtin_return_address(0)); return eagle_result; } while (0);
+     }
+ 
+     if (!(module = LoadLibraryW(library)))
+@@ -202,7 +203,7 @@
+ done:
+     free(library);
+     if (module) FreeLibrary(module);
+-    return hr;
++    do { HRESULT eagle_result = hr; if (eagle_trace_enabled(1)) eagle_trace_event(1, "winrt.activation", eagle_result, 0, 0, 0, 0, classid && iid && class_factory ? WindowsGetStringRawBuffer(classid, NULL) : NULL, iid, __builtin_return_address(0)); return eagle_result; } while (0);
+ }
+ 
+ /***********************************************************************
+--- a/dlls/dwrite/font.c
++++ b/dlls/dwrite/font.c
+@@ -20,6 +20,7 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
++#include "eagle_trace.h"
+ #include <assert.h>
+ #include <math.h>
+ 
+@@ -6044,7 +6045,7 @@
+     TRACE("%p, %d, %s, %p, %u.\n", iface, type, wine_dbgstr_rect(bounds), bitmap, size);
+ 
+     if (!bounds || !bitmap || (UINT32)type > DWRITE_TEXTURE_CLEARTYPE_3x1)
+-        return E_INVALIDARG;
++        do { HRESULT eagle_result = E_INVALIDARG; if (eagle_trace_enabled(2)) eagle_trace_event(2, "dwrite.alpha_texture", eagle_result, bounds && bitmap && type <= DWRITE_TEXTURE_CLEARTYPE_3x1 ? bounds->right - bounds->left : 0, bounds && bitmap && type <= DWRITE_TEXTURE_CLEARTYPE_3x1 ? bounds->bottom - bounds->top : 0, size, type, NULL, NULL, __builtin_return_address(0)); return eagle_result; } while (0);
+ 
+     /* make sure buffer is large enough for requested texture type */
+     required = (bounds->right - bounds->left) * (bounds->bottom - bounds->top);
+@@ -6052,11 +6053,11 @@
+         required *= 3;
+ 
+     if (size < required)
+-        return E_NOT_SUFFICIENT_BUFFER;
++        do { HRESULT eagle_result = E_NOT_SUFFICIENT_BUFFER; if (eagle_trace_enabled(2)) eagle_trace_event(2, "dwrite.alpha_texture", eagle_result, bounds && bitmap && type <= DWRITE_TEXTURE_CLEARTYPE_3x1 ? bounds->right - bounds->left : 0, bounds && bitmap && type <= DWRITE_TEXTURE_CLEARTYPE_3x1 ? bounds->bottom - bounds->top : 0, size, type, NULL, NULL, __builtin_return_address(0)); return eagle_result; } while (0);
+ 
+     /* validate requested texture type */
+     if (analysis->texture_type != type)
+-        return DWRITE_E_UNSUPPORTEDOPERATION;
++        do { HRESULT eagle_result = DWRITE_E_UNSUPPORTEDOPERATION; if (eagle_trace_enabled(2)) eagle_trace_event(2, "dwrite.alpha_texture", eagle_result, bounds && bitmap && type <= DWRITE_TEXTURE_CLEARTYPE_3x1 ? bounds->right - bounds->left : 0, bounds && bitmap && type <= DWRITE_TEXTURE_CLEARTYPE_3x1 ? bounds->bottom - bounds->top : 0, size, type, NULL, NULL, __builtin_return_address(0)); return eagle_result; } while (0);
+ 
+     memset(bitmap, 0, size);
+     glyphrunanalysis_get_texturebounds(analysis, &runbounds);
+@@ -6074,7 +6075,7 @@
+             HRESULT hr;
+ 
+             if (FAILED(hr = glyphrunanalysis_render(analysis)))
+-                return hr;
++                do { HRESULT eagle_result = hr; if (eagle_trace_enabled(2)) eagle_trace_event(2, "dwrite.alpha_texture", eagle_result, bounds && bitmap && type <= DWRITE_TEXTURE_CLEARTYPE_3x1 ? bounds->right - bounds->left : 0, bounds && bitmap && type <= DWRITE_TEXTURE_CLEARTYPE_3x1 ? bounds->bottom - bounds->top : 0, size, type, NULL, NULL, __builtin_return_address(0)); return eagle_result; } while (0);
+         }
+ 
+         src = get_pixel_ptr(analysis->bitmap, type, &runbounds, &analysis->bounds);
+@@ -6087,7 +6088,7 @@
+         }
+     }
+ 
+-    return S_OK;
++    do { HRESULT eagle_result = S_OK; if (eagle_trace_enabled(2)) eagle_trace_event(2, "dwrite.alpha_texture", eagle_result, bounds && bitmap && type <= DWRITE_TEXTURE_CLEARTYPE_3x1 ? bounds->right - bounds->left : 0, bounds && bitmap && type <= DWRITE_TEXTURE_CLEARTYPE_3x1 ? bounds->bottom - bounds->top : 0, size, type, NULL, NULL, __builtin_return_address(0)); return eagle_result; } while (0);
+ }
+ 
+ static HRESULT WINAPI glyphrunanalysis_GetAlphaBlendParams(IDWriteGlyphRunAnalysis *iface, IDWriteRenderingParams *params,
+--- a/dlls/kernelbase/sync.c
++++ b/dlls/kernelbase/sync.c
+@@ -37,6 +37,7 @@
+ #include "wine/asm.h"
+ #include "wine/exception.h"
+ #include "wine/debug.h"
++#include "eagle_trace.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(sync);
+ 
+@@ -411,6 +412,7 @@
+     NTSTATUS status;
+     LARGE_INTEGER time;
+ 
++    eagle_trace_wait("WaitBegin", normalize_std_handle(handle), alertable, timeout);
+     status = NtWaitForSingleObject( normalize_std_handle( handle ), alertable,
+                                     get_nt_timeout( &time, timeout ) );
+ 
+@@ -419,6 +421,7 @@
+         SetLastError( RtlNtStatusToDosError(status) );
+         status = WAIT_FAILED;
+     }
++    eagle_trace_wait("WaitEnd", normalize_std_handle(handle), status, timeout);
+     return status;
+ }
+ 
+@@ -759,6 +762,7 @@
+         SetLastError( ERROR_ALREADY_EXISTS );
+     else
+         SetLastError( RtlNtStatusToDosError(status) );
++    if (ret) eagle_trace_wait("MutexCreate", ret, status != STATUS_OBJECT_NAME_EXISTS && (flags & CREATE_MUTEX_INITIAL_OWNER), 0);
+     return ret;
+ }
+ 
+@@ -786,7 +790,9 @@
+  */
+ BOOL WINAPI DECLSPEC_HOTPATCH ReleaseMutex( HANDLE handle )
+ {
+-    return set_ntstatus( NtReleaseMutant( handle, NULL ));
++    BOOL ret = set_ntstatus( NtReleaseMutant( handle, NULL ));
++    eagle_trace_wait("MutexRelease", handle, ret, 0);
++    return ret;
+ }
+ 
+ 
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -32,6 +32,7 @@
+ 
+ #include "kernelbase.h"
+ #include "wine/debug.h"
++#include "eagle_trace.h"
+ #include "wine/condrv.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(process);
+@@ -419,6 +420,7 @@
+  */
+ BOOL WINAPI DECLSPEC_HOTPATCH CloseHandle( HANDLE handle )
+ {
++    BOOL ret;
+     if (handle == (HANDLE)STD_INPUT_HANDLE)
+         handle = InterlockedExchangePointer( &NtCurrentTeb()->Peb->ProcessParameters->hStdInput, 0 );
+     else if (handle == (HANDLE)STD_OUTPUT_HANDLE)
+@@ -426,7 +428,9 @@
+     else if (handle == (HANDLE)STD_ERROR_HANDLE)
+         handle = InterlockedExchangePointer( &NtCurrentTeb()->Peb->ProcessParameters->hStdError, 0 );
+ 
+-    return set_ntstatus( NtClose( handle ));
++    ret = set_ntstatus( NtClose( handle ));
++    eagle_trace_wait("HandleClose", handle, ret, 0);
++    return ret;
+ }
+ 
+ 
+--- /dev/null
++++ b/include/eagle_trace.h
+@@ -0,0 +1,89 @@
++#ifndef __WINE_EAGLE_TRACE_H
++#define __WINE_EAGLE_TRACE_H
++
++#include <stdio.h>
++#include <stdlib.h>
++#include "windef.h"
++#include "winbase.h"
++
++static inline BOOL eagle_trace_enabled(unsigned mask)
++{
++    static LONG enabled = -1;
++    DWORD saved_error = GetLastError();
++    LONG value = InterlockedCompareExchange(&enabled, -1, -1);
++    if (value == -1)
++    {
++        char text[16];
++        value = GetEnvironmentVariableA("EAGLE_PROVIDER_MASK", text, sizeof(text)) ? strtoul(text, NULL, 0) : 0;
++        InterlockedExchange(&enabled, value);
++    }
++    SetLastError(saved_error);
++    return (value & mask) != 0;
++}
++
++static inline void eagle_trace_event(unsigned mask, const char *name, HRESULT result,
++                                     LONG a, LONG b, ULONG c, ULONG d, const WCHAR *subject, const GUID *requested_iid, const void *caller)
++{
++    char text[768], label[128], iid[40] = "";
++    GUID guid;
++    SIZE_T read;
++    unsigned i;
++    DWORD saved_error;
++    saved_error = GetLastError();
++    if (!eagle_trace_enabled(mask)) return;
++    for (i = 0; subject && subject[i] && i < sizeof(label) - 1; i++)
++    {
++        WCHAR ch = subject[i];
++        label[i] = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ? ch : '?';
++    }
++    label[i] = 0;
++    if (requested_iid && ReadProcessMemory(GetCurrentProcess(), requested_iid, &guid, sizeof(guid), &read) && read == sizeof(guid))
++        snprintf(iid, sizeof(iid), "%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x", guid.Data1, guid.Data2, guid.Data3, guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3], guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
++    snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":%u,\"event\":\"%s\",\"hresult\":\"0x%08lx\",\"a\":%ld,\"b\":%ld,\"c\":%lu,\"d\":%lu,\"subject\":\"%s\",\"iid\":\"%s\",\"caller\":\"%p\"}", mask, name, result, a, b, c, d, label, iid, caller);
++    OutputDebugStringA(text);
++    SetLastError(saved_error);
++}
++
++static inline void eagle_trace_guid(const GUID *value, char *output, unsigned size)
++{
++    GUID guid;
++    SIZE_T read;
++    output[0] = 0;
++    if (value && ReadProcessMemory(GetCurrentProcess(), value, &guid, sizeof(guid), &read) && read == sizeof(guid))
++        snprintf(output, size, "%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x", guid.Data1, guid.Data2, guid.Data3, guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3], guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
++}
++
++static inline void eagle_trace_com(const char *name, HRESULT result, const GUID *clsid, const GUID *requested_iid,
++                                    const void *object, DWORD context, DWORD count, const void *caller)
++{
++    char text[768], class_name[40], iid[40];
++    DWORD saved_error = GetLastError();
++    if (!eagle_trace_enabled(4)) return;
++    eagle_trace_guid(clsid, class_name, sizeof(class_name));
++    eagle_trace_guid(requested_iid, iid, sizeof(iid));
++    snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":4,\"event\":\"%s\",\"hresult\":\"0x%08lx\",\"clsid\":\"%s\",\"iid\":\"%s\",\"object\":\"%p\",\"context\":%lu,\"count\":%lu,\"caller\":\"%p\"}", name, result, class_name, iid, object, context, count, caller);
++    OutputDebugStringA(text);
++    SetLastError(saved_error);
++}
++
++static inline void eagle_trace_wait(const char *name, HANDLE object, DWORD value, DWORD timeout)
++{
++    static __thread BOOL busy;
++    static LONG emitted;
++    char text[384];
++    LONG count;
++    DWORD saved_error = GetLastError();
++    if (busy || !eagle_trace_enabled(8) || !IsDebuggerPresent()) return;
++    count = InterlockedIncrement(&emitted);
++    if (count > 50001) return;
++    busy = TRUE;
++    if (count == 50001)
++        snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":8,\"event\":\"ObserverBudgetExceeded\",\"limit\":50000}");
++    else
++        snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":8,\"event\":\"%s\",\"object\":\"%p\",\"value\":%lu,\"timeout_ms\":%lu}", name, object, value, timeout);
++    OutputDebugStringA(text);
++    busy = FALSE;
++    SetLastError(saved_error);
++}
++
++#endif
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -1,4 +1,5 @@
+ SOURCES = \
++	eagle_trace.h \
+ 	accctrl.h \
+ 	access.idl \
+ 	aclapi.h \

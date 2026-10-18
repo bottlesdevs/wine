@@ -1,0 +1,2 @@
+class Cancelled(BaseException):
+    pass
