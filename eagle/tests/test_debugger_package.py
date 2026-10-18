@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import unittest
 
@@ -11,6 +12,22 @@ from protocol import read_message, write_message
 
 
 class DebuggerPackageTests(unittest.TestCase):
+    def test_provider_dlls_leave_executable_tls_unchanged(self):
+        for architecture in ('i386', 'x86_64'):
+            for module in ('kernelbase', 'combase', 'dwrite'):
+                path = PACKAGE / f'lib/wine/{architecture}-windows/{module}.dll'
+                with self.subTest(architecture=architecture, module=module):
+                    data = path.read_bytes()
+                    self.assertEqual(data[:2], b'MZ')
+                    offset = struct.unpack_from('<I', data, 0x3c)[0]
+                    self.assertEqual(data[offset:offset + 4], b'PE\0\0')
+                    optional = offset + 24
+                    magic = struct.unpack_from('<H', data, optional)[0]
+                    self.assertIn(magic, (0x10b, 0x20b))
+                    directories = optional + (96 if magic == 0x10b else 112)
+                    tls = struct.unpack_from('<II', data, directories + 9 * 8)
+                    self.assertEqual(tls, (0, 0), 'provider DLL must not allocate compiler TLS before the executable')
+
     def test_available_commands_match_release_scope(self):
         executable = str(PACKAGE / 'bin/eagle')
         result = subprocess.run([executable, 'capabilities'], capture_output=True, text=True, timeout=5)
