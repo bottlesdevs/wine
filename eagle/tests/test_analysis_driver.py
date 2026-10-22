@@ -156,16 +156,16 @@ class AnalysisDriver(unittest.TestCase):
             work.mkdir()
             target = root / 'package.exe'
             script = root / 'package.nsi'
-            for member in ('app.exe', 'APP.EXE', 'App.ExE'):
+            for member in ('app.exe', 'APP.EXE', 'App.ExE', 'Library.DlL'):
                 with self.subTest(member=member):
                     script.write_text(f'Name "Fixture"\nOutFile "{target}"\nSection\nSetOutPath "$INSTDIR"\n'
-                        f'File /oname={member} "{payload}"\nFile /oname=Library.DlL "{payload}"\nSectionEnd\n')
+                        f'File /oname={member} "{payload}"\nFile /oname=Support.DlL "{payload}"\nSectionEnd\n')
                     subprocess.run(['makensis', '-V2', str(script)], check=True, capture_output=True)
                     result, messages = self.invoke(dict(target=str(target), work=str(work), database=str(root / 'missing.sqlite')))
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn({'event': 'step', 'data': 'Found 2 binaries in installer'}, messages)
                     self.assertIn({'event': 'step', 'data': '[1/2] Scanning: ' + member}, messages)
-                    self.assertIn({'event': 'step', 'data': '[2/2] Scanning: Library.DlL'}, messages)
+                    self.assertIn({'event': 'step', 'data': '[2/2] Scanning: Support.DlL'}, messages)
                     self.assertEqual(list(work.iterdir()), [])
 
     def test_incomplete_intel_database_keeps_no_match_progress(self):

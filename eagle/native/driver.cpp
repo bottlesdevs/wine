@@ -480,7 +480,8 @@ public:
                     std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) { return std::tolower(ch); });
                     if (extension == ".exe" && (largest.empty() || fs::file_size(file) > fs::file_size(largest))) largest = file;
                 }
-                if (!largest.empty()) { step("Scanning main binary: " + largest.filename().string()); scan_installer(files, true); }
+                if (!largest.empty()) step("Scanning main binary: " + largest.filename().string());
+                scan_installer(files, true);
             }
             catch (const analysis_cancelled &) { throw; }
             catch (const std::exception &error) { fprintf(stderr, "Eagle deep scan failed: %s\n", error.what()); step("Deep scan failed, continuing with surface analysis"); }
