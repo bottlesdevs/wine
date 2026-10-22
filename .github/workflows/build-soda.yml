@@ -880,6 +880,35 @@ jobs:
             "$runner_dir/bin/wineserver" -w
           done
 
+      - name: verify Direct2D pixel units
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          smoke_dir="$HOME/artifacts/soda-d2d-pixel-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$smoke_dir"
+          mkdir -p "$smoke_dir"
+          export TMPDIR="$smoke_dir" TMP="$smoke_dir" TEMP="$smoke_dir"
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-d2d-pixel-smoke.c" \
+            -O2 -Wall -Wextra -Werror -ld2d1 -lwindowscodecs -lole32 -luuid \
+            -o "$smoke_dir/smoke64.exe"
+          i686-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-d2d-pixel-smoke.c" \
+            -O2 -Wall -Wextra -Werror -ld2d1 -lwindowscodecs -lole32 -luuid \
+            -o "$smoke_dir/smoke32.exe"
+          export WINEDEBUG=-all
+          export WINEDLLOVERRIDES='winemenubuilder.exe=d'
+          for arch in 64 32; do
+            export WINEARCH="win$arch"
+            export WINEPREFIX="$smoke_dir/prefix$arch"
+            mkdir -p "$WINEPREFIX"
+            "$runner_dir/bin/wine" "$smoke_dir/smoke$arch.exe" \
+              | tr -d '\r' | tee "$smoke_dir/smoke$arch.log"
+            grep -Fx 'RESULT=PASS' "$smoke_dir/smoke$arch.log"
+            "$runner_dir/bin/wineserver" -w
+          done
+
       - name: verify Haptics waveform constants
         shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
         timeout-minutes: 5

@@ -1,0 +1,61 @@
+--- a/dlls/d2d1/device.c
++++ b/dlls/d2d1/device.c
+@@ -1496,13 +1496,13 @@
+ 
+     w = &context->drawing_state.transform;
+ 
+-    tmp_x = context->desc.dpiX / 96.0f;
++    tmp_x = context->drawing_state.unitMode == D2D1_UNIT_MODE_PIXELS ? 1.0f : context->desc.dpiX / 96.0f;
+     cb_data->transform_rtx.x = w->_11 * tmp_x;
+     cb_data->transform_rtx.y = w->_21 * tmp_x;
+     cb_data->transform_rtx.z = w->_31 * tmp_x;
+     cb_data->transform_rtx.w = 2.0f / context->pixel_size.width;
+ 
+-    tmp_y = context->desc.dpiY / 96.0f;
++    tmp_y = context->drawing_state.unitMode == D2D1_UNIT_MODE_PIXELS ? 1.0f : context->desc.dpiY / 96.0f;
+     cb_data->transform_rty.x = w->_12 * tmp_y;
+     cb_data->transform_rty.y = w->_22 * tmp_y;
+     cb_data->transform_rty.z = w->_32 * tmp_y;
+@@ -2575,8 +2575,8 @@
+     if (antialias_mode != D2D1_ANTIALIAS_MODE_ALIASED)
+         FIXME("Ignoring antialias_mode %#x.\n", antialias_mode);
+ 
+-    x_scale = context->desc.dpiX / 96.0f;
+-    y_scale = context->desc.dpiY / 96.0f;
++    x_scale = context->drawing_state.unitMode == D2D1_UNIT_MODE_PIXELS ? 1.0f : context->desc.dpiX / 96.0f;
++    y_scale = context->drawing_state.unitMode == D2D1_UNIT_MODE_PIXELS ? 1.0f : context->desc.dpiY / 96.0f;
+     d2d_point_transform(&point, &context->drawing_state.transform,
+             clip_rect->left * x_scale, clip_rect->top * y_scale);
+     d2d_rect_set(&transformed_rect, point.x, point.y, point.x, point.y);
+@@ -3563,7 +3563,30 @@
+ 
+     if (SUCCEEDED(ID2D1Image_QueryInterface(image, &IID_ID2D1Bitmap, (void **)&bitmap)))
+     {
+-        d2d_device_context_draw_bitmap(context, bitmap, NULL, 1.0f, interpolation_mode, image_rect, target_offset, NULL);
++        if (context->drawing_state.unitMode == D2D1_UNIT_MODE_PIXELS)
++        {
++            D2D1_SIZE_U size = ID2D1Bitmap_GetPixelSize(bitmap);
++            D2D1_RECT_F source = {0.0f, 0.0f, size.width, size.height}, destination;
++            float dpi_x, dpi_y;
++
++            if (image_rect) d2d_rect_intersect(&source, image_rect);
++            if (source.right <= source.left || source.bottom <= source.top)
++            {
++                ID2D1Bitmap_Release(bitmap);
++                return;
++            }
++            d2d_rect_set(&destination, 0.0f, 0.0f, source.right - source.left, source.bottom - source.top);
++            ID2D1Bitmap_GetDpi(bitmap, &dpi_x, &dpi_y);
++            source.left *= 96.0f / dpi_x;
++            source.right *= 96.0f / dpi_x;
++            source.top *= 96.0f / dpi_y;
++            source.bottom *= 96.0f / dpi_y;
++            d2d_device_context_draw_bitmap(context, bitmap, &destination, 1.0f,
++                    interpolation_mode, &source, target_offset, NULL);
++        }
++        else
++            d2d_device_context_draw_bitmap(context, bitmap, NULL, 1.0f,
++                    interpolation_mode, image_rect, target_offset, NULL);
+ 
+         ID2D1Bitmap_Release(bitmap);
+         return;
