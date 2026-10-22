@@ -74,6 +74,32 @@ class ReportSize(unittest.TestCase):
         self.assertEqual([event['seq'] for event in report['providers']], sorted(event['seq'] for event in report['providers']))
         self.assertLessEqual(self.destination.stat().st_size, 5000)
 
+    def test_size_limit_preserves_earlier_provider_failures(self):
+        failures = [{'hresult': '0x80004005'}, {'hresult': -2147467259}, {'success': False}]
+        events = [dict(kind='provider', pid=1, data=dict(provider=2, **data)) for data in failures]
+        events.extend(dict(kind='provider', pid=1, data=dict(provider=2, hresult='0x00000000', note='x' * 200)) for _ in range(100))
+        self.bundle_events(events)
+        with patch.object(session_reports, 'MAX_REPORT', 5000):
+            report = session.export(self.bundle, self.destination)
+            imported = session.summary(self.destination)
+        self.assertEqual([event['seq'] for event in report['providers'][:3]], [0, 1, 2])
+        self.assertEqual(report['providers'][-1]['seq'], 102)
+        self.assertEqual(imported['providers'], report['providers'])
+        self.assertEqual(len(report['providers']) + report['export']['omitted_records']['providers'], 103)
+        self.assertLessEqual(self.destination.stat().st_size, 5000)
+
+    def test_size_limit_does_not_prioritize_pending_or_invalid_statuses(self):
+        for status in ('0x8000000a', '0x00000001', 'invalid', None):
+            with self.subTest(status=status):
+                events = [dict(kind='provider', pid=1, data=dict(provider=2, hresult=status))]
+                events.extend(dict(kind='provider', pid=1, data=dict(provider=2, hresult=0, note='x' * 200)) for _ in range(100))
+                self.bundle_events(events)
+                with patch.object(session_reports, 'MAX_REPORT', 5000):
+                    report = session.export(self.bundle, self.destination)
+                self.assertNotIn(0, [event['seq'] for event in report['providers']])
+                self.assertEqual(report['providers'][-1]['seq'], 100)
+                self.destination.unlink()
+
     def test_metadata_alone_over_budget_fails_without_output(self):
         self.bundle_events([], description='x' * 3000)
         with patch.object(session_reports, 'MAX_REPORT', 1000):

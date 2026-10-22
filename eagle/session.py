@@ -215,19 +215,21 @@ def read_bundle(root):
             events.append(event)
     return manifest, events
 
+def provider_failed(event):
+    data = event.get('data', {})
+    try:
+        status = int(str(data.get('hresult', 0)), 0) & 0xffffffff
+    except ValueError:
+        status = 0
+    return data.get('success') is False or bool(status & 0x80000000 and status != 0x8000000a)
+
 def summarize(manifest, events):
     exits = [{key: event[key] for key in ("pid", "code")} for event in events if event["kind"] == "process_exit"]
     faults = [event for event in events if event["kind"] == "exception" and not event["first_chance"]]
     providers = [event for event in events if event['kind'] == 'provider']
     groups = collections.defaultdict(list)
     for index, event in enumerate(providers):
-        data = event.get('data', {})
-        try:
-            status = int(str(data.get('hresult', 0)), 0) & 0xffffffff
-        except ValueError:
-            status = 0
-        failed = data.get('success') is False or bool(status & 0x80000000 and status != 0x8000000a)
-        groups[data.get('provider')].append((failed, index))
+        groups[event.get('data', {}).get('provider')].append((provider_failed(event), index))
     for group in groups.values():
         group.sort()
     selected = []
