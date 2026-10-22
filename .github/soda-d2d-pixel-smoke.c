@@ -22,6 +22,7 @@ int main(void)
     D2D1_RECT_F crop = {5, 0, 15, 20};
     D2D1_RECT_F outside = {30, 0, 40, 20};
     D2D1_POINT_2F offset = {4, 0};
+    D2D1_MATRIX_3X2_F transform = {._11 = 2, ._22 = 1, ._31 = 4}, identity = {._11 = 1, ._22 = 1};
     D2D1_COLOR_F white = {1, 1, 1, 1}, black = {0, 0, 0, 1};
     WICRect row = {0, 5, 64, 1};
     DWORD source[400], pixels[64];
@@ -65,6 +66,46 @@ int main(void)
         printf("CLIP mode=%u dpi=144 width=%u expected=%u\n", mode, x, mode ? 10 : 15);
         if (x != (mode ? 10 : 15)) ++failures;
     }
+    for (mode = 0; mode < 2; ++mode)
+    {
+        unsigned int start = mode ? 4 : 6, end = mode ? 24 : 36;
+        ID2D1DeviceContext_SetUnitMode(context, mode);
+        ID2D1RenderTarget_SetTransform(target, &transform);
+        ID2D1RenderTarget_BeginDraw(target);
+        ID2D1RenderTarget_Clear(target, &white);
+        ID2D1RenderTarget_PushAxisAlignedClip(target, &small, D2D1_ANTIALIAS_MODE_ALIASED);
+        ID2D1RenderTarget_FillRectangle(target, &rect, (ID2D1Brush *)brush);
+        ID2D1RenderTarget_PopAxisAlignedClip(target);
+        CHECK(ID2D1RenderTarget_EndDraw(target, NULL, NULL));
+        CHECK(IWICBitmap_CopyPixels(output, &row, sizeof(pixels), sizeof(pixels), (BYTE *)pixels));
+        for (x = 0; x < 64; ++x)
+            if (pixels[x] != (x >= start && x < end ? 0xff000000 : 0xffffffff)) break;
+        printf("TRANSFORM_CLIP mode=%u matched=%u\n", mode, x);
+        if (x != 64) ++failures;
+    }
+    transform._11 = transform._22 = transform._31 = 0;
+    transform._12 = 1;
+    transform._21 = -1;
+    transform._31 = 20;
+    ID2D1RenderTarget_SetDpi(target, 144, 192);
+    for (mode = 0; mode < 2; ++mode)
+    {
+        unsigned int start = mode ? 10 : 15, end = mode ? 20 : 30;
+        ID2D1DeviceContext_SetUnitMode(context, mode);
+        ID2D1RenderTarget_SetTransform(target, &transform);
+        ID2D1RenderTarget_BeginDraw(target);
+        ID2D1RenderTarget_Clear(target, &white);
+        ID2D1RenderTarget_PushAxisAlignedClip(target, &small, D2D1_ANTIALIAS_MODE_ALIASED);
+        ID2D1RenderTarget_FillRectangle(target, &rect, (ID2D1Brush *)brush);
+        ID2D1RenderTarget_PopAxisAlignedClip(target);
+        CHECK(ID2D1RenderTarget_EndDraw(target, NULL, NULL));
+        CHECK(IWICBitmap_CopyPixels(output, &row, sizeof(pixels), sizeof(pixels), (BYTE *)pixels));
+        for (x = 0; x < 64; ++x)
+            if (pixels[x] != (x >= start && x < end ? 0xff000000 : 0xffffffff)) break;
+        printf("ROTATED_CLIP mode=%u matched=%u\n", mode, x);
+        if (x != 64) ++failures;
+    }
+    ID2D1RenderTarget_SetTransform(target, &identity);
     for (y = 0; y < 20; ++y)
         for (x = 0; x < 20; ++x) source[y * 20 + x] = x < 10 ? 0xffff0000 : 0xff0000ff;
     ID2D1RenderTarget_SetDpi(target, 96, 96);
