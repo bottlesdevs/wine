@@ -19,6 +19,24 @@ from session import capture, mapped_image, windows_path
 
 
 class DebuggerPackageTests(unittest.TestCase):
+    def test_launcher_ignores_foreign_python_paths(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['EAGLE_TEST_ROOT']) as directory:
+            root = Path(directory)
+            (root / 'json.py').write_text('raise RuntimeError("foreign Python path")\n')
+            for variables in (
+                {'PYTHONHOME': str(root)},
+                {'PYTHONPATH': str(root)},
+                {'PYTHONHOME': str(root), 'PYTHONPATH': str(root)},
+            ):
+                with self.subTest(variables=tuple(variables)):
+                    environment = os.environ.copy()
+                    environment.update(variables)
+                    result = subprocess.run([str(PACKAGE / 'bin/eagle'), '--help'],
+                                            env=environment, capture_output=True,
+                                            text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('trace', result.stdout)
+
     def test_runtime_image_mapping_rejects_missing_and_deleted_files(self):
         with tempfile.TemporaryDirectory(dir=os.environ['EAGLE_TEST_ROOT']) as directory:
             image = Path(directory) / 'image.dll'

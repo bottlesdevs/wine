@@ -36,7 +36,7 @@ done
 cp "$root/eagle" "$root/COPYING.md" "$destination/lib/eagle/"
 cp "$root/native/vendor/PEFILE-COPYING" "$destination/share/eagle/licenses/"
 cp "$root/README.md" "$destination/share/eagle/"
-printf '%s\n' '#!/bin/sh' 'root=$(CDPATH= cd -- "$(dirname -- "$0")/../lib/eagle" && pwd)' 'exec python3 "$root/eagle" "$@"' > "$destination/bin/eagle"
+printf '%s\n' '#!/bin/sh' 'root=$(CDPATH= cd -- "$(dirname -- "$0")/../lib/eagle" && pwd)' 'exec python3 -E "$root/eagle" "$@"' > "$destination/bin/eagle"
 chmod 755 "$destination/bin/eagle"
 set -- g++
 for architecture in $architectures; do set -- "$@" "$architecture-w64-mingw32-gcc"; done
