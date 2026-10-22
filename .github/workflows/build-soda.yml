@@ -921,14 +921,14 @@ jobs:
           mkdir -p "$smoke_dir"
           export TMPDIR="$smoke_dir" TMP="$smoke_dir" TEMP="$smoke_dir"
           x86_64-w64-mingw32-g++ "$GITHUB_WORKSPACE/.github/soda-d2d-effects-smoke.cpp" \
-            -O2 -Wall -Wextra -Werror -ld2d1 -lwindowscodecs -lole32 -luuid \
+            -O2 -Wall -Wextra -Werror -static-libgcc -ld2d1 -lwindowscodecs -lole32 -luuid \
             -o "$smoke_dir/smoke64.exe"
           i686-w64-mingw32-g++ "$GITHUB_WORKSPACE/.github/soda-d2d-effects-smoke.cpp" \
-            -O2 -Wall -Wextra -Werror -ld2d1 -lwindowscodecs -lole32 -luuid \
+            -O2 -Wall -Wextra -Werror -static-libgcc -ld2d1 -lwindowscodecs -lole32 -luuid \
             -o "$smoke_dir/smoke32.exe"
           for arch in x86_64 i686; do
             "$arch-w64-mingw32-g++" "$GITHUB_WORKSPACE/.github/soda-dwrite-glyph-smoke.cpp" \
-              -O2 -Wall -Wextra -Werror -ld2d1 -ldwrite -lwindowscodecs -lole32 -luuid \
+              -O2 -Wall -Wextra -Werror -static-libgcc -ld2d1 -ldwrite -lwindowscodecs -lole32 -luuid \
               -o "$smoke_dir/glyph-$arch.exe"
           done
           export WINEDEBUG=-all
