@@ -37,6 +37,24 @@ class DebuggerPackageTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn('trace', result.stdout)
 
+    def test_launcher_does_not_write_bytecode(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['EAGLE_TEST_ROOT']) as directory:
+            root = Path(directory)
+            library = root / 'lib/eagle'
+            library.mkdir(parents=True)
+            (root / 'bin').mkdir()
+            for source in (PACKAGE / 'lib/eagle').iterdir():
+                if source.suffix == '.py' or source.name == 'eagle':
+                    (library / source.name).write_bytes(source.read_bytes())
+            launcher = root / 'bin/eagle'
+            launcher.write_bytes((PACKAGE / 'bin/eagle').read_bytes())
+            launcher.chmod(0o755)
+            before = sorted(str(path.relative_to(root)) for path in root.rglob('*'))
+            result = subprocess.run([str(launcher), '--help'], capture_output=True,
+                                    text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(sorted(str(path.relative_to(root)) for path in root.rglob('*')), before)
+
     def test_runtime_image_mapping_rejects_missing_and_deleted_files(self):
         with tempfile.TemporaryDirectory(dir=os.environ['EAGLE_TEST_ROOT']) as directory:
             image = Path(directory) / 'image.dll'
