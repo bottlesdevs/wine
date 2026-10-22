@@ -683,8 +683,8 @@
 +    D2D1_VECTOR_4F kernel;
 +    HRESULT hr, end_hr;
 +    UINT32 max_size = ID2D1DeviceContext6_GetMaximumBitmapSize(&context->ID2D1DeviceContext6_iface);
-+    float width = ceilf((bounds->right - bounds->left) * scale_x);
-+    float height = ceilf((bounds->bottom - bounds->top) * scale_y);
++    float width = roundf((bounds->right - bounds->left) * scale_x);
++    float height = roundf((bounds->bottom - bounds->top) * scale_y);
 +
 +    *output = NULL;
 +    if (!isfinite(width) || !isfinite(height) || width > max_size || height > max_size)
