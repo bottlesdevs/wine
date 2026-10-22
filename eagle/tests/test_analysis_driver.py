@@ -111,6 +111,39 @@ class AnalysisDriver(unittest.TestCase):
             self.assertIn({'event': 'step', 'data': 'Extraction skipped (not supported)'}, messages)
             self.assertEqual(list(work.iterdir()), [])
 
+    @unittest.skipUnless(shutil.which('wixl') and shutil.which('7z'), 'wixl and 7z required')
+    def test_real_msi_file_ids_without_extensions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            native = self.package(root)
+            source = root / 'main.c'
+            source.write_text('int main(void) { return 0; }\n')
+            (root / 'note.txt').write_text('Not an executable')
+            wix = root / 'package.wxs'
+            wix.write_text('<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">'
+                '<Product Id="*" Name="Fixture" Language="1033" Version="1.0.0" Manufacturer="Example" '
+                'UpgradeCode="115D7030-2F9F-4F82-AB60-AD34E63B86D8">'
+                '<Package InstallerVersion="200" Compressed="yes"/>'
+                '<Media Id="1" Cabinet="payload.cab" EmbedCab="yes"/>'
+                '<Directory Id="TARGETDIR" Name="SourceDir"><Directory Id="ProgramFilesFolder">'
+                '<Directory Id="INSTALLDIR" Name="Fixture"><Component Id="Main" Guid="*">'
+                '<File Id="App" Source="sample.exe" KeyPath="yes"/><File Id="Note" Source="note.txt"/>'
+                '</Component></Directory></Directory></Directory>'
+                '<Feature Id="MainFeature" Level="1"><ComponentRef Id="Main"/></Feature></Product></Wix>')
+            work = root / 'work'
+            work.mkdir()
+            target = root / 'package.msi'
+            for architecture in ('i686', 'x86_64'):
+                with self.subTest(architecture=architecture):
+                    subprocess.run([architecture + '-w64-mingw32-gcc', str(source), '-o', str(root / 'sample.exe')], check=True, capture_output=True)
+                    subprocess.run(['wixl', '-o', str(target), str(wix)], cwd=root, check=True, capture_output=True)
+                    result, messages = self.invoke(dict(target=str(target), work=str(work), database=str(root / 'missing.sqlite')), native / 'eagle-driver')
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn({'event': 'step', 'data': 'Found 1 binaries in installer'}, messages)
+                    self.assertIn({'event': 'step', 'data': '[1/1] Scanning: App'}, messages)
+                    self.assertTrue(messages[-1]['status'])
+                    self.assertEqual(list(work.iterdir()), [])
+
     def test_incomplete_intel_database_keeps_no_match_progress(self):
         for missing in ('name', 'imphash'):
             with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -250,8 +251,11 @@ class analyzer
             if (!extractor.empty())
             {
                 std::vector<std::string> arguments = {extractor, "x", "-y", "-o" + output.string(), target.string()};
-                for (const char *filter : {"*.exe", "*.dll", "*.msi", "*.json", "*.xml", "*.config", "*.manifest", "*.ini", "*.js", "*.vdf", "*.reg"})
-                { arguments.push_back(std::string("-i!") + filter); arguments.push_back(std::string("-i!**/") + filter); }
+                if (type != "MSI")
+                {
+                    for (const char *filter : {"*.exe", "*.dll", "*.msi", "*.json", "*.xml", "*.config", "*.manifest", "*.ini", "*.js", "*.vdf", "*.reg"})
+                    { arguments.push_back(std::string("-i!") + filter); arguments.push_back(std::string("-i!**/") + filter); }
+                }
                 try { run_tool(arguments, "", 120); extracted = true; }
                 catch (const tool_failure &) {}
             }
@@ -262,14 +266,29 @@ class analyzer
                 // Keep the existing optional extractor without invoking the Python analyzer.
                 run_tool({python, "-c", "import patoolib,sys; patoolib.extract_archive(sys.argv[1], outdir=sys.argv[2], verbosity=-1)", target.string(), output.string()}, "", 120);
             }
-            for (const char *extension : {".exe", ".dll"})
+            for (const char *extension : {".exe", ".dll", ""})
             {
+                if (!*extension && type != "MSI") continue;
                 std::function<void(const fs::path &, unsigned)> collect = [&](const fs::path &directory, unsigned depth) {
                     check_cancelled();
                     if (depth > 64 || files.size() > 100000) throw std::runtime_error("installer traversal exceeds limit");
                     std::vector<fs::directory_entry> entries;
                     for (const auto &entry : fs::directory_iterator(directory)) if (entry.path().filename().string().front() != '.') entries.push_back(entry);
-                    for (const auto &entry : entries) if (entry.path().extension() == extension && entry.is_regular_file()) files.push_back(entry.path());
+                    for (const auto &entry : entries)
+                    {
+                        if (entry.is_symlink() || !entry.is_regular_file()) continue;
+                        if (*extension)
+                        {
+                            if (entry.path().extension() == extension) files.push_back(entry.path());
+                        }
+                        else if (entry.path().extension() != ".exe" && entry.path().extension() != ".dll")
+                        {
+                            // Cabinet members can use file IDs without executable extensions.
+                            std::ifstream stream(entry.path(), std::ios::binary);
+                            char signature[2];
+                            if (stream.read(signature, sizeof(signature)) && signature[0] == 'M' && signature[1] == 'Z') files.push_back(entry.path());
+                        }
+                    }
                     for (const auto &entry : entries) if (!entry.is_symlink() && entry.is_directory()) collect(entry.path(), depth + 1);
                 };
                 collect(output, 0);
