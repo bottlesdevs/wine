@@ -34,6 +34,34 @@ class TraceExports(unittest.TestCase):
         self.assertEqual([event['seq'] for event in report['providers']], sorted(event['seq'] for event in report['providers']))
         self.assertNotIn(str(ROOT), destination.read_text())
 
+    def test_earlier_failures_survive_later_successes(self):
+        from session import summarize
+        failures = [
+            {'provider': 2, 'hresult': '0x80004005'},
+            {'provider': 2, 'hresult': -2147467259},
+            {'provider': 2, 'success': False},
+        ]
+        events = [{'seq': seq, 'kind': 'provider', 'data': data}
+                  for seq, data in enumerate(failures)]
+        events.extend({'seq': seq, 'kind': 'provider', 'data': {
+            'provider': 2, 'hresult': '0x00000000',
+        }} for seq in range(3, 3003))
+        report = summarize({'schema': 1}, events)
+        self.assertEqual(report['providers'][:3], events[:3])
+        self.assertEqual(report['providers'][-1], events[-1])
+        self.assertEqual(len(report['providers']), 2000)
+        self.assertEqual(report['provider_events_omitted'], 1003)
+
+    def test_pending_and_invalid_statuses_do_not_displace_recent_events(self):
+        from session import summarize
+        for status in ('0x8000000a', '0x00000001', 'invalid', None):
+            with self.subTest(status=status):
+                events = [{'seq': seq, 'kind': 'provider', 'data': {
+                    'provider': 1, 'hresult': status if seq == 0 else '0x00000000',
+                }} for seq in range(2001)]
+                report = summarize({'schema': 1}, events)
+                self.assertEqual(report['providers'], events[1:])
+
     def test_provider_limit_is_shared_across_busy_providers(self):
         bundle = ROOT / 'busy-providers'
         bundle.mkdir()

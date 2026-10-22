@@ -221,11 +221,19 @@ def summarize(manifest, events):
     providers = [event for event in events if event['kind'] == 'provider']
     groups = collections.defaultdict(list)
     for index, event in enumerate(providers):
-        groups[event.get('data', {}).get('provider')].append(index)
+        data = event.get('data', {})
+        try:
+            status = int(str(data.get('hresult', 0)), 0) & 0xffffffff
+        except ValueError:
+            status = 0
+        failed = data.get('success') is False or bool(status & 0x80000000 and status != 0x8000000a)
+        groups[data.get('provider')].append((failed, index))
+    for group in groups.values():
+        group.sort()
     selected = []
     while groups and len(selected) < 2000:
         for provider in list(groups):
-            selected.append(groups[provider].pop())
+            selected.append(groups[provider].pop()[1])
             if not groups[provider]:
                 del groups[provider]
             if len(selected) == 2000:
@@ -234,7 +242,7 @@ def summarize(manifest, events):
     cycles = [event for event in providers if event.get('wait_graph', {}).get('cycles')]
     timeline = [event for event in events if event['kind'] not in ('provider', 'snapshot', 'dump', 'memory') and not (event['kind'] == 'exception' and event.get('internal'))]
     dumps = [{key: event[key] for key in ('seq', 'time_ms', 'kind', 'pid', 'tid', 'path', 'size') if key in event} for event in events if event['kind'] == 'dump']
-    report = {"manifest": manifest, "counts": dict(collections.Counter(event["kind"] for event in events)), "exits": exits, "terminal_exceptions": faults, "snapshots": [event for event in events if event["kind"] == "snapshot"], "dumps": dumps, 'providers': selected_providers, 'provider_selection': 'up to 2000 recent events balanced across providers', 'timeline': timeline[-4096:], 'timeline_events_omitted': max(0, len(timeline) - 4096), 'provider_events_omitted': len(providers) - len(selected_providers), 'observed_wait_cycles': cycles[:100], 'wait_cycles_omitted': max(0, len(cycles) - 100)}
+    report = {"manifest": manifest, "counts": dict(collections.Counter(event["kind"] for event in events)), "exits": exits, "terminal_exceptions": faults, "snapshots": [event for event in events if event["kind"] == "snapshot"], "dumps": dumps, 'providers': selected_providers, 'provider_selection': 'up to 2000 events balanced across providers, failures before recent successes', 'timeline': timeline[-4096:], 'timeline_events_omitted': max(0, len(timeline) - 4096), 'provider_events_omitted': len(providers) - len(selected_providers), 'observed_wait_cycles': cycles[:100], 'wait_cycles_omitted': max(0, len(cycles) - 100)}
     return report
 
 def summary(root, symbol_images=None):
