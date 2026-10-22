@@ -250,7 +250,7 @@ class analyzer
             bool extracted = false;
             if (!extractor.empty())
             {
-                std::vector<std::string> arguments = {extractor, "x", "-y", "-o" + output.string(), target.string()};
+                std::vector<std::string> arguments = {extractor, "x", "-y", "-ssc-", "-o" + output.string(), target.string()};
                 if (type != "MSI")
                 {
                     for (const char *filter : {"*.exe", "*.dll", "*.msi", "*.json", "*.xml", "*.config", "*.manifest", "*.ini", "*.js", "*.vdf", "*.reg"})
@@ -277,11 +277,13 @@ class analyzer
                     for (const auto &entry : entries)
                     {
                         if (entry.is_symlink() || !entry.is_regular_file()) continue;
+                        auto suffix = entry.path().extension().string();
+                        std::transform(suffix.begin(), suffix.end(), suffix.begin(), [](unsigned char ch) { return std::tolower(ch); });
                         if (*extension)
                         {
-                            if (entry.path().extension() == extension) files.push_back(entry.path());
+                            if (suffix == extension) files.push_back(entry.path());
                         }
-                        else if (entry.path().extension() != ".exe" && entry.path().extension() != ".dll")
+                        else if (suffix != ".exe" && suffix != ".dll")
                         {
                             // Cabinet members can use file IDs without executable extensions.
                             std::ifstream stream(entry.path(), std::ios::binary);

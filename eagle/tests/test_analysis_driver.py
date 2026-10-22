@@ -144,6 +144,30 @@ class AnalysisDriver(unittest.TestCase):
                     self.assertTrue(messages[-1]['status'])
                     self.assertEqual(list(work.iterdir()), [])
 
+    @unittest.skipUnless(shutil.which('makensis') and shutil.which('7z') and (PACKAGE / 'native/eagle-yara').is_file(), 'NSIS, 7z and YARA helper required')
+    def test_nsis_member_extension_case(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'main.c'
+            source.write_text('int main(void) { return 0; }\n')
+            payload = root / 'payload.exe'
+            subprocess.run(['x86_64-w64-mingw32-gcc', str(source), '-o', str(payload)], check=True, capture_output=True)
+            work = root / 'work'
+            work.mkdir()
+            target = root / 'package.exe'
+            script = root / 'package.nsi'
+            for member in ('app.exe', 'APP.EXE', 'App.ExE'):
+                with self.subTest(member=member):
+                    script.write_text(f'Name "Fixture"\nOutFile "{target}"\nSection\nSetOutPath "$INSTDIR"\n'
+                        f'File /oname={member} "{payload}"\nFile /oname=Library.DlL "{payload}"\nSectionEnd\n')
+                    subprocess.run(['makensis', '-V2', str(script)], check=True, capture_output=True)
+                    result, messages = self.invoke(dict(target=str(target), work=str(work), database=str(root / 'missing.sqlite')))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn({'event': 'step', 'data': 'Found 2 binaries in installer'}, messages)
+                    self.assertIn({'event': 'step', 'data': '[1/2] Scanning: ' + member}, messages)
+                    self.assertIn({'event': 'step', 'data': '[2/2] Scanning: Library.DlL'}, messages)
+                    self.assertEqual(list(work.iterdir()), [])
+
     def test_incomplete_intel_database_keeps_no_match_progress(self):
         for missing in ('name', 'imphash'):
             with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
