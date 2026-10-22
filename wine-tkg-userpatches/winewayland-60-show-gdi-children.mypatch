@@ -23,7 +23,7 @@ Subject: [PATCH] winewayland: Show child windows painted over client surfaces.
  void set_client_surface(HWND hwnd, struct wayland_client_surface *client);
 --- a/dlls/winewayland.drv/wayland_surface.c
 +++ b/dlls/winewayland.drv/wayland_surface.c
-@@ -1493,13 +1493,243 @@
+@@ -1493,13 +1493,245 @@
      return list;
  }
 
@@ -114,9 +114,11 @@ Subject: [PATCH] winewayland: Show child windows painted over client surfaces.
 +{
 +    int x, y, width, height;
 +
-+    if (!memcmp(&overlay->rect, rect, sizeof(*rect))) return;
-+    overlay->rect = *rect;
-+    overlay->needs_contents = TRUE;
++    if (memcmp(&overlay->rect, rect, sizeof(*rect)))
++    {
++        overlay->rect = *rect;
++        overlay->needs_contents = TRUE;
++    }
 +
 +    wayland_surface_coords_from_window(surface, rect->left, rect->top, &x, &y);
 +    wayland_surface_coords_from_window(surface, rect->right - rect->left, rect->bottom - rect->top,
