@@ -421,6 +421,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
     try:
         if control_enabled:
             control.bind(str(root / "control.sock")); os.chmod(root / "control.sock", 0o600); control.listen(4)
+            control.setblocking(False)
         process = subprocess.Popen([str(wine), str(collector), mode, argument, "interactive" if manifest["interactive"] else "auto"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=root / "dumps", env=env)
         for stream in (process.stdout, process.stderr):
             os.set_blocking(stream.fileno(), False)
@@ -471,6 +472,21 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
         if any(character in command for character in ('\n', '\r', '\x00')) or len(command.encode()) > 1000:
             raise ValueError('invalid debugger command')
         process.stdin.write(command.encode() + b"\n"); process.stdin.flush()
+    def poll_control():
+        if not control_enabled:
+            return
+        try:
+            client, _ = control.accept()
+        except BlockingIOError:
+            return
+        with client:
+            client.settimeout(1)
+            command = client.recv(1024).decode().strip()
+            accepted = command in ("pause", "continue", "pass", "snapshot", "dump", "step", "detach", "clear") or command.startswith(("break ", "memory ", "watch ", "condition ", "logpoint ", "source ", "module ", "remove "))
+            accepted = accepted and '\n' not in command
+            if accepted:
+                native(command)
+            client.sendall(json.dumps({"accepted": accepted, "error": None if accepted else "unknown command"}).encode())
     try:
         from capture_history import CaptureHistory
         with (root / "events.jsonl").open("a", encoding="utf-8") as output, CaptureHistory(output, manifest, profile == 'trace') as history:
@@ -496,15 +512,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                 for key, _ in selector.select(0.1):
                     kind = key.data
                     if kind == "control":
-                        client, _ = control.accept()
-                        with client:
-                            client.settimeout(1)
-                            command = client.recv(1024).decode().strip()
-                            accepted = command in ("pause", "continue", "pass", "snapshot", "dump", "step", "detach", "clear") or command.startswith(("break ", "memory ", "watch ", "condition ", "logpoint ", "source ", "module ", "remove "))
-                            accepted = accepted and '\n' not in command
-                            if accepted:
-                                native(command)
-                            client.sendall(json.dumps({"accepted": accepted, "error": None if accepted else "unknown command"}).encode())
+                        poll_control()
                         continue
                     data = os.read(key.fileobj.fileno(), 65536)
                     if not data:
@@ -517,6 +525,7 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                     if len(buffers[kind]) > 2 * 1024 * 1024:
                         raise ValueError("collector output exceeds event limit")
                     while b"\n" in buffers[kind]:
+                        poll_control()
                         line, buffers[kind] = buffers[kind].split(b"\n", 1)
                         try:
                             event = json.loads(line)

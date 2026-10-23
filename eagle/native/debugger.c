@@ -997,7 +997,7 @@ int main(int argc, char **argv)
             }
             end_event();
             if (!info->dwFirstChance) { snapshot(debug.dwProcessId, 0); dump(debug.dwProcessId, debug.dwThreadId, &info->ExceptionRecord); }
-            if (stop && interactive)
+            if (stop && (interactive || !strcmp(reason, "pause")))
             {
                 if (stopped(&debug, &status, reason) == 2) return 0;
             }

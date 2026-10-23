@@ -75,9 +75,10 @@ class CaptureStartup(unittest.TestCase):
         self.wine.write_bytes(b'owned launcher fixture')
         self.wine.chmod(0o700)
 
-    def capture(self, collector, root, control_enabled=True, register_failure=None):
+    def capture(self, collector, root, control_enabled=True, register_failure=None, observer=None):
         self.addCleanup(collector.close)
-        control = socket.socket(socket.AF_UNIX)
+        socket_type = socket.socket
+        control = socket_type(socket.AF_UNIX)
         selector = selectors.DefaultSelector()
         self.addCleanup(control.close)
         self.addCleanup(selector.close)
@@ -90,9 +91,9 @@ class CaptureStartup(unittest.TestCase):
             if count == register_failure:
                 raise OSError('owned registration failure')
             return original(*args)
-        with patch('session.socket.socket', return_value=control), patch('session.selectors.DefaultSelector', return_value=selector), patch('session.subprocess.Popen', return_value=collector), patch.object(selector, 'register', side_effect=register):
+        with patch('session.socket.socket', side_effect=lambda *args, **kwargs: socket_type(*args, **kwargs) if 'fileno' in kwargs else control), patch('session.selectors.DefaultSelector', return_value=selector), patch('session.subprocess.Popen', return_value=collector), patch.object(selector, 'register', side_effect=register):
             return session.capture(self.wine, self.root / 'prefix', root, pid=123,
-                                   control_enabled=control_enabled)
+                                   control_enabled=control_enabled, observer=observer)
 
     def assert_closed(self, collector, root):
         self.assertIsNotNone(collector.poll())
@@ -120,6 +121,26 @@ class CaptureStartup(unittest.TestCase):
                 self.assertEqual((root / 'events.jsonl').stat().st_mode & 0o777, 0o600)
                 self.assertTrue(collector.stdout.closed)
                 self.assertEqual(self.control.fileno(), -1)
+
+    def test_control_is_serviced_between_buffered_events(self):
+        root = self.root / 'buffered-control'
+        events = [{'seq': 1, 'kind': 'thread_create', 'pid': 123, 'tid': 456},
+                  {'seq': 2, 'kind': 'thread_exit', 'pid': 123, 'tid': 456},
+                  {'seq': 3, 'kind': 'finished', 'pid': 0, 'tid': 0}]
+        collector = Collector(events)
+        client = socket.socket(socket.AF_UNIX)
+        self.addCleanup(client.close)
+        client.settimeout(1)
+        def observe(event):
+            if event['seq'] == 1:
+                client.connect(str(root / 'control.sock'))
+                client.sendall(b'pause\n')
+            elif event['seq'] == 2:
+                self.assertIn(b'pause\n', collector.stdin.commands)
+                self.assertTrue(json.loads(client.recv(4096))['accepted'])
+        report = self.capture(collector, root, observer=observe)
+        self.assertTrue(report['manifest']['completed'])
+        self.assertEqual(collector.stdin.commands, [b'pause\n'])
 
     def test_stream_setup_failure_detaches_and_preserves_history(self):
         root = self.root / 'stream'

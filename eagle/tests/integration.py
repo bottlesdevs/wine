@@ -15,9 +15,9 @@ from session import read_bundle, send_command, windows_path
 from protocol import read_message, write_message
 
 class Integration(unittest.TestCase):
-    def launch(self, name, target="target64.exe", argument="crash", interactive=False):
+    def launch(self, name, target="target64.exe", argument="crash", interactive=False, timeout=30):
         bundle = ROOT / name
-        command = [str(CLI), "run", "--wine", WINE, "--prefix", str(ROOT / "prefix"), "--session", str(bundle), "--timeout", "30"]
+        command = [str(CLI), "run", "--wine", WINE, "--prefix", str(ROOT / "prefix"), "--session", str(bundle), "--timeout", str(timeout)]
         if interactive:
             command.append("--interactive")
         command += [str(ROOT / target), *(argument if isinstance(argument, list) else [argument])]
@@ -133,6 +133,28 @@ class Integration(unittest.TestCase):
         self.assertEqual(stopped['reason'], 'module')
         send_command(root, 'continue')
         self.assertEqual(process.wait(timeout=40), 0)
+
+    def test_pause_without_interactive_mode(self):
+        for bits in (64, 32):
+            marker = ROOT / f'pause-auto-{bits}.marker'
+            process, root = self.launch(f'pause-auto-{bits}', f'target{bits}.exe',
+                                       ['tracewait', windows_path(marker)], timeout=60)
+            self.wait_event(root, 'process_create')
+            send_command(root, 'pause')
+            paused = self.wait_event(root, 'stopped')
+            self.assertEqual(paused['reason'], 'pause')
+            send_command(root, 'snapshot')
+            self.wait_event(root, 'snapshot_complete', paused['seq'])
+            time.sleep(9)
+            self.assertFalse(marker.exists())
+            self.assertIsNone(process.poll())
+            send_command(root, 'continue')
+            self.assertEqual(process.wait(timeout=70), 0)
+            manifest, events = read_bundle(root)
+            self.assertTrue(manifest['completed'])
+            self.assertEqual(marker.read_bytes(), b'alive')
+            self.assertEqual(next(item['code'] for item in events if item['kind'] == 'process_exit'), 0)
+            self.assertFalse([item for item in events if item['kind'] == 'error'])
 
     def test_attach_pause_snapshot_detach(self):
         marker = ROOT / 'attach-marker'
