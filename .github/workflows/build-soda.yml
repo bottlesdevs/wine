@@ -139,8 +139,12 @@ jobs:
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
       - name: setup
+        timeout-minutes: 20
         working-directory: /home/runner/work/
         run: |
+          if test -f /etc/apt/apt-mirrors.txt; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          fi
           mkdir -p /home/runner/.config/frogminer/
           sudo apt purge -y ubuntu-advantage-tools python3-update-manager
           sudo dpkg --add-architecture i386 && sudo apt update

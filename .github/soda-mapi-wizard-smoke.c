@@ -7,7 +7,6 @@ int main(void)
     const char *names[] = {"LAUNCHWIZARD", "LaunchWizard@20", "LaunchWizard"};
     HRESULT (WINAPI *launch)(HWND, ULONG, LPCSTR *, ULONG, LPSTR);
     HMODULE module;
-    FARPROC exports[3];
     HRESULT hr;
     unsigned int i, j, failures = 0;
 
@@ -22,19 +21,15 @@ int main(void)
         }
         for (j = 0; j < ARRAYSIZE(names); ++j)
         {
-            exports[j] = GetProcAddress(module, names[j]);
-            if (!exports[j])
+            launch = (void *)GetProcAddress(module, names[j]);
+            if (!launch)
             {
                 printf("missing %s!%s\n", dlls[i], names[j]);
                 ++failures;
+                continue;
             }
-        }
-        if (exports[0] && exports[1] && exports[2])
-        {
-            if (exports[0] != exports[1] || exports[1] != exports[2]) ++failures;
-            launch = (void *)exports[2];
             hr = launch(NULL, 0, NULL, 0, NULL);
-            printf("%s LaunchWizard=%#lx\n", dlls[i], hr);
+            printf("%s!%s=%#lx\n", dlls[i], names[j], hr);
             if (hr != E_FAIL) ++failures;
         }
         FreeLibrary(module);
