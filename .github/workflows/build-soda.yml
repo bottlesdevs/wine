@@ -1505,7 +1505,7 @@ jobs:
           test "$(git -C /tmp/proton/wine rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
           .github/import-msicu.sh /tmp/proton/wine
           for patch in "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch; do
-            if [[ "$patch" == *wineopenxr-host-runtime.mypatch ]]; then
+            if [[ "$patch" == *wineopenxr-host-runtime.mypatch || "$patch" == *wineopenxr-long-types.mypatch ]]; then
               continue
             fi
             git -C /tmp/proton/wine apply --check "$patch"
