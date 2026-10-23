@@ -1,0 +1,598 @@
+diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -673,10 +673,21 @@
+     LONG ref;
+ };
+ 
++struct graphics_device_handler
++{
++    struct list entry;
++    ITypedEventHandler_CompositionGraphicsDevice_RenderingDeviceReplacedEventArgs *handler;
++    EventRegistrationToken token;
++};
++
+ struct composition_graphics_device
+ {
+     ICompositionGraphicsDevice ICompositionGraphicsDevice_iface;
+     ICompositionGraphicsDevice2 ICompositionGraphicsDevice2_iface;
++    ICompositionGraphicsDeviceInterop ICompositionGraphicsDeviceInterop_iface;
++    CRITICAL_SECTION device_cs;
++    struct list replaced_handlers;
++    UINT64 next_handler;
+     ICompositor *compositor;
+     IUnknown *device;
+     LONG ref;
+@@ -695,6 +706,7 @@
+     ICompositionDrawingSurface ICompositionDrawingSurface_iface;
+     ICompositionVirtualDrawingSurface ICompositionVirtualDrawingSurface_iface;
+     ICompositionDrawingSurfaceInterop ICompositionDrawingSurfaceInterop_iface;
++    ICompositionGraphicsDevice *graphics_device;
+     ICompositor *compositor;
+     ID2D1Device *device;
+     ID2D1DeviceContext *context;
+@@ -10843,6 +10855,7 @@
+         if (impl->context) ID2D1DeviceContext_Release( impl->context );
+         ID2D1Device_Release( impl->device );
+         ICompositor_Release( impl->compositor );
++        ICompositionGraphicsDevice_Release( impl->graphics_device );
+         free( impl );
+     }
+     return ref;
+@@ -11037,6 +11050,34 @@
+ {
+     return composition_drawing_surface_Release(
+             &impl_from_ICompositionDrawingSurfaceInterop( iface )->ICompositionDrawingSurface_iface );
++}
++
++static HRESULT composition_graphics_device_query_rendering_device( struct composition_graphics_device *device,
++        REFIID iid, void **result );
++
++static HRESULT drawing_surface_update_device( struct composition_drawing_surface *surface )
++{
++    ID2D1Device *device;
++    HRESULT hr;
++
++    if (FAILED(hr = composition_graphics_device_query_rendering_device(
++            impl_from_ICompositionGraphicsDevice( surface->graphics_device ), &IID_ID2D1Device,
++            (void **)&device ))) return hr;
++    if (device == surface->device)
++    {
++        ID2D1Device_Release( device );
++        return S_OK;
++    }
++    drawing_surface_clear_tiles( surface );
++    if (surface->context) ID2D1DeviceContext_SetTarget( surface->context, NULL );
++    if (surface->bitmap) ID2D1Bitmap1_Release( surface->bitmap );
++    if (surface->committed_bitmap) ID2D1Bitmap1_Release( surface->committed_bitmap );
++    if (surface->context) ID2D1DeviceContext_Release( surface->context );
++    surface->bitmap = surface->committed_bitmap = NULL;
++    surface->context = NULL;
++    ID2D1Device_Release( surface->device );
++    surface->device = device;
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI composition_drawing_surface_interop_BeginDraw( ICompositionDrawingSurfaceInterop *iface,
+@@ -11062,6 +11103,7 @@
+             update_rect->right > impl->size.Width || update_rect->bottom > impl->size.Height))
+         return E_INVALIDARG;
+     if (impl->virtual && !update_rect) return E_INVALIDARG;
++    if (FAILED(hr = drawing_surface_update_device( impl ))) return hr;
+     if (!impl->context && FAILED(hr = ID2D1Device_CreateDeviceContext( impl->device,
+             D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &impl->context ))) return hr;
+     if (impl->virtual)
+@@ -12150,7 +12192,9 @@
+     FIXME( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
+     if (!out) return E_POINTER;
+     *out = NULL;
+-    if (IsEqualGUID( iid, &IID_ICompositionGraphicsDevice2 ))
++    if (IsEqualGUID( iid, &IID_ICompositionGraphicsDeviceInterop ))
++        *out = &impl_from_ICompositionGraphicsDevice( iface )->ICompositionGraphicsDeviceInterop_iface;
++    else if (IsEqualGUID( iid, &IID_ICompositionGraphicsDevice2 ))
+         *out = &impl_from_ICompositionGraphicsDevice( iface )->ICompositionGraphicsDevice2_iface;
+     else
+     if (!IsEqualGUID( iid, &IID_IUnknown ) && !IsEqualGUID( iid, &IID_IInspectable ) &&
+@@ -12170,11 +12214,19 @@
+ static ULONG WINAPI composition_graphics_device_Release( ICompositionGraphicsDevice *iface )
+ {
+     struct composition_graphics_device *impl = impl_from_ICompositionGraphicsDevice( iface );
++    struct graphics_device_handler *handler, *next;
+     ULONG ref = InterlockedDecrement( &impl->ref );
+ 
+     if (!ref)
+     {
++        LIST_FOR_EACH_ENTRY_SAFE( handler, next, &impl->replaced_handlers, struct graphics_device_handler, entry )
++        {
++            list_remove( &handler->entry );
++            ITypedEventHandler_CompositionGraphicsDevice_RenderingDeviceReplacedEventArgs_Release( handler->handler );
++            free( handler );
++        }
+         IUnknown_Release( impl->device );
++        DeleteCriticalSection( &impl->device_cs );
+         ICompositor_Release( impl->compositor );
+         free( impl );
+     }
+@@ -12206,6 +12258,21 @@
+     if (!level) return E_POINTER;
+     *level = BaseTrust;
+     return S_OK;
++}
++
++static HRESULT composition_graphics_device_query_rendering_device( struct composition_graphics_device *device,
++        REFIID iid, void **result )
++{
++    IUnknown *rendering;
++    HRESULT hr;
++
++    EnterCriticalSection( &device->device_cs );
++    rendering = device->device;
++    IUnknown_AddRef( rendering );
++    LeaveCriticalSection( &device->device_cs );
++    hr = IUnknown_QueryInterface( rendering, iid, result );
++    IUnknown_Release( rendering );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI composition_graphics_device_CreateDrawingSurface( ICompositionGraphicsDevice *iface,
+@@ -12222,12 +12289,14 @@
+     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+     impl->ICompositionDrawingSurface_iface.lpVtbl = &composition_drawing_surface_vtbl;
+     impl->ICompositionDrawingSurfaceInterop_iface.lpVtbl = &composition_drawing_surface_interop_vtbl;
+-    if (FAILED(IUnknown_QueryInterface( impl_from_ICompositionGraphicsDevice( iface )->device,
++    if (FAILED(composition_graphics_device_query_rendering_device( impl_from_ICompositionGraphicsDevice( iface ),
+             &IID_ID2D1Device, (void **)&impl->device )))
+     {
+         free( impl );
+         return E_NOINTERFACE;
+     }
++    impl->graphics_device = iface;
++    ICompositionGraphicsDevice_AddRef( impl->graphics_device );
+     impl->compositor = impl_from_ICompositionGraphicsDevice( iface )->compositor;
+     ICompositor_AddRef( impl->compositor );
+     list_init( &impl->tiles );
+@@ -12243,15 +12312,42 @@
+         ITypedEventHandler_CompositionGraphicsDevice_RenderingDeviceReplacedEventArgs *handler,
+         EventRegistrationToken *token )
+ {
+-    FIXME( "iface %p, handler %p, token %p.\n", iface, handler, token );
+-    return E_NOTIMPL;
++    struct composition_graphics_device *impl = impl_from_ICompositionGraphicsDevice( iface );
++    struct graphics_device_handler *entry;
++
++    if (!handler || !token) return E_POINTER;
++    if (!(entry = malloc( sizeof(*entry) ))) return E_OUTOFMEMORY;
++    entry->handler = handler;
++    ITypedEventHandler_CompositionGraphicsDevice_RenderingDeviceReplacedEventArgs_AddRef( handler );
++    EnterCriticalSection( &impl->device_cs );
++    entry->token.value = ++impl->next_handler;
++    list_add_tail( &impl->replaced_handlers, &entry->entry );
++    *token = entry->token;
++    LeaveCriticalSection( &impl->device_cs );
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI composition_graphics_device_remove_RenderingDeviceReplaced( ICompositionGraphicsDevice *iface,
+         EventRegistrationToken token )
+ {
+-    FIXME( "iface %p.\n", iface );
+-    return E_NOTIMPL;
++    struct composition_graphics_device *impl = impl_from_ICompositionGraphicsDevice( iface );
++    struct graphics_device_handler *entry, *found = NULL;
++
++    EnterCriticalSection( &impl->device_cs );
++    LIST_FOR_EACH_ENTRY( entry, &impl->replaced_handlers, struct graphics_device_handler, entry )
++    {
++        if (entry->token.value != token.value) continue;
++        list_remove( &entry->entry );
++        found = entry;
++        break;
++    }
++    LeaveCriticalSection( &impl->device_cs );
++    if (found)
++    {
++        ITypedEventHandler_CompositionGraphicsDevice_RenderingDeviceReplacedEventArgs_Release( found->handler );
++        free( found );
++    }
++    return S_OK;
+ }
+ 
+ static const ICompositionGraphicsDeviceVtbl composition_graphics_device_vtbl =
+@@ -12338,11 +12434,13 @@
+     impl->ICompositionDrawingSurface_iface.lpVtbl = &composition_drawing_surface_vtbl;
+     impl->ICompositionVirtualDrawingSurface_iface.lpVtbl = &composition_virtual_drawing_surface_vtbl;
+     impl->ICompositionDrawingSurfaceInterop_iface.lpVtbl = &composition_drawing_surface_interop_vtbl;
+-    if (FAILED(IUnknown_QueryInterface( device->device, &IID_ID2D1Device, (void **)&impl->device )))
++    if (FAILED(composition_graphics_device_query_rendering_device( device, &IID_ID2D1Device, (void **)&impl->device )))
+     {
+         free( impl );
+         return E_NOINTERFACE;
+     }
++    impl->graphics_device = &device->ICompositionGraphicsDevice_iface;
++    ICompositionGraphicsDevice_AddRef( impl->graphics_device );
+     impl->compositor = device->compositor;
+     ICompositor_AddRef( impl->compositor );
+     list_init( &impl->tiles );
+@@ -12384,6 +12482,350 @@
+     return E_NOTIMPL;
+ }
+ 
++static inline struct composition_graphics_device *impl_from_ICompositionGraphicsDeviceInterop(
++        ICompositionGraphicsDeviceInterop *iface )
++{
++    return CONTAINING_RECORD( iface, struct composition_graphics_device, ICompositionGraphicsDeviceInterop_iface );
++}
++
++static HRESULT WINAPI graphics_device_interop_QueryInterface( ICompositionGraphicsDeviceInterop *iface,
++        REFIID iid, void **out )
++{
++    return composition_graphics_device_QueryInterface(
++            &impl_from_ICompositionGraphicsDeviceInterop( iface )->ICompositionGraphicsDevice_iface, iid, out );
++}
++
++static ULONG WINAPI graphics_device_interop_AddRef( ICompositionGraphicsDeviceInterop *iface )
++{
++    return composition_graphics_device_AddRef(
++            &impl_from_ICompositionGraphicsDeviceInterop( iface )->ICompositionGraphicsDevice_iface );
++}
++
++static ULONG WINAPI graphics_device_interop_Release( ICompositionGraphicsDeviceInterop *iface )
++{
++    return composition_graphics_device_Release(
++            &impl_from_ICompositionGraphicsDeviceInterop( iface )->ICompositionGraphicsDevice_iface );
++}
++
++static HRESULT WINAPI graphics_device_interop_GetRenderingDevice( ICompositionGraphicsDeviceInterop *iface,
++        IUnknown **value )
++{
++    struct composition_graphics_device *impl = impl_from_ICompositionGraphicsDeviceInterop( iface );
++
++    if (!value) return E_POINTER;
++    EnterCriticalSection( &impl->device_cs );
++    *value = impl->device;
++    IUnknown_AddRef( *value );
++    LeaveCriticalSection( &impl->device_cs );
++    return S_OK;
++}
++
++struct rendering_device_replaced_args
++{
++    IRenderingDeviceReplacedEventArgs IRenderingDeviceReplacedEventArgs_iface;
++    ICompositionObject ICompositionObject_iface;
++    IClosable IClosable_iface;
++    ICompositionGraphicsDevice *device;
++    ICompositionPropertySet *properties;
++    CRITICAL_SECTION cs;
++    BOOL closed;
++    LONG ref;
++};
++
++static inline struct rendering_device_replaced_args *impl_from_IRenderingDeviceReplacedEventArgs(
++        IRenderingDeviceReplacedEventArgs *iface )
++{
++    return CONTAINING_RECORD( iface, struct rendering_device_replaced_args, IRenderingDeviceReplacedEventArgs_iface );
++}
++
++static HRESULT WINAPI rendering_device_replaced_args_QueryInterface( IRenderingDeviceReplacedEventArgs *iface,
++        REFIID iid, void **out )
++{
++    struct rendering_device_replaced_args *impl = impl_from_IRenderingDeviceReplacedEventArgs( iface );
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_ICompositionObject )) *out = &impl->ICompositionObject_iface;
++    else if (IsEqualGUID( iid, &IID_IClosable )) *out = &impl->IClosable_iface;
++    else if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++             IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IRenderingDeviceReplacedEventArgs ))
++        *out = iface;
++    else return E_NOINTERFACE;
++    IRenderingDeviceReplacedEventArgs_AddRef( iface );
++    return S_OK;
++}
++
++static ULONG WINAPI rendering_device_replaced_args_AddRef( IRenderingDeviceReplacedEventArgs *iface )
++{
++    return InterlockedIncrement( &impl_from_IRenderingDeviceReplacedEventArgs( iface )->ref );
++}
++
++static ULONG WINAPI rendering_device_replaced_args_Release( IRenderingDeviceReplacedEventArgs *iface )
++{
++    struct rendering_device_replaced_args *impl = impl_from_IRenderingDeviceReplacedEventArgs( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        if (impl->properties) ICompositionPropertySet_Release( impl->properties );
++        ICompositionGraphicsDevice_Release( impl->device );
++        DeleteCriticalSection( &impl->cs );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI rendering_device_replaced_args_GetIids( IRenderingDeviceReplacedEventArgs *iface,
++        ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    if (!(*iids = CoTaskMemAlloc( 3 * sizeof(**iids) ))) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_IRenderingDeviceReplacedEventArgs;
++    (*iids)[1] = IID_ICompositionObject;
++    (*iids)[2] = IID_IClosable;
++    *count = 3;
++    return S_OK;
++}
++
++static HRESULT WINAPI rendering_device_replaced_args_GetRuntimeClassName( IRenderingDeviceReplacedEventArgs *iface,
++        HSTRING *name )
++{
++    if (!name) return E_POINTER;
++    return WindowsCreateString( RuntimeClass_Windows_UI_Composition_RenderingDeviceReplacedEventArgs,
++            ARRAY_SIZE(RuntimeClass_Windows_UI_Composition_RenderingDeviceReplacedEventArgs) - 1, name );
++}
++
++static HRESULT WINAPI rendering_device_replaced_args_GetTrustLevel( IRenderingDeviceReplacedEventArgs *iface,
++        TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI rendering_device_replaced_args_get_GraphicsDevice( IRenderingDeviceReplacedEventArgs *iface,
++        ICompositionGraphicsDevice **value )
++{
++    struct rendering_device_replaced_args *impl = impl_from_IRenderingDeviceReplacedEventArgs( iface );
++    HRESULT hr = S_OK;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->cs );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else
++    {
++        *value = impl->device;
++        ICompositionGraphicsDevice_AddRef( *value );
++    }
++    LeaveCriticalSection( &impl->cs );
++    return hr;
++}
++
++static const IRenderingDeviceReplacedEventArgsVtbl rendering_device_replaced_args_vtbl =
++{
++    rendering_device_replaced_args_QueryInterface,
++    rendering_device_replaced_args_AddRef,
++    rendering_device_replaced_args_Release,
++    rendering_device_replaced_args_GetIids,
++    rendering_device_replaced_args_GetRuntimeClassName,
++    rendering_device_replaced_args_GetTrustLevel,
++    rendering_device_replaced_args_get_GraphicsDevice,
++};
++
++DEFINE_IINSPECTABLE_( replaced_args_object, ICompositionObject, struct rendering_device_replaced_args,
++        replaced_args_from_ICompositionObject, ICompositionObject_iface, &impl->IRenderingDeviceReplacedEventArgs_iface )
++DEFINE_IINSPECTABLE_( replaced_args_closable, IClosable, struct rendering_device_replaced_args,
++        replaced_args_from_IClosable, IClosable_iface, &impl->IRenderingDeviceReplacedEventArgs_iface )
++
++static HRESULT WINAPI replaced_args_object_get_Compositor( ICompositionObject *iface, ICompositor **value )
++{
++    struct rendering_device_replaced_args *impl = replaced_args_from_ICompositionObject( iface );
++    HRESULT hr = S_OK;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->cs );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else
++    {
++        *value = impl_from_ICompositionGraphicsDevice( impl->device )->compositor;
++        ICompositor_AddRef( *value );
++    }
++    LeaveCriticalSection( &impl->cs );
++    return hr;
++}
++
++static HRESULT WINAPI replaced_args_object_get_Dispatcher( ICompositionObject *iface, ICoreDispatcher **value )
++{
++    struct rendering_device_replaced_args *impl = replaced_args_from_ICompositionObject( iface );
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->cs );
++    hr = impl->closed ? RO_E_CLOSED : S_OK;
++    LeaveCriticalSection( &impl->cs );
++    return hr;
++}
++
++static HRESULT WINAPI replaced_args_object_get_Properties( ICompositionObject *iface, ICompositionPropertySet **value )
++{
++    struct rendering_device_replaced_args *impl = replaced_args_from_ICompositionObject( iface );
++    HRESULT hr = S_OK;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->cs );
++    if (impl->closed) hr = RO_E_CLOSED;
++    else
++    {
++        if (!impl->properties)
++            hr = composition_property_set_create( impl_from_ICompositionGraphicsDevice( impl->device )->compositor,
++                    &impl->properties );
++        if (SUCCEEDED(hr))
++        {
++            *value = impl->properties;
++            ICompositionPropertySet_AddRef( *value );
++        }
++    }
++    LeaveCriticalSection( &impl->cs );
++    return hr;
++}
++
++static HRESULT WINAPI replaced_args_object_StartAnimation( ICompositionObject *iface, HSTRING name,
++        ICompositionAnimation *animation )
++{
++    struct rendering_device_replaced_args *impl = replaced_args_from_ICompositionObject( iface );
++    HRESULT hr;
++
++    EnterCriticalSection( &impl->cs );
++    hr = impl->closed ? RO_E_CLOSED : E_INVALIDARG;
++    LeaveCriticalSection( &impl->cs );
++    return hr;
++}
++
++static HRESULT WINAPI replaced_args_object_StopAnimation( ICompositionObject *iface, HSTRING name )
++{
++    struct rendering_device_replaced_args *impl = replaced_args_from_ICompositionObject( iface );
++    HRESULT hr;
++
++    EnterCriticalSection( &impl->cs );
++    hr = impl->closed ? RO_E_CLOSED : S_OK;
++    LeaveCriticalSection( &impl->cs );
++    return hr;
++}
++
++static HRESULT WINAPI replaced_args_closable_Close( IClosable *iface )
++{
++    struct rendering_device_replaced_args *impl = replaced_args_from_IClosable( iface );
++    ICompositionPropertySet *properties;
++
++    EnterCriticalSection( &impl->cs );
++    impl->closed = TRUE;
++    properties = impl->properties;
++    impl->properties = NULL;
++    LeaveCriticalSection( &impl->cs );
++    if (properties) ICompositionPropertySet_Release( properties );
++    return S_OK;
++}
++
++static const ICompositionObjectVtbl replaced_args_object_vtbl =
++{
++    replaced_args_object_QueryInterface,
++    replaced_args_object_AddRef,
++    replaced_args_object_Release,
++    replaced_args_object_GetIids,
++    replaced_args_object_GetRuntimeClassName,
++    replaced_args_object_GetTrustLevel,
++    replaced_args_object_get_Compositor,
++    replaced_args_object_get_Dispatcher,
++    replaced_args_object_get_Properties,
++    replaced_args_object_StartAnimation,
++    replaced_args_object_StopAnimation,
++};
++
++static const IClosableVtbl replaced_args_closable_vtbl =
++{
++    replaced_args_closable_QueryInterface,
++    replaced_args_closable_AddRef,
++    replaced_args_closable_Release,
++    replaced_args_closable_GetIids,
++    replaced_args_closable_GetRuntimeClassName,
++    replaced_args_closable_GetTrustLevel,
++    replaced_args_closable_Close,
++};
++
++static HRESULT WINAPI graphics_device_interop_SetRenderingDevice( ICompositionGraphicsDeviceInterop *iface,
++        IUnknown *value )
++{
++    struct composition_graphics_device *impl = impl_from_ICompositionGraphicsDeviceInterop( iface );
++    ITypedEventHandler_CompositionGraphicsDevice_RenderingDeviceReplacedEventArgs **handlers = NULL;
++    struct rendering_device_replaced_args *args = NULL;
++    struct graphics_device_handler *entry;
++    IUnknown *previous;
++    unsigned int count = 0, i = 0;
++
++    if (!value) return E_INVALIDARG;
++    IUnknown_AddRef( value );
++    EnterCriticalSection( &impl->device_cs );
++    previous = impl->device;
++    if (previous == value)
++    {
++        LeaveCriticalSection( &impl->device_cs );
++        IUnknown_Release( value );
++        return S_OK;
++    }
++    LIST_FOR_EACH_ENTRY( entry, &impl->replaced_handlers, struct graphics_device_handler, entry ) count++;
++    if (count)
++    {
++        handlers = calloc( count, sizeof(*handlers) );
++        args = calloc( 1, sizeof(*args) );
++        if (!handlers || !args)
++        {
++            LeaveCriticalSection( &impl->device_cs );
++            free( handlers );
++            free( args );
++            IUnknown_Release( value );
++            return E_OUTOFMEMORY;
++        }
++        args->IRenderingDeviceReplacedEventArgs_iface.lpVtbl = &rendering_device_replaced_args_vtbl;
++        args->ICompositionObject_iface.lpVtbl = &replaced_args_object_vtbl;
++        args->IClosable_iface.lpVtbl = &replaced_args_closable_vtbl;
++        InitializeCriticalSection( &args->cs );
++        args->device = &impl->ICompositionGraphicsDevice_iface;
++        args->ref = 1;
++        ICompositionGraphicsDevice_AddRef( args->device );
++        LIST_FOR_EACH_ENTRY( entry, &impl->replaced_handlers, struct graphics_device_handler, entry )
++        {
++            handlers[i++] = entry->handler;
++            ITypedEventHandler_CompositionGraphicsDevice_RenderingDeviceReplacedEventArgs_AddRef( entry->handler );
++        }
++    }
++    impl->device = value;
++    LeaveCriticalSection( &impl->device_cs );
++    IUnknown_Release( previous );
++    for (i = 0; i < count; i++)
++    {
++        ITypedEventHandler_CompositionGraphicsDevice_RenderingDeviceReplacedEventArgs_Invoke( handlers[i],
++                &impl->ICompositionGraphicsDevice_iface, &args->IRenderingDeviceReplacedEventArgs_iface );
++        ITypedEventHandler_CompositionGraphicsDevice_RenderingDeviceReplacedEventArgs_Release( handlers[i] );
++    }
++    free( handlers );
++    if (args) IRenderingDeviceReplacedEventArgs_Release( &args->IRenderingDeviceReplacedEventArgs_iface );
++    return S_OK;
++}
++
++static const ICompositionGraphicsDeviceInteropVtbl graphics_device_interop_vtbl =
++{
++    graphics_device_interop_QueryInterface,
++    graphics_device_interop_AddRef,
++    graphics_device_interop_Release,
++    graphics_device_interop_GetRenderingDevice,
++    graphics_device_interop_SetRenderingDevice,
++};
++
+ static HRESULT WINAPI compositor_interop_CreateGraphicsDevice( ICompositorInterop *iface,
+         IUnknown *device, ICompositionGraphicsDevice **result )
+ {
+@@ -12396,6 +12838,9 @@
+     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+     impl->ICompositionGraphicsDevice_iface.lpVtbl = &composition_graphics_device_vtbl;
+     impl->ICompositionGraphicsDevice2_iface.lpVtbl = &composition_graphics_device2_vtbl;
++    impl->ICompositionGraphicsDeviceInterop_iface.lpVtbl = &graphics_device_interop_vtbl;
++    InitializeCriticalSection( &impl->device_cs );
++    list_init( &impl->replaced_handlers );
+     impl->compositor = &compositor_from_ICompositorInterop( iface )->ICompositor_iface;
+     ICompositor_AddRef( impl->compositor );
+     impl->device = device;
+diff --git a/include/windows.ui.composition.interop.idl b/include/windows.ui.composition.interop.idl
+--- a/include/windows.ui.composition.interop.idl
++++ b/include/windows.ui.composition.interop.idl
+@@ -27,6 +27,18 @@
+ namespace Windows.UI.Composition {
+     interface ICompositorInterop;
+     interface ICompositionDrawingSurfaceInterop;
++    interface ICompositionGraphicsDeviceInterop;
++
++    [
++        object,
++        uuid(a116ff71-f8bf-4c8a-9c98-70779a32a9c8),
++        pointer_default(unique)
++    ]
++    interface ICompositionGraphicsDeviceInterop : IUnknown
++    {
++        HRESULT GetRenderingDevice([out] IUnknown **value);
++        HRESULT SetRenderingDevice([in] IUnknown *value);
++    };
+ 
+     [
+         object,
