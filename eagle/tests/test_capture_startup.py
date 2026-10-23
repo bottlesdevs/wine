@@ -142,6 +142,54 @@ class CaptureStartup(unittest.TestCase):
         self.assertTrue(report['manifest']['completed'])
         self.assertEqual(collector.stdin.commands, [b'pause\n'])
 
+    def test_disconnected_control_client_does_not_end_capture(self):
+        root = self.root / 'disconnected-control'
+        events = [{'seq': 1, 'kind': 'thread_create', 'pid': 123, 'tid': 456},
+                  {'seq': 2, 'kind': 'thread_exit', 'pid': 123, 'tid': 456},
+                  {'seq': 3, 'kind': 'finished', 'pid': 0, 'tid': 0}]
+        collector = Collector(events)
+        client = socket.socket(socket.AF_UNIX)
+        self.addCleanup(client.close)
+        def observe(event):
+            if event['seq'] == 1:
+                client.connect(str(root / 'control.sock'))
+                client.sendall(b'pause\n')
+                client.close()
+        report = self.capture(collector, root, observer=observe)
+        self.assertTrue(report['manifest']['completed'])
+        self.assertEqual(collector.stdin.commands, [b'pause\n'])
+
+    def test_unreadable_control_request_does_not_end_capture(self):
+        for payload in (b'\xff', None):
+            with self.subTest(payload=payload):
+                root = self.root / ('invalid-control' if payload else 'idle-control')
+                collector = Collector([{'seq': 1, 'kind': 'thread_create', 'pid': 123, 'tid': 456},
+                                       {'seq': 2, 'kind': 'finished', 'pid': 0, 'tid': 0}])
+                client = socket.socket(socket.AF_UNIX)
+                self.addCleanup(client.close)
+                def observe(event):
+                    if event['seq'] == 1:
+                        client.connect(str(root / 'control.sock'))
+                        if payload is not None:
+                            client.sendall(payload)
+                report = self.capture(collector, root, observer=observe)
+                self.assertTrue(report['manifest']['completed'])
+                self.assertEqual(collector.stdin.commands, [])
+
+    def test_control_preserves_collector_pipe_errors(self):
+        root = self.root / 'collector-pipe'
+        collector = Collector([{'seq': 1, 'kind': 'thread_create', 'pid': 123, 'tid': 456},
+                               {'seq': 2, 'kind': 'finished', 'pid': 0, 'tid': 0}])
+        client = socket.socket(socket.AF_UNIX)
+        self.addCleanup(client.close)
+        def observe(event):
+            if event['seq'] == 1:
+                client.connect(str(root / 'control.sock'))
+                client.sendall(b'pause\n')
+        with patch.object(collector.stdin, 'write', side_effect=BrokenPipeError('collector pipe closed')):
+            with self.assertRaisesRegex(BrokenPipeError, 'collector pipe closed'):
+                self.capture(collector, root, observer=observe)
+
     def test_stream_setup_failure_detaches_and_preserves_history(self):
         root = self.root / 'stream'
         collector = Collector(live=True)

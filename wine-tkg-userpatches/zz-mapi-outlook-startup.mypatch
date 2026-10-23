@@ -28,7 +28,7 @@ MAPI forwarding used by Outlook.
 +    if (mapiFunctions.LaunchWizard)
 +        return mapiFunctions.LaunchWizard(parent, flags, service_names, buffer_size, profile_name);
 +
-+    return MAPI_E_NOT_SUPPORTED;
++    return E_FAIL;
 +}
 +
  ULONG WINAPI MAPIAddress(LHANDLE session, ULONG_PTR uiparam, LPSTR caption,

@@ -1,0 +1,100 @@
+diff --git a/dlls/d2d1/brush.c b/dlls/d2d1/brush.c
+--- a/dlls/d2d1/brush.c
++++ b/dlls/d2d1/brush.c
+@@ -1365,7 +1365,7 @@
+     }
+ }
+ 
+-BOOL d2d_brush_fill_cb(const struct d2d_brush *brush, struct d2d_brush_cb *cb)
++BOOL d2d_brush_fill_cb(const struct d2d_brush *brush, struct d2d_brush_cb *cb, D2D1_UNIT_MODE unit_mode)
+ {
+     float theta, sin_theta, cos_theta;
+     float dpi_scale, d, s1, s2, t, u;
+@@ -1470,10 +1470,12 @@
+ 
+             /* Scale for bitmap size and dpi. */
+             b = brush->transform;
+-            dpi_scale = bitmap->pixel_size.width * (96.0f / bitmap->dpi_x);
++            dpi_scale = bitmap->pixel_size.width;
++            if (unit_mode == D2D1_UNIT_MODE_DIPS) dpi_scale *= 96.0f / bitmap->dpi_x;
+             b._11 *= dpi_scale;
+             b._21 *= dpi_scale;
+-            dpi_scale = bitmap->pixel_size.height * (96.0f / bitmap->dpi_y);
++            dpi_scale = bitmap->pixel_size.height;
++            if (unit_mode == D2D1_UNIT_MODE_DIPS) dpi_scale *= 96.0f / bitmap->dpi_y;
+             b._12 *= dpi_scale;
+             b._22 *= dpi_scale;
+ 
+diff --git a/dlls/d2d1/device.c b/dlls/d2d1/device.c
+--- a/dlls/d2d1/device.c
++++ b/dlls/d2d1/device.c
+@@ -1487,9 +1487,9 @@
+     }
+     if (context->arithmetic_coefficients)
+         cb_data->coefficients = *context->arithmetic_coefficients;
+-    if (!d2d_brush_fill_cb(brush, &cb_data->colour_brush))
++    if (!d2d_brush_fill_cb(brush, &cb_data->colour_brush, context->drawing_state.unitMode))
+         WARN("Failed to initialize colour brush buffer.\n");
+-    if (!d2d_brush_fill_cb(opacity_brush, &cb_data->opacity_brush))
++    if (!d2d_brush_fill_cb(opacity_brush, &cb_data->opacity_brush, context->drawing_state.unitMode))
+         WARN("Failed to initialize opacity brush buffer.\n");
+ 
+     ID3D11DeviceContext_Unmap(d3d_context, (ID3D11Resource *)context->ps_cb, 0);
+@@ -1930,6 +1930,15 @@
+     brush_desc.transform._12 = 0.0f;
+     brush_desc.transform._22 = fabsf((d.bottom - d.top) / (s.bottom - s.top));
+     brush_desc.transform._32 = min(d.top, d.bottom) - min(s.top, s.bottom) * brush_desc.transform._22;
++
++    if (context->drawing_state.unitMode == D2D1_UNIT_MODE_PIXELS)
++    {
++        float dpi_x, dpi_y;
++
++        ID2D1Bitmap_GetDpi(bitmap, &dpi_x, &dpi_y);
++        brush_desc.transform._11 *= 96.0f / dpi_x;
++        brush_desc.transform._22 *= 96.0f / dpi_y;
++    }
+ 
+     if (FAILED(hr = d2d_bitmap_brush_create(context->factory, bitmap, &bitmap_brush_desc, &brush_desc, &brush)))
+     {
+@@ -3758,7 +3767,6 @@
+     BOOL clamp;
+     HRESULT hr;
+     unsigned int i;
+-    float dpi_x, dpi_y;
+ 
+     for (ancestor = parent; ancestor; ancestor = ancestor->parent)
+         if (ancestor->effect == effect) return D2DERR_CYCLIC_GRAPH;
+@@ -3804,12 +3812,6 @@
+     {
+         brush_desc.transform._31 = destination.left - source.left + inputs[i].left;
+         brush_desc.transform._32 = destination.top - source.top + inputs[i].top;
+-        if (context->drawing_state.unitMode == D2D1_UNIT_MODE_PIXELS)
+-        {
+-            ID2D1Bitmap_GetDpi(bitmaps[i], &dpi_x, &dpi_y);
+-            brush_desc.transform._11 = dpi_x / 96.0f;
+-            brush_desc.transform._22 = dpi_y / 96.0f;
+-        }
+         if (FAILED(hr = d2d_bitmap_brush_create(context->factory, bitmaps[i], &bitmap_desc,
+                 &brush_desc, &brushes[i]))) goto done;
+     }
+@@ -3913,7 +3915,7 @@
+     ID2D1DeviceContext6 *iface = NULL;
+     struct d2d_device_context *child;
+     struct d2d_brush *brush = NULL;
+-    D2D1_SIZE_F input_size = ID2D1Bitmap_GetSize(input);
++    D2D1_SIZE_U input_size = ID2D1Bitmap_GetPixelSize(input);
+     D2D1_SIZE_U size;
+     D2D1_RECT_F rect;
+     D2D1_VECTOR_4F kernel;
+diff --git a/dlls/d2d1/d2d1_private.h b/dlls/d2d1/d2d1_private.h
+--- a/dlls/d2d1/d2d1_private.h
++++ b/dlls/d2d1/d2d1_private.h
+@@ -401,7 +401,7 @@
+         struct d2d_brush **brush);
+ void d2d_brush_bind_resources(struct d2d_brush *brush, struct d2d_device_context *context,
+         unsigned int brush_idx);
+-BOOL d2d_brush_fill_cb(const struct d2d_brush *brush, struct d2d_brush_cb *cb);
++BOOL d2d_brush_fill_cb(const struct d2d_brush *brush, struct d2d_brush_cb *cb, D2D1_UNIT_MODE unit_mode);
+ struct d2d_brush *unsafe_impl_from_ID2D1Brush(ID2D1Brush *iface);
+ 
+ struct d2d_stroke_style

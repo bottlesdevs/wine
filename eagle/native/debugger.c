@@ -721,6 +721,8 @@ int main(int argc, char **argv)
         SetHandleInformation(GetStdHandle(STD_ERROR_HANDLE), HANDLE_FLAG_INHERIT, 0);
         startup.dwFlags = STARTF_USESTDHANDLES;
         startup.hStdInput = startup.hStdOutput = startup.hStdError = output;
+        /* Start Wine's desktop before its bootstrap can inherit the debug port. */
+        GetDesktopWindow();
         launched = CreateProcessA(NULL, target, NULL, NULL, TRUE, DEBUG_PROCESS, NULL, getenv("EAGLE_TARGET_CWD"), &startup, &info);
         launch_error = GetLastError(); CloseHandle(output);
         if (!launched) { error("launch", launch_error); free(target); return 1; }

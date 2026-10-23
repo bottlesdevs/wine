@@ -70,6 +70,19 @@ class Integration(unittest.TestCase):
         self.assertEqual(sum(item["kind"] == "process_create" for item in events), 2)
         self.assertEqual(sorted(item["code"] for item in events if item["kind"] == "process_exit"), [0, 7])
 
+    def test_window_start_does_not_capture_desktop_bootstrap(self):
+        env = dict(os.environ, WINEPREFIX=str(ROOT / "prefix"))
+        server = Path(WINE).parent / "wineserver"
+        for bits in (64, 32):
+            subprocess.run([str(server), "-k"], env=env, check=False)
+            subprocess.run([str(server), "-w"], env=env, check=True, timeout=30)
+            process, root = self.launch(f"desktop-{bits}", f"target{bits}.exe", "window", timeout=120)
+            self.assertEqual(process.wait(timeout=130), 0)
+            manifest, events = read_bundle(root)
+            self.assertTrue(manifest["completed"])
+            self.assertEqual(sum(item["kind"] == "process_create" for item in events), 1)
+            self.assertEqual([item["code"] for item in events if item["kind"] == "process_exit"], [0])
+
     def test_multithread_logpoints_do_not_lose_hits(self):
         for attempt in range(3):
             process, root = self.launch(f'threads-{attempt}', argument='threads', interactive=True)

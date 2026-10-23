@@ -481,12 +481,18 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
             return
         with client:
             client.settimeout(1)
-            command = client.recv(1024).decode().strip()
+            try:
+                command = client.recv(1024).decode().strip()
+            except (TimeoutError, ConnectionError, UnicodeDecodeError):
+                return
             accepted = command in ("pause", "continue", "pass", "snapshot", "dump", "step", "detach", "clear") or command.startswith(("break ", "memory ", "watch ", "condition ", "logpoint ", "source ", "module ", "remove "))
             accepted = accepted and '\n' not in command
             if accepted:
                 native(command)
-            client.sendall(json.dumps({"accepted": accepted, "error": None if accepted else "unknown command"}).encode())
+            try:
+                client.sendall(json.dumps({"accepted": accepted, "error": None if accepted else "unknown command"}).encode())
+            except (BrokenPipeError, ConnectionResetError):
+                pass
     try:
         from capture_history import CaptureHistory
         with (root / "events.jsonl").open("a", encoding="utf-8") as output, CaptureHistory(output, manifest, profile == 'trace') as history:

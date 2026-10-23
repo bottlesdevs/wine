@@ -1,0 +1,167 @@
+--- a/dlls/d2d1/device.c
++++ b/dlls/d2d1/device.c
+@@ -3515,6 +3515,25 @@
+     return S_OK;
+ }
+ 
++static HRESULT d2d_affine_matrix(struct d2d_device_context *context, ID2D1Effect *effect,
++        D2D1_UNIT_MODE mode, D2D1_MATRIX_3X2_F *matrix)
++{
++    HRESULT hr;
++
++    if (FAILED(hr = ID2D1Effect_GetValue(effect, D2D1_2DAFFINETRANSFORM_PROP_TRANSFORM_MATRIX,
++            D2D1_PROPERTY_TYPE_MATRIX_3X2, (BYTE *)matrix, sizeof(*matrix)))) return hr;
++    if (!isfinite(matrix->_11) || !isfinite(matrix->_12) || !isfinite(matrix->_21)
++            || !isfinite(matrix->_22) || !isfinite(matrix->_31) || !isfinite(matrix->_32)) return E_INVALIDARG;
++    if (mode == D2D1_UNIT_MODE_PIXELS)
++    {
++        matrix->_12 *= context->desc.dpiY / context->desc.dpiX;
++        matrix->_21 *= context->desc.dpiX / context->desc.dpiY;
++        matrix->_31 *= context->desc.dpiX / 96.0f;
++        matrix->_32 *= context->desc.dpiY / 96.0f;
++    }
++    return S_OK;
++}
++
+ HRESULT d2d_effect_image_bounds(struct d2d_device_context *context, ID2D1Image *image,
+         const struct d2d_effect_frame *parent, D2D1_UNIT_MODE mode, D2D1_RECT_F *bounds)
+ {
+@@ -3563,12 +3582,29 @@
+     frame.parent = parent;
+     if (FAILED(hr = ID2D1Effect_GetValue(effect, D2D1_PROPERTY_CLSID, D2D1_PROPERTY_TYPE_CLSID,
+             (BYTE *)&clsid, sizeof(clsid)))) goto done;
+-    if (IsEqualGUID(&clsid, &CLSID_D2D1ColorMatrix) || IsEqualGUID(&clsid, &CLSID_D2D1Shadow))
++    if (IsEqualGUID(&clsid, &CLSID_D2D1ColorMatrix) || IsEqualGUID(&clsid, &CLSID_D2D1Shadow)
++            || IsEqualGUID(&clsid, &CLSID_D2D12DAffineTransform))
+     {
+         ID2D1Effect_GetInput(effect, 0, &input);
+         if (!input) {hr = D2DERR_WRONG_STATE; goto done;}
+         hr = d2d_effect_image_bounds(context, input, &frame, mode, bounds);
+         ID2D1Image_Release(input);
++        if (SUCCEEDED(hr) && IsEqualGUID(&clsid, &CLSID_D2D12DAffineTransform))
++        {
++            D2D1_MATRIX_3X2_F matrix;
++            D2D1_RECT_F source = *bounds;
++            D2D1_POINT_2F point;
++
++            if (FAILED(hr = d2d_affine_matrix(context, effect, mode, &matrix))) goto done;
++            d2d_point_transform(&point, &matrix, source.left, source.top);
++            d2d_rect_set(bounds, point.x, point.y, point.x, point.y);
++            d2d_point_transform(&point, &matrix, source.right, source.top);
++            d2d_rect_expand(bounds, &point);
++            d2d_point_transform(&point, &matrix, source.left, source.bottom);
++            d2d_rect_expand(bounds, &point);
++            d2d_point_transform(&point, &matrix, source.right, source.bottom);
++            d2d_rect_expand(bounds, &point);
++        }
+         if (SUCCEEDED(hr) && IsEqualGUID(&clsid, &CLSID_D2D1Shadow))
+         {
+             if (FAILED(hr = ID2D1Effect_GetValue(effect, D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION,
+@@ -3965,6 +4001,98 @@
+     return hr;
+ }
+ 
++static HRESULT d2d_device_context_draw_affine(struct d2d_device_context *context, ID2D1Effect *effect,
++        const D2D1_POINT_2F *offset, const D2D1_RECT_F *image_rect, const struct d2d_effect_frame *parent)
++{
++    struct d2d_effect_frame frame = {effect, parent};
++    const struct d2d_effect_frame *ancestor;
++    D2D1_MATRIX_3X2_F matrix, previous = context->drawing_state.transform, placement = identity;
++    D2D1_2DAFFINETRANSFORM_INTERPOLATION_MODE interpolation;
++    ID2D1DeviceContext6 *iface = &context->ID2D1DeviceContext6_iface;
++    ID2D1Bitmap *bitmap, *padded;
++    ID2D1BitmapRenderTarget *target;
++    D2D1_BORDER_MODE border;
++    D2D1_RECT_F source;
++    float dpi_x, dpi_y;
++    ID2D1Image *input;
++    D2D1_RECT_F bounds;
++    HRESULT hr;
++
++    for (ancestor = parent; ancestor; ancestor = ancestor->parent)
++        if (ancestor->effect == effect) return D2DERR_CYCLIC_GRAPH;
++    if (FAILED(hr = d2d_affine_matrix(context, effect, context->drawing_state.unitMode, &matrix))) return hr;
++    if (FAILED(hr = ID2D1Effect_GetValue(effect, D2D1_2DAFFINETRANSFORM_PROP_INTERPOLATION_MODE,
++            D2D1_PROPERTY_TYPE_ENUM, (BYTE *)&interpolation, sizeof(interpolation)))) return hr;
++    if (interpolation != D2D1_2DAFFINETRANSFORM_INTERPOLATION_MODE_NEAREST_NEIGHBOR
++            && interpolation != D2D1_2DAFFINETRANSFORM_INTERPOLATION_MODE_LINEAR)
++        return D2DERR_UNSUPPORTED_OPERATION;
++    if (FAILED(hr = ID2D1Effect_GetValue(effect, D2D1_2DAFFINETRANSFORM_PROP_BORDER_MODE,
++            D2D1_PROPERTY_TYPE_ENUM, (BYTE *)&border, sizeof(border)))) return hr;
++    if (border != D2D1_BORDER_MODE_SOFT && border != D2D1_BORDER_MODE_HARD) return E_INVALIDARG;
++    ID2D1Effect_GetInput(effect, 0, &input);
++    if (!input) return D2DERR_WRONG_STATE;
++    hr = d2d_effect_input_bitmap(context, input, &frame, &bitmap, &bounds);
++    ID2D1Image_Release(input);
++    if (FAILED(hr)) return hr;
++    {
++        D2D1_SIZE_F size = ID2D1Bitmap_GetSize(bitmap);
++        d2d_rect_set(&source, 0.0f, 0.0f, size.width, size.height);
++    }
++    if (border == D2D1_BORDER_MODE_SOFT && interpolation == D2D1_2DAFFINETRANSFORM_INTERPOLATION_MODE_LINEAR)
++    {
++        D2D1_PIXEL_FORMAT format = {DXGI_FORMAT_R32G32B32A32_FLOAT, D2D1_ALPHA_MODE_PREMULTIPLIED};
++        D2D1_COLOR_F transparent = {0};
++        D2D1_SIZE_U size = ID2D1Bitmap_GetPixelSize(bitmap);
++        UINT32 max_size = ID2D1DeviceContext6_GetMaximumBitmapSize(iface);
++
++        if (max_size < 2 || size.width > max_size - 2 || size.height > max_size - 2)
++        {hr = D2DERR_EXCEEDS_MAX_BITMAP_SIZE; goto done;}
++        size.width += 2;
++        size.height += 2;
++        if (FAILED(hr = ID2D1DeviceContext6_CreateCompatibleRenderTarget(iface,
++                NULL, &size, &format, D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE, &target))) goto done;
++        ID2D1Bitmap_GetDpi(bitmap, &dpi_x, &dpi_y);
++        ID2D1BitmapRenderTarget_SetDpi(target, dpi_x, dpi_y);
++        source.left += 96.0f / dpi_x;
++        source.right += 96.0f / dpi_x;
++        source.top += 96.0f / dpi_y;
++        source.bottom += 96.0f / dpi_y;
++        ID2D1BitmapRenderTarget_BeginDraw(target);
++        ID2D1BitmapRenderTarget_Clear(target, &transparent);
++        ID2D1BitmapRenderTarget_DrawBitmap(target, bitmap, &source, 1.0f,
++                D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, NULL);
++        hr = ID2D1BitmapRenderTarget_EndDraw(target, NULL, NULL);
++        if (SUCCEEDED(hr)) hr = ID2D1BitmapRenderTarget_GetBitmap(target, &padded);
++        ID2D1BitmapRenderTarget_Release(target);
++        if (FAILED(hr)) goto done;
++        ID2D1Bitmap_Release(bitmap);
++        bitmap = padded;
++    }
++    if (offset)
++    {
++        placement._31 = offset->x;
++        placement._32 = offset->y;
++    }
++    if (image_rect)
++    {
++        placement._31 -= image_rect->left;
++        placement._32 -= image_rect->top;
++    }
++    d2d_matrix_multiply(&placement, &previous);
++    ID2D1DeviceContext6_SetTransform(iface, &placement);
++    if (image_rect) ID2D1DeviceContext6_PushAxisAlignedClip(iface, image_rect, D2D1_ANTIALIAS_MODE_ALIASED);
++    d2d_matrix_multiply(&matrix, &placement);
++    ID2D1DeviceContext6_SetTransform(iface, &matrix);
++    d2d_device_context_draw_bitmap(context, bitmap, &bounds, 1.0f,
++            (D2D1_INTERPOLATION_MODE)interpolation, &source, NULL, NULL);
++    if (image_rect) ID2D1DeviceContext6_PopAxisAlignedClip(iface);
++    ID2D1DeviceContext6_SetTransform(iface, &previous);
++    hr = context->error.code;
++done:
++    ID2D1Bitmap_Release(bitmap);
++    return hr;
++}
++
+ static HRESULT d2d_device_context_draw_effect(struct d2d_device_context *context, ID2D1Effect *effect,
+         const D2D1_POINT_2F *offset, const D2D1_RECT_F *image_rect, D2D1_INTERPOLATION_MODE interpolation_mode,
+         const struct d2d_effect_frame *parent)
+@@ -3974,6 +4102,8 @@
+ 
+     if (FAILED(hr = ID2D1Effect_GetValue(effect, D2D1_PROPERTY_CLSID, D2D1_PROPERTY_TYPE_CLSID,
+             (BYTE *)&clsid, sizeof(clsid)))) return hr;
++    if (IsEqualGUID(&clsid, &CLSID_D2D12DAffineTransform))
++        return d2d_device_context_draw_affine(context, effect, offset, image_rect, parent);
+     if (IsEqualGUID(&clsid, &CLSID_D2D1Shadow))
+         return d2d_device_context_draw_shadow(context, effect, offset, image_rect, interpolation_mode, parent);
+     if (IsEqualGUID(&clsid, &CLSID_D2D1ColorMatrix))

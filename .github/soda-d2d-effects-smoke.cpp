@@ -93,20 +93,33 @@ int main(void)
         effect->Release(); effect = NULL;
         commands->Release(); commands = NULL;
     }
-    for (i = 0; i < 12; ++i)
+    for (i = 0; i < 24; ++i)
     {
         float dpi = (i / 3) % 2 ? 144.0f : 96.0f;
-        float scale = i >= 6 ? 1.0f : dpi / 96;
+        float scale = i % 12 >= 6 ? 1.0f : dpi / 96;
         float sigma = i % 3 == 0 ? 0 : i % 3 == 1 ? 0.75f : 3;
         float deviation = sigma * dpi / 96;
         int radius = (int)ceilf(3 * deviation);
         unsigned int differences = 0;
         context->SetDpi(dpi, dpi);
-        context->SetUnitMode(i >= 6 ? D2D1_UNIT_MODE_PIXELS : D2D1_UNIT_MODE_DIPS);
+        context->SetUnitMode(i % 12 >= 6 ? D2D1_UNIT_MODE_PIXELS : D2D1_UNIT_MODE_DIPS);
         for (x = 0; x < 400; ++x) source[x] = 0x80800000;
         CHECK(target->CreateBitmap(size, source, 80, &bitmap_props, &bitmap));
         CHECK(context->CreateEffect(CLSID_D2D1Shadow, &effect));
-        effect->SetInput(0, (ID2D1Image *)bitmap, TRUE);
+        if (i >= 12)
+        {
+            context->GetTarget(&saved);
+            CHECK(context->CreateCommandList(&commands));
+            context->SetTarget(commands);
+            context->BeginDraw();
+            target->DrawBitmap(bitmap, NULL, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, NULL);
+            CHECK(context->EndDraw());
+            CHECK(commands->Close());
+            context->SetTarget(saved);
+            saved->Release(); saved = NULL;
+            effect->SetInput(0, commands, TRUE);
+        }
+        else effect->SetInput(0, (ID2D1Image *)bitmap, TRUE);
         CHECK(effect->SetValue(D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION, sigma));
         CHECK(effect->SetValue(D2D1_SHADOW_PROP_COLOR, tint));
         effect->GetOutput(&image);
@@ -151,6 +164,7 @@ int main(void)
         image->Release(); image = NULL;
         effect->Release(); effect = NULL;
         bitmap->Release(); bitmap = NULL;
+        if (commands) {commands->Release(); commands = NULL;}
     }
     result = failures ? 1 : 0;
 done:

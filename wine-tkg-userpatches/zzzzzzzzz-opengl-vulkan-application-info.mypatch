@@ -1,0 +1,12 @@
+diff --git a/dlls/opengl32/unix_wgl.c b/dlls/opengl32/unix_wgl.c
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -1219,7 +1219,7 @@
+         };
+         VkApplicationInfo app_info =
+         {
+-            .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
++            .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+             .pEngineName = "Wine WGL",
+             .engineVersion = 1,
+         };

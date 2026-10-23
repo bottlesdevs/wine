@@ -32,7 +32,7 @@ permissions:
 env:
   WINE_VERSION: '11.0'
   LLVM_TOOLS_VERSION: '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80'
-  REVISION: '32-experimental'
+  REVISION: '33-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -50,11 +50,19 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-32 Experimental, codenamed Windows Escape, updates personal-account sign-in responses and Eagle symbol caching. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-33 Experimental, codenamed Windows Escape, adds Office rendering changes and Eagle fixes. It remains a prerelease and does not replace the current stable Soda build.
 
-    - Returned OAuth token fields when personal-account requests ask for a batch response.
-    - Added the customer ID to personal-account responses.
-    - Preserved Eagle symbol frames when unrelated processes or libraries change.
+    - Fixed Eagle startup with inherited Python environment settings.
+    - Fixed Eagle pause handling and disconnected control clients.
+    - Kept provider errors in size-limited Eagle reports.
+    - Expanded Eagle scanning for MSI payloads and uppercase executable names.
+    - Added Direct2D affine transforms, bitmap and image brush scaling, and command-list bounds in pixel units.
+    - Updated Direct2D shadows, layers and clipping, plus Composition graphics device replacement.
+    - Refreshed Wayland overlays after scale changes.
+    - Added MAPI wizard forwarding and DWORD service startup timeouts.
+    - Corrected cached personal-account identification.
+    - Updated Vulkan setup for WGL and shared resources.
+
 
 jobs:
   patches:
@@ -578,6 +586,51 @@ jobs:
           run_smoke win64 "$RUNNER_TEMP/soda-office-winrt-smoke64.exe" "$RUNNER_TEMP/soda-ldap-smoke64.exe"
           run_smoke win32 "$RUNNER_TEMP/soda-office-winrt-smoke32.exe" "$RUNNER_TEMP/soda-ldap-smoke32.exe"
 
+      - name: verify MAPI wizard forwarding
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          export WINEDEBUG=-all
+          export WINEPREFIX="$RUNNER_TEMP/soda-mapi-wizard-prefix"
+          export WINEARCH=win64
+          "$runner_dir/bin/wineboot" -u
+          for bits in 64 32; do
+            if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-mapi-wizard-smoke.c" \
+              -O2 -Wall -Wextra -Werror -o "$RUNNER_TEMP/soda-mapi-wizard$bits.exe"
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-mapi-wizard$bits.exe" \
+              | tr -d '\r' | tee "$RUNNER_TEMP/soda-mapi-wizard$bits.log"
+            grep -Fx 'MAPI_RUNTIME_RESULT failures=0' "$RUNNER_TEMP/soda-mapi-wizard$bits.log"
+          done
+          "$runner_dir/bin/wineserver" -w
+
+      - name: verify service startup timeout
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-service-timeout"
+          mkdir -p "$work"
+          export TMPDIR="$work" TMP="$work" TEMP="$work"
+          export WINEPREFIX="$work/prefix" WINEARCH=win64 WINEDEBUG=-all
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-service-timeout-smoke.c" \
+            -municode -O2 -Wall -Wextra -Werror -ladvapi32 -o "$work/service-timeout.exe"
+          trap '"$runner_dir/bin/wineserver" -k; "$runner_dir/bin/wineserver" -w' EXIT
+          "$runner_dir/bin/wine" reg add 'HKLM\System\CurrentControlSet\Control' \
+            /v ServicesPipeTimeout /t REG_DWORD /d 60000 /f
+          "$runner_dir/bin/wineserver" -k
+          "$runner_dir/bin/wineserver" -w
+          "$runner_dir/bin/wineserver" -p
+          "$runner_dir/bin/wine" "$work/service-timeout.exe" install
+          "$runner_dir/bin/wine" "$work/service-timeout.exe" run-pass \
+            | tr -d '\r' | tee "$work/runtime.log"
+          grep -Fx 'SERVICE_START_RESULT failures=0' "$work/runtime.log"
+
       - name: verify Composition brush lifetime
         shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
         timeout-minutes: 5
@@ -929,6 +982,11 @@ jobs:
             -O2 -Wall -Wextra -Werror -static-libgcc -ld2d1 -lwindowscodecs -lole32 -luuid \
             -o "$smoke_dir/smoke32.exe"
           for arch in x86_64 i686; do
+            for test in affine brush-units bitmap-units; do
+              "$arch-w64-mingw32-g++" "$GITHUB_WORKSPACE/.github/soda-d2d-$test-smoke.cpp" \
+                -O2 -Wall -Wextra -Werror -static-libgcc -ld2d1 -lwindowscodecs -lole32 -luuid \
+                -o "$smoke_dir/$test-$arch.exe"
+            done
             "$arch-w64-mingw32-g++" "$GITHUB_WORKSPACE/.github/soda-dwrite-glyph-smoke.cpp" \
               -O2 -Wall -Wextra -Werror -static-libgcc -ld2d1 -ldwrite -lwindowscodecs -lole32 -luuid \
               -o "$smoke_dir/glyph-$arch.exe"
@@ -944,6 +1002,11 @@ jobs:
             grep -Fx 'RESULT=PASS' "$smoke_dir/smoke$arch.log"
             compiler_arch=x86_64
             if test "$arch" = 32; then compiler_arch=i686; fi
+            for test in affine brush-units bitmap-units; do
+              "$runner_dir/bin/wine" "$smoke_dir/$test-$compiler_arch.exe" \
+                | tr -d '\r' | tee "$smoke_dir/$test-$arch.log"
+              grep -Fx 'RESULT=PASS failures=0' "$smoke_dir/$test-$arch.log"
+            done
             for dpi in 96 144; do
               for units in 0 1; do
                 for transformed in 0 1; do
@@ -1682,7 +1745,9 @@ jobs:
             -o "$RUNNER_TEMP/soda-office-winrt/brush32.exe"
           for bits in 64 32; do
             if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
-            for probe in surface callbacks; do
+            "$compiler" .github/soda-mapi-wizard-smoke.c \
+              -O2 -Wall -Wextra -Werror -o "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$bits.exe"
+            for probe in surface callbacks graphics-device; do
               "$compiler" ".github/soda-composition-$probe-smoke.c" \
                 -I"$wine_headers" -D__WINESRC__ \
                 -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
@@ -1724,6 +1789,9 @@ jobs:
             | tr -d '\r' | tee /tmp/soda-icu/runtime32.log
           grep -F 'ICU 72.1 timezone=America/Denver' /tmp/soda-icu/runtime32.log
           for arch in 64 32; do
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.exe" \
+              | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.log"
+            grep -Fx 'MAPI_RUNTIME_RESULT failures=0' "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.log"
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/smoke$arch.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/runtime$arch.log"
             for factory in core_application message_websocket protection_policy retail_info web_authentication_manager composition_effect_source_parameter; do
@@ -1732,10 +1800,12 @@ jobs:
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/brush$arch.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/brush$arch.log"
             grep -E '^composition_brush_checks:[1-9][0-9]* failures:0$' "$RUNNER_TEMP/soda-office-winrt/brush$arch.log"
-            for probe in surface callbacks; do
+            for probe in surface callbacks graphics-device; do
               "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/composition-$probe$arch.exe" \
                 | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/composition-$probe$arch.log"
-              if [[ "$probe" == surface ]]; then result=SURFACE_COMMIT_RESULT; else result=CONTROLLER_CALLBACK_RESULT; fi
+              if [[ "$probe" == surface ]]; then result=SURFACE_COMMIT_RESULT
+              elif [[ "$probe" == callbacks ]]; then result=CONTROLLER_CALLBACK_RESULT
+              else result=GRAPHICS_DEVICE_RESULT; fi
               grep -E "^$result checks=[1-9][0-9]* failures=0$" "$RUNNER_TEMP/soda-office-winrt/composition-$probe$arch.log"
             done
             for apartment in sta mta; do
@@ -1759,6 +1829,32 @@ jobs:
             grep -Fx 'ldap_init_checks:1024 failures:0' "$RUNNER_TEMP/soda-office-winrt/ldap$arch.log"
           done
           "$runner_dir/bin/wineserver" -w
+
+      - name: verify service startup timeout
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
+        env:
+          COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
+        run: |
+          runner_dir="/tmp/$COMPONENT_NAME"
+          export FEX_APP_CONFIG="$runner_dir/share/fex-emu/Config.json"
+          export FEX_APP_CONFIG_LOCATION="$runner_dir/share/fex-emu"
+          work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-service-timeout"
+          mkdir -p "$work"
+          export TMPDIR="$work" TMP="$work" TEMP="$work"
+          export WINEPREFIX="$work/prefix" WINEARCH=win64 WINEDEBUG=-all
+          x86_64-w64-mingw32-gcc "$GITHUB_WORKSPACE/.github/soda-service-timeout-smoke.c" \
+            -municode -O2 -Wall -Wextra -Werror -ladvapi32 -o "$work/service-timeout.exe"
+          trap '"$runner_dir/bin/wineserver" -k; "$runner_dir/bin/wineserver" -w' EXIT
+          "$runner_dir/bin/wine" reg add 'HKLM\System\CurrentControlSet\Control' \
+            /v ServicesPipeTimeout /t REG_DWORD /d 60000 /f
+          "$runner_dir/bin/wineserver" -k
+          "$runner_dir/bin/wineserver" -w
+          "$runner_dir/bin/wineserver" -p
+          "$runner_dir/bin/wine" "$work/service-timeout.exe" install
+          "$runner_dir/bin/wine" "$work/service-timeout.exe" run-pass \
+            | tr -d '\r' | tee "$work/runtime.log"
+          grep -Fx 'SERVICE_START_RESULT failures=0' "$work/runtime.log"
 
   recovery:
     if: >-

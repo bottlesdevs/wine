@@ -1,0 +1,21 @@
+Read service startup timeouts stored as DWORD values.
+
+--- a/programs/services/services.c
++++ b/programs/services/services.c
+@@ -1236,9 +1236,13 @@
+     if (RegOpenKeyW( HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control", &key )) return;
+ 
+     count = sizeof(buffer);
+-    if (!RegQueryValueExW( key, L"ServicesPipeTimeout", NULL, &type, (BYTE *)buffer, &count ) &&
+-        type == REG_SZ && (val = wcstol( buffer, NULL, 10 )))
+-        service_pipe_timeout = val;
++    if (!RegQueryValueExW( key, L"ServicesPipeTimeout", NULL, &type, (BYTE *)buffer, &count ))
++    {
++        if (type == REG_DWORD && count == sizeof(service_pipe_timeout))
++            memcpy( &service_pipe_timeout, buffer, sizeof(service_pipe_timeout) );
++        else if (type == REG_SZ && (val = wcstol( buffer, NULL, 10 )))
++            service_pipe_timeout = val;
++    }
+ 
+     count = sizeof(buffer);
+     if (!RegQueryValueExW( key, L"WaitToKillServiceTimeout", NULL, &type, (BYTE *)buffer, &count ) &&
