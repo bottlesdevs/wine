@@ -713,6 +713,10 @@ jobs:
           test -n "$runner_dir"
           for bits in 64 32; do
             if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-composition-inertia-smoke.c" \
+              -I"$runner_dir/include/wine/windows" -D__WINESRC__ \
+              -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
+              -o "$RUNNER_TEMP/soda-composition-inertia$bits.exe"
             "$compiler" "$GITHUB_WORKSPACE/.github/soda-composition-tracker-smoke.c" \
               -I"$runner_dir/include/wine/windows" -D__WINESRC__ \
               -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
@@ -747,6 +751,11 @@ jobs:
           "$runner_dir/bin/wine" reg add 'HKCU\Software\Wine\Direct3D' \
             /v renderer /t REG_SZ /d gl /f
           for bits in 64 32; do
+            for apartment in sta mta; do
+              "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-inertia$bits.exe" "$apartment" \
+                | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-inertia$bits-$apartment.log"
+              grep -E '^INERTIA_OBJECT_CHECKS:[1-9][0-9]* failures:0$' "$RUNNER_TEMP/soda-composition-inertia$bits-$apartment.log"
+            done
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-composition-tracker$bits.exe" candidate \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-composition-tracker$bits.log"
             grep -E '^TRACKER_DONE$' "$RUNNER_TEMP/soda-composition-tracker$bits.log"
@@ -1761,6 +1770,10 @@ jobs:
             if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
             "$compiler" .github/soda-mapi-wizard-smoke.c \
               -O2 -Wall -Wextra -Werror -o "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$bits.exe"
+            "$compiler" .github/soda-composition-inertia-smoke.c \
+              -I"$wine_headers" -D__WINESRC__ \
+              -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
+              -o "$RUNNER_TEMP/soda-office-winrt/inertia$bits.exe"
             mapi_dir="$RUNNER_TEMP/soda-office-winrt/mapi-client$bits"
             mkdir -p "$mapi_dir"
             "$compiler" .github/soda-mapi-client-smoke.c \
@@ -1813,6 +1826,11 @@ jobs:
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.log"
             grep -Fx 'MAPI_RUNTIME_RESULT failures=0' "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.log"
+            for apartment in sta mta; do
+              "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/inertia$arch.exe" "$apartment" \
+                | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/inertia$arch-$apartment.log"
+              grep -E '^INERTIA_OBJECT_CHECKS:[1-9][0-9]* failures:0$' "$RUNNER_TEMP/soda-office-winrt/inertia$arch-$apartment.log"
+            done
             mapi_dir="$RUNNER_TEMP/soda-office-winrt/mapi-client$arch"
             "$runner_dir/bin/wine" "$mapi_dir/client.exe" "Z:$mapi_dir/OLMAPI32.DLL" \
               | tr -d '\r' | tee "$mapi_dir/runtime.log"
