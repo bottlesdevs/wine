@@ -191,15 +191,31 @@ class Tracing(unittest.TestCase):
                 try:
                     before = set((prefix / 'logs/runs').glob('*.running.log'))
                     before_sessions = set((prefix / 'logs/runs').glob('*.session'))
-                    collector = subprocess.Popen([str(CANDIDATE / 'bin/eagle'), 'trace', '--wine', str(CANDIDATE / 'bin/wine'), '--prefix', str(prefix), '--logs', str(prefix / 'logs/runs'), '--', str(ROOT / ('target' + bits + '.exe')), 'window', '6000'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                    deadline = time.monotonic() + 5
-                    while time.monotonic() < deadline:
-                        created = set((prefix / 'logs/runs').glob('*.session')) - before_sessions
-                        if any((path / 'events.jsonl').exists() and 'explorer.exe' in (path / 'events.jsonl').read_text().lower() for path in created):
-                            break
+                    desktop = 'EagleTrace' + bits
+                    ready = ROOT / ('window-ready-' + bits)
+                    helper_ready = ROOT / ('helper-ready-' + bits)
+                    stop = ROOT / ('window-stop-' + bits)
+                    for marker in (ready, helper_ready, stop):
+                        marker.unlink(missing_ok=True)
+                    target = str(ROOT / ('target' + bits + '.exe'))
+                    ready_path = 'Z:' + str(ready).replace('/', '\\')
+                    helper_path = 'Z:' + str(helper_ready).replace('/', '\\')
+                    stop_path = 'Z:' + str(stop).replace('/', '\\')
+                    collector = subprocess.Popen([str(CANDIDATE / 'bin/eagle'), 'trace', '--wine', str(CANDIDATE / 'bin/wine'), '--prefix', str(prefix), '--logs', str(prefix / 'logs/runs'), '--', target, 'window', '180000', desktop, ready_path, stop_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    deadline = time.monotonic() + 90
+                    while not ready.exists() and time.monotonic() < deadline and collector.poll() is None:
                         time.sleep(0.05)
-                    helper = subprocess.Popen([str(CANDIDATE / 'bin/wine'), str(ROOT / ('target' + bits + '.exe')), 'window', '15000'], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    output, error = collector.communicate(timeout=25)
+                    self.assertTrue(ready.exists(), 'traced window did not become ready')
+                    created = set((prefix / 'logs/runs').glob('*.session')) - before_sessions
+                    events = [json.loads(line) for path in created for line in (path / 'events.jsonl').read_text().rsplit('\n', 1)[0].splitlines()]
+                    self.assertTrue(any(event['kind'] == 'process_create' and event.get('path', '').lower().endswith('\\explorer.exe') for event in events), 'dedicated desktop must start a traced Explorer')
+                    helper = subprocess.Popen([str(CANDIDATE / 'bin/wine'), target, 'window', '180000', desktop, helper_path], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    deadline = time.monotonic() + 60
+                    while not helper_ready.exists() and time.monotonic() < deadline and helper.poll() is None:
+                        time.sleep(0.05)
+                    self.assertTrue(helper_ready.exists(), 'untraced window did not become ready')
+                    stop.touch()
+                    output, error = collector.communicate(timeout=30)
                     self.assertEqual(collector.returncode, 0, error[-4000:])
                     self.assertIsNone(helper.poll(), 'untraced GUI client must still use the Wine desktop')
                     report = json.loads(Path(json.loads(output)['data']['log']).read_text())

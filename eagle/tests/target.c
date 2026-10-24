@@ -59,6 +59,11 @@ int main(int argc, char **argv)
         HWND window;
         MSG message;
         DWORD deadline;
+        if (argc > 3)
+        {
+            HDESK desktop = CreateDesktopA(argv[3], NULL, NULL, 0, GENERIC_ALL, NULL);
+            if (!desktop || !SetThreadDesktop(desktop)) return 21;
+        }
         cls.lpfnWndProc = DefWindowProcA;
         cls.hInstance = GetModuleHandleA(NULL);
         cls.lpszClassName = "EagleWindowTest";
@@ -67,9 +72,16 @@ int main(int argc, char **argv)
                                0, 0, 320, 200, NULL, NULL, cls.hInstance, NULL);
         if (!window) return 14;
         ShowWindow(window, SW_SHOW);
+        if (argc > 4)
+        {
+            FILE *ready = fopen(argv[4], "w");
+            if (!ready) return 22;
+            if (fclose(ready)) return 23;
+        }
         deadline = GetTickCount() + (argc > 2 ? strtoul(argv[2], NULL, 10) : 500);
         while (GetTickCount() < deadline)
         {
+            if (argc > 5 && GetFileAttributesA(argv[5]) != INVALID_FILE_ATTRIBUTES) break;
             while (PeekMessageA(&message, NULL, 0, 0, PM_REMOVE))
             {
                 TranslateMessage(&message);

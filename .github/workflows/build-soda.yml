@@ -1872,7 +1872,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       SOURCE_RUN: ${{ inputs.recovery_run }}
-      SOURCE_COMMIT: 'a5399634587a2c08cf076b9d146faf41f4ebeea9'
+      SOURCE_COMMIT: 'bc771c1b76056ae0bfb3d4ce659b436175a072cd'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -1912,7 +1912,7 @@ jobs:
           print('Completed Wine builds and runtime tests verified; Eagle package tests will run again')
           PYCODE
           git merge-base --is-ancestor "$SOURCE_COMMIT" "$GITHUB_SHA"
-          test -z "$(git diff --name-only "$SOURCE_COMMIT" "$GITHUB_SHA" -- . ':(exclude).github/workflows/build-soda.yml' ':(exclude)eagle/tests/test_inline_compression.py')"
+          test -z "$(git diff --name-only "$SOURCE_COMMIT" "$GITHUB_SHA" -- . ':(exclude).github/workflows/build-soda.yml' ':(exclude)eagle/tests/test_tracing.py' ':(exclude)eagle/tests/target.c')"
           python3 - <<'PYCODE'
           import os
           from pathlib import Path
@@ -1931,6 +1931,9 @@ jobs:
         working-directory: /home/runner/work/
         run: |
           mkdir -p /home/runner/.config/frogminer/
+          if test -f /etc/apt/apt-mirrors.txt; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          fi
           sudo apt purge -y ubuntu-advantage-tools python3-update-manager
           sudo dpkg --add-architecture i386 && sudo apt update
           sudo apt-mark hold grub-common grub-efi-amd64-bin python3 python3-apt shim-signed
@@ -2093,6 +2096,7 @@ jobs:
           name: eagle-recovery-test-logs-${{ github.sha }}
           path: |
             ${{ env.RECOVERY_WORK }}/logs/*.log
+            ${{ env.RECOVERY_WORK }}/eagle/tests/prefix/logs/runs/*.session/*.json*
             ${{ env.RECOVERY_WORK }}/eagle/tests/j32/*/session/*.json*
             ${{ env.RECOVERY_WORK }}/eagle/tests/j64/*/session/*.json*
             ${{ env.RECOVERY_WORK }}/eagle/tests/k32/*/session/*.json*
@@ -2121,8 +2125,10 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$RELEASE_NOTES" > "$RECOVERY_WORK/notes.md"
+          title="Soda $WINE_VERSION-$REVISION"
+          if [[ -n "$RELEASE_CODENAME" ]]; then title="$title - $RELEASE_CODENAME"; fi
           gh release create "$component" "$component-x86_64.tar.xz" "$component-x86_64-symbols.tar.xz" "$component-aarch64.tar.xz" "$component-aarch64-symbols.tar.xz" SHA256SUMS \
-            --target "$GITHUB_SHA" --title "Soda $WINE_VERSION-$REVISION" \
+            --target "$GITHUB_SHA" --title "$title" \
             --notes-file "$RECOVERY_WORK/notes.md" --prerelease
 
   release:
