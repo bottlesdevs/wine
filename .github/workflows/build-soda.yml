@@ -1873,6 +1873,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       SOURCE_RUN: ${{ inputs.recovery_run }}
       SOURCE_COMMIT: 'bc771c1b76056ae0bfb3d4ce659b436175a072cd'
+      XZ_DEFAULTS: '-T2'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -1990,8 +1991,8 @@ jobs:
             "/usr/lib/llvm-22/bin/$tool" --version
           done
 
-      - name: package verified Wine artifacts
-        timeout-minutes: 30
+      - name: verify x86_64 Wine and Eagle
+        timeout-minutes: 25
         run: |
           work="$RECOVERY_WORK"
           component="soda-$WINE_VERSION-$REVISION"
@@ -2061,8 +2062,21 @@ jobs:
             --tools "$tools" --verify
           cp "$runner/share/soda/"{build,files,sources}.json "$work/symbols/$component-x86_64/share/soda/"
           mv "$runner" "$work/release/$component-x86_64"
+
+      - name: package x86_64 archives
+        timeout-minutes: 20
+        run: |
+          work="$RECOVERY_WORK"
+          component="soda-$WINE_VERSION-$REVISION"
           tar -C "$work/release" -cJf "$work/release/$component-x86_64.tar.xz" "$component-x86_64"
           tar -C "$work/symbols" -cJf "$work/release/$component-x86_64-symbols.tar.xz" "$component-x86_64"
+
+      - name: verify ARM64 artifacts
+        timeout-minutes: 15
+        run: |
+          work="$RECOVERY_WORK"
+          component="soda-$WINE_VERSION-$REVISION"
+          tools="$work/provenance/native"
           gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
             --name "$component-aarch64" --dir "$work/release"
           mkdir "$work/arm64" "$work/arm64-symbols"
@@ -2074,6 +2088,12 @@ jobs:
           sh "$GITHUB_WORKSPACE/.github/soda-provenance.sh" "$runner" "$work/arm64-provenance" \
             --name "$component-aarch64" --refresh --assembly-source "$GITHUB_WORKSPACE"
           cp "$runner/share/soda/"{build,files,sources}.json "$work/arm64-symbols/$component-aarch64/share/soda/"
+
+      - name: package ARM64 archives
+        timeout-minutes: 20
+        run: |
+          work="$RECOVERY_WORK"
+          component="soda-$WINE_VERSION-$REVISION"
           tar -C "$work/arm64" -cJf "$work/release/$component-aarch64.tar.xz" "$component-aarch64"
           tar -C "$work/arm64-symbols" -cJf "$work/release/$component-aarch64-symbols.tar.xz" "$component-aarch64"
           cd "$work/release"
