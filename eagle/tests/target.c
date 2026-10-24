@@ -63,6 +63,20 @@ int main(int argc, char **argv)
         {
             HDESK desktop = CreateDesktopA(argv[3], NULL, NULL, 0, GENERIC_ALL, NULL);
             if (!desktop || !SetThreadDesktop(desktop)) return 21;
+            if (argc > 5)
+            {
+                STARTUPINFOA startup = {0};
+                PROCESS_INFORMATION process;
+                char command[] = "explorer.exe /desktop";
+                DWORD status;
+                startup.cb = sizeof(startup);
+                startup.lpDesktop = argv[3];
+                if (!CreateProcessA(NULL, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &process)) return 24;
+                status = WaitForInputIdle(process.hProcess, 60000);
+                CloseHandle(process.hThread);
+                CloseHandle(process.hProcess);
+                if (status) return 25;
+            }
         }
         cls.lpfnWndProc = DefWindowProcA;
         cls.hInstance = GetModuleHandleA(NULL);
