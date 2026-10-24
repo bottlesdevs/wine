@@ -1,0 +1,67 @@
+diff --git a/dlls/combase/apartment.c b/dlls/combase/apartment.c
+--- a/dlls/combase/apartment.c
++++ b/dlls/combase/apartment.c
+@@ -757,7 +757,7 @@
+ 
+ /* gets the specified class object by loading the appropriate DLL, if
+  * necessary and calls the DllGetClassObject function for the DLL */
+-static HRESULT apartment_getclassobject(struct apartment *apt, LPCWSTR dllpath,
++HRESULT apartment_getclassobject(struct apartment *apt, LPCWSTR dllpath,
+                                         BOOL apartment_threaded,
+                                         REFCLSID rclsid, REFIID riid, void **ppv)
+ {
+diff --git a/dlls/combase/combase.c b/dlls/combase/combase.c
+--- a/dlls/combase/combase.c
++++ b/dlls/combase/combase.c
+@@ -1799,16 +1799,27 @@
+     return TRUE;
+ }
+ 
+-static HRESULT get_c2r_outlook_mapi_class_object(REFCLSID rclsid, REFIID riid, void **obj)
+-{
++static HRESULT get_c2r_outlook_mapi_class_object(struct apartment *apt, REFCLSID rclsid, REFIID riid, void **obj)
++{
++    static const WCHAR mime_name[] = L"OUTLMIME.DLL";
+     HRESULT (WINAPI *get_class_object)(REFCLSID, REFIID, void **);
++    WCHAR path[MAX_PATH], *name;
++    HMODULE module;
+     HRESULT hr;
+-    HMODULE module;
++    DWORD len;
+ 
+     if (GetModuleHandleExW(0, L"OLMAPI32.DLL", &module))
+     {
+         get_class_object = (void *)GetProcAddress(module, "DllGetClassObject");
+         hr = get_class_object ? get_class_object(rclsid, riid, obj) : CLASS_E_CLASSNOTAVAILABLE;
++        if (hr == CLASS_E_CLASSNOTAVAILABLE &&
++                (len = GetModuleFileNameW(module, path, ARRAY_SIZE(path))) && len < ARRAY_SIZE(path) &&
++                (name = wcsrchr(path, '\\')) && name - path + ARRAY_SIZE(mime_name) < ARRAY_SIZE(path))
++        {
++            memcpy(name + 1, mime_name, sizeof(mime_name));
++            if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES)
++                hr = apartment_getclassobject(apt, path, FALSE, rclsid, riid, obj);
++        }
+         FreeLibrary(module);
+         if (hr != CLASS_E_CLASSNOTAVAILABLE) return hr;
+     }
+@@ -1963,7 +1974,7 @@
+ 
+     if ((clscontext & CLSCTX_INPROC_SERVER) && hr == REGDB_E_CLASSNOTREG)
+     {
+-        hr = get_c2r_outlook_mapi_class_object(rclsid, riid, obj);
++        hr = get_c2r_outlook_mapi_class_object(apt, rclsid, riid, obj);
+         if (SUCCEEDED(hr))
+         {
+             apartment_release(apt);
+diff --git a/dlls/combase/combase_private.h b/dlls/combase/combase_private.h
+--- a/dlls/combase/combase_private.h
++++ b/dlls/combase/combase_private.h
+@@ -165,6 +165,8 @@
+ void apartment_decrement_mta_usage(CO_MTA_USAGE_COOKIE cookie);
+ HRESULT ensure_mta(void);
+ struct apartment * apartment_get_mta(void);
++HRESULT apartment_getclassobject(struct apartment *apt, const WCHAR *dllpath, BOOL apartment_threaded,
++        REFCLSID rclsid, REFIID riid, void **object);
+ HRESULT apartment_get_inproc_class_object(struct apartment *apt, const struct class_reg_data *regdata,
+         REFCLSID rclsid, REFIID riid, DWORD class_context, void **ppv);
+ HRESULT apartment_get_local_server_stream(struct apartment *apt, IStream **ret);

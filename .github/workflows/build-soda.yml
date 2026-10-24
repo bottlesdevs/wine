@@ -640,10 +640,18 @@ jobs:
               -O2 -Wall -Wextra -Werror -DBUILD_MAPI_PROVIDER -shared -Wl,--kill-at \
               -lole32 -luuid -o "$mapi_dir/OLMAPI32.DLL"
             "$compiler" "$GITHUB_WORKSPACE/.github/soda-mapi-client-smoke.c" \
+              -O2 -Wall -Wextra -Werror -DBUILD_MIME_PROVIDER -shared -Wl,--kill-at \
+              -lole32 -luuid -o "$mapi_dir/OUTLMIME.DLL"
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-mapi-client-smoke.c" \
               -O2 -Wall -Wextra -Werror -lole32 -luuid -o "$mapi_dir/client.exe"
             "$runner_dir/bin/wine" "$mapi_dir/client.exe" "Z:$mapi_dir/OLMAPI32.DLL" \
               | tr -d '\r' | tee "$mapi_dir/runtime.log"
             grep -Fx 'MAPI_CLIENT_RESULT failures=0' "$mapi_dir/runtime.log"
+            mkdir -p "$mapi_dir/no-mime"
+            cp "$mapi_dir/OLMAPI32.DLL" "$mapi_dir/no-mime/OLMAPI32.DLL"
+            "$runner_dir/bin/wine" "$mapi_dir/client.exe" "Z:$mapi_dir/no-mime/OLMAPI32.DLL" no-mime \
+              | tr -d '\r' | tee "$mapi_dir/absent-mime.log"
+            grep -Fx 'MAPI_CLIENT_ABSENT_MIME_RESULT failures=0' "$mapi_dir/absent-mime.log"
           done
           "$runner_dir/bin/wineserver" -w
 
@@ -1813,6 +1821,9 @@ jobs:
               -O2 -Wall -Wextra -Werror -DBUILD_MAPI_PROVIDER -shared -Wl,--kill-at \
               -lole32 -luuid -o "$mapi_dir/OLMAPI32.DLL"
             "$compiler" .github/soda-mapi-client-smoke.c \
+              -O2 -Wall -Wextra -Werror -DBUILD_MIME_PROVIDER -shared -Wl,--kill-at \
+              -lole32 -luuid -o "$mapi_dir/OUTLMIME.DLL"
+            "$compiler" .github/soda-mapi-client-smoke.c \
               -O2 -Wall -Wextra -Werror -lole32 -luuid -o "$mapi_dir/client.exe"
             for probe in surface callbacks graphics-device; do
               "$compiler" ".github/soda-composition-$probe-smoke.c" \
@@ -1873,6 +1884,11 @@ jobs:
             "$runner_dir/bin/wine" "$mapi_dir/client.exe" "Z:$mapi_dir/OLMAPI32.DLL" \
               | tr -d '\r' | tee "$mapi_dir/runtime.log"
             grep -Fx 'MAPI_CLIENT_RESULT failures=0' "$mapi_dir/runtime.log"
+            mkdir -p "$mapi_dir/no-mime"
+            cp "$mapi_dir/OLMAPI32.DLL" "$mapi_dir/no-mime/OLMAPI32.DLL"
+            "$runner_dir/bin/wine" "$mapi_dir/client.exe" "Z:$mapi_dir/no-mime/OLMAPI32.DLL" no-mime \
+              | tr -d '\r' | tee "$mapi_dir/absent-mime.log"
+            grep -Fx 'MAPI_CLIENT_ABSENT_MIME_RESULT failures=0' "$mapi_dir/absent-mime.log"
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/smoke$arch.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/runtime$arch.log"
             for factory in core_application message_websocket protection_policy retail_info web_authentication_manager composition_effect_source_parameter; do
