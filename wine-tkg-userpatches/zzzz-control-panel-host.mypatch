@@ -1,0 +1,50 @@
+diff --git a/programs/control/control.c b/programs/control/control.c
+--- a/programs/control/control.c
++++ b/programs/control/control.c
+@@ -22,6 +22,7 @@
+ #define WIN32_LEAN_AND_MEAN
+ 
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <windows.h>
+ #include <commctrl.h>
+@@ -32,7 +33,37 @@
+ 
+ static void launch(LPCWSTR what)
+ {
+-  Control_RunDLLW(GetDesktopWindow(), 0, what, SW_SHOW);
++  static const WCHAR suffix[] = L"\\rundll32.exe";
++  WCHAR app[MAX_PATH], *cmdline;
++  STARTUPINFOW si = {0};
++  PROCESS_INFORMATION pi;
++  UINT len;
++
++  if (!*what)
++  {
++    Control_RunDLLW(GetDesktopWindow(), 0, what, SW_SHOW);
++    ExitProcess(0);
++  }
++
++  len = GetSystemDirectoryW(app, ARRAY_SIZE(app));
++  if (!len || len > ARRAY_SIZE(app) - ARRAY_SIZE(suffix)) ExitProcess(1);
++  lstrcatW(app, suffix);
++  len = lstrlenW(app) + lstrlenW(what) + ARRAY_SIZE(L"\"\" shell32.dll,Control_RunDLL ");
++  if (!(cmdline = malloc(len * sizeof(*cmdline)))) ExitProcess(1);
++  lstrcpyW(cmdline, L"\"");
++  lstrcatW(cmdline, app);
++  lstrcatW(cmdline, L"\" shell32.dll,Control_RunDLL ");
++  lstrcatW(cmdline, what);
++  si.cb = sizeof(si);
++  if (!CreateProcessW(app, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
++  {
++    free(cmdline);
++    ExitProcess(1);
++  }
++  free(cmdline);
++  CloseHandle(pi.hThread);
++  WaitForSingleObject(pi.hProcess, INFINITE);
++  CloseHandle(pi.hProcess);
+   ExitProcess(0);
+ }
+ 
