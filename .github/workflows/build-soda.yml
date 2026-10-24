@@ -608,6 +608,16 @@ jobs:
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-mapi-wizard$bits.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-mapi-wizard$bits.log"
             grep -Fx 'MAPI_RUNTIME_RESULT failures=0' "$RUNNER_TEMP/soda-mapi-wizard$bits.log"
+            mapi_dir="$RUNNER_TEMP/soda-mapi-client$bits"
+            mkdir -p "$mapi_dir"
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-mapi-client-smoke.c" \
+              -O2 -Wall -Wextra -Werror -DBUILD_MAPI_PROVIDER -shared -Wl,--kill-at \
+              -lole32 -luuid -o "$mapi_dir/OLMAPI32.DLL"
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-mapi-client-smoke.c" \
+              -O2 -Wall -Wextra -Werror -lole32 -luuid -o "$mapi_dir/client.exe"
+            "$runner_dir/bin/wine" "$mapi_dir/client.exe" "Z:$mapi_dir/OLMAPI32.DLL" \
+              | tr -d '\r' | tee "$mapi_dir/runtime.log"
+            grep -Fx 'MAPI_CLIENT_RESULT failures=0' "$mapi_dir/runtime.log"
           done
           "$runner_dir/bin/wineserver" -w
 
@@ -1751,6 +1761,13 @@ jobs:
             if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
             "$compiler" .github/soda-mapi-wizard-smoke.c \
               -O2 -Wall -Wextra -Werror -o "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$bits.exe"
+            mapi_dir="$RUNNER_TEMP/soda-office-winrt/mapi-client$bits"
+            mkdir -p "$mapi_dir"
+            "$compiler" .github/soda-mapi-client-smoke.c \
+              -O2 -Wall -Wextra -Werror -DBUILD_MAPI_PROVIDER -shared -Wl,--kill-at \
+              -lole32 -luuid -o "$mapi_dir/OLMAPI32.DLL"
+            "$compiler" .github/soda-mapi-client-smoke.c \
+              -O2 -Wall -Wextra -Werror -lole32 -luuid -o "$mapi_dir/client.exe"
             for probe in surface callbacks graphics-device; do
               "$compiler" ".github/soda-composition-$probe-smoke.c" \
                 -I"$wine_headers" -D__WINESRC__ \
@@ -1796,6 +1813,10 @@ jobs:
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.log"
             grep -Fx 'MAPI_RUNTIME_RESULT failures=0' "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.log"
+            mapi_dir="$RUNNER_TEMP/soda-office-winrt/mapi-client$arch"
+            "$runner_dir/bin/wine" "$mapi_dir/client.exe" "Z:$mapi_dir/OLMAPI32.DLL" \
+              | tr -d '\r' | tee "$mapi_dir/runtime.log"
+            grep -Fx 'MAPI_CLIENT_RESULT failures=0' "$mapi_dir/runtime.log"
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/smoke$arch.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/runtime$arch.log"
             for factory in core_application message_websocket protection_policy retail_info web_authentication_manager composition_effect_source_parameter; do

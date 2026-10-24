@@ -1,0 +1,23 @@
+Resolve account classes through an already loaded MAPI provider.
+
+--- a/dlls/combase/combase.c
++++ b/dlls/combase/combase.c
+@@ -1801,6 +1801,18 @@
+ 
+ static HRESULT get_c2r_outlook_mapi_class_object(REFCLSID rclsid, REFIID riid, void **obj)
+ {
++    HRESULT (WINAPI *get_class_object)(REFCLSID, REFIID, void **);
++    HRESULT hr;
++    HMODULE module;
++
++    if (GetModuleHandleExW(0, L"OLMAPI32.DLL", &module))
++    {
++        get_class_object = (void *)GetProcAddress(module, "DllGetClassObject");
++        hr = get_class_object ? get_class_object(rclsid, riid, obj) : CLASS_E_CLASSNOTAVAILABLE;
++        FreeLibrary(module);
++        if (hr != CLASS_E_CLASSNOTAVAILABLE) return hr;
++    }
++
+     InitOnceExecuteOnce(&c2r_outlook_mapi_once, init_c2r_outlook_mapi, NULL, NULL);
+     if (!c2r_outlook_mapi_get_class_object) return CLASS_E_CLASSNOTAVAILABLE;
+     return c2r_outlook_mapi_get_class_object(rclsid, riid, obj);
