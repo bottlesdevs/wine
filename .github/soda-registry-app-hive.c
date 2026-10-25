@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <sddl.h>
 #ifdef REGISTRY_HIVE_CODEC
 #include "registry_hive.h"
 #endif
@@ -31,6 +32,106 @@ static void remove_file(const WCHAR *path)
     }
 }
 
+static void test_security(HKEY root, HKEY child)
+{
+    SECURITY_INFORMATION info = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    PSECURITY_DESCRIPTOR first = NULL, second = NULL;
+    WCHAR *first_text = NULL, *second_text = NULL;
+    DWORD first_size = 0, second_size = 0;
+    LONG ret;
+
+    check("security_root_size", RegGetKeySecurity(root, info, NULL, &first_size), ERROR_INSUFFICIENT_BUFFER);
+    check("security_child_size", RegGetKeySecurity(child, info, NULL, &second_size), ERROR_INSUFFICIENT_BUFFER);
+    if (!first_size || !second_size) return;
+    first = malloc(first_size);
+    second = malloc(second_size);
+    if (!first || !second) { check("security_allocate", 1, 0); goto done; }
+    ret = RegGetKeySecurity(root, info, first, &first_size);
+    check("security_root_read", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    ret = RegGetKeySecurity(child, info, second, &second_size);
+    check("security_child_read", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    ret = ConvertSecurityDescriptorToStringSecurityDescriptorW(first, SDDL_REVISION_1, info, &first_text, NULL);
+    check("security_root_text", ret, TRUE);
+    if (!ret) goto done;
+    ret = ConvertSecurityDescriptorToStringSecurityDescriptorW(second, SDDL_REVISION_1, info, &second_text, NULL);
+    check("security_child_text", ret, TRUE);
+    if (!ret) goto done;
+    check("security_matches", !lstrcmpW(first_text, second_text), TRUE);
+    check("security_root_change", RegSetKeySecurity(root, DACL_SECURITY_INFORMATION, first), ERROR_ACCESS_DENIED);
+    check("security_child_change", RegSetKeySecurity(child, DACL_SECURITY_INFORMATION, second), ERROR_ACCESS_DENIED);
+done:
+    LocalFree(first_text);
+    LocalFree(second_text);
+    free(first);
+    free(second);
+}
+
+static LONG run_child(const WCHAR *path, DWORD options, DWORD expected)
+{
+    WCHAR executable[MAX_PATH], command[2 * MAX_PATH + 80];
+    STARTUPINFOW startup = {0};
+    PROCESS_INFORMATION process = {0};
+    DWORD length, result;
+
+    length = GetModuleFileNameW(NULL, executable, MAX_PATH);
+    if (!length || length >= MAX_PATH) return ERROR_INVALID_NAME;
+    swprintf(command, sizeof(command) / sizeof(*command), L"\"%ls\" --child \"%ls\" %lu %lu",
+             executable, path, options, expected);
+    startup.cb = sizeof(startup);
+    if (!CreateProcessW(executable, command, NULL, NULL, FALSE, CREATE_NO_WINDOW,
+                        NULL, NULL, &startup, &process)) return GetLastError();
+    CloseHandle(process.hThread);
+    result = WaitForSingleObject(process.hProcess, 20000);
+    if (result != WAIT_OBJECT_0)
+    {
+        TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, INFINITE);
+        CloseHandle(process.hProcess);
+        return ERROR_TIMEOUT;
+    }
+    if (!GetExitCodeProcess(process.hProcess, &result)) result = GetLastError();
+    CloseHandle(process.hProcess);
+    return result;
+}
+
+static int child_access(const WCHAR *path, DWORD options, DWORD expected)
+{
+    HKEY root = NULL;
+    DWORD value = 12345;
+    LONG ret = RegLoadAppKeyW(path, &root, KEY_ALL_ACCESS, options, 0);
+
+    if (ret != (LONG)expected) return 1;
+    if (ret) return 0;
+    ret = RegSetValueExW(root, L"CrossProcess", 0, REG_DWORD, (const BYTE *)&value, sizeof(value));
+    if (RegCloseKey(root)) return 1;
+    return ret ? 1 : 0;
+}
+
+static void test_processes(const WCHAR *path)
+{
+    HKEY root = NULL;
+    DWORD value = 0, size = sizeof(value), type = 0;
+    LONG ret;
+
+    ret = RegLoadAppKeyW(path, &root, KEY_ALL_ACCESS, REG_PROCESS_APPKEY, 0);
+    check("process_private_load", ret, ERROR_SUCCESS);
+    if (ret) return;
+    check("process_private_child", run_child(path, 0, ERROR_SHARING_VIOLATION), ERROR_SUCCESS);
+    check("process_private_close", RegCloseKey(root), ERROR_SUCCESS);
+    root = NULL;
+    ret = RegLoadAppKeyW(path, &root, KEY_ALL_ACCESS, 0, 0);
+    check("process_shared_load", ret, ERROR_SUCCESS);
+    if (ret) return;
+    check("process_shared_child", run_child(path, 0, ERROR_SUCCESS), ERROR_SUCCESS);
+    check("process_shared_query", RegQueryValueExW(root, L"CrossProcess", NULL, &type,
+          (BYTE *)&value, &size), ERROR_SUCCESS);
+    check("process_shared_type", type, REG_DWORD);
+    check("process_shared_value", value, 12345);
+    check("process_shared_close", RegCloseKey(root), ERROR_SUCCESS);
+}
+
 static void test_lifetime(const WCHAR *path)
 {
     HKEY root = NULL, child = NULL, second = NULL, reader = NULL;
@@ -43,6 +144,7 @@ static void test_lifetime(const WCHAR *path)
     ret = RegOpenKeyExW(root, L"Fixture\\Child", 0, KEY_ALL_ACCESS, &child);
     check("lifetime_child", ret, ERROR_SUCCESS);
     if (ret) goto done;
+    test_security(root, child);
     check("lifetime_close_root", RegCloseKey(root), ERROR_SUCCESS);
     root = NULL;
     check("lifetime_child_write", RegSetValueExW(child, L"Lifetime", 0, REG_DWORD,
@@ -196,6 +298,8 @@ int wmain(int argc, WCHAR **argv)
     HANDLE file;
     LONG ret;
 
+    if (argc == 5 && !lstrcmpW(argv[1], L"--child"))
+        return child_access(argv[2], wcstoul(argv[3], NULL, 0), wcstoul(argv[4], NULL, 0));
     if ((argc != 2 && argc != 3) || lstrlenW(argv[1]) > MAX_PATH - 40) return 2;
     swprintf(path, MAX_PATH, L"%ls\\application.dat", argv[1]);
     swprintf(invalid, MAX_PATH, L"%ls\\invalid.dat", argv[1]);
@@ -296,6 +400,7 @@ close:
     if (root) check("final_close_root", RegCloseKey(root), ERROR_SUCCESS);
     root = NULL;
     test_lifetime(path);
+    test_processes(path);
     check("reserved", RegLoadAppKeyW(path, &root, KEY_READ, 0, 1), ERROR_INVALID_PARAMETER);
     check("null_file", RegLoadAppKeyW(NULL, &root, KEY_READ, 0, 0), ERROR_INVALID_PARAMETER);
     ret = RegLoadAppKeyW(missing, &root, KEY_READ, 0, 0);
