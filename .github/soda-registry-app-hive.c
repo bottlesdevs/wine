@@ -128,6 +128,9 @@ static void test_custom_security(HKEY root)
             check("same_descriptor_close", RegCloseKey(child), ERROR_SUCCESS);
             check("same_descriptor_delete", RegDeleteKeyW(root, L"SameDescriptor"), ERROR_SUCCESS);
         }
+        ret = RegCreateKeyExW(root, L"Fixture\\Child", 0, NULL, 0, KEY_ALL_ACCESS, &attributes, &child, NULL);
+        printf("{\"case\":\"existing_descriptor_create\",\"result\":%ld}\n", ret);
+        if (!ret) check("existing_descriptor_close", RegCloseKey(child), ERROR_SUCCESS);
     }
     free(attributes.lpSecurityDescriptor);
 }
