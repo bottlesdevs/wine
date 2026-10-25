@@ -727,8 +727,8 @@ new file mode 100644
 +    *log_size = 0;
 +    if (!hive_header_valid( bytes, size, 0 )) return EINVAL;
 +    bins = read_u32( bytes + 40 );
-+    if (size < HIVE_HEADER || bins > size - HIVE_HEADER || bins > UINT32_MAX - 1023) return EINVAL;
-+    entry_size = ((size_t)bins + 48 + 511) & ~(size_t)511;
++    if (size < HIVE_HEADER || bins > size - HIVE_HEADER || bins > UINT32_MAX - 8191) return EINVAL;
++    entry_size = (((size_t)bins + 48 + 512 + 4095) & ~(size_t)4095) - 512;
 +    if (!(output = calloc( 1, 512 + entry_size ))) return ENOMEM;
 +    memcpy( output, bytes, 512 );
 +    write_u32( output + 28, 6 );
