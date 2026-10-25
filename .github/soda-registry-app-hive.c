@@ -1,8 +1,12 @@
 #define _WIN32_WINNT 0x0601
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#ifdef REGISTRY_HIVE_CODEC
+#include "registry_hive.h"
+#endif
 
 static unsigned int checks, failures;
 
@@ -26,6 +30,82 @@ static void remove_file(const WCHAR *path)
         check("cleanup_log", removed || GetLastError() == ERROR_FILE_NOT_FOUND ? 0 : GetLastError(), 0);
     }
 }
+
+#ifdef REGISTRY_HIVE_CODEC
+static void test_codec(const WCHAR *path, const WCHAR *directory)
+{
+    static const WCHAR text[] = L"application hive fixture";
+    static const BYTE binary[] = {0x00, 0x01, 0x7f, 0x80, 0xff};
+    WCHAR rewritten[MAX_PATH], value[64];
+    struct reg_hive_key *tree = NULL;
+    HKEY root = NULL, child = NULL;
+    HANDLE input, output;
+    LARGE_INTEGER length;
+    DWORD size, transferred, number = 0, type;
+    unsigned char *data = NULL;
+    void *encoded = NULL;
+    size_t encoded_size = 0;
+    int ret;
+
+    swprintf(rewritten, MAX_PATH, L"%ls\\codec.dat", directory);
+    input = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    check("codec_input", input == INVALID_HANDLE_VALUE ? GetLastError() : 0, 0);
+    if (input == INVALID_HANDLE_VALUE) return;
+    if (!GetFileSizeEx(input, &length) || length.QuadPart <= 0 || length.QuadPart > 32*1024*1024)
+    {
+        CloseHandle(input);
+        check("codec_input_size", 1, 0);
+        return;
+    }
+    size = (DWORD)length.QuadPart;
+    data = malloc(size);
+    if (!data) { CloseHandle(input); check("codec_allocate", 1, 0); return; }
+    ret = ReadFile(input, data, size, &transferred, NULL) && transferred == size;
+    CloseHandle(input);
+    check("codec_read", ret, TRUE);
+    if (!ret) goto done;
+    ret = reg_hive_decode(data, size, &tree);
+    check("codec_decode", ret, 0);
+    if (ret) goto done;
+    ret = reg_hive_encode(tree, &encoded, &encoded_size);
+    check("codec_encode", ret, 0);
+    if (ret || encoded_size > MAXDWORD) goto done;
+    output = CreateFileW(rewritten, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
+    check("codec_output", output == INVALID_HANDLE_VALUE ? GetLastError() : 0, 0);
+    if (output == INVALID_HANDLE_VALUE) goto done;
+    ret = WriteFile(output, encoded, (DWORD)encoded_size, &transferred, NULL) && transferred == encoded_size;
+    CloseHandle(output);
+    check("codec_write", ret, TRUE);
+    if (!ret) goto remove;
+    ret = RegLoadAppKeyW(rewritten, &root, KEY_READ, REG_PROCESS_APPKEY, 0);
+    check("codec_native_load", ret, ERROR_SUCCESS);
+    if (ret) goto remove;
+    ret = RegOpenKeyExW(root, L"Fixture\\Child", 0, KEY_READ, &child);
+    check("codec_native_subkey", ret, ERROR_SUCCESS);
+    if (ret) goto close;
+    size = sizeof(number);
+    ret = RegQueryValueExW(child, L"Number", NULL, &type, (BYTE *)&number, &size);
+    check("codec_native_number", ret, ERROR_SUCCESS);
+    check("codec_number_value", !ret && type == REG_DWORD && size == sizeof(number) && number == 0x12345678, TRUE);
+    size = sizeof(value);
+    ret = RegQueryValueExW(child, L"Text", NULL, &type, (BYTE *)value, &size);
+    check("codec_native_text", ret, ERROR_SUCCESS);
+    check("codec_text_value", !ret && type == REG_SZ && size == sizeof(text) && !memcmp(value, text, sizeof(text)), TRUE);
+    size = sizeof(value);
+    ret = RegQueryValueExW(child, L"Binary", NULL, &type, (BYTE *)value, &size);
+    check("codec_native_binary", ret, ERROR_SUCCESS);
+    check("codec_binary_value", !ret && type == REG_BINARY && size == sizeof(binary) && !memcmp(value, binary, sizeof(binary)), TRUE);
+    check("codec_close_child", RegCloseKey(child), ERROR_SUCCESS);
+close:
+    check("codec_close_root", RegCloseKey(root), ERROR_SUCCESS);
+remove:
+    remove_file(rewritten);
+done:
+    reg_hive_free(tree);
+    free(encoded);
+    free(data);
+}
+#endif
 
 int wmain(int argc, WCHAR **argv)
 {
@@ -90,6 +170,9 @@ int wmain(int argc, WCHAR **argv)
     root = NULL;
     if (argc == 3)
         check("snapshot", CopyFileW(path, argv[2], TRUE) ? 0 : GetLastError(), ERROR_SUCCESS);
+#ifdef REGISTRY_HIVE_CODEC
+    test_codec(path, argv[1]);
+#endif
 
     ret = RegLoadAppKeyW(path, &root, KEY_READ, REG_PROCESS_APPKEY, 0);
     check("reopen", ret, ERROR_SUCCESS);

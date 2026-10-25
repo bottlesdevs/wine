@@ -143,11 +143,17 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or !$visualStudio) { throw 'Visual C++ tools not found' }
           $vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvarsall.bat'
           $source = Join-Path $env:GITHUB_WORKSPACE '.github/soda-registry-app-hive.c'
+          $patch = Join-Path $env:GITHUB_WORKSPACE 'wine-tkg-userpatches/registry-hive-codec.mypatch'
+          & git -C $work apply --include=server/registry_hive.c --include=server/registry_hive.h $patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $codec = Join-Path $work 'server/registry_hive.c'
+          $includes = Join-Path $work 'server'
           $failed = $false
           foreach ($bits in @(64, 32)) {
             $target = if ($bits -eq 64) { 'amd64' } else { 'x86' }
             $exe = Join-Path $work "registry$bits.exe"
             $obj = Join-Path $work "registry$bits.obj"
+            $codecObject = Join-Path $work "registry-hive$bits.obj"
             $script = Join-Path $work "build$bits.cmd"
             $fixtures = Join-Path $work "fixtures$bits"
             New-Item -ItemType Directory -Path $fixtures | Out-Null
@@ -155,7 +161,9 @@ jobs:
               '@echo off',
               "call `"$vcvars`" $target",
               'if errorlevel 1 exit /b %errorlevel%',
-              "cl /nologo /W4 /WX /O2 /TC `"$source`" /Fe:`"$exe`" /Fo:`"$obj`" /link advapi32.lib",
+              "cl /nologo /W4 /WX /O2 /TC /c `"$codec`" /I`"$includes`" /Fo:`"$codecObject`"",
+              'if errorlevel 1 exit /b %errorlevel%',
+              "cl /nologo /W4 /WX /O2 /TC /DREGISTRY_HIVE_CODEC /I`"$includes`" `"$source`" /Fe:`"$exe`" /Fo:`"$obj`" /link advapi32.lib `"$codecObject`"",
               'exit /b %errorlevel%'
             ) | Set-Content -Encoding ascii $script
             & cmd.exe /d /c $script
