@@ -1177,6 +1177,11 @@ jobs:
             "$runner_dir/bin/wine" "$work/headers$bits.exe" http://127.0.0.1:9284/fixture \
               | tr -d '\r' | tee "$work/headers$bits.log"
             grep -Fx 'HTTP_HEADER_ABI_RESULT checks=111 failures=0' "$work/headers$bits.log"
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-http-media-reference.c" \
+              -O2 -Wall -Wextra -Werror -lruntimeobject -o "$work/media$bits.exe"
+            "$runner_dir/bin/wine" "$work/media$bits.exe" > "$work/media$bits.jsonl"
+            python3 "$GITHUB_WORKSPACE/.github/soda-http-media-compare.py" \
+              "$GITHUB_WORKSPACE/.github/soda-http-media-reference.jsonl" "$work/media$bits.jsonl"
           done
 
       - name: verify Direct2D dashed strokes
@@ -1939,6 +1944,9 @@ jobs:
               -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
               -ld2d1 -lwindowscodecs -lole32 -luuid \
               -o "$RUNNER_TEMP/soda-office-winrt/dashes$bits.exe"
+            "$compiler" .github/soda-http-media-reference.c \
+              -O2 -Wall -Wextra -Werror -lruntimeobject \
+              -o "$RUNNER_TEMP/soda-office-winrt/http-media$bits.exe"
             "$compiler" .github/soda-http-headers-smoke.c \
               -I"$wine_headers" -D__WINESRC__ \
               -municode -O2 -Wall -Wextra -Werror -lruntimeobject \
@@ -2020,6 +2028,8 @@ jobs:
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/http-headers$arch.exe" http://127.0.0.1:9284/fixture \
               | tr -d '\r' | tee "$http_dir/headers$arch.log"
             grep -Fx 'HTTP_HEADER_ABI_RESULT checks=111 failures=0' "$http_dir/headers$arch.log"
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/http-media$arch.exe" > "$http_dir/media$arch.jsonl"
+            python3 .github/soda-http-media-compare.py .github/soda-http-media-reference.jsonl "$http_dir/media$arch.jsonl"
             msi_dir="$RUNNER_TEMP/soda-office-winrt/msi-components-$arch"
             mkdir -p "$msi_dir/root/Integration" "$msi_dir/root/Office16"
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/msi-components$arch.exe" "Z:$msi_dir" \

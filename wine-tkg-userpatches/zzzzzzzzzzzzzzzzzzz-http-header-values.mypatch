@@ -1,0 +1,1531 @@
+diff --git a/include/windows.web.http.idl b/include/windows.web.http.idl
+--- a/include/windows.web.http.idl
++++ b/include/windows.web.http.idl
+@@ -676,3 +676,81 @@
+         [default] interface Windows.Web.Http.Filters.IHttpCacheControl;
+     }
+ }
++
++namespace Windows.Web.Http.Headers
++{
++    interface IHttpMediaTypeHeaderValue;
++    interface IHttpNameValueHeaderValue;
++    runtimeclass HttpMediaTypeHeaderValue;
++    runtimeclass HttpNameValueHeaderValue;
++    declare {
++        interface Windows.Foundation.Collections.IIterator<Windows.Web.Http.Headers.HttpNameValueHeaderValue *>;
++        interface Windows.Foundation.Collections.IIterable<Windows.Web.Http.Headers.HttpNameValueHeaderValue *>;
++        interface Windows.Foundation.Collections.IVectorView<Windows.Web.Http.Headers.HttpNameValueHeaderValue *>;
++        interface Windows.Foundation.Collections.IVector<Windows.Web.Http.Headers.HttpNameValueHeaderValue *>;
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), uuid(16b28533-e728-4fcb-bdb0-08a431a14844)]
++    interface IHttpMediaTypeHeaderValue : IInspectable
++    {
++        [propget] HRESULT CharSet([out, retval] HSTRING *value);
++        [propput] HRESULT CharSet([in] HSTRING value);
++        [propget] HRESULT MediaType([out, retval] HSTRING *value);
++        [propput] HRESULT MediaType([in] HSTRING value);
++        [propget] HRESULT Parameters([out, retval] Windows.Foundation.Collections.IVector<Windows.Web.Http.Headers.HttpNameValueHeaderValue *> **value);
++    }
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), uuid(bed747a8-cd17-42dd-9367-ab9c5b56dd7d)]
++    interface IHttpMediaTypeHeaderValueFactory : IInspectable
++    {
++        HRESULT Create([in] HSTRING mediaType, [out, retval] Windows.Web.Http.Headers.HttpMediaTypeHeaderValue **value);
++    }
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), uuid(e04d83df-1d41-4d8c-a2de-6fd2ed87399b)]
++    interface IHttpMediaTypeHeaderValueStatics : IInspectable
++    {
++        HRESULT Parse([in] HSTRING input, [out, retval] Windows.Web.Http.Headers.HttpMediaTypeHeaderValue **value);
++        HRESULT TryParse([in] HSTRING input, [out] Windows.Web.Http.Headers.HttpMediaTypeHeaderValue **value, [out, retval] boolean *parsed);
++    }
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), uuid(d8ba7463-5b9a-4d1b-93f9-aa5b44ecfddf)]
++    interface IHttpNameValueHeaderValue : IInspectable
++    {
++        [propget] HRESULT Name([out, retval] HSTRING *value);
++        [propget] HRESULT Value([out, retval] HSTRING *value);
++        [propput] HRESULT Value([in] HSTRING value);
++    }
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), uuid(770e2267-cbf8-4736-a925-93fbe10c7ca8)]
++    interface IHttpNameValueHeaderValueFactory : IInspectable
++    {
++        HRESULT CreateFromName([in] HSTRING name, [out, retval] Windows.Web.Http.Headers.HttpNameValueHeaderValue **value);
++        HRESULT CreateFromNameWithValue([in] HSTRING name, [in] HSTRING value, [out, retval] Windows.Web.Http.Headers.HttpNameValueHeaderValue **result);
++    }
++    [contract(Windows.Foundation.UniversalApiContract, 1.0), uuid(ffd4030f-1130-4152-8659-256909a9d115)]
++    interface IHttpNameValueHeaderValueStatics : IInspectable
++    {
++        HRESULT Parse([in] HSTRING input, [out, retval] Windows.Web.Http.Headers.HttpNameValueHeaderValue **value);
++        HRESULT TryParse([in] HSTRING input, [out] Windows.Web.Http.Headers.HttpNameValueHeaderValue **value, [out, retval] boolean *parsed);
++    }
++    [
++        activatable(Windows.Web.Http.Headers.IHttpMediaTypeHeaderValueFactory, Windows.Foundation.UniversalApiContract, 1.0),
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        marshaling_behavior(agile),
++        static(Windows.Web.Http.Headers.IHttpMediaTypeHeaderValueStatics, Windows.Foundation.UniversalApiContract, 1.0),
++        threading(both)
++    ]
++    runtimeclass HttpMediaTypeHeaderValue
++    {
++        [default] interface Windows.Web.Http.Headers.IHttpMediaTypeHeaderValue;
++        interface Windows.Foundation.IStringable;
++    }
++    [
++        activatable(Windows.Web.Http.Headers.IHttpNameValueHeaderValueFactory, Windows.Foundation.UniversalApiContract, 1.0),
++        contract(Windows.Foundation.UniversalApiContract, 1.0),
++        marshaling_behavior(agile),
++        static(Windows.Web.Http.Headers.IHttpNameValueHeaderValueStatics, Windows.Foundation.UniversalApiContract, 1.0),
++        threading(both)
++    ]
++    runtimeclass HttpNameValueHeaderValue
++    {
++        [default] interface Windows.Web.Http.Headers.IHttpNameValueHeaderValue;
++        interface Windows.Foundation.IStringable;
++    }
++}
+diff --git a/dlls/windows.web/Makefile.in b/dlls/windows.web/Makefile.in
+--- a/dlls/windows.web/Makefile.in
++++ b/dlls/windows.web/Makefile.in
+@@ -7,9 +7,11 @@
+ 	http_async.c \
+ 	http_client.c \
+ 	http_cookie.c \
++	http_header_values.c \
+ 	http_message.c \
+ 	json_array.c \
+ 	json_object.c \
+ 	json_value.c \
+ 	main.c \
+-	protocol_filter.c
++	protocol_filter.c \
++	vector.c
+diff --git a/dlls/windows.web/private.h b/dlls/windows.web/private.h
+--- a/dlls/windows.web/private.h
++++ b/dlls/windows.web/private.h
+@@ -65,6 +65,13 @@
+ extern IActivationFactory *json_array_factory;
+ extern IActivationFactory *json_object_factory;
+ extern IActivationFactory *json_value_factory;
++extern IActivationFactory *http_media_value_factory;
++extern IActivationFactory *http_name_value_factory;
++struct vector_iids
++{
++    const GUID *vector, *view, *iterable, *iterator;
++};
++HRESULT vector_create( const struct vector_iids *iids, void **out );
+ extern IActivationFactory *http_cookie_factory;
+ extern IActivationFactory *http_client_factory;
+ extern IActivationFactory *http_method_factory;
+diff --git a/dlls/windows.web/main.c b/dlls/windows.web/main.c
+--- a/dlls/windows.web/main.c
++++ b/dlls/windows.web/main.c
+@@ -59,6 +59,11 @@
+     if (!wcscmp( buffer, RuntimeClass_Windows_Web_Http_Filters_HttpBaseProtocolFilter ))
+         IActivationFactory_QueryInterface( protocol_filter_factory, &IID_IActivationFactory, (void **)factory );
+ 
++    if (!wcscmp( buffer, RuntimeClass_Windows_Web_Http_Headers_HttpMediaTypeHeaderValue ))
++        IActivationFactory_QueryInterface( http_media_value_factory, &IID_IActivationFactory, (void **)factory );
++    if (!wcscmp( buffer, RuntimeClass_Windows_Web_Http_Headers_HttpNameValueHeaderValue ))
++        IActivationFactory_QueryInterface( http_name_value_factory, &IID_IActivationFactory, (void **)factory );
++
+     if (*factory) return S_OK;
+     return CLASS_E_CLASSNOTAVAILABLE;
+ }
+diff --git a/dlls/windows.web/classes.idl b/dlls/windows.web/classes.idl
+--- a/dlls/windows.web/classes.idl
++++ b/dlls/windows.web/classes.idl
+@@ -50,3 +50,8 @@
+     runtimeclass HttpBaseProtocolFilter;
+     runtimeclass HttpCacheControl;
+ }
++
++namespace Windows.Web.Http.Headers {
++    runtimeclass HttpMediaTypeHeaderValue;
++    runtimeclass HttpNameValueHeaderValue;
++}
+diff --git a/dlls/windows.web/http_header_values.c b/dlls/windows.web/http_header_values.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/windows.web/http_header_values.c
+@@ -0,0 +1,701 @@
++#include "private.h"
++
++struct header_value
++{
++    union
++    {
++        IHttpMediaTypeHeaderValue media;
++        IHttpNameValueHeaderValue pair;
++    } iface;
++    IStringable stringable;
++    LONG ref;
++    BOOL media;
++    SRWLOCK lock;
++    HSTRING name, value;
++    IVector_HttpNameValueHeaderValue *parameters;
++};
++
++struct string_buffer
++{
++    WCHAR *data;
++    SIZE_T length, capacity;
++    HRESULT status;
++};
++
++static const IHttpMediaTypeHeaderValueVtbl media_vtbl;
++static const IHttpNameValueHeaderValueVtbl pair_vtbl;
++static const IStringableVtbl value_string_vtbl;
++
++static void append_span(struct string_buffer *buffer, const WCHAR *text, SIZE_T length)
++{
++    SIZE_T capacity, required;
++    WCHAR *data;
++
++    if (FAILED(buffer->status) || !length) return;
++    if (length > (SIZE_T)~(UINT32)0 - buffer->length ||
++            length > ~(SIZE_T)0 / sizeof(WCHAR) - buffer->length - 1)
++    {
++        buffer->status = E_OUTOFMEMORY;
++        return;
++    }
++    required = buffer->length + length + 1;
++    if (required > buffer->capacity)
++    {
++        capacity = required;
++        if (buffer->capacity <= ~(SIZE_T)0 / sizeof(WCHAR) / 2 && buffer->capacity * 2 > required)
++            capacity = buffer->capacity * 2;
++        if (!(data = realloc(buffer->data, capacity * sizeof(WCHAR))))
++        {
++            buffer->status = E_OUTOFMEMORY;
++            return;
++        }
++        buffer->data = data;
++        buffer->capacity = capacity;
++    }
++    memcpy(buffer->data + buffer->length, text, length * sizeof(WCHAR));
++    buffer->length += length;
++    buffer->data[buffer->length] = 0;
++}
++
++static void append_string(struct string_buffer *buffer, HSTRING value)
++{
++    UINT32 length;
++    const WCHAR *text = WindowsGetStringRawBuffer(value, &length);
++    append_span(buffer, text, length);
++}
++
++static HRESULT finish_string(struct string_buffer *buffer, HSTRING *value)
++{
++    HRESULT hr = buffer->status;
++    if (SUCCEEDED(hr))
++        hr = WindowsCreateString(buffer->data, buffer->length, value);
++    free(buffer->data);
++    return hr;
++}
++
++static BOOL token_char(WCHAR ch)
++{
++    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
++            (ch && wcschr(L"!#$%&'*+-.^_`|~", ch));
++}
++
++static const WCHAR *read_token(const WCHAR *cursor, const WCHAR *end)
++{
++    while (cursor < end && token_char(*cursor)) ++cursor;
++    return cursor;
++}
++
++static const WCHAR *skip_space(const WCHAR *cursor, const WCHAR *end)
++{
++    while (cursor < end && (*cursor == ' ' || *cursor == '\t')) ++cursor;
++    return cursor;
++}
++
++static BOOL valid_token(HSTRING value)
++{
++    UINT32 length;
++    const WCHAR *text = WindowsGetStringRawBuffer(value, &length);
++    return length && read_token(text, text + length) == text + length;
++}
++
++static BOOL valid_media(HSTRING value)
++{
++    UINT32 length;
++    const WCHAR *text = WindowsGetStringRawBuffer(value, &length), *end = text + length;
++    const WCHAR *cursor = read_token(text, end);
++    if (cursor == text || cursor == end || *cursor++ != '/') return FALSE;
++    text = cursor;
++    cursor = read_token(cursor, end);
++    return cursor != text && cursor == end;
++}
++
++static ULONG value_addref(struct header_value *impl)
++{
++    return InterlockedIncrement(&impl->ref);
++}
++
++static ULONG value_release(struct header_value *impl)
++{
++    ULONG ref = InterlockedDecrement(&impl->ref);
++    if (!ref)
++    {
++        WindowsDeleteString(impl->name);
++        WindowsDeleteString(impl->value);
++        if (impl->parameters) IVector_HttpNameValueHeaderValue_Release(impl->parameters);
++        free(impl);
++    }
++    return ref;
++}
++
++static HRESULT value_query(struct header_value *impl, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable) ||
++            IsEqualGUID(iid, &IID_IAgileObject) ||
++            IsEqualGUID(iid, impl->media ? &IID_IHttpMediaTypeHeaderValue : &IID_IHttpNameValueHeaderValue))
++        *out = &impl->iface;
++    else if (IsEqualGUID(iid, &IID_IStringable)) *out = &impl->stringable;
++    else return E_NOINTERFACE;
++    value_addref(impl);
++    return S_OK;
++}
++
++static HRESULT value_get_iids(struct header_value *impl, ULONG *count, IID **iids)
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = NULL;
++    if (!(*iids = CoTaskMemAlloc(2 * sizeof(**iids)))) return E_OUTOFMEMORY;
++    (*iids)[0] = impl->media ? IID_IHttpMediaTypeHeaderValue : IID_IHttpNameValueHeaderValue;
++    (*iids)[1] = IID_IStringable;
++    *count = 2;
++    return S_OK;
++}
++
++static HRESULT value_get_name(struct header_value *impl, HSTRING *name)
++{
++    const WCHAR *text = impl->media ? RuntimeClass_Windows_Web_Http_Headers_HttpMediaTypeHeaderValue
++            : RuntimeClass_Windows_Web_Http_Headers_HttpNameValueHeaderValue;
++    if (!name) return E_POINTER;
++    return WindowsCreateString(text, wcslen(text), name);
++}
++
++#define VALUE_BASE(prefix, type, field) \
++    static inline struct header_value *value_from_##prefix(type *iface) \
++    { return CONTAINING_RECORD(iface, struct header_value, field); } \
++    static HRESULT WINAPI prefix##_QueryInterface(type *iface, REFIID iid, void **out) \
++    { return value_query(value_from_##prefix(iface), iid, out); } \
++    static ULONG WINAPI prefix##_AddRef(type *iface) \
++    { return value_addref(value_from_##prefix(iface)); } \
++    static ULONG WINAPI prefix##_Release(type *iface) \
++    { return value_release(value_from_##prefix(iface)); } \
++    static HRESULT WINAPI prefix##_GetIids(type *iface, ULONG *count, IID **iids) \
++    { return value_get_iids(value_from_##prefix(iface), count, iids); } \
++    static HRESULT WINAPI prefix##_GetRuntimeClassName(type *iface, HSTRING *name) \
++    { return value_get_name(value_from_##prefix(iface), name); } \
++    static HRESULT WINAPI prefix##_GetTrustLevel(type *iface, TrustLevel *level) \
++    { if (!level) return E_POINTER; *level = BaseTrust; return S_OK; }
++
++VALUE_BASE(media, IHttpMediaTypeHeaderValue, iface.media)
++VALUE_BASE(pair, IHttpNameValueHeaderValue, iface.pair)
++VALUE_BASE(value_string, IStringable, stringable)
++
++static HRESULT value_create(BOOL media, HSTRING name, HSTRING value, struct header_value **out)
++{
++    static const struct vector_iids iids = {&IID_IVector_HttpNameValueHeaderValue,
++            &IID_IVectorView_HttpNameValueHeaderValue, &IID_IIterable_HttpNameValueHeaderValue,
++            &IID_IIterator_HttpNameValueHeaderValue};
++    struct header_value *impl;
++    HRESULT hr;
++
++    *out = NULL;
++    if (!media && !valid_token(name)) return E_INVALIDARG;
++    if (!(impl = calloc(1, sizeof(*impl)))) return E_OUTOFMEMORY;
++    if (media) impl->iface.media.lpVtbl = &media_vtbl;
++    else impl->iface.pair.lpVtbl = &pair_vtbl;
++    impl->stringable.lpVtbl = &value_string_vtbl;
++    impl->media = media;
++    impl->ref = 1;
++    hr = WindowsDuplicateString(name, &impl->name);
++    if (SUCCEEDED(hr)) hr = WindowsDuplicateString(value, &impl->value);
++    if (SUCCEEDED(hr) && media) hr = vector_create(&iids, (void **)&impl->parameters);
++    if (FAILED(hr))
++    {
++        value_release(impl);
++        return hr;
++    }
++    *out = impl;
++    return S_OK;
++}
++
++static HRESULT get_value_string(struct header_value *impl, BOOL name, HSTRING *value)
++{
++    HRESULT hr;
++    if (!value) return E_POINTER;
++    *value = NULL;
++    AcquireSRWLockShared(&impl->lock);
++    hr = WindowsDuplicateString(name ? impl->name : impl->value, value);
++    ReleaseSRWLockShared(&impl->lock);
++    return hr;
++}
++
++static HRESULT set_value_string(struct header_value *impl, HSTRING value)
++{
++    HSTRING copy, old;
++    HRESULT hr;
++    if (FAILED(hr = WindowsDuplicateString(value, &copy))) return hr;
++    AcquireSRWLockExclusive(&impl->lock);
++    old = impl->value;
++    impl->value = copy;
++    ReleaseSRWLockExclusive(&impl->lock);
++    WindowsDeleteString(old);
++    return S_OK;
++}
++
++static HRESULT WINAPI pair_get_Name(IHttpNameValueHeaderValue *iface, HSTRING *value)
++{
++    return get_value_string(value_from_pair(iface), TRUE, value);
++}
++
++static HRESULT WINAPI pair_get_Value(IHttpNameValueHeaderValue *iface, HSTRING *value)
++{
++    return get_value_string(value_from_pair(iface), FALSE, value);
++}
++
++static HRESULT WINAPI pair_put_Value(IHttpNameValueHeaderValue *iface, HSTRING value)
++{
++    return set_value_string(value_from_pair(iface), value);
++}
++
++static HRESULT WINAPI media_get_MediaType(IHttpMediaTypeHeaderValue *iface, HSTRING *value)
++{
++    return get_value_string(value_from_media(iface), FALSE, value);
++}
++
++static HRESULT WINAPI media_put_MediaType(IHttpMediaTypeHeaderValue *iface, HSTRING value)
++{
++    if (!valid_media(value)) return E_INVALIDARG;
++    return set_value_string(value_from_media(iface), value);
++}
++
++static HRESULT WINAPI media_get_Parameters(IHttpMediaTypeHeaderValue *iface, IVector_HttpNameValueHeaderValue **value)
++{
++    if (!value) return E_POINTER;
++    *value = value_from_media(iface)->parameters;
++    IVector_HttpNameValueHeaderValue_AddRef(*value);
++    return S_OK;
++}
++
++static HRESULT find_charset(struct header_value *impl, UINT32 *index, IHttpNameValueHeaderValue **value)
++{
++    UINT32 count, i;
++    HSTRING name;
++    HRESULT hr;
++
++    *value = NULL;
++    if (FAILED(hr = IVector_HttpNameValueHeaderValue_get_Size(impl->parameters, &count))) return hr;
++    for (i = 0; i < count; ++i)
++    {
++        if (FAILED(hr = IVector_HttpNameValueHeaderValue_GetAt(impl->parameters, i, value))) return hr;
++        hr = IHttpNameValueHeaderValue_get_Name(*value, &name);
++        if (SUCCEEDED(hr))
++        {
++            BOOL found = !_wcsicmp(WindowsGetStringRawBuffer(name, NULL), L"charset");
++            WindowsDeleteString(name);
++            if (found)
++            {
++                *index = i;
++                return S_OK;
++            }
++        }
++        IHttpNameValueHeaderValue_Release(*value);
++        *value = NULL;
++        if (FAILED(hr)) return hr;
++    }
++    return S_FALSE;
++}
++
++static HRESULT WINAPI media_get_CharSet(IHttpMediaTypeHeaderValue *iface, HSTRING *value)
++{
++    IHttpNameValueHeaderValue *parameter;
++    UINT32 index;
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    hr = find_charset(value_from_media(iface), &index, &parameter);
++    if (hr == S_FALSE) return S_OK;
++    if (FAILED(hr)) return hr;
++    hr = IHttpNameValueHeaderValue_get_Value(parameter, value);
++    IHttpNameValueHeaderValue_Release(parameter);
++    return hr;
++}
++
++static HRESULT WINAPI media_put_CharSet(IHttpMediaTypeHeaderValue *iface, HSTRING value)
++{
++    struct header_value *impl = value_from_media(iface), *created;
++    IHttpNameValueHeaderValue *parameter;
++    HSTRING_HEADER header;
++    HSTRING name;
++    UINT32 index;
++    HRESULT hr;
++
++    hr = find_charset(impl, &index, &parameter);
++    if (FAILED(hr)) return hr;
++    if (parameter)
++    {
++        if (WindowsGetStringLen(value)) hr = IHttpNameValueHeaderValue_put_Value(parameter, value);
++        else hr = IVector_HttpNameValueHeaderValue_RemoveAt(impl->parameters, index);
++        IHttpNameValueHeaderValue_Release(parameter);
++        return hr;
++    }
++    if (!WindowsGetStringLen(value)) return S_OK;
++    WindowsCreateStringReference(L"charset", 7, &header, &name);
++    if (FAILED(hr = value_create(FALSE, name, value, &created))) return hr;
++    hr = IVector_HttpNameValueHeaderValue_Append(impl->parameters, &created->iface.pair);
++    value_release(created);
++    return hr;
++}
++
++static void format_pair(struct string_buffer *buffer, HSTRING name, HSTRING value)
++{
++    static const WCHAR hex[] = L"0123456789ABCDEF";
++    const WCHAR *text, *key;
++    UINT32 length, name_length, i;
++    BOOL quoted;
++
++    key = WindowsGetStringRawBuffer(name, &name_length);
++    append_span(buffer, key, name_length);
++    text = WindowsGetStringRawBuffer(value, &length);
++    if (!length) return;
++    append_span(buffer, L"=", 1);
++    if (name_length && key[name_length - 1] == '*')
++    {
++        int bytes;
++        char *utf8;
++        if (length > INT_MAX) { buffer->status = E_OUTOFMEMORY; return; }
++        bytes = WideCharToMultiByte(CP_UTF8, 0, text, length, NULL, 0, NULL, NULL);
++        if (!bytes || !(utf8 = malloc(bytes))) { buffer->status = E_OUTOFMEMORY; return; }
++        WideCharToMultiByte(CP_UTF8, 0, text, length, utf8, bytes, NULL, NULL);
++        append_span(buffer, L"UTF-8''", 7);
++        for (i = 0; i < (UINT32)bytes; ++i)
++        {
++            unsigned char ch = utf8[i];
++            if (token_char(ch) && ch != '*' && ch != '\'' && ch != '%')
++            {
++                WCHAR wide = ch;
++                append_span(buffer, &wide, 1);
++            }
++            else
++            {
++                WCHAR escaped[] = {'%', hex[ch >> 4], hex[ch & 15]};
++                append_span(buffer, escaped, 3);
++            }
++        }
++        free(utf8);
++        return;
++    }
++    quoted = !wcscmp(key, L"name") || !wcscmp(key, L"filename");
++    for (i = 0; i < length; ++i) if (!token_char(text[i])) quoted = TRUE;
++    if (quoted) append_span(buffer, L"\"", 1);
++    for (i = 0; i < length; ++i)
++    {
++        if (quoted && (text[i] == '\\' || text[i] == '"' || text[i] < 32 || text[i] == 127))
++            append_span(buffer, L"\\", 1);
++        append_span(buffer, text + i, 1);
++    }
++    if (quoted) append_span(buffer, L"\"", 1);
++}
++
++static HRESULT WINAPI value_string_ToString(IStringable *iface, HSTRING *out)
++{
++    struct header_value *impl = value_from_value_string(iface);
++    struct string_buffer buffer = {0};
++    IVectorView_HttpNameValueHeaderValue *view = NULL;
++    IHttpNameValueHeaderValue *parameter;
++    IStringable *stringable;
++    HSTRING name = NULL, value = NULL;
++    UINT32 count = 0, i;
++    HRESULT hr;
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    AcquireSRWLockShared(&impl->lock);
++    hr = WindowsDuplicateString(impl->name, &name);
++    if (SUCCEEDED(hr)) hr = WindowsDuplicateString(impl->value, &value);
++    ReleaseSRWLockShared(&impl->lock);
++    if (FAILED(hr)) { WindowsDeleteString(name); return hr; }
++    if (!impl->media) format_pair(&buffer, name, value);
++    else
++    {
++        append_string(&buffer, value);
++        hr = IVector_HttpNameValueHeaderValue_GetView(impl->parameters, &view);
++        if (SUCCEEDED(hr)) hr = IVectorView_HttpNameValueHeaderValue_get_Size(view, &count);
++        for (i = 0; SUCCEEDED(hr) && i < count; ++i)
++        {
++            HSTRING item = NULL;
++            hr = IVectorView_HttpNameValueHeaderValue_GetAt(view, i, &parameter);
++            if (FAILED(hr)) break;
++            hr = IHttpNameValueHeaderValue_QueryInterface(parameter, &IID_IStringable, (void **)&stringable);
++            IHttpNameValueHeaderValue_Release(parameter);
++            if (FAILED(hr)) break;
++            hr = IStringable_ToString(stringable, &item);
++            IStringable_Release(stringable);
++            if (SUCCEEDED(hr))
++            {
++                append_span(&buffer, L"; ", 2);
++                append_string(&buffer, item);
++            }
++            WindowsDeleteString(item);
++        }
++        if (view) IVectorView_HttpNameValueHeaderValue_Release(view);
++    }
++    WindowsDeleteString(name);
++    WindowsDeleteString(value);
++    if (FAILED(hr)) buffer.status = hr;
++    return finish_string(&buffer, out);
++}
++
++static const IHttpMediaTypeHeaderValueVtbl media_vtbl = {
++    media_QueryInterface, media_AddRef, media_Release, media_GetIids,
++    media_GetRuntimeClassName, media_GetTrustLevel, media_get_CharSet, media_put_CharSet,
++    media_get_MediaType, media_put_MediaType, media_get_Parameters
++};
++static const IHttpNameValueHeaderValueVtbl pair_vtbl = {
++    pair_QueryInterface, pair_AddRef, pair_Release, pair_GetIids,
++    pair_GetRuntimeClassName, pair_GetTrustLevel, pair_get_Name, pair_get_Value, pair_put_Value
++};
++static const IStringableVtbl value_string_vtbl = {
++    value_string_QueryInterface, value_string_AddRef, value_string_Release, value_string_GetIids,
++    value_string_GetRuntimeClassName, value_string_GetTrustLevel, value_string_ToString
++};
++
++static HRESULT parse_parameter(const WCHAR **cursor, const WCHAR *end, BOOL require_value,
++        struct header_value **out)
++{
++    const WCHAR *name, *name_end, *position = skip_space(*cursor, end), *start;
++    struct string_buffer buffer = {0};
++    HSTRING key = NULL, value = NULL;
++    HRESULT hr;
++
++    *out = NULL;
++    name = position;
++    name_end = read_token(position, end);
++    if (name_end == name) return E_INVALIDARG;
++    position = skip_space(name_end, end);
++    if (position < end && *position == '=')
++    {
++        position = skip_space(position + 1, end);
++        if (position == end) return E_INVALIDARG;
++        if (*position == '"')
++        {
++            ++position;
++            while (position < end && *position != '"')
++            {
++                WCHAR ch = *position++;
++                if (ch == '\\')
++                {
++                    if (position == end) { free(buffer.data); return E_INVALIDARG; }
++                    ch = *position++;
++                }
++                if (ch < 32 && ch != '\t') { free(buffer.data); return E_INVALIDARG; }
++                append_span(&buffer, &ch, 1);
++            }
++            if (position == end) { free(buffer.data); return E_INVALIDARG; }
++            ++position;
++        }
++        else
++        {
++            start = position;
++            position = read_token(position, end);
++            if (position == start) return E_INVALIDARG;
++            append_span(&buffer, start, position - start);
++        }
++    }
++    else if (require_value) return E_INVALIDARG;
++    hr = finish_string(&buffer, &value);
++    if (SUCCEEDED(hr)) hr = WindowsCreateString(name, name_end - name, &key);
++    if (SUCCEEDED(hr)) hr = value_create(FALSE, key, value, out);
++    WindowsDeleteString(key);
++    WindowsDeleteString(value);
++    *cursor = skip_space(position, end);
++    return hr;
++}
++
++static HRESULT parse_header(BOOL media, HSTRING input, struct header_value **out)
++{
++    const WCHAR *text, *end, *cursor, *type, *type_end, *subtype, *subtype_end;
++    struct header_value *impl = NULL, *parameter;
++    struct string_buffer buffer = {0};
++    HSTRING value = NULL;
++    UINT32 length;
++    HRESULT hr;
++
++    *out = NULL;
++    text = WindowsGetStringRawBuffer(input, &length);
++    end = text + length;
++    cursor = skip_space(text, end);
++    if (!media)
++    {
++        hr = parse_parameter(&cursor, end, FALSE, &impl);
++        if (SUCCEEDED(hr) && cursor != end) hr = E_INVALIDARG;
++    }
++    else
++    {
++        type = cursor;
++        type_end = read_token(cursor, end);
++        cursor = skip_space(type_end, end);
++        if (type_end == type || cursor == end || *cursor++ != '/') return E_INVALIDARG;
++        subtype = skip_space(cursor, end);
++        subtype_end = read_token(subtype, end);
++        if (subtype_end == subtype) return E_INVALIDARG;
++        append_span(&buffer, type, type_end - type);
++        append_span(&buffer, L"/", 1);
++        append_span(&buffer, subtype, subtype_end - subtype);
++        if (FAILED(hr = finish_string(&buffer, &value))) return hr;
++        hr = value_create(TRUE, NULL, value, &impl);
++        WindowsDeleteString(value);
++        cursor = skip_space(subtype_end, end);
++        while (SUCCEEDED(hr) && cursor < end)
++        {
++            if (*cursor++ != ';') { hr = E_INVALIDARG; break; }
++            hr = parse_parameter(&cursor, end, TRUE, &parameter);
++            if (FAILED(hr)) break;
++            hr = IVector_HttpNameValueHeaderValue_Append(impl->parameters, &parameter->iface.pair);
++            value_release(parameter);
++        }
++    }
++    if (FAILED(hr))
++    {
++        if (impl) value_release(impl);
++        return hr;
++    }
++    *out = impl;
++    return S_OK;
++}
++
++struct header_factory
++{
++    IActivationFactory activation;
++    union { IHttpMediaTypeHeaderValueFactory media; IHttpNameValueHeaderValueFactory pair; } factory;
++    union { IHttpMediaTypeHeaderValueStatics media; IHttpNameValueHeaderValueStatics pair; } statics;
++    BOOL media;
++    LONG ref;
++};
++
++static HRESULT factory_query(struct header_factory *impl, REFIID iid, void **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IInspectable) ||
++            IsEqualGUID(iid, &IID_IAgileObject) || IsEqualGUID(iid, &IID_IActivationFactory))
++        *out = &impl->activation;
++    else if (IsEqualGUID(iid, impl->media ? &IID_IHttpMediaTypeHeaderValueFactory : &IID_IHttpNameValueHeaderValueFactory))
++        *out = &impl->factory;
++    else if (IsEqualGUID(iid, impl->media ? &IID_IHttpMediaTypeHeaderValueStatics : &IID_IHttpNameValueHeaderValueStatics))
++        *out = &impl->statics;
++    else return E_NOINTERFACE;
++    InterlockedIncrement(&impl->ref);
++    return S_OK;
++}
++
++#define FACTORY_BASE(prefix, type, field) \
++    static inline struct header_factory *factory_from_##prefix(type *iface) \
++    { return CONTAINING_RECORD(iface, struct header_factory, field); } \
++    static HRESULT WINAPI prefix##_QueryInterface(type *iface, REFIID iid, void **out) \
++    { return factory_query(factory_from_##prefix(iface), iid, out); } \
++    static ULONG WINAPI prefix##_AddRef(type *iface) \
++    { return InterlockedIncrement(&factory_from_##prefix(iface)->ref); } \
++    static ULONG WINAPI prefix##_Release(type *iface) \
++    { return InterlockedDecrement(&factory_from_##prefix(iface)->ref); } \
++    static HRESULT WINAPI prefix##_GetIids(type *iface, ULONG *count, IID **iids) \
++    { \
++        struct header_factory *impl = factory_from_##prefix(iface); \
++        if (!count || !iids) return E_POINTER; \
++        *count = 0; *iids = NULL; \
++        if (!(*iids = CoTaskMemAlloc(2 * sizeof(**iids)))) return E_OUTOFMEMORY; \
++        (*iids)[0] = impl->media ? IID_IHttpMediaTypeHeaderValueFactory : IID_IHttpNameValueHeaderValueFactory; \
++        (*iids)[1] = impl->media ? IID_IHttpMediaTypeHeaderValueStatics : IID_IHttpNameValueHeaderValueStatics; \
++        *count = 2; return S_OK; \
++    } \
++    static HRESULT WINAPI prefix##_GetRuntimeClassName(type *iface, HSTRING *name) \
++    { \
++        const WCHAR *text = factory_from_##prefix(iface)->media ? RuntimeClass_Windows_Web_Http_Headers_HttpMediaTypeHeaderValue \
++                : RuntimeClass_Windows_Web_Http_Headers_HttpNameValueHeaderValue; \
++        if (!name) return E_POINTER; return WindowsCreateString(text, wcslen(text), name); \
++    } \
++    static HRESULT WINAPI prefix##_GetTrustLevel(type *iface, TrustLevel *level) \
++    { if (!level) return E_POINTER; *level = BaseTrust; return S_OK; }
++
++FACTORY_BASE(activation, IActivationFactory, activation)
++FACTORY_BASE(media_factory, IHttpMediaTypeHeaderValueFactory, factory.media)
++FACTORY_BASE(pair_factory, IHttpNameValueHeaderValueFactory, factory.pair)
++FACTORY_BASE(media_statics, IHttpMediaTypeHeaderValueStatics, statics.media)
++FACTORY_BASE(pair_statics, IHttpNameValueHeaderValueStatics, statics.pair)
++
++static HRESULT WINAPI activation_ActivateInstance(IActivationFactory *iface, IInspectable **out)
++{
++    if (!out) return E_POINTER;
++    *out = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI media_factory_Create(IHttpMediaTypeHeaderValueFactory *iface, HSTRING value,
++        IHttpMediaTypeHeaderValue **out)
++{
++    struct header_value *impl;
++    HRESULT hr;
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (SUCCEEDED(hr = value_create(TRUE, NULL, value, &impl))) *out = &impl->iface.media;
++    return hr;
++}
++
++static HRESULT WINAPI pair_factory_CreateFromNameWithValue(IHttpNameValueHeaderValueFactory *iface,
++        HSTRING name, HSTRING value, IHttpNameValueHeaderValue **out)
++{
++    struct header_value *impl;
++    HRESULT hr;
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (SUCCEEDED(hr = value_create(FALSE, name, value, &impl))) *out = &impl->iface.pair;
++    return hr;
++}
++
++static HRESULT WINAPI pair_factory_CreateFromName(IHttpNameValueHeaderValueFactory *iface,
++        HSTRING name, IHttpNameValueHeaderValue **out)
++{
++    return pair_factory_CreateFromNameWithValue(iface, name, NULL, out);
++}
++
++#define HEADER_STATICS(prefix, type, value_type, media_value, field) \
++    static HRESULT WINAPI prefix##_Parse(type *iface, HSTRING input, value_type **out) \
++    { \
++        struct header_value *impl; HRESULT hr; \
++        if (!out) return E_POINTER; *out = NULL; \
++        if (SUCCEEDED(hr = parse_header(media_value, input, &impl))) *out = &impl->iface.field; \
++        return hr; \
++    } \
++    static HRESULT WINAPI prefix##_TryParse(type *iface, HSTRING input, value_type **out, boolean *parsed) \
++    { \
++        HRESULT hr; \
++        if (!out || !parsed) return E_POINTER; *out = NULL; *parsed = FALSE; \
++        hr = prefix##_Parse(iface, input, out); \
++        if (hr == E_INVALIDARG) return S_OK; \
++        if (SUCCEEDED(hr)) *parsed = TRUE; \
++        return hr; \
++    }
++
++HEADER_STATICS(media_statics, IHttpMediaTypeHeaderValueStatics, IHttpMediaTypeHeaderValue, TRUE, media)
++HEADER_STATICS(pair_statics, IHttpNameValueHeaderValueStatics, IHttpNameValueHeaderValue, FALSE, pair)
++
++static const IActivationFactoryVtbl activation_vtbl = {
++    activation_QueryInterface, activation_AddRef, activation_Release, activation_GetIids,
++    activation_GetRuntimeClassName, activation_GetTrustLevel, activation_ActivateInstance
++};
++static const IHttpMediaTypeHeaderValueFactoryVtbl media_factory_vtbl = {
++    media_factory_QueryInterface, media_factory_AddRef, media_factory_Release, media_factory_GetIids,
++    media_factory_GetRuntimeClassName, media_factory_GetTrustLevel, media_factory_Create
++};
++static const IHttpNameValueHeaderValueFactoryVtbl pair_factory_vtbl = {
++    pair_factory_QueryInterface, pair_factory_AddRef, pair_factory_Release, pair_factory_GetIids,
++    pair_factory_GetRuntimeClassName, pair_factory_GetTrustLevel, pair_factory_CreateFromName,
++    pair_factory_CreateFromNameWithValue
++};
++static const IHttpMediaTypeHeaderValueStaticsVtbl media_statics_vtbl = {
++    media_statics_QueryInterface, media_statics_AddRef, media_statics_Release, media_statics_GetIids,
++    media_statics_GetRuntimeClassName, media_statics_GetTrustLevel, media_statics_Parse, media_statics_TryParse
++};
++static const IHttpNameValueHeaderValueStaticsVtbl pair_statics_vtbl = {
++    pair_statics_QueryInterface, pair_statics_AddRef, pair_statics_Release, pair_statics_GetIids,
++    pair_statics_GetRuntimeClassName, pair_statics_GetTrustLevel, pair_statics_Parse, pair_statics_TryParse
++};
++static struct header_factory media_factory = {
++    {&activation_vtbl}, {.media = {&media_factory_vtbl}}, {.media = {&media_statics_vtbl}}, TRUE, 1
++};
++static struct header_factory pair_factory = {
++    {&activation_vtbl}, {.pair = {&pair_factory_vtbl}}, {.pair = {&pair_statics_vtbl}}, FALSE, 1
++};
++IActivationFactory *http_media_value_factory = &media_factory.activation;
++IActivationFactory *http_name_value_factory = &pair_factory.activation;
+diff --git a/dlls/windows.web/vector.c b/dlls/windows.web/vector.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/windows.web/vector.c
+@@ -0,0 +1,675 @@
++/* WinRT collection implementation
++ *
++ * Copyright 2021 Rémi Bernon for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(combase);
++
++struct iterator
++{
++    IIterator_IInspectable IIterator_IInspectable_iface;
++    const GUID *iid;
++    LONG ref;
++
++    IVectorView_IInspectable *view;
++    UINT32 index;
++    UINT32 size;
++};
++
++static inline struct iterator *impl_from_IIterator_IInspectable( IIterator_IInspectable *iface )
++{
++    return CONTAINING_RECORD( iface, struct iterator, IIterator_IInspectable_iface );
++}
++
++static HRESULT WINAPI iterator_QueryInterface( IIterator_IInspectable *iface, REFIID iid, void **out )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) ||
++        IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) ||
++        IsEqualGUID( iid, impl->iid ))
++    {
++        IInspectable_AddRef( (*out = &impl->IIterator_IInspectable_iface) );
++        return S_OK;
++    }
++
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI iterator_AddRef( IIterator_IInspectable *iface )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++    ULONG ref = InterlockedIncrement( &impl->ref );
++    TRACE( "iface %p increasing refcount to %lu.\n", iface, ref );
++    return ref;
++}
++
++static ULONG WINAPI iterator_Release( IIterator_IInspectable *iface )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    TRACE( "iface %p decreasing refcount to %lu.\n", iface, ref );
++
++    if (!ref)
++    {
++        IVectorView_IInspectable_Release( impl->view );
++        free( impl );
++    }
++
++    return ref;
++}
++
++static HRESULT WINAPI iterator_GetIids( IIterator_IInspectable *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI iterator_GetRuntimeClassName( IIterator_IInspectable *iface, HSTRING *class_name )
++{
++    FIXME( "iface %p, class_name %p stub!\n", iface, class_name );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI iterator_GetTrustLevel( IIterator_IInspectable *iface, TrustLevel *trust_level )
++{
++    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI iterator_get_Current( IIterator_IInspectable *iface, IInspectable **value )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++    TRACE( "iface %p, value %p.\n", iface, value );
++    return IVectorView_IInspectable_GetAt( impl->view, impl->index, value );
++}
++
++static HRESULT WINAPI iterator_get_HasCurrent( IIterator_IInspectable *iface, boolean *value )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    *value = impl->index < impl->size;
++    return S_OK;
++}
++
++static HRESULT WINAPI iterator_MoveNext( IIterator_IInspectable *iface, boolean *value )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (impl->index < impl->size) impl->index++;
++    return IIterator_IInspectable_get_HasCurrent( iface, value );
++}
++
++static HRESULT WINAPI iterator_GetMany( IIterator_IInspectable *iface, UINT32 items_size,
++                                        IInspectable **items, UINT *count )
++{
++    struct iterator *impl = impl_from_IIterator_IInspectable( iface );
++    TRACE( "iface %p, items_size %u, items %p, count %p.\n", iface, items_size, items, count );
++    return IVectorView_IInspectable_GetMany( impl->view, impl->index, items_size, items, count );
++}
++
++static const IIterator_IInspectableVtbl iterator_vtbl =
++{
++    iterator_QueryInterface,
++    iterator_AddRef,
++    iterator_Release,
++    /* IInspectable methods */
++    iterator_GetIids,
++    iterator_GetRuntimeClassName,
++    iterator_GetTrustLevel,
++    /* IIterator<IInspectable*> methods */
++    iterator_get_Current,
++    iterator_get_HasCurrent,
++    iterator_MoveNext,
++    iterator_GetMany,
++};
++
++struct vector_view
++{
++    IVectorView_IInspectable IVectorView_IInspectable_iface;
++    IIterable_IInspectable IIterable_IInspectable_iface;
++    struct vector_iids iids;
++    LONG ref;
++
++    UINT32 size;
++    IInspectable *elements[1];
++};
++
++static inline struct vector_view *impl_from_IVectorView_IInspectable( IVectorView_IInspectable *iface )
++{
++    return CONTAINING_RECORD( iface, struct vector_view, IVectorView_IInspectable_iface );
++}
++
++static HRESULT WINAPI vector_view_QueryInterface( IVectorView_IInspectable *iface, REFIID iid, void **out )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) ||
++        IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) ||
++        IsEqualGUID( iid, impl->iids.view ))
++    {
++        IInspectable_AddRef( (*out = &impl->IVectorView_IInspectable_iface) );
++        return S_OK;
++    }
++
++    if (IsEqualGUID( iid, impl->iids.iterable ))
++    {
++        IInspectable_AddRef( (*out = &impl->IIterable_IInspectable_iface) );
++        return S_OK;
++    }
++
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI vector_view_AddRef( IVectorView_IInspectable *iface )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++    ULONG ref = InterlockedIncrement( &impl->ref );
++    TRACE( "iface %p increasing refcount to %lu.\n", iface, ref );
++    return ref;
++}
++
++static ULONG WINAPI vector_view_Release( IVectorView_IInspectable *iface )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++    ULONG i, ref = InterlockedDecrement( &impl->ref );
++
++    TRACE( "iface %p decreasing refcount to %lu.\n", iface, ref );
++
++    if (!ref)
++    {
++        for (i = 0; i < impl->size; ++i) IInspectable_Release( impl->elements[i] );
++        free( impl );
++    }
++
++    return ref;
++}
++
++static HRESULT WINAPI vector_view_GetIids( IVectorView_IInspectable *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_view_GetRuntimeClassName( IVectorView_IInspectable *iface, HSTRING *class_name )
++{
++    FIXME( "iface %p, class_name %p stub!\n", iface, class_name );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_view_GetTrustLevel( IVectorView_IInspectable *iface, TrustLevel *trust_level )
++{
++    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_view_GetAt( IVectorView_IInspectable *iface, UINT32 index, IInspectable **value )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++
++    TRACE( "iface %p, index %u, value %p.\n", iface, index, value );
++
++    *value = NULL;
++    if (index >= impl->size) return E_BOUNDS;
++
++    IInspectable_AddRef( (*value = impl->elements[index]) );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_view_get_Size( IVectorView_IInspectable *iface, UINT32 *value )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    *value = impl->size;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_view_IndexOf( IVectorView_IInspectable *iface, IInspectable *element,
++                                           UINT32 *index, BOOLEAN *found )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++    ULONG i;
++
++    TRACE( "iface %p, element %p, index %p, found %p.\n", iface, element, index, found );
++
++    for (i = 0; i < impl->size; ++i) if (impl->elements[i] == element) break;
++    if ((*found = (i < impl->size))) *index = i;
++    else *index = 0;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_view_GetMany( IVectorView_IInspectable *iface, UINT32 start_index,
++                                           UINT32 items_size, IInspectable **items, UINT *count )
++{
++    struct vector_view *impl = impl_from_IVectorView_IInspectable( iface );
++    UINT32 i;
++
++    TRACE( "iface %p, start_index %u, items_size %u, items %p, count %p.\n",
++           iface, start_index, items_size, items, count );
++
++    if (start_index >= impl->size) return E_BOUNDS;
++
++    for (i = start_index; i < impl->size; ++i)
++    {
++        if (i - start_index >= items_size) break;
++        IInspectable_AddRef( (items[i - start_index] = impl->elements[i]) );
++    }
++    *count = i - start_index;
++
++    return S_OK;
++}
++
++static const struct IVectorView_IInspectableVtbl vector_view_vtbl =
++{
++    vector_view_QueryInterface,
++    vector_view_AddRef,
++    vector_view_Release,
++    /* IInspectable methods */
++    vector_view_GetIids,
++    vector_view_GetRuntimeClassName,
++    vector_view_GetTrustLevel,
++    /* IVectorView<IInspectable*> methods */
++    vector_view_GetAt,
++    vector_view_get_Size,
++    vector_view_IndexOf,
++    vector_view_GetMany,
++};
++
++DEFINE_IINSPECTABLE_( iterable_view, IIterable_IInspectable, struct vector_view, view_impl_from_IIterable_IInspectable,
++                      IIterable_IInspectable_iface, &impl->IVectorView_IInspectable_iface )
++
++static HRESULT WINAPI iterable_view_First( IIterable_IInspectable *iface, IIterator_IInspectable **value )
++{
++    struct vector_view *impl = view_impl_from_IIterable_IInspectable( iface );
++    struct iterator *iter;
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (!(iter = calloc( 1, sizeof(struct iterator) ))) return E_OUTOFMEMORY;
++    iter->IIterator_IInspectable_iface.lpVtbl = &iterator_vtbl;
++    iter->iid = impl->iids.iterator;
++    iter->ref = 1;
++
++    IVectorView_IInspectable_AddRef( (iter->view = &impl->IVectorView_IInspectable_iface) );
++    iter->size = impl->size;
++
++    *value = &iter->IIterator_IInspectable_iface;
++    return S_OK;
++}
++
++static const struct IIterable_IInspectableVtbl iterable_view_vtbl =
++{
++    iterable_view_QueryInterface,
++    iterable_view_AddRef,
++    iterable_view_Release,
++    /* IInspectable methods */
++    iterable_view_GetIids,
++    iterable_view_GetRuntimeClassName,
++    iterable_view_GetTrustLevel,
++    /* IIterable<T> methods */
++    iterable_view_First,
++};
++
++struct vector
++{
++    IVector_IInspectable IVector_IInspectable_iface;
++    IIterable_IInspectable IIterable_IInspectable_iface;
++    struct vector_iids iids;
++    LONG ref;
++
++    UINT32 size;
++    UINT32 capacity;
++    IInspectable **elements;
++};
++
++static inline struct vector *impl_from_IVector_IInspectable( IVector_IInspectable *iface )
++{
++    return CONTAINING_RECORD( iface, struct vector, IVector_IInspectable_iface );
++}
++
++static HRESULT WINAPI vector_QueryInterface( IVector_IInspectable *iface, REFIID iid, void **out )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid( iid ), out );
++
++    if (IsEqualGUID( iid, &IID_IUnknown ) ||
++        IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) ||
++        IsEqualGUID( iid, impl->iids.vector ))
++    {
++        IInspectable_AddRef( (*out = &impl->IVector_IInspectable_iface) );
++        return S_OK;
++    }
++
++    if (IsEqualGUID( iid, impl->iids.iterable ))
++    {
++        IInspectable_AddRef( (*out = &impl->IIterable_IInspectable_iface) );
++        return S_OK;
++    }
++
++    FIXME( "%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid( iid ) );
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI vector_AddRef( IVector_IInspectable *iface )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    ULONG ref = InterlockedIncrement( &impl->ref );
++    TRACE( "iface %p increasing refcount to %lu.\n", iface, ref );
++    return ref;
++}
++
++static ULONG WINAPI vector_Release( IVector_IInspectable *iface )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    TRACE( "iface %p decreasing refcount to %lu.\n", iface, ref );
++
++    if (!ref)
++    {
++        IVector_IInspectable_Clear( iface );
++        free( impl );
++    }
++
++    return ref;
++}
++
++static HRESULT WINAPI vector_GetIids( IVector_IInspectable *iface, ULONG *iid_count, IID **iids )
++{
++    FIXME( "iface %p, iid_count %p, iids %p stub!\n", iface, iid_count, iids );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_GetRuntimeClassName( IVector_IInspectable *iface, HSTRING *class_name )
++{
++    FIXME( "iface %p, class_name %p stub!\n", iface, class_name );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_GetTrustLevel( IVector_IInspectable *iface, TrustLevel *trust_level )
++{
++    FIXME( "iface %p, trust_level %p stub!\n", iface, trust_level );
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI vector_GetAt( IVector_IInspectable *iface, UINT32 index, IInspectable **value )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p, index %u, value %p.\n", iface, index, value );
++
++    *value = NULL;
++    if (index >= impl->size) return E_BOUNDS;
++
++    IInspectable_AddRef( (*value = impl->elements[index]) );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_get_Size( IVector_IInspectable *iface, UINT32 *value )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    TRACE( "iface %p, value %p.\n", iface, value );
++    *value = impl->size;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_GetView( IVector_IInspectable *iface, IVectorView_IInspectable **value )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    struct vector_view *view;
++    ULONG i;
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (!(view = calloc( 1, offsetof( struct vector_view, elements[impl->size] ) ))) return E_OUTOFMEMORY;
++    view->IVectorView_IInspectable_iface.lpVtbl = &vector_view_vtbl;
++    view->IIterable_IInspectable_iface.lpVtbl = &iterable_view_vtbl;
++    view->iids = impl->iids;
++    view->ref = 1;
++
++    for (i = 0; i < impl->size; ++i) IInspectable_AddRef( (view->elements[view->size++] = impl->elements[i]) );
++
++    *value = &view->IVectorView_IInspectable_iface;
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_IndexOf( IVector_IInspectable *iface, IInspectable *element, UINT32 *index, BOOLEAN *found )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    ULONG i;
++
++    TRACE( "iface %p, element %p, index %p, found %p.\n", iface, element, index, found );
++
++    for (i = 0; i < impl->size; ++i) if (impl->elements[i] == element) break;
++    if ((*found = (i < impl->size))) *index = i;
++    else *index = 0;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_SetAt( IVector_IInspectable *iface, UINT32 index, IInspectable *value )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p, index %u, value %p.\n", iface, index, value );
++
++    if (index >= impl->size) return E_BOUNDS;
++    IInspectable_Release( impl->elements[index] );
++    IInspectable_AddRef( (impl->elements[index] = value) );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_InsertAt( IVector_IInspectable *iface, UINT32 index, IInspectable *value )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    IInspectable **tmp = impl->elements;
++
++    TRACE( "iface %p, index %u, value %p.\n", iface, index, value );
++
++    if (impl->size == impl->capacity)
++    {
++        impl->capacity = max( 32, impl->capacity * 3 / 2 );
++        if (!(impl->elements = realloc( impl->elements, impl->capacity * sizeof(*impl->elements) )))
++        {
++            impl->elements = tmp;
++            return E_OUTOFMEMORY;
++        }
++    }
++
++    memmove( impl->elements + index + 1, impl->elements + index, (impl->size++ - index) * sizeof(*impl->elements) );
++    IInspectable_AddRef( (impl->elements[index] = value) );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_RemoveAt( IVector_IInspectable *iface, UINT32 index )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p, index %u.\n", iface, index );
++
++    if (index >= impl->size) return E_BOUNDS;
++    IInspectable_Release( impl->elements[index] );
++    memmove( impl->elements + index, impl->elements + index + 1, (--impl->size - index) * sizeof(*impl->elements) );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_Append( IVector_IInspectable *iface, IInspectable *value )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    return IVector_IInspectable_InsertAt( iface, impl->size, value );
++}
++
++static HRESULT WINAPI vector_RemoveAtEnd( IVector_IInspectable *iface )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p.\n", iface );
++
++    if (impl->size) IInspectable_Release( impl->elements[--impl->size] );
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_Clear( IVector_IInspectable *iface )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++
++    TRACE( "iface %p.\n", iface );
++
++    while (impl->size) IVector_IInspectable_RemoveAtEnd( iface );
++    free( impl->elements );
++    impl->capacity = 0;
++    impl->elements = NULL;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_GetMany( IVector_IInspectable *iface, UINT32 start_index,
++                                      UINT32 items_size, IInspectable **items, UINT *count )
++{
++    struct vector *impl = impl_from_IVector_IInspectable( iface );
++    UINT32 i;
++
++    TRACE( "iface %p, start_index %u, items_size %u, items %p, count %p.\n",
++           iface, start_index, items_size, items, count );
++
++    if (start_index >= impl->size) return E_BOUNDS;
++
++    for (i = start_index; i < impl->size; ++i)
++    {
++        if (i - start_index >= items_size) break;
++        IInspectable_AddRef( (items[i - start_index] = impl->elements[i]) );
++    }
++    *count = i - start_index;
++
++    return S_OK;
++}
++
++static HRESULT WINAPI vector_ReplaceAll( IVector_IInspectable *iface, UINT32 count, IInspectable **items )
++{
++    HRESULT hr;
++    ULONG i;
++
++    TRACE( "iface %p, count %u, items %p.\n", iface, count, items );
++
++    hr = IVector_IInspectable_Clear( iface );
++    for (i = 0; i < count && SUCCEEDED(hr); ++i) hr = IVector_IInspectable_Append( iface, items[i] );
++    return hr;
++}
++
++static const struct IVector_IInspectableVtbl vector_vtbl =
++{
++    vector_QueryInterface,
++    vector_AddRef,
++    vector_Release,
++    /* IInspectable methods */
++    vector_GetIids,
++    vector_GetRuntimeClassName,
++    vector_GetTrustLevel,
++    /* IVector<IInspectable*> methods */
++    vector_GetAt,
++    vector_get_Size,
++    vector_GetView,
++    vector_IndexOf,
++    vector_SetAt,
++    vector_InsertAt,
++    vector_RemoveAt,
++    vector_Append,
++    vector_RemoveAtEnd,
++    vector_Clear,
++    vector_GetMany,
++    vector_ReplaceAll,
++};
++
++DEFINE_IINSPECTABLE( iterable, IIterable_IInspectable, struct vector, IVector_IInspectable_iface )
++
++static HRESULT WINAPI iterable_First( IIterable_IInspectable *iface, IIterator_IInspectable **value )
++{
++    struct vector *impl = impl_from_IIterable_IInspectable( iface );
++    IIterable_IInspectable *iterable;
++    IVectorView_IInspectable *view;
++    HRESULT hr;
++
++    TRACE( "iface %p, value %p.\n", iface, value );
++
++    if (FAILED(hr = IVector_IInspectable_GetView( &impl->IVector_IInspectable_iface, &view ))) return hr;
++
++    hr = IVectorView_IInspectable_QueryInterface( view, impl->iids.iterable, (void **)&iterable );
++    IVectorView_IInspectable_Release( view );
++    if (FAILED(hr)) return hr;
++
++    hr = IIterable_IInspectable_First( iterable, value );
++    IIterable_IInspectable_Release( iterable );
++    return hr;
++}
++
++static const struct IIterable_IInspectableVtbl iterable_vtbl =
++{
++    iterable_QueryInterface,
++    iterable_AddRef,
++    iterable_Release,
++    /* IInspectable methods */
++    iterable_GetIids,
++    iterable_GetRuntimeClassName,
++    iterable_GetTrustLevel,
++    /* IIterable<T> methods */
++    iterable_First,
++};
++
++HRESULT vector_create( const struct vector_iids *iids, void **out )
++{
++    struct vector *impl;
++
++    TRACE( "iid %s, out %p.\n", debugstr_guid( iids->vector ), out );
++
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->IVector_IInspectable_iface.lpVtbl = &vector_vtbl;
++    impl->IIterable_IInspectable_iface.lpVtbl = &iterable_vtbl;
++    impl->iids = *iids;
++    impl->ref = 1;
++
++    *out = &impl->IVector_IInspectable_iface;
++    TRACE( "created %p\n", *out );
++    return S_OK;
++}
