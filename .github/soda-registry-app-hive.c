@@ -88,7 +88,9 @@ static void test_custom_security(HKEY root)
 {
     static const WCHAR *descriptors[] = {L"D:P(A;;KA;;;WD)", L"D:NO_ACCESS_CONTROL"};
     SECURITY_ATTRIBUTES attributes = {sizeof(attributes), NULL, FALSE};
+    SECURITY_INFORMATION info = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
     HKEY child = NULL;
+    DWORD size = 0;
     unsigned int i;
     LONG ret;
 
@@ -102,13 +104,32 @@ static void test_custom_security(HKEY root)
                               &attributes, &child, NULL);
         LocalFree(attributes.lpSecurityDescriptor);
         attributes.lpSecurityDescriptor = NULL;
-        check("custom_create", ret, ERROR_SUCCESS);
+        check("custom_create", ret, ERROR_ACCESS_DENIED);
         if (ret) continue;
         test_security(root, child);
         check("custom_close", RegCloseKey(child), ERROR_SUCCESS);
         child = NULL;
         check("custom_delete", RegDeleteKeyW(root, L"CustomDescriptor"), ERROR_SUCCESS);
     }
+    ret = RegGetKeySecurity(root, info, NULL, &size);
+    check("same_descriptor_size", ret, ERROR_INSUFFICIENT_BUFFER);
+    if (!size) return;
+    attributes.lpSecurityDescriptor = malloc(size);
+    if (!attributes.lpSecurityDescriptor) { check("same_descriptor_allocate", 1, 0); return; }
+    ret = RegGetKeySecurity(root, info, attributes.lpSecurityDescriptor, &size);
+    check("same_descriptor_read", ret, ERROR_SUCCESS);
+    if (!ret)
+    {
+        ret = RegCreateKeyExW(root, L"SameDescriptor", 0, NULL, 0, KEY_ALL_ACCESS, &attributes, &child, NULL);
+        printf("{\"case\":\"same_descriptor_create\",\"result\":%ld}\n", ret);
+        if (!ret)
+        {
+            test_security(root, child);
+            check("same_descriptor_close", RegCloseKey(child), ERROR_SUCCESS);
+            check("same_descriptor_delete", RegDeleteKeyW(root, L"SameDescriptor"), ERROR_SUCCESS);
+        }
+    }
+    free(attributes.lpSecurityDescriptor);
 }
 
 static LONG run_child(const WCHAR *path, DWORD options, DWORD expected)
