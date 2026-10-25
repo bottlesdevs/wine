@@ -125,6 +125,34 @@ static void test_parse(IInspectable *factory, UINT32 slot, BOOL use_try, BOOL me
     WindowsDeleteString(value);
 }
 
+static void test_pair_values(IInspectable *factory)
+{
+    static const WCHAR *names[] = {L"x", L"name", L"filename", L"charset"};
+    static const WCHAR *values[] = {NULL, L"", L"value", L"a b", L"\"utf-8\"", L"a\r\nb", L"a\\b", L"a\"b", L"\x00e9"};
+    IInspectable *object;
+    HSTRING name, value;
+    unsigned int i, j;
+    HRESULT hr;
+
+    for (i = 0; i < ARRAYSIZE(names); ++i)
+        for (j = 0; j < ARRAYSIZE(values); ++j)
+        {
+            name = string(names[i]);
+            value = string(values[j]);
+            object = NULL;
+            hr = ((create_pair)table(factory)[7])(factory, name, value, &object);
+            printf("{\"operation\":\"pair_create\",\"name_index\":%u,\"value_index\":%u,\"hr\":\"%08lx\"", i, j, (unsigned long)hr);
+            if (object)
+            {
+                print_value(object, FALSE);
+                IInspectable_Release(object);
+            }
+            printf("}\n");
+            WindowsDeleteString(name);
+            WindowsDeleteString(value);
+        }
+}
+
 static void test_mutations(IInspectable *factory, IInspectable *name_factory)
 {
     static const WCHAR *charsets[] = {L"utf-8", L"\"utf-8\"", L"UTF-16", L"bad value", L"", NULL};
@@ -190,7 +218,8 @@ int main(void)
         L"text/plain; n\x00e4me=value", L"text/plain; name=\"\x00e9\"", L"text/plain\t;\tcharset\t=\tutf-8"};
     static const WCHAR *name_inputs[] = {NULL, L"", L"charset", L"charset=utf-8", L" charset = utf-8 ",
         L"charset=\"utf-8\"", L"name=", L"name=\"\"", L"name=\"a;b\"", L"name=bad value", L"bad name=x",
-        L"name=\"a\\\"b\"", L"name=\"unterminated", L"name=x;other=y", L"name=x,other=y"};
+        L"name=\"a\\\"b\"", L"name=\"unterminated", L"name=x;other=y", L"name=x,other=y", L"x=value", L"foo=value", L"filename=value", L"filename*=value",
+        L"boundary=value", L"type=value", L"NAME=value", L"q=value", L"name*=value"};
     const WCHAR *classes[] = {L"Windows.Web.Http.Headers.HttpMediaTypeHeaderValue",
             L"Windows.Web.Http.Headers.HttpNameValueHeaderValue"};
     const GUID *iids[] = {&media_factory_iid, &media_statics_iid, &name_factory_iid, &name_statics_iid};
@@ -224,6 +253,7 @@ int main(void)
             test_parse(factories[3], 7, TRUE, FALSE, name_inputs[i], "name_tryparse");
         }
         test_mutations(factories[0], factories[2]);
+        test_pair_values(factories[2]);
     }
     for (i = 0; i < ARRAYSIZE(factories); ++i)
         if (factories[i]) IInspectable_Release(factories[i]);
