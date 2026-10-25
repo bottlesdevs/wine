@@ -19,7 +19,7 @@ diff --git a/dlls/kernelbase/registry.c b/dlls/kernelbase/registry.c
          options &= ~REG_OPTION_CREATE_LINK;
  
 -    status = create_key( subkey, root, str, options, access_64, class, dispos );
-+    status = create_key( subkey, root, str, options, access_64, class, dispos, i < len ? NULL : sa );
++    status = create_key( subkey, root, str, options, access_64, class, dispos, sa );
      if (!status)
      {
          while (i < len && buffer[i] == '\\') i++;

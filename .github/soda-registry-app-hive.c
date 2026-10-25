@@ -193,7 +193,7 @@ static void test_ordinary_attributes(void)
     ret = RegOpenKeyExW(root, L"Wide", 0, READ_CONTROL, &parent);
     check("ordinary_intermediate_open", ret, ERROR_SUCCESS);
     if (ret) goto done;
-    test_dacl(parent, attributes.lpSecurityDescriptor, FALSE);
+    test_dacl(parent, attributes.lpSecurityDescriptor, TRUE);
     check("ordinary_intermediate_close", RegCloseKey(parent), ERROR_SUCCESS);
     parent = NULL;
     ret = RegCreateKeyExA(root, "Ansi", 0, NULL, 0, KEY_ALL_ACCESS, &attributes, &child, NULL);
