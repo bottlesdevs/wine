@@ -83,6 +83,26 @@ static void check(const char *name, BOOL value)
     printf("%s:failed\n", name);
 }
 
+static WORD file_machine(const WCHAR *path)
+{
+    IMAGE_DOS_HEADER dos;
+    IMAGE_FILE_HEADER header;
+    DWORD signature, size;
+    WORD machine = 0;
+    HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            NULL, OPEN_EXISTING, 0, NULL);
+
+    if (file == INVALID_HANDLE_VALUE) return 0;
+    if (ReadFile(file, &dos, sizeof(dos), &size, NULL) && size == sizeof(dos) &&
+            dos.e_magic == IMAGE_DOS_SIGNATURE && dos.e_lfanew > 0 && dos.e_lfanew < 16 * 1024 * 1024 &&
+            SetFilePointer(file, dos.e_lfanew, NULL, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
+            ReadFile(file, &signature, sizeof(signature), &size, NULL) && size == sizeof(signature) &&
+            signature == IMAGE_NT_SIGNATURE && ReadFile(file, &header, sizeof(header), &size, NULL) && size == sizeof(header))
+        machine = header.Machine;
+    CloseHandle(file);
+    return machine;
+}
+
 int wmain(int argc, WCHAR **argv)
 {
     static const struct
@@ -96,7 +116,7 @@ int wmain(int argc, WCHAR **argv)
         {L",@1,\"fixture value\"", L"fixture value", 1},
         {L",@0,\"value, two & $\"", L"value, two & $", 0},
     };
-    WCHAR control[MAX_PATH], command[4096], output[1024], *name;
+    WCHAR control[MAX_PATH], command[4096], output[1024], image[MAX_PATH], *name;
     PROCESS_INFORMATION process;
     STARTUPINFOW startup = {0};
     struct result result;
@@ -109,6 +129,10 @@ int wmain(int argc, WCHAR **argv)
     length = GetSystemDirectoryW(control, ARRAYSIZE(control));
     if (!length || length > ARRAYSIZE(control) - ARRAYSIZE(L"\\control.exe")) return 3;
     lstrcatW(control, L"\\control.exe");
+    GetModuleFileNameW(NULL, image, ARRAYSIZE(image));
+    printf("CPL_MACHINES client=%04x control=%04x applet=%04x\n",
+            file_machine(image), file_machine(control), file_machine(argv[1]));
+    printf("CPL_CONTROL path=%ls\n", control);
     startup.cb = sizeof(startup);
     for (i = 0; i < ARRAYSIZE(cases); ++i)
     {
@@ -127,6 +151,7 @@ int wmain(int argc, WCHAR **argv)
             return 7;
         }
         check("control_exit", GetExitCodeProcess(process.hProcess, &status) && status == 0);
+        printf("CPL_CONTROL_EXIT case=%u code=%lu\n", i, (unsigned long)status);
         CloseHandle(process.hProcess);
         file = CreateFileW(output, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
         check("applet_output", file != INVALID_HANDLE_VALUE);

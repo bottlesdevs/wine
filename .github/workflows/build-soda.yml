@@ -16,6 +16,7 @@ on:
         options:
           - x86_64
           - aarch64
+          - aarch64-control
         default: x86_64
       pgo:
         description: 'Build a PGO candidate'
@@ -1632,6 +1633,85 @@ jobs:
           name: pgo-evidence-${{ github.sha }}
           path: /tmp/soda-pgo/evidence/*.txt
           if-no-files-found: error
+
+  arm64-control:
+    needs: patches
+    if: inputs.architecture == 'aarch64-control' && inputs.winrt_http_reference != true
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN: ${{ inputs.baseline_run_id }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: prepare existing ARM candidate
+        run: |
+          test "$(uname -m)" = aarch64
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64-control"
+          mkdir -p "$work/downloads" "$work/runner"
+          echo "CPL_WORK=$work" >> "$GITHUB_ENV"
+          export TMPDIR="$work" TMP="$work" TEMP="$work"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$work/source-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts" > "$work/source-artifacts.json"
+          name="$(jq -er '[.artifacts[] | select(.expired == false and (.name | endswith("-aarch64")))] | if length == 1 then .[0].name else error("expected one ARM candidate") end' "$work/source-artifacts.json")"
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --name "$name" --dir "$work/downloads"
+          archive="$(find "$work/downloads" -maxdepth 1 -type f -name '*-aarch64.tar.xz' -print -quit)"
+          test -n "$archive"
+          sha256sum "$archive" > "$work/candidate.sha256"
+          tar -xJf "$archive" -C "$work/runner"
+          runner_dir="$(find "$work/runner" -mindepth 1 -maxdepth 1 -type d -name 'soda-*-aarch64' -print -quit)"
+          test -x "$runner_dir/bin/wine"
+          echo "CPL_RUNNER=$runner_dir" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-i686 gcc-mingw-w64-x86-64 xvfb xauth
+
+      - name: inspect Control Panel hosting
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          export TMPDIR="$CPL_WORK" TMP="$CPL_WORK" TEMP="$CPL_WORK"
+          export WINEPREFIX="$CPL_WORK/prefix" WINEARCH=win64
+          export FEX_APP_CONFIG="$CPL_RUNNER/share/fex-emu/Config.json"
+          export FEX_APP_CONFIG_LOCATION="$CPL_RUNNER/share/fex-emu"
+          export WINEDLLOVERRIDES='mscoree,mshtml,winedbg.exe='
+          export WINEDEBUG=-all,+module,+process
+          ldd "$CPL_RUNNER/bin/wine" > "$CPL_WORK/ldd.log"
+          "$CPL_RUNNER/bin/wine" wineboot -u > "$CPL_WORK/wineboot.stdout" 2> "$CPL_WORK/wineboot.stderr"
+          trap '"$CPL_RUNNER/bin/wineserver" -k; "$CPL_RUNNER/bin/wineserver" -w' EXIT
+          for bits in 64 32; do
+            if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
+            directory="$CPL_WORK/cpl-$bits"
+            fixture="$directory/fixtures, with space/applet.cpl"
+            mkdir -p "$(dirname "$fixture")" "$directory/results"
+            "$compiler" .github/soda-control-host-smoke.c -DBUILD_CPL -shared -Wl,--kill-at \
+              -O2 -Wall -Wextra -Werror -o "$fixture"
+            "$compiler" .github/soda-control-host-smoke.c -municode \
+              -O2 -Wall -Wextra -Werror -o "$directory/client.exe"
+            set +e
+            "$CPL_RUNNER/bin/wine" "$directory/client.exe" "Z:$fixture" "Z:$directory/results" \
+              > "$directory/client.stdout" 2> "$directory/client.stderr"
+            result=$?
+            set -e
+            printf '%s\n' "$result" > "$directory/exit-code"
+            cat "$directory/client.stdout"
+          done
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.CPL_WORK != ''
+        with:
+          name: arm64-control-${{ github.sha }}
+          path: |
+            ${{ env.CPL_WORK }}/*.json
+            ${{ env.CPL_WORK }}/*.log
+            ${{ env.CPL_WORK }}/*.sha256
+            ${{ env.CPL_WORK }}/*.stdout
+            ${{ env.CPL_WORK }}/*.stderr
+            ${{ env.CPL_WORK }}/cpl-*/*.stdout
+            ${{ env.CPL_WORK }}/cpl-*/*.stderr
+            ${{ env.CPL_WORK }}/cpl-*/exit-code
+          if-no-files-found: error
+          retention-days: 7
 
   arm64:
     needs: patches
