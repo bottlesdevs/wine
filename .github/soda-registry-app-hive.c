@@ -15,8 +15,16 @@ static void check(const char *name, LONG result, LONG expected)
 
 static void remove_file(const WCHAR *path)
 {
+    WCHAR log[MAX_PATH];
+    unsigned int i;
     BOOL removed = DeleteFileW(path);
     check("cleanup", removed || GetLastError() == ERROR_FILE_NOT_FOUND ? 0 : GetLastError(), 0);
+    for (i = 1; i <= 2; i++)
+    {
+        swprintf(log, MAX_PATH, L"%ls.LOG%u", path, i);
+        removed = DeleteFileW(log);
+        check("cleanup_log", removed || GetLastError() == ERROR_FILE_NOT_FOUND ? 0 : GetLastError(), 0);
+    }
 }
 
 int wmain(int argc, WCHAR **argv)
