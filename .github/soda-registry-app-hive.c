@@ -84,6 +84,33 @@ done:
     free(second);
 }
 
+static void test_custom_security(HKEY root)
+{
+    static const WCHAR *descriptors[] = {L"D:P(A;;KA;;;WD)", L"D:NO_ACCESS_CONTROL"};
+    SECURITY_ATTRIBUTES attributes = {sizeof(attributes), NULL, FALSE};
+    HKEY child = NULL;
+    unsigned int i;
+    LONG ret;
+
+    for (i = 0; i < sizeof(descriptors) / sizeof(*descriptors); i++)
+    {
+        ret = ConvertStringSecurityDescriptorToSecurityDescriptorW(descriptors[i], SDDL_REVISION_1,
+                &attributes.lpSecurityDescriptor, NULL);
+        check("custom_descriptor", ret, TRUE);
+        if (!ret) continue;
+        ret = RegCreateKeyExW(root, L"CustomDescriptor", 0, NULL, 0, KEY_ALL_ACCESS,
+                              &attributes, &child, NULL);
+        LocalFree(attributes.lpSecurityDescriptor);
+        attributes.lpSecurityDescriptor = NULL;
+        check("custom_create", ret, ERROR_SUCCESS);
+        if (ret) continue;
+        test_security(root, child);
+        check("custom_close", RegCloseKey(child), ERROR_SUCCESS);
+        child = NULL;
+        check("custom_delete", RegDeleteKeyW(root, L"CustomDescriptor"), ERROR_SUCCESS);
+    }
+}
+
 static LONG run_child(const WCHAR *path, DWORD options, DWORD expected)
 {
     WCHAR executable[MAX_PATH], command[2 * MAX_PATH + 80];
@@ -414,6 +441,7 @@ int wmain(int argc, WCHAR **argv)
     check("create_subkey", ret, ERROR_SUCCESS);
     if (ret) goto close;
     test_security(root, subkey);
+    test_custom_security(root);
     check("write_number", RegSetValueExW(subkey, L"Number", 0, REG_DWORD,
           (const BYTE *)&number, sizeof(number)), ERROR_SUCCESS);
     check("write_text", RegSetValueExW(subkey, L"Text", 0, REG_SZ,
