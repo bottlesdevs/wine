@@ -2,7 +2,7 @@ diff --git a/server/registry_hive.c b/server/registry_hive.c
 new file mode 100644
 --- /dev/null
 +++ b/server/registry_hive.c
-@@ -0,0 +1,898 @@
+@@ -0,0 +1,899 @@
 +/*
 + * Registry hive file support
 + *
@@ -626,6 +626,7 @@ new file mode 100644
 +    write_u32( writer.data + 44, 1 );
 +    memcpy( writer.data + HIVE_HEADER, "hbin", 4 );
 +    write_u32( writer.data + HIVE_HEADER + 8, final - HIVE_HEADER );
++    write_u64( writer.data + HIVE_HEADER + 20, root->modified );
 +    for (i = 0; i < 508; i += 4) checksum ^= read_u32( writer.data + i );
 +    if (!checksum) checksum = 1;
 +    else if (checksum == UINT32_MAX) checksum--;

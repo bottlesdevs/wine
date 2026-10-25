@@ -262,7 +262,7 @@ static void test_journal(const void *data, size_t size, const WCHAR *directory)
     for (mode = 0; mode < 2; mode++)
     {
         memcpy(damaged, data, size);
-        memset(damaged + 4096, 0, size - 4096);
+        memset(damaged + 4096 + 32, 0, size - 4096 - 32);
         ret = reg_hive_set_sequence(damaged, size, 18, 17);
         check("journal_dirty_header", ret, 0);
         if (ret) goto done;
@@ -331,12 +331,15 @@ static void test_codec(const WCHAR *path, const WCHAR *directory)
     CloseHandle(input);
     check("codec_read", ret, TRUE);
     if (!ret) goto done;
+    printf("{\"journal_source\":\"native\"}\n");
+    test_journal(data, size, directory);
     ret = reg_hive_decode(data, size, &tree);
     check("codec_decode", ret, 0);
     if (ret) goto done;
     ret = reg_hive_encode(tree, &encoded, &encoded_size);
     check("codec_encode", ret, 0);
     if (ret || encoded_size > MAXDWORD) goto done;
+    printf("{\"journal_source\":\"encoded\"}\n");
     test_journal(encoded, encoded_size, directory);
     output = CreateFileW(rewritten, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
     check("codec_output", output == INVALID_HANDLE_VALUE ? GetLastError() : 0, 0);
