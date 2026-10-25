@@ -616,6 +616,29 @@ jobs:
           done
           "$runner_dir/bin/wineserver" -w
 
+      - name: verify C2R component metadata
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          export WINEDEBUG=-all
+          export WINEPREFIX="$RUNNER_TEMP/soda-msi-components-prefix"
+          export WINEARCH=win64
+          "$runner_dir/bin/wineboot" -u
+          for bits in 64 32; do
+            if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
+            directory="$RUNNER_TEMP/soda-msi-components-$bits"
+            mkdir -p "$directory/root/Integration" "$directory/root/Office16"
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-msi-components-smoke.c" \
+              -municode -O2 -Wall -Wextra -Werror -lmsi -ladvapi32 -o "$directory/client.exe"
+            "$runner_dir/bin/wine" "$directory/client.exe" "Z:$directory" \
+              | tr -d '\r' | tee "$directory/runtime.log"
+            grep -Fx 'MSI_COMPONENT_RESULT checks=82 failures=0' "$directory/runtime.log"
+          done
+          "$runner_dir/bin/wineserver" -w
+
       - name: verify MAPI wizard forwarding
         shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
         timeout-minutes: 5
@@ -1804,6 +1827,9 @@ jobs:
             if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
             "$compiler" .github/soda-mapi-wizard-smoke.c \
               -O2 -Wall -Wextra -Werror -o "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$bits.exe"
+            "$compiler" .github/soda-msi-components-smoke.c \
+              -municode -O2 -Wall -Wextra -Werror -lmsi -ladvapi32 \
+              -o "$RUNNER_TEMP/soda-office-winrt/msi-components$bits.exe"
             "$compiler" .github/soda-composition-inertia-smoke.c \
               -I"$wine_headers" -D__WINESRC__ \
               -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
@@ -1870,6 +1896,11 @@ jobs:
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.log"
             grep -Fx 'MAPI_RUNTIME_RESULT failures=0' "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.log"
+            msi_dir="$RUNNER_TEMP/soda-office-winrt/msi-components-$arch"
+            mkdir -p "$msi_dir/root/Integration" "$msi_dir/root/Office16"
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/msi-components$arch.exe" "Z:$msi_dir" \
+              | tr -d '\r' | tee "$msi_dir/runtime.log"
+            grep -Fx 'MSI_COMPONENT_RESULT checks=82 failures=0' "$msi_dir/runtime.log"
             for apartment in sta mta; do
               "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/inertia$arch.exe" "$apartment" \
                 | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/inertia$arch-$apartment.log"
