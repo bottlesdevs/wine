@@ -17,6 +17,7 @@ on:
           - x86_64
           - aarch64
           - aarch64-control
+          - compiler-cache
         default: x86_64
       pgo:
         description: 'Build a PGO candidate'
@@ -155,6 +156,10 @@ jobs:
     needs: patches
     if: inputs.winrt_http_reference != true && (github.event_name == 'push' || inputs.architecture == 'x86_64')
     runs-on: ubuntu-24.04
+    env:
+      CCACHE_DIR: /home/runner/.cache/soda-ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 2G
     outputs:
       archive_name: ${{ steps.identity.outputs.archive_name }}
       component_name: ${{ steps.identity.outputs.component_name }}
@@ -164,6 +169,14 @@ jobs:
 
     steps:        
       - uses: actions/checkout@v7
+
+      - name: restore compiler cache
+        id: compiler-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: soda-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/soda-arm64-sdk.Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: soda-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/soda-arm64-sdk.Dockerfile') }}-
 
       - name: define build identity
         id: identity
@@ -220,6 +233,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/soda-secret-headers.sh" "$GITHUB_WORKSPACE/.soda-secret-i386" i386
           sudo apt-get install -y \
             g++ \
+            ccache \
             autoconf \
             automake \
             libtool \
@@ -253,6 +267,12 @@ jobs:
             "/usr/lib/llvm-22/bin/$tool" --version
           done
 
+      - name: initialize compiler cache
+        run: |
+          mkdir -p "$CCACHE_DIR"
+          ccache --version
+          ccache --show-config
+
       - name: clone wine-tkg-git repo
         working-directory: /home/runner/work/
         run: |
@@ -278,6 +298,7 @@ jobs:
           git -C /tmp/build-tools checkout "$BUILD_TOOLS_COMMIT"
           cp /tmp/build-tools/runners/vaniglia/wine-tkg-valve.cfg wine-tkg.cfg
           sed -i '$a_NOLIB32="false"' wine-tkg.cfg
+          sed -i '$a_NOCCACHE="false"' wine-tkg.cfg
           sed -i "\$a_configure_userargs64=\"SECRET_CFLAGS=-I$GITHUB_WORKSPACE/.soda-secret-amd64/include SECRET_LIBS=-L$GITHUB_WORKSPACE/.soda-secret-amd64/lib\"" wine-tkg.cfg
           sed -i "\$a_configure_userargs32=\"--disable-wineopenxr SECRET_CFLAGS=-I$GITHUB_WORKSPACE/.soda-secret-i386/include SECRET_LIBS=-L$GITHUB_WORKSPACE/.soda-secret-i386/lib\"" wine-tkg.cfg
           if [[ "${{ steps.identity.outputs.pgo }}" == "true" ]]; then
@@ -307,6 +328,7 @@ jobs:
             -O2 -Wall -Wextra -Werror -o /tmp/soda-icu/smoke32.exe
       
       - name: start build
+        id: compile
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -1644,6 +1666,111 @@ jobs:
           path: /tmp/soda-pgo/evidence/*.txt
           if-no-files-found: error
 
+      - name: compiler cache statistics
+        if: always() && !cancelled() && (steps.compile.outcome == 'success' || steps.compile.outcome == 'failure')
+        run: ccache --show-stats
+
+      - name: save compiler cache
+        if: always() && !cancelled() && (steps.compile.outcome == 'success' || steps.compile.outcome == 'failure')
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+
+  compiler-cache:
+    needs: patches
+    if: inputs.architecture == 'compiler-cache' && inputs.winrt_http_reference != true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    env:
+      CCACHE_DIR: /home/runner/.cache/soda-ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 2G
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: restore compiler cache
+        id: compiler-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: soda-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/soda-arm64-sdk.Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: soda-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/soda-arm64-sdk.Dockerfile') }}-
+
+      - name: setup
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ccache gcc clang gcc-mingw-w64-x86-64 gcc-mingw-w64-i686
+          mkdir -p "$CCACHE_DIR"
+
+      - name: check compiler cache
+        id: compile
+        run: |
+          for compiler in gcc clang x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc; do
+            bash .github/soda-compiler-cache-smoke.sh "$RUNNER_TEMP/cache-smoke/$compiler" "$compiler" \
+              | tee "$RUNNER_TEMP/cache-smoke-$compiler.log"
+          done
+
+      - name: check ARM SDK compiler cache
+        if: runner.arch == 'ARM64'
+        run: |
+          sudo systemctl start docker
+          docker build --file .github/soda-arm64-sdk.Dockerfile --tag soda-arm64-sdk .github
+          work="$RUNNER_TEMP/cache-proton"
+          mkdir -p "$work/source" "$work/build"
+          for file in configure.sh Makefile.in; do
+            curl --fail --location --retry 3 \
+              "https://raw.githubusercontent.com/ValveSoftware/Proton/$PROTON_COMMIT/$file" \
+              --output "$work/source/$file"
+          done
+          (
+            cd "$work/build"
+            bash "$work/source/configure.sh" --build-name=cache-check --target-arch=arm64 \
+              --container-engine=docker --proton-sdk-image=soda-arm64-sdk --enable-ccache
+            grep -Fx 'ENABLE_CCACHE := 1' Makefile
+            make --no-print-directory -n --eval='cache-options:;@echo $(DOCKER_OPTS)' cache-options \
+              | tee "$RUNNER_TEMP/cache-proton-options.log"
+          )
+          grep -F -- "-v $CCACHE_DIR:$CCACHE_DIR" "$RUNNER_TEMP/cache-proton-options.log"
+          grep -F -- '-e CCACHE_COMPILERCHECK' "$RUNNER_TEMP/cache-proton-options.log"
+          if grep -F -- 'CCACHE_DISABLE=1' "$RUNNER_TEMP/cache-proton-options.log"; then exit 1; fi
+          mkdir -p "$RUNNER_TEMP/cache-sdk"
+          for target in native x86_64-windows-gnu i686-windows-gnu; do
+            flags=()
+            if [[ "$target" != native ]]; then flags=("--target=$target"); fi
+            docker run --rm --user "$(id -u):$(id -g)" \
+              -v "$CCACHE_DIR:$CCACHE_DIR" -e CCACHE_DIR -e CCACHE_COMPILERCHECK -e CCACHE_MAXSIZE \
+              -e CCACHE_SMOKE_DIRECT=1 \
+              -v "$GITHUB_WORKSPACE:/source:ro" -v "$RUNNER_TEMP/cache-sdk:/work" \
+              soda-arm64-sdk bash /source/.github/soda-compiler-cache-smoke.sh \
+              "/work/$target" clang "${flags[@]}" | tee -a "$RUNNER_TEMP/cache-sdk.log"
+          done
+
+      - name: compiler cache statistics
+        if: always() && !cancelled() && (steps.compile.outcome == 'success' || steps.compile.outcome == 'failure')
+        run: ccache --show-stats
+
+      - name: save compiler cache
+        if: always() && !cancelled() && (steps.compile.outcome == 'success' || steps.compile.outcome == 'failure')
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: compiler-cache-${{ runner.arch }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/cache-smoke-*.log
+            ${{ runner.temp }}/cache-sdk.log
+            ${{ runner.temp }}/cache-proton-options.log
+          if-no-files-found: error
+          retention-days: 7
+
   arm64-control:
     needs: patches
     if: inputs.architecture == 'aarch64-control' && inputs.winrt_http_reference != true
@@ -1728,12 +1855,24 @@ jobs:
     if: inputs.winrt_http_reference != true && (github.event_name == 'push' || inputs.architecture == 'aarch64')
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
+    env:
+      CCACHE_DIR: /home/runner/.cache/soda-ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 2G
     outputs:
       archive_name: ${{ steps.identity.outputs.archive_name }}
       component_name: ${{ steps.identity.outputs.component_name }}
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: restore compiler cache
+        id: compiler-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: soda-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/soda-arm64-sdk.Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: soda-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/soda-arm64-sdk.Dockerfile') }}-
 
       - name: define build identity
         id: identity
@@ -1759,6 +1898,7 @@ jobs:
             libsqlite3-dev \
             libglib2.0-dev \
             g++ \
+            ccache \
             file \
             gcc-mingw-w64-i686 \
             gcc-mingw-w64-x86-64 \
@@ -1769,6 +1909,12 @@ jobs:
           command -v docker
           sudo systemctl start docker
           docker version
+
+      - name: initialize compiler cache
+        run: |
+          mkdir -p "$CCACHE_DIR"
+          ccache --version
+          ccache --show-config
 
       - name: prepare sources
         env:
@@ -1826,9 +1972,10 @@ jobs:
           mkdir /tmp/proton-build
           cd /tmp/proton-build
           /tmp/proton/configure.sh --build-name=soda-arm64 --target-arch=arm64 \
-            --container-engine=docker --proton-sdk-image=soda-arm64-sdk
+            --container-engine=docker --proton-sdk-image=soda-arm64-sdk --enable-ccache
 
       - name: build Wine and FEX
+        id: compile
         working-directory: /tmp/proton-build
         run: |
           make UNSTRIPPED_BUILD=1 WINE_DEPENDS= WINE_aarch64_DEPENDS= wine
@@ -2221,6 +2368,17 @@ jobs:
           "$runner_dir/bin/wine" "$work/service-timeout.exe" run-pass \
             | tr -d '\r' | tee "$work/runtime.log"
           grep -Fx 'SERVICE_START_RESULT failures=0' "$work/runtime.log"
+
+      - name: compiler cache statistics
+        if: always() && !cancelled() && (steps.compile.outcome == 'success' || steps.compile.outcome == 'failure')
+        run: ccache --show-stats
+
+      - name: save compiler cache
+        if: always() && !cancelled() && (steps.compile.outcome == 'success' || steps.compile.outcome == 'failure')
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
   recovery:
     if: >-
