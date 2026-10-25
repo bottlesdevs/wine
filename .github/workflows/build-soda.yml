@@ -160,7 +160,7 @@ jobs:
             ) | Set-Content -Encoding ascii $script
             & cmd.exe /d /c $script
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & $exe $fixtures | Tee-Object -FilePath (Join-Path $work "registry$bits.jsonl")
+            & $exe $fixtures (Join-Path $work "registry$bits.dat") | Tee-Object -FilePath (Join-Path $work "registry$bits.jsonl")
             if ($LASTEXITCODE -ne 0) { $failed = $true }
             if (Get-ChildItem -Force $fixtures) {
               Write-Warning 'Registry fixture files were not removed'

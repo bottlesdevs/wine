@@ -39,7 +39,7 @@ int wmain(int argc, WCHAR **argv)
     HANDLE file;
     LONG ret;
 
-    if (argc != 2 || lstrlenW(argv[1]) > MAX_PATH - 40) return 2;
+    if ((argc != 2 && argc != 3) || lstrlenW(argv[1]) > MAX_PATH - 40) return 2;
     swprintf(path, MAX_PATH, L"%ls\\application.dat", argv[1]);
     swprintf(invalid, MAX_PATH, L"%ls\\invalid.dat", argv[1]);
     swprintf(missing, MAX_PATH, L"%ls\\missing-parent\\application.dat", argv[1]);
@@ -88,6 +88,8 @@ int wmain(int argc, WCHAR **argv)
     subkey = NULL;
     check("close_root", RegCloseKey(root), ERROR_SUCCESS);
     root = NULL;
+    if (argc == 3)
+        check("snapshot", CopyFileW(path, argv[2], TRUE) ? 0 : GetLastError(), ERROR_SUCCESS);
 
     ret = RegLoadAppKeyW(path, &root, KEY_READ, REG_PROCESS_APPKEY, 0);
     check("reopen", ret, ERROR_SUCCESS);
