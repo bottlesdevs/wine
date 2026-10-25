@@ -22,6 +22,11 @@ on:
         required: true
         type: boolean
         default: false
+      winrt_http_reference:
+        description: 'Collect native WinRT HTTP header results'
+        required: true
+        type: boolean
+        default: false
       baseline_run_id:
         description: 'Run ID containing the baseline artifact'
         required: false
@@ -65,8 +70,56 @@ env:
 
 
 jobs:
+  http-reference:
+    if: inputs.winrt_http_reference == true
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: collect WinRT HTTP header results
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:USERPROFILE "artifacts/Soda-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-http-reference"
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $env:TMPDIR = $work
+          $env:TMP = $work
+          $env:TEMP = $work
+          "HTTP_REFERENCE_DIR=$work" | Add-Content $env:GITHUB_ENV
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$visualStudio) { throw 'Visual C++ tools not found' }
+          $vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvarsall.bat'
+          $source = Join-Path $env:GITHUB_WORKSPACE '.github/soda-http-media-reference.c'
+          foreach ($bits in @(64, 32)) {
+            $target = if ($bits -eq 64) { 'amd64' } else { 'x86' }
+            $exe = Join-Path $work "media$bits.exe"
+            $obj = Join-Path $work "media$bits.obj"
+            $script = Join-Path $work "build$bits.cmd"
+            @(
+              '@echo off',
+              "call `"$vcvars`" $target",
+              'if errorlevel 1 exit /b %errorlevel%',
+              "cl /nologo /W4 /O2 /TC `"$source`" /Fe:`"$exe`" /Fo:`"$obj`" runtimeobject.lib",
+              'exit /b %errorlevel%'
+            ) | Set-Content -Encoding ascii $script
+            & cmd.exe /d /c $script
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $exe | Tee-Object -FilePath (Join-Path $work "media$bits.jsonl")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.HTTP_REFERENCE_DIR != ''
+        with:
+          name: winrt-http-reference-${{ github.sha }}
+          path: ${{ env.HTTP_REFERENCE_DIR }}
+          retention-days: 7
+          if-no-files-found: error
+
   patches:
-    if: inputs.recovery_run == ''
+    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -99,7 +152,7 @@ jobs:
 
   build:
     needs: patches
-    if: github.event_name == 'push' || inputs.architecture == 'x86_64'
+    if: inputs.winrt_http_reference != true && (github.event_name == 'push' || inputs.architecture == 'x86_64')
     runs-on: ubuntu-24.04
     outputs:
       archive_name: ${{ steps.identity.outputs.archive_name }}
@@ -1577,7 +1630,7 @@ jobs:
 
   arm64:
     needs: patches
-    if: github.event_name == 'push' || inputs.architecture == 'aarch64'
+    if: inputs.winrt_http_reference != true && (github.event_name == 'push' || inputs.architecture == 'aarch64')
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     outputs:
@@ -2061,6 +2114,7 @@ jobs:
 
   recovery:
     if: >-
+      inputs.winrt_http_reference != true &&
       github.event_name == 'workflow_dispatch' &&
       inputs.recovery_run != '' &&
       github.ref == 'refs/heads/soda'
