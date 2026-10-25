@@ -32,6 +32,22 @@ static void remove_file(const WCHAR *path)
     }
 }
 
+static BOOL copy_hive_snapshot(const WCHAR *path, const WCHAR *destination)
+{
+    WCHAR source_log[MAX_PATH], destination_log[MAX_PATH];
+    unsigned int i;
+
+    if (!CopyFileW(path, destination, TRUE)) return FALSE;
+    for (i = 1; i <= 2; i++)
+    {
+        swprintf(source_log, MAX_PATH, L"%ls.LOG%u", path, i);
+        if (GetFileAttributesW(source_log) == INVALID_FILE_ATTRIBUTES) continue;
+        swprintf(destination_log, MAX_PATH, L"%ls.LOG%u", destination, i);
+        if (!CopyFileW(source_log, destination_log, TRUE)) return FALSE;
+    }
+    return TRUE;
+}
+
 static void test_security(HKEY root, HKEY child)
 {
     SECURITY_INFORMATION info = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
@@ -351,7 +367,7 @@ int wmain(int argc, WCHAR **argv)
     check("close_root", RegCloseKey(root), ERROR_SUCCESS);
     root = NULL;
     if (argc == 3)
-        check("snapshot", CopyFileW(path, argv[2], TRUE) ? 0 : GetLastError(), ERROR_SUCCESS);
+        check("snapshot", copy_hive_snapshot(path, argv[2]) ? 0 : GetLastError(), ERROR_SUCCESS);
 #ifdef REGISTRY_HIVE_CODEC
     test_codec(path, argv[1]);
 #endif
