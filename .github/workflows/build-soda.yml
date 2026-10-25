@@ -40,7 +40,7 @@ permissions:
 env:
   WINE_VERSION: '11.0'
   LLVM_TOOLS_VERSION: '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80'
-  REVISION: '33-experimental'
+  REVISION: '34-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -58,18 +58,17 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-33 Experimental, codenamed Windows Escape, adds Office rendering changes and Eagle fixes. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-34 Experimental, codenamed Windows Escape, adds Outlook profile fixes, Direct2D dashed strokes and Eagle analysis fixes. It remains a prerelease and does not replace the current stable Soda build.
 
-    - Fixed Eagle startup with inherited Python environment settings.
-    - Fixed Eagle pause handling and disconnected control clients.
-    - Kept provider errors in size-limited Eagle reports.
-    - Expanded Eagle scanning for MSI payloads and uppercase executable names.
-    - Added Direct2D affine transforms, bitmap and image brush scaling, and command-list bounds in pixel units.
-    - Updated Direct2D shadows, layers and clipping, plus Composition graphics device replacement.
-    - Refreshed Wayland overlays after scale changes.
-    - Added MAPI wizard forwarding and DWORD service startup timeouts.
-    - Corrected cached personal-account identification.
-    - Updated Vulkan setup for WGL and shared resources.
+    - Fixed Direct2D dashed outlines and their rendering at large coordinate scales.
+    - Fixed MAPI activation through loaded Outlook providers and MIME class lookup.
+    - Fixed Control Panel applet launch and 32/64-bit host selection.
+    - Added Composition inertia resting value objects.
+    - Fixed MSI queries for installed Click-to-Run component metadata.
+    - Fixed WinRT HTTP header interfaces and added media type and name/value headers.
+    - Fixed Eagle compatibility warnings for ARM64 executables.
+    - Fixed Eagle manifest decoding for UTF-16 and legacy encodings.
+    - Kept selected executable names and folders when Eagle analyses symbolic links.
 
 
 jobs:
