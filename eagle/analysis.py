@@ -55,7 +55,7 @@ def analyze(path, progress=None, limit=50, cancel=None):
         raise ValueError('Static analysis is not included in this build')
     work = Path(os.environ.get('TMPDIR', Path.home() / '.cache/eagle/work'))
     work.mkdir(parents=True, exist_ok=True)
-    request = dict(target=str(Path(path).resolve(strict=True)), scan_limit=limit,
+    request = dict(target=str(Path(path).absolute()), scan_limit=limit,
                    work=str(work), extractor_python=sys.executable)
     result = None
     pending = bytearray()

@@ -645,7 +645,8 @@ static json_object *yara_insights(json_object *request)
 static json_object *discover(json_object *request)
 {
     namespace fs = std::filesystem;
-    fs::path executable = fs::canonical(text(request, "path")), directory = executable.parent_path();
+    fs::path executable = fs::absolute(text(request, "path")), directory = executable.parent_path();
+    if (!fs::is_regular_file(executable)) throw std::runtime_error("target must be a regular file");
     auto basename = executable.filename().string(), stem = executable.stem().string();
     auto *details = member(request, "details");
     if (!json_object_is_type(details, json_type_object)) throw std::runtime_error("analysis details are required");
@@ -718,8 +719,9 @@ static json_object *discover(json_object *request)
     }
     for (auto type : {G_USER_DIRECTORY_DOWNLOAD, G_USER_DIRECTORY_DESKTOP, G_USER_DIRECTORY_DOCUMENTS, G_USER_DIRECTORY_TEMPLATES})
         if (auto *path = g_get_user_special_dir(type)) excluded.insert(fs::weakly_canonical(path));
-    auto path = directory.string();
-    bool safe = !excluded.count(directory) && !(path.find("/run/user/") != std::string::npos && path.find("/doc/") != std::string::npos);
+    auto resolved = fs::weakly_canonical(directory);
+    auto path = resolved.string();
+    bool safe = !excluded.count(resolved) && !(path.find("/run/user/") != std::string::npos && path.find("/doc/") != std::string::npos);
     size_t entries = 0;
     std::error_code error;
     if (safe) for (fs::directory_iterator it(directory, error), end; !error && it != end; it.increment(error))

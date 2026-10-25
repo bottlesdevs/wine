@@ -8,6 +8,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 NATIVE = Path(os.environ['EAGLE_PACKAGE']) / 'lib/eagle/native'
@@ -72,6 +73,37 @@ class AnalysisHelpers(unittest.TestCase):
                 (root / 'payload.exe').write_bytes(b'fixture')
                 valid.symlink_to(root / 'payload.exe')
                 self.assertEqual(self.analysis(operation='discover', path=str(target), details=details)['ue_shipping_exe'], str(valid))
+
+    def test_discovery_keeps_the_selected_symlink_location(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = root / 'payload'
+            payload.mkdir()
+            (payload / 'real.exe').write_bytes(b'fixture')
+            (payload / 'renpy').mkdir()
+            target = root / 'selected.exe'
+            target.symlink_to(payload / 'real.exe')
+            (root / 'selected.runtimeconfig.json').write_text('{}')
+            (root / 'selected.pck').write_bytes(b'fixture')
+            details = {name: [] for name in ('Runtimes', 'Engines', 'Frameworks', 'Analysed Files')}
+            result = self.analysis(operation='discover', path=str(target), details=details)
+            self.assertEqual(result['details']['Runtimes'], ['.NET Core/5+'])
+            self.assertEqual(result['details']['Engines'], ['Godot'])
+            self.assertEqual(result['details']['Analysed Files'], ['selected.runtimeconfig.json', 'selected.pck'])
+
+    def test_symlinked_home_directory_still_skips_neighbors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / 'home'
+            home.mkdir()
+            (home / 'app.exe').write_bytes(b'fixture')
+            (home / 'unrelated.dll').write_bytes(b'fixture')
+            selected = root / 'selected'
+            selected.symlink_to(home, target_is_directory=True)
+            details = {name: [] for name in ('Runtimes', 'Engines', 'Frameworks', 'Analysed Files')}
+            with patch.dict(os.environ, HOME=str(home)):
+                result = self.analysis(operation='discover', path=str(selected / 'app.exe'), details=details)
+            self.assertEqual(result['neighbors'], [])
 
     def test_asar_invalid_directory_tables_are_rejected(self):
         for table in (None, [], False, ''):

@@ -363,7 +363,7 @@ public:
     {
         auto *path = get(request, "target");
         if (!json_object_is_type(path, json_type_string)) throw std::runtime_error("target must be a path string");
-        target = fs::canonical(text(path));
+        target = fs::absolute(text(path));
         if (!fs::is_regular_file(target)) throw std::runtime_error("target must be a regular file");
         auto *limit = get(request, "scan_limit");
         if (limit && (!json_object_is_type(limit, json_type_int) || json_object_get_int64(limit) < 1 || json_object_get_int64(limit) > 10000)) throw std::runtime_error("scan limit must be between 1 and 10000");

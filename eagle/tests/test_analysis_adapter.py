@@ -81,6 +81,21 @@ class AnalysisAdapter(unittest.TestCase):
                 self.assertEqual(result.stdout, '')
                 self.assertIn('unexpected analysis response', result.stderr)
 
+    def test_cli_keeps_the_selected_symlink_name_and_context(self):
+        for name in ('selected.exe', 'Caf\u00e9.exe'):
+            with self.subTest(name=name):
+                target = self.root / name
+                target.symlink_to(self.target)
+                marker = target.stem + '.runtimeconfig.json'
+                (self.root / marker).write_text('{}')
+                path = str(target) if name == 'selected.exe' else os.path.relpath(target)
+                result = self.cli('analyze', path, '--scan-limit', '1')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout)['data']
+                self.assertEqual(report['name'], name)
+                self.assertEqual(report['details']['Analysed Files'], [name, marker])
+                self.assertIn('.NET Core/5+', report['details']['Runtimes'])
+
     def test_stdio_rejects_truncated_headers(self):
         self.assertIsNone(read_message(io.BytesIO(b'')))
         for fragment in (b'Content-Length: 2', b'Content-Length: 2\r\n',
