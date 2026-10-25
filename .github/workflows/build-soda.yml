@@ -18,6 +18,7 @@ on:
           - aarch64
           - aarch64-control
           - compiler-cache
+          - d2d-reference
         default: x86_64
       pgo:
         description: 'Build a PGO candidate'
@@ -120,8 +121,56 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  d2d-reference:
+    if: inputs.architecture == 'd2d-reference' && inputs.winrt_http_reference != true
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: verify scaled Direct2D dashed strokes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:USERPROFILE "artifacts/Soda-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-d2d-reference"
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $env:TMPDIR = $work
+          $env:TMP = $work
+          $env:TEMP = $work
+          "D2D_REFERENCE_DIR=$work" | Add-Content $env:GITHUB_ENV
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$visualStudio) { throw 'Visual C++ tools not found' }
+          $vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvarsall.bat'
+          $source = Join-Path $env:GITHUB_WORKSPACE '.github/soda-d2d-scaled-dashes.cpp'
+          foreach ($bits in @(64, 32)) {
+            $target = if ($bits -eq 64) { 'amd64' } else { 'x86' }
+            $exe = Join-Path $work "dashes$bits.exe"
+            $obj = Join-Path $work "dashes$bits.obj"
+            $script = Join-Path $work "build$bits.cmd"
+            @(
+              '@echo off',
+              "call `"$vcvars`" $target",
+              'if errorlevel 1 exit /b %errorlevel%',
+              "cl /nologo /W4 /O2 /EHsc `"$source`" /Fe:`"$exe`" /Fo:`"$obj`" /link d2d1.lib windowscodecs.lib ole32.lib uuid.lib",
+              'exit /b %errorlevel%'
+            ) | Set-Content -Encoding ascii $script
+            & cmd.exe /d /c $script
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $exe | Tee-Object -FilePath (Join-Path $work "dashes$bits.log")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.D2D_REFERENCE_DIR != ''
+        with:
+          name: d2d-scaled-reference-${{ github.sha }}
+          path: ${{ env.D2D_REFERENCE_DIR }}
+          retention-days: 7
+          if-no-files-found: error
+
   patches:
-    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true
+    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -1238,6 +1287,12 @@ jobs:
             "$runner_dir/bin/wine" "$smoke_dir/dashes$bits.exe" "Z:$smoke_dir/dashes$bits.png" \
               | tr -d '\r' | tee "$smoke_dir/dashes$bits.log"
             grep -E '^DASH_RESULT checks=[1-9][0-9]* failures=0$' "$smoke_dir/dashes$bits.log"
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-d2d-scaled-dashes.cpp" \
+              -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
+              -ld2d1 -lwindowscodecs -lole32 -luuid -o "$smoke_dir/scaled$bits.exe"
+            "$runner_dir/bin/wine" "$smoke_dir/scaled$bits.exe" \
+              | tr -d '\r' | tee "$smoke_dir/scaled$bits.log"
+            grep -E '^SCALED_DASH_RESULT checks=[1-9][0-9]* failures=0$' "$smoke_dir/scaled$bits.log"
           done
           "$runner_dir/bin/wineserver" -w
 
@@ -2181,6 +2236,10 @@ jobs:
               -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
               -ld2d1 -lwindowscodecs -lole32 -luuid \
               -o "$RUNNER_TEMP/soda-office-winrt/dashes$bits.exe"
+            "${compiler%gcc}g++" .github/soda-d2d-scaled-dashes.cpp \
+              -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
+              -ld2d1 -lwindowscodecs -lole32 -luuid \
+              -o "$RUNNER_TEMP/soda-office-winrt/scaled-dashes$bits.exe"
             "$compiler" .github/soda-http-media-reference.c \
               -O2 -Wall -Wextra -Werror -lruntimeobject \
               -o "$RUNNER_TEMP/soda-office-winrt/http-media$bits.exe"
@@ -2276,6 +2335,9 @@ jobs:
               "Z:$RUNNER_TEMP/soda-office-winrt/dashes$arch.png" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/dashes$arch.log"
             grep -E '^DASH_RESULT checks=[1-9][0-9]* failures=0$' "$RUNNER_TEMP/soda-office-winrt/dashes$arch.log"
+            LIBGL_ALWAYS_SOFTWARE=1 "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/scaled-dashes$arch.exe" \
+              | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/scaled-dashes$arch.log"
+            grep -E '^SCALED_DASH_RESULT checks=[1-9][0-9]* failures=0$' "$RUNNER_TEMP/soda-office-winrt/scaled-dashes$arch.log"
             for apartment in sta mta; do
               "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/inertia$arch.exe" "$apartment" \
                 | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/inertia$arch-$apartment.log"

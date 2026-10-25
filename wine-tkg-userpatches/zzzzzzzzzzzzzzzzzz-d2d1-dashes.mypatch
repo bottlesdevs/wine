@@ -374,7 +374,7 @@ diff --git a/dlls/d2d1/geometry.c b/dlls/d2d1/geometry.c
 diff --git a/dlls/d2d1/device.c b/dlls/d2d1/device.c
 --- a/dlls/d2d1/device.c
 +++ b/dlls/d2d1/device.c
-@@ -1696,14 +1696,29 @@
+@@ -1696,14 +1696,42 @@
          return;
      }
  
@@ -386,11 +386,24 @@ diff --git a/dlls/d2d1/device.c b/dlls/d2d1/device.c
 +
 +    if (stroke_style_impl && stroke_style_impl->dash_count)
 +    {
++        D2D1_MATRIX_3X2_F transform = context->drawing_state.transform;
++        float scale, tolerance = D2D1_DEFAULT_FLATTENING_TOLERANCE;
 +        ID2D1PathGeometry *dashed;
 +        HRESULT hr;
 +
++        if (context->drawing_state.unitMode != D2D1_UNIT_MODE_PIXELS)
++        {
++            transform._11 *= context->desc.dpiX / 96.0f;
++            transform._21 *= context->desc.dpiX / 96.0f;
++            transform._12 *= context->desc.dpiY / 96.0f;
++            transform._22 *= context->desc.dpiY / 96.0f;
++        }
++        scale = D2D1ComputeMaximumScaleFactor(&transform);
++        if (scale > 0.0f && isfinite(scale))
++            tolerance /= scale;
++
 +        if (SUCCEEDED(hr = d2d_geometry_create_dashed(geometry, stroke_style_impl, stroke_width,
-+                D2D1_DEFAULT_FLATTENING_TOLERANCE, &dashed)))
++                tolerance, &dashed)))
 +        {
 +            ID2D1DeviceContext6_FillGeometry(iface, (ID2D1Geometry *)dashed, brush, NULL);
 +            ID2D1PathGeometry_Release(dashed);
