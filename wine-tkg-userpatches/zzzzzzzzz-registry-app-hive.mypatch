@@ -1,0 +1,1056 @@
+diff --git a/dlls/kernelbase/registry.c b/dlls/kernelbase/registry.c
+--- a/dlls/kernelbase/registry.c
++++ b/dlls/kernelbase/registry.c
+@@ -402,10 +402,10 @@
+ }
+ 
+ static NTSTATUS create_key( HKEY *retkey, HKEY root, UNICODE_STRING name, ULONG options, ACCESS_MASK access,
+-                            const UNICODE_STRING *class, PULONG dispos );
++                            const UNICODE_STRING *class, PULONG dispos, const SECURITY_ATTRIBUTES *sa );
+ 
+ static NTSTATUS create_subkey( HKEY *subkey, HKEY root, UNICODE_STRING *name, DWORD options, ACCESS_MASK access,
+-                               const UNICODE_STRING *class, PULONG dispos )
++                               const UNICODE_STRING *class, PULONG dispos, const SECURITY_ATTRIBUTES *sa )
+ {
+     ACCESS_MASK access_64 = access & ~KEY_WOW64_32KEY;
+     DWORD i = 0, len = name->Length / sizeof(WCHAR);
+@@ -422,7 +422,7 @@
+     if (i < len)
+         options &= ~REG_OPTION_CREATE_LINK;
+ 
+-    status = create_key( subkey, root, str, options, access_64, class, dispos );
++    status = create_key( subkey, root, str, options, access_64, class, dispos, i < len ? NULL : sa );
+     if (!status)
+     {
+         while (i < len && buffer[i] == '\\') i++;
+@@ -436,7 +436,7 @@
+ 
+ /* wrapper for NtCreateKey that creates the key recursively if necessary */
+ static NTSTATUS create_key( HKEY *retkey, HKEY root, UNICODE_STRING name, ULONG options, ACCESS_MASK access,
+-                            const UNICODE_STRING *class, PULONG dispos )
++                            const UNICODE_STRING *class, PULONG dispos, const SECURITY_ATTRIBUTES *sa )
+ {
+     NTSTATUS status = STATUS_OBJECT_NAME_NOT_FOUND;
+     HKEY subkey, subkey_root = root;
+@@ -447,7 +447,8 @@
+     {
+         OBJECT_ATTRIBUTES attr;
+ 
+-        InitializeObjectAttributes( &attr, &name, 0, root, NULL );
++        InitializeObjectAttributes( &attr, &name, sa && sa->bInheritHandle ? OBJ_INHERIT : 0,
++                                    root, sa ? sa->lpSecurityDescriptor : NULL );
+         if (options & REG_OPTION_OPEN_LINK) attr.Attributes |= OBJ_OPENLINK;
+ 
+         status = NtCreateKey( (HANDLE *)retkey, access, &attr, 0, class, options, dispos );
+@@ -476,7 +477,7 @@
+         status = STATUS_SUCCESS;
+         while (!status && name.Length)
+         {
+-            status = create_subkey( &subkey, subkey_root, &name, options, access, class, dispos );
++            status = create_subkey( &subkey, subkey_root, &name, options, access, class, dispos, sa );
+             if (subkey_root && subkey_root != root) NtClose( subkey_root );
+             subkey_root = subkey;
+         }
+@@ -504,7 +505,7 @@
+         UNICODE_STRING name;
+ 
+         RtlInitUnicodeString( &name, root_key_names[idx] );
+-        if (create_key( &hkey, 0, name, 0, access, NULL, NULL )) return 0;
++        if (create_key( &hkey, 0, name, 0, access, NULL, NULL, NULL )) return 0;
+         TRACE( "%s -> %p\n", debugstr_w(name.Buffer), hkey );
+     }
+ 
+@@ -620,7 +621,7 @@
+     RtlInitUnicodeString( &nameW, name );
+     RtlInitUnicodeString( &classW, class );
+ 
+-    return RtlNtStatusToDosError( create_key( retkey, hkey, nameW, options, access, &classW, dispos ) );
++    return RtlNtStatusToDosError( create_key( retkey, hkey, nameW, options, access, &classW, dispos, sa ) );
+ }
+ 
+ 
+@@ -672,7 +673,7 @@
+     {
+         if (!(status = RtlAnsiStringToUnicodeString( &classW, &classA, TRUE )))
+         {
+-            status = create_key( retkey, hkey, NtCurrentTeb()->StaticUnicodeString, options, access, &classW, dispos );
++            status = create_key( retkey, hkey, NtCurrentTeb()->StaticUnicodeString, options, access, &classW, dispos, sa );
+             RtlFreeUnicodeString( &classW );
+         }
+     }
+@@ -3256,13 +3257,14 @@
+  */
+ LSTATUS WINAPI RegLoadAppKeyA(const char *file, HKEY *result, REGSAM sam, DWORD options, DWORD reserved)
+ {
+-    FIXME("%s %p %lu %lu %lu: stub\n", wine_dbgstr_a(file), result, sam, options, reserved);
+-
+-    if (!file || reserved)
+-        return ERROR_INVALID_PARAMETER;
+-
+-    *result = (HKEY)0xdeadbeef;
+-    return ERROR_SUCCESS;
++    UNICODE_STRING name;
++    LSTATUS ret;
++
++    if (!file) return ERROR_INVALID_PARAMETER;
++    if (!RtlCreateUnicodeStringFromAsciiz( &name, file )) return ERROR_NOT_ENOUGH_MEMORY;
++    ret = RegLoadAppKeyW( name.Buffer, result, sam, options, reserved );
++    RtlFreeUnicodeString( &name );
++    return ret;
+ }
+ 
+ /******************************************************************************
+@@ -3271,13 +3273,20 @@
+  */
+ LSTATUS WINAPI RegLoadAppKeyW(const WCHAR *file, HKEY *result, REGSAM sam, DWORD options, DWORD reserved)
+ {
+-    FIXME("%s %p %lu %lu %lu: stub\n", wine_dbgstr_w(file), result, sam, options, reserved);
+-
+-    if (!file || reserved)
+-        return ERROR_INVALID_PARAMETER;
+-
+-    *result = (HKEY)0xdeadbeef;
+-    return ERROR_SUCCESS;
++    OBJECT_ATTRIBUTES target, source;
++    UNICODE_STRING name;
++    NTSTATUS status;
++    ULONG flags = REG_APP_HIVE;
++
++    TRACE( "%s %p %#lx %#lx %#lx\n", debugstr_w(file), result, sam, options, reserved );
++    if (!file || !result || reserved || (options & ~REG_PROCESS_APPKEY)) return ERROR_INVALID_PARAMETER;
++    if (!RtlDosPathNameToNtPathName_U( file, &name, NULL, NULL )) return ERROR_INVALID_PARAMETER;
++    if (options & REG_PROCESS_APPKEY) flags |= REG_PROCESS_PRIVATE;
++    InitializeObjectAttributes( &target, NULL, OBJ_CASE_INSENSITIVE, NULL, NULL );
++    InitializeObjectAttributes( &source, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
++    status = NtLoadKeyEx( &target, &source, flags, NULL, NULL, sam, (HANDLE *)result, NULL );
++    RtlFreeUnicodeString( &name );
++    return RtlNtStatusToDosError( status );
+ }
+ 
+ 
+diff --git a/dlls/ntdll/unix/registry.c b/dlls/ntdll/unix/registry.c
+--- a/dlls/ntdll/unix/registry.c
++++ b/dlls/ntdll/unix/registry.c
+@@ -1104,6 +1104,32 @@
+     return NtLoadKeyEx( attr, file, flags, 0, 0, 0, NULL, NULL );
+ }
+ 
++static NTSTATUS load_app_hive( OBJECT_ATTRIBUTES *file, ULONG flags, ACCESS_MASK access, HANDLE *root )
++{
++    IO_STATUS_BLOCK io;
++    HANDLE handle;
++    NTSTATUS status;
++    ULONG sharing = flags & REG_PROCESS_PRIVATE ? 0 : FILE_SHARE_READ | FILE_SHARE_WRITE;
++
++    if (!root || !file) return STATUS_INVALID_PARAMETER;
++    status = NtCreateFile( &handle, GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE, file, &io,
++                          NULL, 0, sharing, FILE_OPEN_IF,
++                          FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0 );
++    if (status) return status;
++    SERVER_START_REQ( load_app_hive )
++    {
++        req->file = wine_server_obj_handle( handle );
++        req->flags = flags & REG_PROCESS_PRIVATE;
++        req->access = access;
++        req->created = io.Information == FILE_CREATED;
++        status = wine_server_call( req );
++        if (!status) *root = wine_server_ptr_handle( reply->hkey );
++    }
++    SERVER_END_REQ;
++    NtClose( handle );
++    return status;
++}
++
+ /******************************************************************************
+  *              NtLoadKeyEx  (NTDLL.@)
+  */
+@@ -1116,10 +1142,24 @@
+     struct object_attributes *objattr;
+     char *unix_name;
+     UNICODE_STRING nt_name;
+-    OBJECT_ATTRIBUTES new_attr = *file;
++    OBJECT_ATTRIBUTES new_attr;
+ 
+     TRACE( "(%p,%p,0x%x,%p,%p,0x%x,%p,%p)\n",
+            attr, file, flags, trustkey, event, access, roothandle, iostatus );
++
++    if (flags & REG_APP_HIVE)
++    {
++        if ((flags & ~(REG_APP_HIVE | REG_PROCESS_PRIVATE)) || trustkey || event)
++            return STATUS_INVALID_PARAMETER;
++        ret = load_app_hive( file, flags, access, roothandle );
++        if (iostatus)
++        {
++            iostatus->Status = ret;
++            iostatus->Information = 0;
++        }
++        return ret;
++    }
++    new_attr = *file;
+ 
+     if (flags) FIXME( "flags %x not handled\n", flags );
+     if (trustkey) FIXME("trustkey parameter not supported\n");
+diff --git a/dlls/wow64/registry.c b/dlls/wow64/registry.c
+--- a/dlls/wow64/registry.c
++++ b/dlls/wow64/registry.c
+@@ -192,15 +192,17 @@
+     HANDLE trustkey = get_handle( &args );
+     HANDLE event = get_handle( &args );
+     ACCESS_MASK desired_access = get_ulong( &args );
+-    HANDLE *rootkey = get_ptr( &args );
++    ULONG *rootkey32 = get_ptr( &args );
+     IO_STATUS_BLOCK32 *io32 = get_ptr( &args );
+ 
+     struct object_attr64 attr, file;
+     IO_STATUS_BLOCK io;
++    HANDLE rootkey = 0;
+     NTSTATUS status;
+ 
+     status = NtLoadKeyEx( objattr_32to64( &attr, attr32 ), objattr_32to64( &file, file32 ), flags,
+-                        trustkey, event, desired_access, rootkey, iosb_32to64( &io, io32 ) );
++                        trustkey, event, desired_access, rootkey32 ? &rootkey : NULL, iosb_32to64( &io, io32 ) );
++    if (rootkey32 && !status) put_handle( rootkey32, rootkey );
+     put_iosb( io32, &io );
+     return status;
+ }
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -6262,6 +6262,23 @@
+ struct fsync_free_shm_idx_reply
+ {
+     struct reply_header __header;
++};
++
++
++struct load_app_hive_request
++{
++    struct request_header __header;
++    obj_handle_t file;
++    unsigned int flags;
++    unsigned int access;
++    unsigned int created;
++    char __pad_28[4];
++};
++struct load_app_hive_reply
++{
++    struct reply_header __header;
++    obj_handle_t hkey;
++    char __pad_12[4];
+ };
+ 
+ 
+@@ -6577,6 +6594,7 @@
+     REQ_d3dkmt_mutex_acquire,
+     REQ_d3dkmt_mutex_release,
+     REQ_fsync_free_shm_idx,
++    REQ_load_app_hive,
+     REQ_NB_REQUESTS
+ };
+ 
+@@ -6894,6 +6912,7 @@
+     struct d3dkmt_mutex_acquire_request d3dkmt_mutex_acquire_request;
+     struct d3dkmt_mutex_release_request d3dkmt_mutex_release_request;
+     struct fsync_free_shm_idx_request fsync_free_shm_idx_request;
++    struct load_app_hive_request load_app_hive_request;
+ };
+ union generic_reply
+ {
+@@ -7209,8 +7228,9 @@
+     struct d3dkmt_mutex_acquire_reply d3dkmt_mutex_acquire_reply;
+     struct d3dkmt_mutex_release_reply d3dkmt_mutex_release_reply;
+     struct fsync_free_shm_idx_reply fsync_free_shm_idx_reply;
+-};
+-
+-#define SERVER_PROTOCOL_VERSION 932
++    struct load_app_hive_reply load_app_hive_reply;
++};
++
++#define SERVER_PROTOCOL_VERSION 934
+ 
+ #endif /* __WINE_WINE_SERVER_PROTOCOL_H */
+diff --git a/server/Makefile.in b/server/Makefile.in
+--- a/server/Makefile.in
++++ b/server/Makefile.in
+@@ -32,6 +32,7 @@
+ 	queue.c \
+ 	region.c \
+ 	registry.c \
++	registry_hive.c \
+ 	request.c \
+ 	security.h \
+ 	semaphore.c \
+diff --git a/server/handle.c b/server/handle.c
+--- a/server/handle.c
++++ b/server/handle.c
+@@ -101,6 +101,7 @@
+ static struct object *grab_object_for_handle( struct object *obj )
+ {
+     obj->handle_count++;
++    registry_open_handle( obj );
+     obj->ops->type->handle_count++;
+     obj->ops->type->handle_max = max( obj->ops->type->handle_max, obj->ops->type->handle_count );
+     return grab_object( obj );
+diff --git a/server/object.h b/server/object.h
+--- a/server/object.h
++++ b/server/object.h
+@@ -146,6 +146,7 @@
+ extern void *mem_alloc( size_t size ) __WINE_ALLOC_SIZE(1) __WINE_DEALLOC(free) __WINE_MALLOC;
+ extern void *memdup( const void *data, size_t len ) __WINE_ALLOC_SIZE(2) __WINE_DEALLOC(free);
+ extern void *alloc_object( const struct object_ops *ops );
++extern void registry_open_handle( struct object *obj );
+ extern void namespace_add( struct namespace *namespace, struct object_name *ptr );
+ extern const WCHAR *get_object_name( struct object *obj, data_size_t *len );
+ extern WCHAR *default_get_full_name( struct object *obj, data_size_t max, data_size_t *ret_len ) __WINE_DEALLOC(free) __WINE_MALLOC;
+diff --git a/server/protocol.def b/server/protocol.def
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -4353,3 +4353,13 @@
+     unsigned int shm_idx;
+ @REPLY
+ @END
++
++/* Load a private or shared application registry hive. */
++@REQ(load_app_hive)
++    obj_handle_t file;
++    unsigned int flags;
++    unsigned int access;
++    unsigned int created;
++@REPLY
++    obj_handle_t hkey;
++@END
+diff --git a/server/registry.c b/server/registry.c
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -52,6 +52,7 @@
+ #include "security.h"
+ 
+ #include "winternl.h"
++#include "registry_hive.h"
+ 
+ struct notify
+ {
+@@ -78,10 +79,14 @@
+     },
+ };
+ 
++struct app_hive;
++
+ /* a registry key */
+ struct key
+ {
+     struct object     obj;         /* object header */
++    struct app_hive   *hive;
++    struct list       hive_entry;
+     WCHAR            *class;       /* key class */
+     data_size_t       classlen;    /* length of class name */
+     int               last_subkey; /* last in use subkey */
+@@ -97,6 +102,24 @@
+     abstime_t         timestamp_counter; /* timestamp counter at last change */
+ };
+ 
++struct app_hive
++{
++    struct list entry, keys;
++    struct key *root;
++    struct file *file;
++    unsigned int flags, handles;
++    uint32_t sequence;
++    char *filename;
++    dev_t device;
++    ino_t inode;
++    WCHAR *name;
++    size_t namelen, sd_size, security_size;
++    void *security;
++};
++
++static struct list app_hives = LIST_INIT(app_hives);
++static void app_hive_close_handle( struct key *key );
++
+ /* key flags */
+ #define KEY_VOLATILE 0x0001  /* key is volatile (not saved to disk) */
+ #define KEY_DELETED  0x0002  /* key has been deleted */
+@@ -176,6 +199,7 @@
+ static void key_unlink_name( struct object *obj, struct object_name *name );
+ static int key_close_handle( struct object *obj, struct process *process, obj_handle_t handle );
+ static void key_destroy( struct object *obj );
++static int key_set_sd( struct object *obj, const struct security_descriptor *sd, unsigned int info );
+ 
+ static const struct object_ops key_ops =
+ {
+@@ -191,7 +215,7 @@
+     default_get_sync,        /* get_sync */
+     key_map_access,          /* map_access */
+     key_get_sd,              /* get_sd */
+-    default_set_sd,          /* set_sd */
++    key_set_sd,              /* set_sd */
+     key_get_full_name,       /* get_full_name */
+     key_lookup_name,         /* lookup_name */
+     key_link_name,           /* link_name */
+@@ -434,6 +458,7 @@
+     static struct security_descriptor *key_default_sd;
+ 
+     if (obj->sd) return obj->sd;
++    if (((struct key *)obj)->hive) return ((struct key *)obj)->hive->root->obj.sd;
+ 
+     if (!key_default_sd)
+     {
+@@ -652,12 +677,23 @@
+     }
+ }
+ 
++static int key_set_sd( struct object *obj, const struct security_descriptor *sd, unsigned int info )
++{
++    if (((struct key *)obj)->hive)
++    {
++        set_error( STATUS_ACCESS_DENIED );
++        return 0;
++    }
++    return default_set_sd( obj, sd, info );
++}
++
+ /* close the notification associated with a handle */
+ static int key_close_handle( struct object *obj, struct process *process, obj_handle_t handle )
+ {
+     struct key * key = (struct key *) obj;
+     struct notify *notify = find_notify( key, process, handle );
+     if (notify) do_notification( key, notify, 1 );
++    if (key->hive) app_hive_close_handle( key );
+     return 1;  /* ok to close */
+ }
+ 
+@@ -668,6 +704,7 @@
+     struct key *key = (struct key *)obj;
+     assert( obj->ops == &key_ops );
+ 
++    if (key->hive) list_remove( &key->hive_entry );
+     free( key->class );
+     for (i = 0; i <= key->last_value; i++)
+     {
+@@ -696,7 +733,7 @@
+ {
+     struct key *key;
+ 
+-    if (!name->len) return open_named_object( parent, &key_ops, name, attributes );
++    if (!name->len && parent) return open_named_object( parent, &key_ops, name, attributes );
+ 
+     if ((key = create_named_object( parent, &key_ops, name, attributes, sd )))
+     {
+@@ -716,6 +753,10 @@
+             key->modif       = modif;
+             key->timestamp_counter = 0;
+             list_init( &key->notify_list );
++            list_init( &key->hive_entry );
++            key->hive = NULL;
++            if (parent && parent->ops == &key_ops && (key->hive = ((struct key *)parent)->hive))
++                list_add_tail( &key->hive->keys, &key->hive_entry );
+ 
+             if (options & REG_OPTION_CREATE_LINK) key->flags |= KEY_SYMLINK;
+             if (options & REG_OPTION_VOLATILE) key->flags |= KEY_VOLATILE;
+@@ -874,6 +915,13 @@
+     }
+     else
+     {
++        if (key->hive && sd)
++        {
++            unlink_named_object( &key->obj );
++            release_object( key );
++            set_error( STATUS_ACCESS_DENIED );
++            return NULL;
++        }
+         if (parent) touch_key( get_parent( key ), REG_NOTIFY_CHANGE_NAME );
+         if (debug_level > 1) dump_operation( key, NULL, "Create" );
+     }
+@@ -2325,6 +2373,493 @@
+     }
+ }
+ 
++static struct security_descriptor *app_hive_security( const void *data, size_t size )
++{
++    const SECURITY_DESCRIPTOR_RELATIVE *relative = data;
++    const unsigned char *bytes = data;
++    struct security_descriptor *sd;
++    unsigned int offsets[4], lengths[4], i, total = 0;
++    char *out;
++
++    if (size < sizeof(*relative) || relative->Revision != SECURITY_DESCRIPTOR_REVISION ||
++        !(relative->Control & SE_SELF_RELATIVE)) goto invalid;
++    offsets[0] = relative->Owner;
++    offsets[1] = relative->Group;
++    offsets[2] = relative->Sacl;
++    offsets[3] = relative->Dacl;
++    for (i = 0; i < 4; i++)
++    {
++        lengths[i] = 0;
++        if (!offsets[i]) continue;
++        if (offsets[i] < sizeof(*relative) || offsets[i] > size || size - offsets[i] < 8) goto invalid;
++        if (i < 2) lengths[i] = 8 + bytes[offsets[i] + 1] * 4;
++        else
++        {
++            unsigned short length;
++            memcpy( &length, bytes + offsets[i] + 2, sizeof(length) );
++            lengths[i] = length;
++            if (length < 8) goto invalid;
++        }
++        if (lengths[i] > size - offsets[i]) goto invalid;
++        total += lengths[i];
++    }
++    if (!(sd = mem_alloc( sizeof(*sd) + total ))) return NULL;
++    sd->control = relative->Control & ~SE_SELF_RELATIVE;
++    sd->owner_len = lengths[0];
++    sd->group_len = lengths[1];
++    sd->sacl_len = lengths[2];
++    sd->dacl_len = lengths[3];
++    out = (char *)(sd + 1);
++    for (i = 0; i < 4; i++)
++    {
++        if (lengths[i]) memcpy( out, bytes + offsets[i], lengths[i] );
++        out += lengths[i];
++    }
++    if (sd_is_valid( sd, sizeof(*sd) + total )) return sd;
++    free( sd );
++invalid:
++    set_error( STATUS_REGISTRY_CORRUPT );
++    return NULL;
++}
++
++static void *app_hive_relative_security( const struct security_descriptor *sd, size_t *size )
++{
++    SECURITY_DESCRIPTOR_RELATIVE *relative;
++    unsigned int offset = sizeof(*relative);
++
++    *size = sizeof(*relative) + sd->owner_len + sd->group_len + sd->sacl_len + sd->dacl_len;
++    if (!(relative = mem_alloc( *size ))) return NULL;
++    memset( relative, 0, sizeof(*relative) );
++    relative->Revision = SECURITY_DESCRIPTOR_REVISION;
++    relative->Control = sd->control | SE_SELF_RELATIVE;
++    if (sd->owner_len) relative->Owner = offset;
++    offset += sd->owner_len;
++    if (sd->group_len) relative->Group = offset;
++    offset += sd->group_len;
++    if (sd->sacl_len) relative->Sacl = offset;
++    offset += sd->sacl_len;
++    if (sd->dacl_len) relative->Dacl = offset;
++    memcpy( relative + 1, sd + 1, *size - sizeof(*relative) );
++    return relative;
++}
++
++static int app_hive_import( struct app_hive *hive, struct key *key, const struct reg_hive_key *tree )
++{
++    struct security_descriptor *sd;
++    struct key *child;
++    struct unicode_str name;
++    size_t i, j, size;
++
++    if (!(sd = app_hive_security( tree->security, tree->security_size ))) return 0;
++    size = sizeof(*sd) + sd->owner_len + sd->group_len + sd->sacl_len + sd->dacl_len;
++    if (size != hive->sd_size || memcmp( sd, hive->root->obj.sd, size ))
++    {
++        free( sd );
++        set_error( STATUS_REGISTRY_CORRUPT );
++        return 0;
++    }
++    free( key->obj.sd );
++    key->obj.sd = sd;
++    key->modif = tree->modified;
++    if (tree->classlen)
++    {
++        key->classlen = tree->classlen * sizeof(WCHAR);
++        if (!(key->class = memdup( tree->class_name, key->classlen ))) return 0;
++    }
++    for (i = 0; i < tree->value_count; i++)
++    {
++        const struct reg_hive_value *value = tree->values + i;
++        name.str = value->name;
++        name.len = value->namelen * sizeof(WCHAR);
++        if (name.len > MAX_VALUE_LEN * sizeof(WCHAR) || value->size > UINT_MAX)
++        {
++            set_error( STATUS_REGISTRY_CORRUPT );
++            return 0;
++        }
++        set_value( key, &name, value->type, value->data, value->size );
++        if (get_error()) return 0;
++    }
++    for (i = 0; i < tree->child_count; i++)
++    {
++        name.str = tree->children[i]->name;
++        name.len = tree->children[i]->namelen * sizeof(WCHAR);
++        for (j = 0; j < name.len / sizeof(WCHAR); j++) if (name.str[j] == '\\') break;
++        if (!name.len || name.len > MAX_NAME_LEN * sizeof(WCHAR) || j != name.len / sizeof(WCHAR))
++        {
++            set_error( STATUS_REGISTRY_CORRUPT );
++            return 0;
++        }
++        if (!(child = create_key_object( &key->obj, &name, OBJ_CASE_INSENSITIVE, 0,
++                                         tree->children[i]->modified, sd ))) return 0;
++        if (!app_hive_import( hive, child, tree->children[i] ))
++        {
++            release_object( child );
++            return 0;
++        }
++        release_object( child );
++    }
++    return 1;
++}
++
++static struct reg_hive_key *app_hive_export( struct app_hive *hive, const struct key *key )
++{
++    struct reg_hive_key *tree;
++    const WCHAR *name = key == hive->root ? hive->name : key->obj.name->name;
++    size_t namelen = key == hive->root ? hive->namelen : key->obj.name->len;
++    size_t i;
++
++    if (!(tree = calloc( 1, sizeof(*tree) ))) goto failed;
++    tree->namelen = namelen / sizeof(WCHAR);
++    if (!(tree->name = memdup( name, namelen ))) goto failed;
++    tree->modified = key->modif;
++    tree->security_size = hive->security_size;
++    if (!(tree->security = memdup( hive->security, hive->security_size ))) goto failed;
++    tree->classlen = key->classlen / sizeof(WCHAR);
++    if (key->classlen && !(tree->class_name = memdup( key->class, key->classlen ))) goto failed;
++    if (key->last_value >= 0 && !(tree->values = calloc( key->last_value + 1, sizeof(*tree->values) ))) goto failed;
++    for (i = 0; i < (size_t)(key->last_value + 1); i++)
++    {
++        struct reg_hive_value *value = tree->values + i;
++        const struct key_value *input = key->values + i;
++        tree->value_count++;
++        value->namelen = input->namelen / sizeof(WCHAR);
++        value->type = input->type;
++        value->size = input->len;
++        if (input->namelen && !(value->name = memdup( input->name, input->namelen ))) goto failed;
++        if (input->len && !(value->data = memdup( input->data, input->len ))) goto failed;
++    }
++    if (key->last_subkey >= 0 && !(tree->children = calloc( key->last_subkey + 1, sizeof(*tree->children) ))) goto failed;
++    for (i = 0; i < (size_t)(key->last_subkey + 1); i++)
++    {
++        if (key->subkeys[i]->flags & KEY_VOLATILE) continue;
++        if (!(tree->children[tree->child_count] = app_hive_export( hive, key->subkeys[i] ))) goto failed;
++        tree->child_count++;
++    }
++    return tree;
++failed:
++    reg_hive_free( tree );
++    set_error( STATUS_NO_MEMORY );
++    return NULL;
++}
++
++static int app_hive_write( int fd, const void *data, size_t size, off_t offset )
++{
++    size_t done = 0;
++    ssize_t count;
++
++    while (done < size)
++    {
++        count = pwrite( fd, (const char *)data + done, size - done, offset + done );
++        if (count == -1 && errno == EINTR) continue;
++        if (count <= 0) return 0;
++        done += count;
++    }
++    return 1;
++}
++
++static int app_hive_write_log( struct app_hive *hive, const void *data, size_t size )
++{
++    void *log = NULL;
++    char *path = NULL, *temporary = NULL, *directory = NULL, *slash;
++    size_t log_size, length = strlen( hive->filename );
++    int fd = -1, dir = -1, ret = 0;
++
++    if (reg_hive_log_encode( data, size, hive->sequence, &log, &log_size )) goto done;
++    if (!(path = malloc( length + 6 )) || !(temporary = malloc( length + 13 )) ||
++        !(directory = strdup( hive->filename ))) goto done;
++    sprintf( path, "%s.LOG%u", hive->filename, hive->sequence & 1 ? 1 : 2 );
++    sprintf( temporary, "%s.XXXXXX", path );
++    slash = strrchr( directory, '/' );
++    if (!slash) goto done;
++    if (slash == directory) slash[1] = 0;
++    else *slash = 0;
++    if ((dir = open( directory, O_RDONLY | O_DIRECTORY )) == -1 ||
++        (fd = mkstemp( temporary )) == -1) goto done;
++    if (!app_hive_write( fd, log, log_size, 0 ) || fsync( fd ) ||
++        rename( temporary, path ) || fsync( dir )) goto done;
++    ret = 1;
++done:
++    if (fd != -1)
++    {
++        close( fd );
++        unlink( temporary );
++    }
++    if (dir != -1) close( dir );
++    free( directory );
++    free( temporary );
++    free( path );
++    free( log );
++    return ret;
++}
++
++static void app_hive_read_logs( const char *filename, struct reg_hive_log logs[2] )
++{
++    char *path, *data;
++    struct stat st;
++    size_t length = strlen( filename ), done;
++    ssize_t count;
++    unsigned int i;
++    int fd;
++
++    memset( logs, 0, 2 * sizeof(*logs) );
++    if (!(path = malloc( length + 6 ))) return;
++    for (i = 0; i < 2; i++)
++    {
++        sprintf( path, "%s.LOG%u", filename, i + 1 );
++        if ((fd = open( path, O_RDONLY | O_NOFOLLOW )) == -1) continue;
++        if (fstat( fd, &st ) || !S_ISREG( st.st_mode ) || st.st_size < 512 || st.st_size > UINT_MAX)
++        {
++            close( fd );
++            continue;
++        }
++        if (!(data = malloc( st.st_size ))) { close( fd ); continue; }
++        done = 0;
++        while (done < (size_t)st.st_size)
++        {
++            count = pread( fd, data + done, st.st_size - done, done );
++            if (count == -1 && errno == EINTR) continue;
++            if (count <= 0) break;
++            done += count;
++        }
++        close( fd );
++        if (done != (size_t)st.st_size) { free( data ); continue; }
++        logs[i].data = data;
++        logs[i].size = done;
++    }
++    free( path );
++}
++
++static int app_hive_flush( struct app_hive *hive )
++{
++    struct reg_hive_key *tree;
++    struct stat st;
++    void *data;
++    size_t size;
++    int fd = get_file_unix_fd( hive->file ), ret;
++
++    if (!(hive->root->flags & KEY_DIRTY)) return 1;
++    if (!(tree = app_hive_export( hive, hive->root ))) return 0;
++    ret = reg_hive_encode( tree, &data, &size );
++    reg_hive_free( tree );
++    if (ret)
++    {
++        set_error( ret == ENOMEM ? STATUS_NO_MEMORY : STATUS_REGISTRY_CORRUPT );
++        return 0;
++    }
++    reg_hive_set_sequence( data, size, hive->sequence + 1, hive->sequence );
++    ret = !stat( hive->filename, &st ) && st.st_dev == hive->device && st.st_ino == hive->inode &&
++          app_hive_write_log( hive, data, size ) &&
++          app_hive_write( fd, data, 512, 0 ) && !fsync( fd ) &&
++          app_hive_write( fd, (char *)data + 512, size - 512, 512 ) &&
++          !ftruncate( fd, size ) && !fsync( fd );
++    if (ret)
++    {
++        reg_hive_set_sequence( data, size, hive->sequence + 1, hive->sequence + 1 );
++        ret = app_hive_write( fd, data, 512, 0 ) && !fsync( fd );
++    }
++    free( data );
++    if (!ret)
++    {
++        set_error( STATUS_REGISTRY_IO_FAILED );
++        return 0;
++    }
++    hive->sequence++;
++    make_clean( hive->root, change_timestamp_counter );
++    return 1;
++}
++
++static void app_hive_destroy( struct app_hive *hive )
++{
++    struct key *key, *next;
++
++    LIST_FOR_EACH_ENTRY_SAFE( key, next, &hive->keys, struct key, hive_entry )
++    {
++        key->hive = NULL;
++        list_remove( &key->hive_entry );
++    }
++    list_remove( &hive->entry );
++    if (hive->root) release_object( hive->root );
++    release_object( hive->file );
++    free( hive->filename );
++    free( hive->name );
++    free( hive->security );
++    free( hive );
++}
++
++void registry_open_handle( struct object *obj )
++{
++    if (obj->ops == &key_ops && ((struct key *)obj)->hive) ((struct key *)obj)->hive->handles++;
++}
++
++static void app_hive_close_handle( struct key *key )
++{
++    struct app_hive *hive = key->hive;
++
++    assert( hive->handles );
++    if (--hive->handles) return;
++    if (!app_hive_flush( hive )) fprintf( stderr, "wineserver: failed to flush application hive: %x\n", get_error() );
++    app_hive_destroy( hive );
++}
++
++DECL_HANDLER(load_app_hive)
++{
++    static const struct security_descriptor empty_sd;
++    static const WCHAR root_name[] = {'R','e','g','i','s','t','r','y','\\','A'};
++    static const WCHAR file_name[] = {'R','O','O','T'};
++    struct unicode_str empty = {NULL, 0};
++    struct reg_hive_key *tree = NULL;
++    struct reg_hive_log logs[2];
++    struct fd *file_fd;
++    struct security_descriptor *sd = NULL;
++    struct app_hive *hive;
++    struct file *file;
++    struct stat st;
++    struct key *root;
++    char *data = NULL, *filename = NULL;
++    void *recovered_data = NULL;
++    uint32_t sequence = 1;
++    ssize_t count;
++    size_t done = 0, recovered_size = 0;
++    int fd, ret;
++
++    if (req->flags & ~REG_PROCESS_PRIVATE)
++    {
++        set_error( STATUS_INVALID_PARAMETER );
++        return;
++    }
++    if (!(file = get_file_obj( current->process, req->file, FILE_READ_DATA | FILE_WRITE_DATA ))) return;
++    fd = get_file_unix_fd( file );
++    if (fstat( fd, &st ) || !S_ISREG( st.st_mode ) || st.st_size < 0 || st.st_size > UINT_MAX)
++    {
++        release_object( file );
++        set_error( STATUS_REGISTRY_IO_FAILED );
++        return;
++    }
++    LIST_FOR_EACH_ENTRY( hive, &app_hives, struct app_hive, entry )
++    {
++        if (hive->device != st.st_dev || hive->inode != st.st_ino) continue;
++        if ((hive->flags | req->flags) & REG_PROCESS_PRIVATE) set_error( STATUS_SHARING_VIOLATION );
++        else reply->hkey = alloc_handle( current->process, hive->root, req->access, 0 );
++        release_object( file );
++        return;
++    }
++    file_fd = get_obj_fd( (struct object *)file );
++    if (file_fd)
++    {
++        filename = dup_fd_name( file_fd, "" );
++        release_object( file_fd );
++    }
++    if (!filename) { set_error( STATUS_REGISTRY_IO_FAILED ); goto failed; }
++    if (!req->created)
++    {
++        if (!(data = mem_alloc( st.st_size ? st.st_size : 1 ))) goto failed;
++        while (done < (size_t)st.st_size)
++        {
++            count = pread( fd, data + done, st.st_size - done, done );
++            if (count == -1 && errno == EINTR) continue;
++            if (count <= 0) break;
++            done += count;
++        }
++        if (done != (size_t)st.st_size)
++        {
++            set_error( STATUS_REGISTRY_IO_FAILED );
++            goto failed;
++        }
++        app_hive_read_logs( filename, logs );
++        ret = reg_hive_recover( data, done, logs, &recovered_data, &recovered_size, &sequence );
++        free( (void *)logs[0].data );
++        free( (void *)logs[1].data );
++        if (!ret) ret = reg_hive_decode( recovered_data ? recovered_data : data,
++                                        recovered_data ? recovered_size : done, &tree );
++        free( data );
++        data = NULL;
++        if (ret)
++        {
++            set_error( ret == ENOMEM ? STATUS_NO_MEMORY : STATUS_REGISTRY_IO_FAILED );
++            goto failed;
++        }
++        if (!(sd = app_hive_security( tree->security, tree->security_size ))) goto failed;
++    }
++    if (req->created)
++    {
++        char *path;
++        unsigned int i;
++        if (!(path = mem_alloc( strlen(filename) + 6 ))) goto failed;
++        for (i = 1; i <= 2; i++)
++        {
++            sprintf( path, "%s.LOG%u", filename, i );
++            if (unlink( path ) && errno != ENOENT) break;
++        }
++        free( path );
++        if (i <= 2) { set_error( STATUS_REGISTRY_IO_FAILED ); goto failed; }
++    }
++    if (!(root = create_key_object( NULL, &empty, 0, 0, current_time, sd ))) goto failed;
++    if (sd)
++    {
++        free( root->obj.sd );
++        root->obj.sd = sd;
++        sd = NULL;
++    }
++    if (!(root->obj.name = mem_alloc( offsetof( struct object_name, name ) + sizeof(root_name) )))
++    {
++        release_object( root );
++        goto failed;
++    }
++    root->obj.name->obj = &root->obj;
++    root->obj.name->parent = NULL;
++    root->obj.name->len = sizeof(root_name);
++    memcpy( root->obj.name->name, root_name, sizeof(root_name) );
++    if (!tree && !set_sd_defaults_from_token( &root->obj, &empty_sd, OWNER_SECURITY_INFORMATION |
++            GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, current->process->token ))
++    {
++        release_object( root );
++        goto failed;
++    }
++    if (!(hive = calloc( 1, sizeof(*hive) )))
++    {
++        release_object( root );
++        set_error( STATUS_NO_MEMORY );
++        goto failed;
++    }
++    hive->root = root;
++    hive->file = file;
++    hive->flags = req->flags;
++    hive->sequence = sequence;
++    hive->filename = filename;
++    filename = NULL;
++    hive->device = st.st_dev;
++    hive->inode = st.st_ino;
++    hive->sd_size = sizeof(*root->obj.sd) + root->obj.sd->owner_len + root->obj.sd->group_len +
++                    root->obj.sd->sacl_len + root->obj.sd->dacl_len;
++    hive->namelen = tree ? tree->namelen * sizeof(WCHAR) : sizeof(file_name);
++    hive->name = memdup( tree ? tree->name : file_name, hive->namelen );
++    hive->security = app_hive_relative_security( root->obj.sd, &hive->security_size );
++    list_init( &hive->keys );
++    list_add_tail( &hive->keys, &root->hive_entry );
++    root->hive = hive;
++    list_add_tail( &app_hives, &hive->entry );
++    if (!hive->name || !hive->security || (tree && !app_hive_import( hive, root, tree ))) goto failed_hive;
++    reg_hive_free( tree );
++    tree = NULL;
++    if (st.st_size && !recovered_data) make_clean( root, change_timestamp_counter );
++    else if (!app_hive_flush( hive )) goto failed_hive;
++    free( recovered_data );
++    recovered_data = NULL;
++    reply->hkey = alloc_handle( current->process, root, req->access, 0 );
++    if (!reply->hkey) goto failed_hive;
++    return;
++failed_hive:
++    app_hive_destroy( hive );
++    file = NULL;
++failed:
++    reg_hive_free( tree );
++    free( data );
++    free( filename );
++    free( recovered_data );
++    free( sd );
++    if (file) release_object( file );
++}
++
+ /* return registry branches snaphot data for flushing key */
+ DECL_HANDLER(flush_key)
+ {
+@@ -2336,6 +2871,12 @@
+ 
+     reply->total = 0;
+     reply->branch_count = 0;
++    if (key->hive)
++    {
++        app_hive_flush( key->hive );
++        release_object( key );
++        return;
++    }
+     if ((key->flags & KEY_DIRTY) && !(key->flags & KEY_VOLATILE))
+         find_branches_for_key( key, branches, &branch_count );
+     release_object( key );
+diff --git a/server/request_handlers.h b/server/request_handlers.h
+--- a/server/request_handlers.h
++++ b/server/request_handlers.h
+@@ -317,6 +317,7 @@
+ DECL_HANDLER(d3dkmt_mutex_acquire);
+ DECL_HANDLER(d3dkmt_mutex_release);
+ DECL_HANDLER(fsync_free_shm_idx);
++DECL_HANDLER(load_app_hive);
+ 
+ typedef void (*req_handler)( const void *req, void *reply );
+ static const req_handler req_handlers[REQ_NB_REQUESTS] =
+@@ -631,6 +632,7 @@
+     (req_handler)req_d3dkmt_mutex_acquire,
+     (req_handler)req_d3dkmt_mutex_release,
+     (req_handler)req_fsync_free_shm_idx,
++    (req_handler)req_load_app_hive,
+ };
+ 
+ C_ASSERT( sizeof(abstime_t) == 8 );
+@@ -2411,3 +2413,10 @@
+ C_ASSERT( offsetof(struct fsync_free_shm_idx_request, shm_idx) == 12 );
+ C_ASSERT( sizeof(struct fsync_free_shm_idx_request) == 16 );
+ C_ASSERT( sizeof(struct fsync_free_shm_idx_reply) == 8 );
++C_ASSERT( offsetof(struct load_app_hive_request, file) == 12 );
++C_ASSERT( offsetof(struct load_app_hive_request, flags) == 16 );
++C_ASSERT( offsetof(struct load_app_hive_request, access) == 20 );
++C_ASSERT( offsetof(struct load_app_hive_request, created) == 24 );
++C_ASSERT( sizeof(struct load_app_hive_request) == 32 );
++C_ASSERT( offsetof(struct load_app_hive_reply, hkey) == 8 );
++C_ASSERT( sizeof(struct load_app_hive_reply) == 16 );
+diff --git a/server/request_trace.h b/server/request_trace.h
+--- a/server/request_trace.h
++++ b/server/request_trace.h
+@@ -3565,6 +3565,19 @@
+ static void dump_fsync_free_shm_idx_request( const struct fsync_free_shm_idx_request *req )
+ {
+     fprintf( stderr, " shm_idx=%08x", req->shm_idx );
++}
++
++static void dump_load_app_hive_request( const struct load_app_hive_request *req )
++{
++    fprintf( stderr, " file=%04x", req->file );
++    fprintf( stderr, ", flags=%08x", req->flags );
++    fprintf( stderr, ", access=%08x", req->access );
++    fprintf( stderr, ", created=%08x", req->created );
++}
++
++static void dump_load_app_hive_reply( const struct load_app_hive_reply *req )
++{
++    fprintf( stderr, " hkey=%04x", req->hkey );
+ }
+ 
+ typedef void (*dump_func)( const void *req );
+@@ -3881,6 +3894,7 @@
+     (dump_func)dump_d3dkmt_mutex_acquire_request,
+     (dump_func)dump_d3dkmt_mutex_release_request,
+     (dump_func)dump_fsync_free_shm_idx_request,
++    (dump_func)dump_load_app_hive_request,
+ };
+ 
+ static const dump_func reply_dumpers[REQ_NB_REQUESTS] =
+@@ -4195,6 +4209,7 @@
+     (dump_func)dump_d3dkmt_mutex_acquire_reply,
+     NULL,
+     NULL,
++    (dump_func)dump_load_app_hive_reply,
+ };
+ 
+ static const char * const req_names[REQ_NB_REQUESTS] =
+@@ -4509,6 +4524,7 @@
+     "d3dkmt_mutex_acquire",
+     "d3dkmt_mutex_release",
+     "fsync_free_shm_idx",
++    "load_app_hive",
+ };
+ 
+ static const struct
+@@ -4642,6 +4658,8 @@
+     { "PROCESS_IN_JOB",              STATUS_PROCESS_IN_JOB },
+     { "PROCESS_IS_TERMINATING",      STATUS_PROCESS_IS_TERMINATING },
+     { "PROCESS_NOT_IN_JOB",          STATUS_PROCESS_NOT_IN_JOB },
++    { "REGISTRY_CORRUPT",            STATUS_REGISTRY_CORRUPT },
++    { "REGISTRY_IO_FAILED",          STATUS_REGISTRY_IO_FAILED },
+     { "REPARSE_POINT_NOT_RESOLVED",  STATUS_REPARSE_POINT_NOT_RESOLVED },
+     { "SECTION_TOO_BIG",             STATUS_SECTION_TOO_BIG },
+     { "SEMAPHORE_LIMIT_EXCEEDED",    STATUS_SEMAPHORE_LIMIT_EXCEEDED },
