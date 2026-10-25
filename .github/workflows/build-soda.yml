@@ -668,6 +668,16 @@ jobs:
               | tr -d '\r' | tee "$directory/runtime.log"
             grep -Fx 'CPL_HOST_RESULT checks=32 failures=0' "$directory/runtime.log"
           done
+          for bits in 64 32; do
+            if [[ "$bits" == 64 ]]; then other=32; else other=64; fi
+            directory="$RUNNER_TEMP/soda-control-$bits"
+            export SODA_CPL_FIXTURE_PATH="Z:$RUNNER_TEMP/soda-control-$other/fixtures, with space/applet.cpl"
+            for path in "$SODA_CPL_FIXTURE_PATH" '%SODA_CPL_FIXTURE_PATH%'; do
+              "$runner_dir/bin/wine" "$directory/client.exe" "$path" "Z:$directory/results" \
+                | tr -d '\r' | tee "$directory/cross-machine.log"
+              grep -Fx 'CPL_HOST_RESULT checks=32 failures=0' "$directory/cross-machine.log"
+            done
+          done
           "$runner_dir/bin/wineserver" -w
 
       - name: verify C2R component metadata
@@ -2173,6 +2183,16 @@ jobs:
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/ldap$arch.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/ldap$arch.log"
             grep -Fx 'ldap_init_checks:1024 failures:0' "$RUNNER_TEMP/soda-office-winrt/ldap$arch.log"
+          done
+          for bits in 64 32; do
+            if [[ "$bits" == 64 ]]; then other=32; else other=64; fi
+            directory="$RUNNER_TEMP/soda-office-winrt/control-$bits"
+            export SODA_CPL_FIXTURE_PATH="Z:$RUNNER_TEMP/soda-office-winrt/control-$other/fixtures, with space/applet.cpl"
+            for path in "$SODA_CPL_FIXTURE_PATH" '%SODA_CPL_FIXTURE_PATH%'; do
+              "$runner_dir/bin/wine" "$directory/client.exe" "$path" "Z:$directory/results" \
+                | tr -d '\r' | tee "$directory/cross-machine.log"
+              grep -Fx 'CPL_HOST_RESULT checks=32 failures=0' "$directory/cross-machine.log"
+            done
           done
           "$runner_dir/bin/wineserver" -w
 

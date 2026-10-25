@@ -1,0 +1,98 @@
+diff --git a/dlls/shell32/Makefile.in b/dlls/shell32/Makefile.in
+--- a/dlls/shell32/Makefile.in
++++ b/dlls/shell32/Makefile.in
+@@ -1,7 +1,7 @@
+ EXTRADEFS = -D_SHELL32_
+ MODULE    = shell32.dll
+ IMPORTLIB = shell32
+-IMPORTS   = uuid shlwapi user32 gdi32 advapi32
++IMPORTS   = uuid shlwapi user32 gdi32 advapi32 kernelbase
+ DELAYIMPORTS = ole32 oleaut32 shdocvw version comctl32 comdlg32 gdiplus
+ 
+ SOURCES = \
+diff --git a/dlls/shell32/control.c b/dlls/shell32/control.c
+--- a/dlls/shell32/control.c
++++ b/dlls/shell32/control.c
+@@ -26,6 +26,7 @@
+ 
+ #include "windef.h"
+ #include "winbase.h"
++#include "winternl.h"
+ #include "wingdi.h"
+ #include "winuser.h"
+ #include "winreg.h"
+@@ -714,6 +715,66 @@
+     Control_DoInterface(panel, hWnd, hInst);
+ }
+ 
++static void Control_ReexecApplet(LPCWSTR applet, LPCWSTR cmd)
++{
++    static const WCHAR suffix[] = L"\\rundll32.exe";
++    HMODULE image;
++    IMAGE_NT_HEADERS *nt;
++    WORD machine = 0, process_machine, native_machine;
++    WCHAR app[MAX_PATH], *cmdline, *path;
++    STARTUPINFOEXW si = {{0}};
++    PROCESS_INFORMATION pi;
++    SIZE_T size = 0, len;
++    void *cookie;
++    BOOL redirected;
++
++    if (!IsWow64Process2(GetCurrentProcess(), &process_machine, &native_machine)) return;
++    if (!(len = ExpandEnvironmentStringsW(applet, NULL, 0))) return;
++    if (!(path = malloc(len * sizeof(*path)))) return;
++    image = NULL;
++    if (ExpandEnvironmentStringsW(applet, path, len) == len)
++        image = LoadLibraryExW(path, NULL, LOAD_LIBRARY_AS_IMAGE_RESOURCE);
++    free(path);
++    if (!image) return;
++    if ((nt = RtlImageNtHeader((void *)((ULONG_PTR)image & ~3)))) machine = nt->FileHeader.Machine;
++    FreeLibrary(image);
++    if (!machine || machine == (process_machine ? process_machine : native_machine)) return;
++
++    len = GetSystemWow64Directory2W(app, ARRAY_SIZE(app), machine);
++    if (!len) len = GetSystemWow64Directory2W(app, ARRAY_SIZE(app), IMAGE_FILE_MACHINE_TARGET_HOST);
++    if (!len || len > ARRAY_SIZE(app) - ARRAY_SIZE(suffix)) return;
++    lstrcatW(app, suffix);
++    len = lstrlenW(app) + lstrlenW(cmd) + ARRAY_SIZE(L"\"\" shell32.dll,Control_RunDLL ");
++    if (!(cmdline = malloc(len * sizeof(*cmdline)))) return;
++    swprintf(cmdline, len, L"\"%s\" shell32.dll,Control_RunDLL %s", app, cmd);
++
++    InitializeProcThreadAttributeList(NULL, 1, 0, &size);
++    if ((si.lpAttributeList = malloc(size)))
++    {
++        if (InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &size))
++        {
++            if (UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_MACHINE_TYPE,
++                    &machine, sizeof(machine), NULL, NULL))
++            {
++                si.StartupInfo.cb = sizeof(si);
++                redirected = Wow64DisableWow64FsRedirection(&cookie);
++                TRACE("restarting applet %s with machine %04x\n", debugstr_w(applet), machine);
++                if (CreateProcessW(app, cmdline, NULL, NULL, FALSE, EXTENDED_STARTUPINFO_PRESENT,
++                        NULL, NULL, &si.StartupInfo, &pi))
++                {
++                    CloseHandle(pi.hThread);
++                    WaitForSingleObject(pi.hProcess, INFINITE);
++                    CloseHandle(pi.hProcess);
++                }
++                if (redirected) Wow64RevertWow64FsRedirection(cookie);
++            }
++            DeleteProcThreadAttributeList(si.lpAttributeList);
++        }
++        free(si.lpAttributeList);
++    }
++    free(cmdline);
++}
++
+ static	void	Control_DoLaunch(CPanel* panel, HWND hWnd, LPCWSTR wszCmd)
+    /* forms to parse:
+     *	foo.cpl,@sp,str
+@@ -823,6 +884,7 @@
+ 
+         Control_UnloadApplet(applet);
+     }
++    else Control_ReexecApplet(buffer, wszCmd);
+ 
+     free(buffer);
+ }
