@@ -19,6 +19,7 @@ on:
           - aarch64-control
           - compiler-cache
           - d2d-reference
+          - registry-reference
         default: x86_64
       pgo:
         description: 'Build a PGO candidate'
@@ -120,6 +121,62 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  registry-reference:
+    if: inputs.architecture == 'registry-reference' && inputs.winrt_http_reference != true
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: verify application registry hives
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:USERPROFILE "artifacts/Soda-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-registry-reference"
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $env:TMPDIR = $work
+          $env:TMP = $work
+          $env:TEMP = $work
+          "REGISTRY_REFERENCE_DIR=$work" | Add-Content $env:GITHUB_ENV
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$visualStudio) { throw 'Visual C++ tools not found' }
+          $vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvarsall.bat'
+          $source = Join-Path $env:GITHUB_WORKSPACE '.github/soda-registry-app-hive.c'
+          $failed = $false
+          foreach ($bits in @(64, 32)) {
+            $target = if ($bits -eq 64) { 'amd64' } else { 'x86' }
+            $exe = Join-Path $work "registry$bits.exe"
+            $obj = Join-Path $work "registry$bits.obj"
+            $script = Join-Path $work "build$bits.cmd"
+            $fixtures = Join-Path $work "fixtures$bits"
+            New-Item -ItemType Directory -Path $fixtures | Out-Null
+            @(
+              '@echo off',
+              "call `"$vcvars`" $target",
+              'if errorlevel 1 exit /b %errorlevel%',
+              "cl /nologo /W4 /WX /O2 /TC `"$source`" /Fe:`"$exe`" /Fo:`"$obj`" /link advapi32.lib",
+              'exit /b %errorlevel%'
+            ) | Set-Content -Encoding ascii $script
+            & cmd.exe /d /c $script
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $exe $fixtures | Tee-Object -FilePath (Join-Path $work "registry$bits.jsonl")
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            if (Get-ChildItem -Force $fixtures) {
+              Write-Warning 'Registry fixture files were not removed'
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.REGISTRY_REFERENCE_DIR != ''
+        with:
+          name: registry-reference-${{ github.sha }}
+          path: ${{ env.REGISTRY_REFERENCE_DIR }}
+          retention-days: 7
+          if-no-files-found: error
+
   d2d-reference:
     if: inputs.architecture == 'd2d-reference' && inputs.winrt_http_reference != true
     runs-on: windows-2022
@@ -169,7 +226,7 @@ jobs:
           if-no-files-found: error
 
   patches:
-    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference'
+    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
