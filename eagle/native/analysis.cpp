@@ -494,7 +494,12 @@ static json_object *pe_insights(json_object *request)
     for (size_t i = 0; i < json_object_array_length(products); i++)
     {
         auto key = std::to_string(json_object_get_int(json_object_array_get_idx(products, i)));
-        if (member(compilers, key.c_str())) { auto compiler = text(compilers, key.c_str()); string(metadata, "compiler", compiler); step("Compiler: " + compiler); break; }
+        if (member(compilers, key.c_str()))
+        {
+            auto linker = text(structure, "linker_version");
+            auto compiler = linker.empty() ? std::string("Microsoft tools (Rich header)") : "Microsoft tools (linker " + linker + ")";
+            string(metadata, "compiler", compiler); step("Compiler: " + compiler); break;
+        }
     }
     step("Scanning PE sections...");
     auto *sections = member(structure, "sections");

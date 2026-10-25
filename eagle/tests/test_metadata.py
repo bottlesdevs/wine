@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import tempfile
 import unittest
 
@@ -39,16 +40,51 @@ class MetadataTests(unittest.TestCase):
                                          if entry['name'] in CONFIG['packers']), None)
                         self.assertEqual(json.loads(result.stdout)['metadata'].get('packer'), expected)
 
-    def invoke(self, tables, flat=None, sections=None, machine=0x8664):
+    def invoke(self, tables, flat=None, sections=None, machine=0x8664, **fields):
         structure = dict(machine=machine, min_os='10.0', timestamp=0,
                          characteristics=0, dll_characteristics=0, rich_products=[],
                          sections=sections or [], manifests=[], imports=[], managed=False,
                          version=flat or {}, version_tables=tables)
+        structure.update(fields)
         request = dict(operation='pe-insights', structure=structure,
                        details={'Warning': [], 'Runtimes': []}, metadata={}, basename='app.exe',
                        compilers=CONFIG['compilers'], packers=CONFIG['packers'], mapping=CONFIG['mapping'])
         return subprocess.run([str(ROOT / 'native/eagle-analysis')], input=json.dumps(request),
                               capture_output=True, text=True, timeout=5)
+
+    def test_rich_records_describe_tools_without_guessing_visual_studio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'app.exe'
+            for machine in (0x14c, 0x8664, 0xaa64):
+                for product, count, detected in ((0x104, 42, True), (0x9999, 0x1040000, False)):
+                    with self.subTest(machine=machine, product=product):
+                        data = bytearray(image('unknown.dll', machine))
+                        pe = struct.unpack_from('<I', data, 0x3c)[0]
+                        optional = pe + 24
+                        table = optional + struct.unpack_from('<H', data, pe + 20)[0]
+                        end = table + 40 * struct.unpack_from('<H', data, pe + 6)[0]
+                        self.assertLessEqual(end + 32, struct.unpack_from('<I', data, optional + 60)[0])
+                        data[pe + 32:end + 32] = bytes(data[pe:end])
+                        struct.pack_into('<I', data, 0x3c, pe + 32)
+                        key = 0x12345678
+                        data[0x80:0xa0] = struct.pack('<8I', 0x536e6144 ^ key, key, key, key,
+                            ((product << 16) | 35229) ^ key, count ^ key, 0x68636952, key)
+                        optional = struct.unpack_from('<I', data, 0x3c)[0] + 24
+                        data[optional + 2:optional + 4] = bytes((14, 44))
+                        target.write_bytes(data)
+                        result = subprocess.run([str(ROOT / 'native/eagle-pe'), str(target)],
+                                                capture_output=True, timeout=5)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        header = json.loads(result.stdout)
+                        self.assertEqual(header['rich_products'], [product])
+                        self.assertEqual(header['linker_version'], '14.44')
+                        result = self.invoke([], machine=machine, rich_products=header['rich_products'],
+                                             linker_version=header['linker_version'])
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        report = json.loads(result.stdout)
+                        expected = 'Microsoft tools (linker 14.44)' if detected else None
+                        self.assertEqual(report['metadata'].get('compiler'), expected)
+                        self.assertEqual(any(step == 'Compiler: ' + str(expected) for step in report['steps']), detected)
 
     def test_arm64_warning_describes_the_required_runner(self):
         result = self.invoke([], machine=0xaa64)

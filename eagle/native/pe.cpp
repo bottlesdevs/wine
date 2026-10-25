@@ -417,6 +417,7 @@ public:
             printf(",\"rva\":%u,\"virtual_size\":%u,\"raw_size\":%u}", entry.rva, entry.virtual_size, entry.size);
         }
         printf("],\"debug_info\":%s,\"debuglink\":", has_debug ? "true" : "false"); quote(debuglink);
+        printf(",\"linker_version\":\"%u.%u\"", data[optional+2], data[optional+3]);
         printf(",\"debuglink_crc\":%u,\"managed\":%s,\"rich_products\":[", debuglink_crc, directory(14) && dword(directory_start+14*8+4) ? "true" : "false");
         comma = false;
         for (size_t rich = 64; rich + 8 <= pe; rich += 4) if (dword(rich) == 0x68636952)
