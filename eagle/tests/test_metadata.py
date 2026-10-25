@@ -39,8 +39,8 @@ class MetadataTests(unittest.TestCase):
                                          if entry['name'] in CONFIG['packers']), None)
                         self.assertEqual(json.loads(result.stdout)['metadata'].get('packer'), expected)
 
-    def invoke(self, tables, flat=None, sections=None):
-        structure = dict(machine=0x8664, min_os='10.0', timestamp=0,
+    def invoke(self, tables, flat=None, sections=None, machine=0x8664):
+        structure = dict(machine=machine, min_os='10.0', timestamp=0,
                          characteristics=0, dll_characteristics=0, rich_products=[],
                          sections=sections or [], manifests=[], imports=[], managed=False,
                          version=flat or {}, version_tables=tables)
@@ -49,6 +49,19 @@ class MetadataTests(unittest.TestCase):
                        compilers=CONFIG['compilers'], packers=CONFIG['packers'], mapping=CONFIG['mapping'])
         return subprocess.run([str(ROOT / 'native/eagle-analysis')], input=json.dumps(request),
                               capture_output=True, text=True, timeout=5)
+
+    def test_arm64_warning_describes_the_required_runner(self):
+        result = self.invoke([], machine=0xaa64)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['arch'], 'ARM64')
+        self.assertEqual(report['details']['Warning'], [{
+            'name': 'ARM64 binary',
+            'description': 'Requires an ARM64-capable Wine runner.',
+            'severity': 'warning',
+            'source': 'Main Executable',
+        }])
+        self.assertIn('[!] ARM64 requires a matching Wine runner', report['steps'])
 
     def test_nonempty_version_values_survive_later_empty_tables(self):
         for tables, expected in [

@@ -468,10 +468,10 @@ static json_object *pe_insights(json_object *request)
     step("Architecture: " + architecture);
     if (machine == 0xaa64)
     {
-        auto *warning = json_object_new_object(); string(warning, "name", "ARM64 binary"); string(warning, "description", "Requires an ARM64-capable Wine runner. This debugger supports x86 and x64."); string(warning, "severity", "warning"); string(warning, "source", "Main Executable");
+        auto *warning = json_object_new_object(); string(warning, "name", "ARM64 binary"); string(warning, "description", "Requires an ARM64-capable Wine runner."); string(warning, "severity", "warning"); string(warning, "source", "Main Executable");
         auto *items = member(details, "Warning");
         if (!json_object_is_type(items, json_type_array)) throw std::runtime_error("PE warning category is missing");
-        json_object_array_add(items, warning); step("[!] ARM64 requires a matching Wine runner; native debugging is unavailable in this build");
+        json_object_array_add(items, warning); step("[!] ARM64 requires a matching Wine runner");
     }
     step("Checking PE characteristics...");
     int characteristics = json_object_get_int(member(structure, "characteristics"));
