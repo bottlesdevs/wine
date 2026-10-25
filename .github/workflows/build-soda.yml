@@ -1100,6 +1100,32 @@ jobs:
             "$runner_dir/bin/wineserver" -w
           done
 
+      - name: verify WinRT HTTP header interfaces
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          work="$HOME/artifacts/soda-http-headers-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$work"
+          export TMPDIR="$work" TMP="$work" TEMP="$work"
+          export WINEPREFIX="$work/prefix" WINEARCH=win64 WINEDEBUG=-all
+          printf fixture > "$work/fixture"
+          python3 -m http.server 9284 --bind 127.0.0.1 --directory "$work" > "$work/server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"; "$runner_dir/bin/wineserver" -k; "$runner_dir/bin/wineserver" -w' EXIT
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:9284/fixture
+          for bits in 64 32; do
+            if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-http-headers-smoke.c" \
+              -I"$runner_dir/include/wine/windows" -D__WINESRC__ \
+              -municode -O2 -Wall -Wextra -Werror -lruntimeobject -o "$work/headers$bits.exe"
+            "$runner_dir/bin/wine" "$work/headers$bits.exe" http://127.0.0.1:9284/fixture \
+              | tr -d '\r' | tee "$work/headers$bits.log"
+            grep -Fx 'HTTP_HEADER_ABI_RESULT checks=111 failures=0' "$work/headers$bits.log"
+          done
+
       - name: verify Direct2D dashed strokes
         shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
         timeout-minutes: 5
@@ -1860,6 +1886,10 @@ jobs:
               -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
               -ld2d1 -lwindowscodecs -lole32 -luuid \
               -o "$RUNNER_TEMP/soda-office-winrt/dashes$bits.exe"
+            "$compiler" .github/soda-http-headers-smoke.c \
+              -I"$wine_headers" -D__WINESRC__ \
+              -municode -O2 -Wall -Wextra -Werror -lruntimeobject \
+              -o "$RUNNER_TEMP/soda-office-winrt/http-headers$bits.exe"
             "$compiler" .github/soda-composition-inertia-smoke.c \
               -I"$wine_headers" -D__WINESRC__ \
               -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
@@ -1922,10 +1952,21 @@ jobs:
           "$runner_dir/bin/wine" /tmp/soda-icu/smoke32.exe \
             | tr -d '\r' | tee /tmp/soda-icu/runtime32.log
           grep -F 'ICU 72.1 timezone=America/Denver' /tmp/soda-icu/runtime32.log
+          http_dir="$HOME/artifacts/soda-http-headers-arm64-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$http_dir"
+          printf fixture > "$http_dir/fixture"
+          TMPDIR="$http_dir" TMP="$http_dir" TEMP="$http_dir" \
+            python3 -m http.server 9284 --bind 127.0.0.1 --directory "$http_dir" > "$http_dir/server.log" 2>&1 &
+          http_pid=$!
+          trap 'kill "$http_pid"' EXIT
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:9284/fixture
           for arch in 64 32; do
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.log"
             grep -Fx 'MAPI_RUNTIME_RESULT failures=0' "$RUNNER_TEMP/soda-office-winrt/mapi-wizard$arch.log"
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/http-headers$arch.exe" http://127.0.0.1:9284/fixture \
+              | tr -d '\r' | tee "$http_dir/headers$arch.log"
+            grep -Fx 'HTTP_HEADER_ABI_RESULT checks=111 failures=0' "$http_dir/headers$arch.log"
             msi_dir="$RUNNER_TEMP/soda-office-winrt/msi-components-$arch"
             mkdir -p "$msi_dir/root/Integration" "$msi_dir/root/Office16"
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/msi-components$arch.exe" "Z:$msi_dir" \
