@@ -1,0 +1,424 @@
+Honor Direct2D dash patterns when rendering geometry.
+
+diff --git a/dlls/d2d1/geometry.c b/dlls/d2d1/geometry.c
+--- a/dlls/d2d1/geometry.c
++++ b/dlls/d2d1/geometry.c
+@@ -3888,6 +3888,334 @@
+     return hr;
+ }
+ 
++static void d2d_dash_polygon(ID2D1GeometrySink *sink, D2D1_POINT_2F *p, unsigned int count)
++{
++    struct d2d_geometry *geometry = impl_from_ID2D1GeometrySink(sink);
++    D2D1_POINT_2F tmp;
++    unsigned int i;
++    float area = 0.0f;
++
++    if (geometry->u.path.state == D2D_GEOMETRY_STATE_ERROR) return;
++    if (geometry->u.path.segment_count > UINT16_MAX - count)
++    {
++        d2d_geometry_set_error(geometry, E_OUTOFMEMORY);
++        return;
++    }
++    for (i = 0; i < count; ++i)
++    {
++        if (!isfinite(p[i].x) || !isfinite(p[i].y))
++        {
++            d2d_geometry_set_error(geometry, E_INVALIDARG);
++            return;
++        }
++    }
++    for (i = 1; i + 1 < count; ++i)
++        area += (p[i].x - p[0].x) * (p[i + 1].y - p[0].y)
++                - (p[i].y - p[0].y) * (p[i + 1].x - p[0].x);
++    if (area < 0.0f)
++    {
++        for (i = 0; i < count / 2; ++i)
++        {
++            tmp = p[i];
++            p[i] = p[count - i - 1];
++            p[count - i - 1] = tmp;
++        }
++    }
++    ID2D1GeometrySink_BeginFigure(sink, p[0], D2D1_FIGURE_BEGIN_FILLED);
++    ID2D1GeometrySink_AddLines(sink, p + 1, count - 1);
++    ID2D1GeometrySink_EndFigure(sink, D2D1_FIGURE_END_CLOSED);
++}
++
++static void d2d_dash_cap(ID2D1GeometrySink *sink, D2D1_POINT_2F point,
++        D2D1_POINT_2F direction, float radius, float tolerance, D2D1_CAP_STYLE cap)
++{
++    struct d2d_geometry *geometry = impl_from_ID2D1GeometrySink(sink);
++    D2D1_POINT_2F p[4];
++    unsigned int i, count;
++    float x = point.x, y = point.y;
++    double angle, step;
++
++    if (cap == D2D1_CAP_STYLE_FLAT || geometry->u.path.state == D2D_GEOMETRY_STATE_ERROR) return;
++    if (cap == D2D1_CAP_STYLE_ROUND)
++    {
++        step = acos(1.0 - min((double)tolerance * 0.25 / radius, 1.0));
++        if (!step || M_PI / step > UINT16_MAX)
++        {
++            d2d_geometry_set_error(impl_from_ID2D1GeometrySink(sink), E_OUTOFMEMORY);
++            return;
++        }
++        count = max(8, (unsigned int)ceil(M_PI / step));
++        if (geometry->u.path.segment_count > UINT16_MAX - count)
++        {
++            d2d_geometry_set_error(geometry, E_OUTOFMEMORY);
++            return;
++        }
++        p[0] = (D2D1_POINT_2F){x + radius, y};
++        ID2D1GeometrySink_BeginFigure(sink, p[0], D2D1_FIGURE_BEGIN_FILLED);
++        for (i = 1; i < count; ++i)
++        {
++            angle = 2.0 * M_PI * i / count;
++            p[0] = (D2D1_POINT_2F){x + radius * cos(angle), y + radius * sin(angle)};
++            ID2D1GeometrySink_AddLine(sink, p[0]);
++        }
++        ID2D1GeometrySink_EndFigure(sink, D2D1_FIGURE_END_CLOSED);
++        return;
++    }
++    p[0] = (D2D1_POINT_2F){x - direction.y * radius, y + direction.x * radius};
++    p[1] = (D2D1_POINT_2F){x + direction.y * radius, y - direction.x * radius};
++    p[2] = (D2D1_POINT_2F){x + direction.x * radius, y + direction.y * radius};
++    if (cap == D2D1_CAP_STYLE_TRIANGLE)
++    {
++        d2d_dash_polygon(sink, p, 3);
++        return;
++    }
++    p[2].x += direction.y * radius;
++    p[2].y -= direction.x * radius;
++    p[3] = (D2D1_POINT_2F){p[0].x + direction.x * radius, p[0].y + direction.y * radius};
++    d2d_dash_polygon(sink, p, 4);
++}
++
++static void d2d_dash_join(ID2D1GeometrySink *sink, D2D1_POINT_2F point,
++        D2D1_POINT_2F prev, D2D1_POINT_2F next, float radius, float tolerance, const struct d2d_stroke_style *style)
++{
++    D2D1_POINT_2F p[5], m;
++    float cross = prev.x * next.y - prev.y * next.x;
++    float dot = prev.x * next.x + prev.y * next.y;
++    float side = cross > 0.0f ? -1.0f : 1.0f, length, limit, t;
++
++    if (style->desc.lineJoin == D2D1_LINE_JOIN_ROUND)
++    {
++        d2d_dash_cap(sink, point, next, radius, tolerance, D2D1_CAP_STYLE_ROUND);
++        return;
++    }
++    if (fabsf(cross) < 1e-6f || dot <= -1.0f) return;
++    p[0] = point;
++    p[1] = (D2D1_POINT_2F){point.x - prev.y * radius * side, point.y + prev.x * radius * side};
++    p[2] = (D2D1_POINT_2F){point.x - next.y * radius * side, point.y + next.x * radius * side};
++    if (style->desc.lineJoin == D2D1_LINE_JOIN_BEVEL)
++    {
++        d2d_dash_polygon(sink, p, 3);
++        return;
++    }
++    m = (D2D1_POINT_2F){-(prev.y + next.y) * side / (1.0f + dot),
++            (prev.x + next.x) * side / (1.0f + dot)};
++    length = sqrtf(m.x * m.x + m.y * m.y);
++    limit = max(1.0f, style->desc.miterLimit);
++    if (length > limit && style->desc.lineJoin == D2D1_LINE_JOIN_MITER_OR_BEVEL)
++    {
++        d2d_dash_polygon(sink, p, 3);
++        return;
++    }
++    p[4] = p[2];
++    p[2] = (D2D1_POINT_2F){point.x + m.x * radius, point.y + m.y * radius};
++    if (length > limit)
++    {
++        t = (limit - 1.0f / length) / (length - 1.0f / length);
++        p[3] = (D2D1_POINT_2F){p[4].x + (p[2].x - p[4].x) * t,
++                p[4].y + (p[2].y - p[4].y) * t};
++        p[2] = (D2D1_POINT_2F){p[1].x + (p[2].x - p[1].x) * t,
++                p[1].y + (p[2].y - p[1].y) * t};
++        d2d_dash_polygon(sink, p, 5);
++    }
++    else
++    {
++        p[3] = p[4];
++        d2d_dash_polygon(sink, p, 4);
++    }
++}
++
++static void d2d_dash_figure(ID2D1GeometrySink *sink, const struct d2d_figure *figure,
++        const struct d2d_stroke_style *style, float width, float tolerance, double period)
++{
++    D2D1_POINT_2F start, point, next, direction, prev = {0}, first_direction = {0}, p[4];
++    struct d2d_geometry *output = impl_from_ID2D1GeometrySink(sink);
++    unsigned int iterations = 0;
++    bool initial_boundary;
++    bool closed = figure->flags & D2D_FIGURE_FLAG_CLOSED, active = false, first_on = false, last_on = false;
++    double offset, remaining, length, position, step, walked = 0.0, total = 0.0;
++    unsigned int index = 0, count = style->dash_count * (style->dash_count % 2 ? 2 : 1);
++    float radius = width * 0.5f;
++    size_t i, first = SIZE_MAX, last = SIZE_MAX;
++
++    for (i = 0; i < figure->vertex_count; ++i)
++    {
++        if (figure->vertex_types[i] == D2D_VERTEX_TYPE_NONE) continue;
++        if (first == SIZE_MAX) first = i;
++        else total += hypot((double)figure->vertices[i].x - figure->vertices[last].x,
++                (double)figure->vertices[i].y - figure->vertices[last].y);
++        last = i;
++    }
++    if (first == SIZE_MAX || !isfinite(total)) return;
++    if (closed) total += hypot((double)figure->vertices[first].x - figure->vertices[last].x,
++            (double)figure->vertices[first].y - figure->vertices[last].y);
++    if (!total) return;
++    start = figure->vertices[first];
++    point = start;
++    offset = fmod((double)style->desc.dashOffset * width, period);
++    if (offset < 0.0) offset += period;
++    remaining = (double)style->dashes[0] * width;
++    while (offset > 0.0 && offset >= remaining)
++    {
++        offset -= remaining;
++        index = (index + 1) % count;
++        remaining = (double)style->dashes[index % style->dash_count] * width;
++    }
++    remaining -= offset;
++    initial_boundary = offset == 0.0 && (index & 1);
++    for (i = first + 1; i <= figure->vertex_count; ++i)
++    {
++        if (i == figure->vertex_count)
++        {
++            if (!closed) break;
++            next = start;
++        }
++        else
++        {
++            if (figure->vertex_types[i] == D2D_VERTEX_TYPE_NONE) continue;
++            next = figure->vertices[i];
++        }
++        length = hypot((double)next.x - point.x, (double)next.y - point.y);
++        if (!length) continue;
++        direction = (D2D1_POINT_2F){(next.x - point.x) / length, (next.y - point.y) / length};
++        position = 0.0;
++        if (!walked && initial_boundary && !closed)
++        {
++            D2D1_POINT_2F back = {-direction.x, -direction.y};
++            d2d_dash_cap(sink, start, back, radius, tolerance, style->desc.startCap);
++            d2d_dash_cap(sink, start, direction, radius, tolerance, style->desc.dashCap);
++        }
++        while (position < length)
++        {
++            D2D1_POINT_2F a, b;
++
++            if (output->u.path.state == D2D_GEOMETRY_STATE_ERROR) return;
++            if (++iterations > UINT16_MAX)
++            {
++                d2d_geometry_set_error(output, E_OUTOFMEMORY);
++                return;
++            }
++            a = (D2D1_POINT_2F){point.x + direction.x * position, point.y + direction.y * position};
++            if (!remaining)
++            {
++                if (!(index & 1))
++                {
++                    d2d_dash_cap(sink, a, direction, radius, tolerance, style->desc.dashCap);
++                    if (style->desc.dashCap != D2D1_CAP_STYLE_ROUND)
++                    {
++                        D2D1_POINT_2F back = {-direction.x, -direction.y};
++                        d2d_dash_cap(sink, a, back, radius, tolerance, style->desc.dashCap);
++                    }
++                }
++                index = (index + 1) % count;
++                remaining = (double)style->dashes[index % style->dash_count] * width;
++                continue;
++            }
++            step = min(remaining, length - position);
++            if (position + step == position)
++            {
++                d2d_geometry_set_error(output, E_OUTOFMEMORY);
++                return;
++            }
++            b = (D2D1_POINT_2F){point.x + direction.x * (position + step),
++                    point.y + direction.y * (position + step)};
++            if (!(index & 1))
++            {
++                if (active)
++                {
++                    if (!position) d2d_dash_join(sink, a, prev, direction, radius, tolerance, style);
++                }
++                else if (closed && !walked && !position)
++                {
++                    first_on = true;
++                    first_direction = direction;
++                }
++                else
++                {
++                    D2D1_POINT_2F back = {-direction.x, -direction.y};
++                    d2d_dash_cap(sink, a, back, radius, tolerance,
++                            !walked && !position ? style->desc.startCap : style->desc.dashCap);
++                }
++                p[0] = (D2D1_POINT_2F){a.x - direction.y * radius, a.y + direction.x * radius};
++                p[1] = (D2D1_POINT_2F){a.x + direction.y * radius, a.y - direction.x * radius};
++                p[2] = (D2D1_POINT_2F){b.x + direction.y * radius, b.y - direction.x * radius};
++                p[3] = (D2D1_POINT_2F){b.x - direction.y * radius, b.y + direction.x * radius};
++                d2d_dash_polygon(sink, p, 4);
++                active = true;
++                prev = direction;
++            }
++            position += step;
++            remaining -= step;
++            if (!remaining)
++            {
++                if (active)
++                {
++                    if (walked + position >= total) last_on = true;
++                    else d2d_dash_cap(sink, b, direction, radius, tolerance, style->desc.dashCap);
++                }
++                active = false;
++                index = (index + 1) % count;
++                remaining = (double)style->dashes[index % style->dash_count] * width;
++            }
++        }
++        walked += length;
++        point = next;
++    }
++    if (!active && !last_on && !(index & 1) && !closed)
++    {
++        D2D1_POINT_2F back = {-direction.x, -direction.y};
++        d2d_dash_cap(sink, point, back, radius, tolerance, style->desc.dashCap);
++        d2d_dash_cap(sink, point, direction, radius, tolerance, style->desc.endCap);
++    }
++    if (active || last_on)
++    {
++        if (closed && first_on) d2d_dash_join(sink, start, prev, first_direction, radius, tolerance, style);
++        else d2d_dash_cap(sink, point, prev, radius, tolerance, closed ? style->desc.dashCap : style->desc.endCap);
++    }
++    else if (first_on)
++    {
++        d2d_point_scale(&first_direction, -1.0f);
++        d2d_dash_cap(sink, start, first_direction, radius, tolerance, style->desc.dashCap);
++    }
++}
++
++HRESULT d2d_geometry_create_dashed(ID2D1Geometry *geometry, const struct d2d_stroke_style *style,
++        float width, float tolerance, ID2D1PathGeometry **ret)
++{
++    ID2D1PathGeometry *flat = NULL, *path = NULL;
++    const struct d2d_geometry *impl;
++    ID2D1GeometrySink *sink = NULL;
++    double period = 0.0;
++    size_t i;
++    HRESULT hr;
++
++    *ret = NULL;
++    if (!isfinite(width) || width < 0.0f || !isfinite(style->desc.dashOffset)) return E_INVALIDARG;
++    for (i = 0; i < style->dash_count; ++i)
++    {
++        if (!isfinite(style->dashes[i]) || style->dashes[i] < 0.0f) return E_INVALIDARG;
++        period += style->dashes[i];
++    }
++    period *= (double)width * (style->dash_count % 2 ? 2 : 1);
++    if (style->dash_count > UINT_MAX / 2 || !isfinite(period)) return E_INVALIDARG;
++    hr = d2d_geometry_get_simplified(geometry, NULL, tolerance, &flat);
++    if (SUCCEEDED(hr)) hr = ID2D1Factory_CreatePathGeometry(unsafe_impl_from_ID2D1Geometry(geometry)->factory, &path);
++    if (SUCCEEDED(hr)) hr = ID2D1PathGeometry_Open(path, &sink);
++    if (SUCCEEDED(hr))
++    {
++        ID2D1GeometrySink_SetFillMode(sink, D2D1_FILL_MODE_WINDING);
++        impl = unsafe_impl_from_ID2D1Geometry((ID2D1Geometry *)flat);
++        if (period > 0.0)
++            for (i = 0; i < impl->u.path.figure_count; ++i)
++                d2d_dash_figure(sink, &impl->u.path.figures[i], style, width, tolerance, period);
++        hr = ID2D1GeometrySink_Close(sink);
++    }
++    if (sink) ID2D1GeometrySink_Release(sink);
++    if (flat) ID2D1PathGeometry_Release(flat);
++    if (SUCCEEDED(hr)) *ret = path;
++    else if (path) ID2D1PathGeometry_Release(path);
++    return hr;
++}
++
+ static HRESULT d2d_geometry_tessellate(ID2D1Geometry *geometry, const D2D1_MATRIX_3X2_F *transform,
+         float tolerance, ID2D1TessellationSink *sink)
+ {
+@@ -5039,18 +5367,18 @@
+ 
+     d2d_point_set(&ellipse.point, 0.0f, 0.0f);
+     ellipse.radiusX = r->radiusX;
+-    ellipse.radiusY = r->radiusY;
++    ellipse.radiusY = -r->radiusY;
+ 
+     d2d_ellipse_to_segments(&ellipse, &start_point, segments);
+ 
+-    d2d_point_set(&p, r->rect.left + r->radiusX, r->rect.bottom + r->radiusY);
++    d2d_point_set(&p, r->rect.left + r->radiusX, r->rect.bottom - r->radiusY);
+     d2d_point_translate(&start_point, p.x, p.y);
+     d2d_bezier_segment_translate(&segments[0], p.x, p.y);
+-    d2d_point_set(&p, r->rect.right - r->radiusX, r->rect.bottom + r->radiusY);
++    d2d_point_set(&p, r->rect.right - r->radiusX, r->rect.bottom - r->radiusY);
+     d2d_bezier_segment_translate(&segments[1], p.x, p.y);
+-    d2d_point_set(&p, r->rect.right - r->radiusX, r->rect.top - r->radiusY);
++    d2d_point_set(&p, r->rect.right - r->radiusX, r->rect.top + r->radiusY);
+     d2d_bezier_segment_translate(&segments[2], p.x, p.y);
+-    d2d_point_set(&p, r->rect.left + r->radiusX, r->rect.top - r->radiusY);
++    d2d_point_set(&p, r->rect.left + r->radiusX, r->rect.top + r->radiusY);
+     d2d_bezier_segment_translate(&segments[3], p.x, p.y);
+ 
+     ret = d2d_figure_begin(&figure, start_point, D2D1_FIGURE_BEGIN_FILLED);
+@@ -5058,7 +5386,7 @@
+     d2d_point_set(&p, r->rect.right - r->radiusX, r->rect.bottom);
+     ret = ret && d2d_figure_add_lines(&figure, &p, 1);
+     ret = ret && d2d_figure_add_beziers(&figure, &segments[1], 1);
+-    d2d_point_set(&p, r->rect.right, r->rect.top - r->radiusY);
++    d2d_point_set(&p, r->rect.right, r->rect.top + r->radiusY);
+     ret = ret && d2d_figure_add_lines(&figure, &p, 1);
+     ret = ret && d2d_figure_add_beziers(&figure, &segments[2], 1);
+     d2d_point_set(&p, r->rect.left + r->radiusX, r->rect.top);
+diff --git a/dlls/d2d1/device.c b/dlls/d2d1/device.c
+--- a/dlls/d2d1/device.c
++++ b/dlls/d2d1/device.c
+@@ -1696,14 +1696,29 @@
+         return;
+     }
+ 
++    if (stroke_style_impl)
++    {
++        if (stroke_style_impl->desc.transformType == D2D1_STROKE_TRANSFORM_TYPE_FIXED)
++            stroke_width /= context->drawing_state.transform.m11;
++    }
++
++    if (stroke_style_impl && stroke_style_impl->dash_count)
++    {
++        ID2D1PathGeometry *dashed;
++        HRESULT hr;
++
++        if (SUCCEEDED(hr = d2d_geometry_create_dashed(geometry, stroke_style_impl, stroke_width,
++                D2D1_DEFAULT_FLATTENING_TOLERANCE, &dashed)))
++        {
++            ID2D1DeviceContext6_FillGeometry(iface, (ID2D1Geometry *)dashed, brush, NULL);
++            ID2D1PathGeometry_Release(dashed);
++        }
++        else d2d_device_context_set_error(context, hr);
++        return;
++    }
++
+     if (stroke_style)
+         FIXME("Ignoring stroke style %p.\n", stroke_style);
+-
+-    if (stroke_style_impl)
+-    {
+-        if (stroke_style_impl->desc.transformType == D2D1_STROKE_TRANSFORM_TYPE_FIXED)
+-            stroke_width /= context->drawing_state.transform.m11;
+-    }
+ 
+     d2d_device_context_draw_geometry(context, geometry_impl, brush_impl, stroke_width);
+ }
+diff --git a/dlls/d2d1/d2d1_private.h b/dlls/d2d1/d2d1_private.h
+--- a/dlls/d2d1/d2d1_private.h
++++ b/dlls/d2d1/d2d1_private.h
+@@ -662,6 +662,8 @@
+ HRESULT d2d_geometry_group_init(struct d2d_geometry *geometry, ID2D1Factory *factory,
+         D2D1_FILL_MODE fill_mode, ID2D1Geometry **src_geometries, unsigned int geometry_count);
+ struct d2d_geometry *unsafe_impl_from_ID2D1Geometry(ID2D1Geometry *iface);
++HRESULT d2d_geometry_create_dashed(ID2D1Geometry *geometry, const struct d2d_stroke_style *style,
++        float width, float tolerance, ID2D1PathGeometry **ret);
+ 
+ struct d2d_geometry_realization
+ {
