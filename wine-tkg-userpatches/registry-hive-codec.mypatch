@@ -2,7 +2,7 @@ diff --git a/server/registry_hive.c b/server/registry_hive.c
 new file mode 100644
 --- /dev/null
 +++ b/server/registry_hive.c
-@@ -0,0 +1,641 @@
+@@ -0,0 +1,898 @@
 +/*
 + * Registry hive file support
 + *
@@ -644,11 +644,268 @@ new file mode 100644
 +    }
 +    return ret;
 +}
++
++static uint32_t hive_checksum( const unsigned char *data )
++{
++    uint32_t value = 0;
++    unsigned int i;
++
++    for (i = 0; i < 508; i += 4) value ^= read_u32( data + i );
++    if (!value) return 1;
++    return value == UINT32_MAX ? value - 1 : value;
++}
++
++static int hive_header_valid( const unsigned char *data, size_t size, unsigned int type )
++{
++    uint32_t bins;
++
++    if (size < 512 || memcmp( data, "regf", 4 ) || read_u32( data + 20 ) != 1 ||
++        read_u32( data + 24 ) < 3 || read_u32( data + 24 ) > 6 ||
++        read_u32( data + 28 ) != type || read_u32( data + 32 ) != 1 ||
++        read_u32( data + 508 ) != hive_checksum( data )) return 0;
++    bins = read_u32( data + 40 );
++    return bins && !(bins & 4095) && read_u32( data + 36 ) < bins;
++}
++
++int reg_hive_set_sequence( void *data, size_t size, uint32_t primary, uint32_t secondary )
++{
++    unsigned char *bytes = data;
++
++    if (size < 512 || memcmp( bytes, "regf", 4 )) return EINVAL;
++    write_u32( bytes + 4, primary );
++    write_u32( bytes + 8, secondary );
++    write_u32( bytes + 508, hive_checksum( bytes ));
++    return 0;
++}
++
++static uint32_t hive_rotate( uint32_t value, unsigned int shift )
++{
++    return value << shift | value >> (32 - shift);
++}
++
++static void hive_hash_round( uint32_t *left, uint32_t *right )
++{
++    *right ^= *left;
++    *left = hive_rotate( *left, 20 ) + *right;
++    *right = hive_rotate( *right, 9 ) ^ *left;
++    *left = hive_rotate( *left, 27 ) + *right;
++    *right = hive_rotate( *right, 19 );
++}
++
++static uint64_t hive_log_hash( const unsigned char *data, size_t size )
++{
++    uint32_t left = 0x7a4e55c5, right = 0x82ef4d88, tail;
++    unsigned int shift = 0;
++
++    while (size >= 4)
++    {
++        left += read_u32( data );
++        hive_hash_round( &left, &right );
++        data += 4;
++        size -= 4;
++    }
++    tail = 0x80u << (size * 8);
++    while (size--)
++    {
++        tail |= (uint32_t)*data++ << shift;
++        shift += 8;
++    }
++    left += tail;
++    hive_hash_round( &left, &right );
++    hive_hash_round( &left, &right );
++    return left | (uint64_t)right << 32;
++}
++
++int reg_hive_log_encode( const void *data, size_t size, uint32_t sequence, void **log, size_t *log_size )
++{
++    const unsigned char *bytes = data;
++    unsigned char *output, *entry;
++    uint32_t bins;
++    size_t entry_size;
++
++    *log = NULL;
++    *log_size = 0;
++    if (!hive_header_valid( bytes, size, 0 )) return EINVAL;
++    bins = read_u32( bytes + 40 );
++    if (size < HIVE_HEADER || bins > size - HIVE_HEADER || bins > UINT32_MAX - 1023) return EINVAL;
++    entry_size = ((size_t)bins + 48 + 511) & ~(size_t)511;
++    if (!(output = calloc( 1, 512 + entry_size ))) return ENOMEM;
++    memcpy( output, bytes, 512 );
++    write_u32( output + 28, 6 );
++    reg_hive_set_sequence( output, 512, sequence, sequence );
++    entry = output + 512;
++    memcpy( entry, "HvLE", 4 );
++    write_u32( entry + 4, entry_size );
++    write_u32( entry + 8, read_u32( bytes + 144 ) & 1 );
++    write_u32( entry + 12, sequence );
++    write_u32( entry + 16, bins );
++    write_u32( entry + 20, 1 );
++    write_u32( entry + 40, 0 );
++    write_u32( entry + 44, bins );
++    memcpy( entry + 48, bytes + HIVE_HEADER, bins );
++    write_u64( entry + 24, hive_log_hash( entry + 40, entry_size - 40 ));
++    write_u64( entry + 32, hive_log_hash( entry, 32 ));
++    *log = output;
++    *log_size = 512 + entry_size;
++    return 0;
++}
++
++struct hive_log_cursor
++{
++    const unsigned char *data;
++    size_t size, offset;
++};
++
++static const unsigned char *hive_log_entry( struct hive_log_cursor *cursor )
++{
++    const unsigned char *entry, *reference;
++    uint32_t length, pages, bins, offset, size, i;
++    size_t used;
++
++    if (cursor->offset > cursor->size || cursor->size - cursor->offset < 40) return NULL;
++    entry = cursor->data + cursor->offset;
++    length = read_u32( entry + 4 );
++    pages = read_u32( entry + 20 );
++    bins = read_u32( entry + 16 );
++    if (memcmp( entry, "HvLE", 4 ) || length < 512 || (length & 511) ||
++        length > cursor->size - cursor->offset || !bins || (bins & 4095) ||
++        pages > (length - 40) / 8 ||
++        read_u64( entry + 24 ) != hive_log_hash( entry + 40, length - 40 ) ||
++        read_u64( entry + 32 ) != hive_log_hash( entry, 32 )) return NULL;
++    used = 40 + (size_t)pages * 8;
++    for (i = 0; i < pages; i++)
++    {
++        reference = entry + 40 + i * 8;
++        offset = read_u32( reference );
++        size = read_u32( reference + 4 );
++        if (!size || (offset & 511) || (size & 511) || offset > bins ||
++            size > bins - offset || size > length - used) return NULL;
++        used += size;
++    }
++    return entry;
++}
++
++static const unsigned char *hive_log_next( struct hive_log_cursor *cursor, const unsigned char *entry )
++{
++    uint32_t sequence = read_u32( entry + 12 ) + 1;
++
++    cursor->offset += read_u32( entry + 4 );
++    entry = hive_log_entry( cursor );
++    return entry && read_u32( entry + 12 ) == sequence ? entry : NULL;
++}
++
++int reg_hive_recover( const void *data, size_t size, const struct reg_hive_log logs[2],
++                      void **output, size_t *output_size, uint32_t *sequence )
++{
++    struct hive_log_cursor cursors[2];
++    const unsigned char *bytes = data, *entry[2], *current, *page;
++    unsigned char *recovered = NULL, *grown;
++    struct reg_hive_key *tree = NULL;
++    size_t recovered_size = size, new_size, page_offset;
++    uint32_t expected = 0, bins, pages, i;
++    int valid = hive_header_valid( bytes, size, 0 ), order, selected, applied = 0, ret = EINVAL;
++
++    *output = NULL;
++    *output_size = 0;
++    if (valid && read_u32( bytes + 4 ) == read_u32( bytes + 8 ))
++    {
++        *sequence = read_u32( bytes + 4 );
++        return 0;
++    }
++    memset( cursors, 0, sizeof(cursors) );
++    for (i = 0; i < 2; i++)
++    {
++        if (!hive_header_valid( logs[i].data, logs[i].size, 6 )) continue;
++        if (read_u32( (const unsigned char *)logs[i].data + 4 ) !=
++            read_u32( (const unsigned char *)logs[i].data + 8 )) continue;
++        cursors[i].data = logs[i].data;
++        cursors[i].size = logs[i].size;
++        cursors[i].offset = 512;
++    }
++    for (i = 0; i < 2; i++)
++    {
++        entry[i] = hive_log_entry( cursors + i );
++        if (entry[i] && read_u32( entry[i] + 12 ) != read_u32( cursors[i].data + 4 )) entry[i] = NULL;
++    }
++    if (!entry[0] && !entry[1]) return EINVAL;
++    if (valid) expected = read_u32( bytes + 8 );
++    else if (!entry[1]) expected = read_u32( entry[0] + 12 );
++    else if (!entry[0]) expected = read_u32( entry[1] + 12 );
++    else
++    {
++        order = (int32_t)(read_u32( entry[0] + 12 ) - read_u32( entry[1] + 12 ));
++        selected = order < 0;
++        expected = read_u32( entry[selected] + 12 );
++        entry[!selected] = NULL;
++    }
++    if (!(recovered = calloc( 1, size < HIVE_HEADER ? HIVE_HEADER : size ))) return ENOMEM;
++    if (size) memcpy( recovered, bytes, size );
++    if (recovered_size < HIVE_HEADER) recovered_size = HIVE_HEADER;
++    for (;;)
++    {
++        selected = -1;
++        for (i = 0; i < 2; i++)
++        {
++            while (entry[i] && (int32_t)(read_u32( entry[i] + 12 ) - expected) < 0)
++            {
++                entry[i] = hive_log_next( cursors + i, entry[i] );
++            }
++            if (entry[i] && read_u32( entry[i] + 12 ) == expected) selected = i;
++        }
++        if (selected < 0) break;
++        if (entry[0] && entry[1] && read_u32( entry[0] + 12 ) == expected &&
++            read_u32( entry[1] + 12 ) == expected &&
++            (read_u64( entry[0] + 24 ) != read_u64( entry[1] + 24 ) ||
++             read_u64( entry[0] + 32 ) != read_u64( entry[1] + 32 ))) goto done;
++        current = entry[selected];
++        bins = read_u32( current + 16 );
++        new_size = (size_t)bins + HIVE_HEADER;
++        if (new_size < bins) goto done;
++        if (new_size > recovered_size)
++        {
++            if (!(grown = calloc( 1, new_size ))) { ret = ENOMEM; goto done; }
++            memcpy( grown, recovered, recovered_size );
++            free( recovered );
++            recovered = grown;
++        }
++        recovered_size = new_size;
++        memcpy( recovered, cursors[selected].data, 512 );
++        write_u32( recovered + 28, 0 );
++        write_u32( recovered + 40, bins );
++        write_u32( recovered + 144, (read_u32( recovered + 144 ) & ~1u) | (read_u32( current + 8 ) & 1) );
++        pages = read_u32( current + 20 );
++        page_offset = 40 + (size_t)pages * 8;
++        for (i = 0; i < pages; i++)
++        {
++            uint32_t offset, length;
++            page = current + 40 + i * 8;
++            offset = read_u32( page );
++            length = read_u32( page + 4 );
++            memcpy( recovered + HIVE_HEADER + offset, current + page_offset, length );
++            page_offset += length;
++        }
++        expected++;
++        applied = 1;
++        entry[selected] = hive_log_next( cursors + selected, current );
++    }
++    if (!applied) goto done;
++    reg_hive_set_sequence( recovered, recovered_size, expected, expected );
++    ret = reg_hive_decode( recovered, recovered_size, &tree );
++    reg_hive_free( tree );
++    if (ret) goto done;
++    *sequence = expected;
++    *output = recovered;
++    *output_size = recovered_size;
++    return 0;
++done:
++    free( recovered );
++    return ret;
++}
 diff --git a/server/registry_hive.h b/server/registry_hive.h
 new file mode 100644
 --- /dev/null
 +++ b/server/registry_hive.h
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,55 @@
 +/*
 + * Registry hive file support
 + *
@@ -689,6 +946,16 @@ new file mode 100644
 +    size_t child_count;
 +};
 +
++struct reg_hive_log
++{
++    const void *data;
++    size_t size;
++};
++
++int reg_hive_set_sequence( void *data, size_t size, uint32_t primary, uint32_t secondary );
++int reg_hive_log_encode( const void *data, size_t size, uint32_t sequence, void **log, size_t *log_size );
++int reg_hive_recover( const void *data, size_t size, const struct reg_hive_log logs[2],
++                      void **output, size_t *output_size, uint32_t *sequence );
 +int reg_hive_decode( const void *data, size_t size, struct reg_hive_key **root );
 +int reg_hive_encode( const struct reg_hive_key *root, void **data, size_t *size );
 +void reg_hive_free( struct reg_hive_key *key );

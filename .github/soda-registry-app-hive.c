@@ -227,6 +227,78 @@ done:
 }
 
 #ifdef REGISTRY_HIVE_CODEC
+static BOOL write_fixture(const WCHAR *path, const void *data, size_t size)
+{
+    HANDLE file;
+    DWORD written;
+    BOOL ret;
+
+    if (size > MAXDWORD) return FALSE;
+    file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
+    if (file == INVALID_HANDLE_VALUE) return FALSE;
+    ret = WriteFile(file, data, (DWORD)size, &written, NULL) && written == size && FlushFileBuffers(file);
+    CloseHandle(file);
+    return ret;
+}
+
+static void test_journal(const void *data, size_t size, const WCHAR *directory)
+{
+    WCHAR path[MAX_PATH], log_path[MAX_PATH];
+    unsigned char *damaged = NULL;
+    void *log = NULL;
+    size_t log_size = 0;
+    HKEY root = NULL, child = NULL;
+    DWORD number, value_size, type;
+    unsigned int mode;
+    LONG ret;
+
+    swprintf(path, MAX_PATH, L"%ls\\recovery.dat", directory);
+    swprintf(log_path, MAX_PATH, L"%ls.LOG1", path);
+    ret = reg_hive_log_encode(data, size, 17, &log, &log_size);
+    check("journal_encode", ret, 0);
+    if (ret) return;
+    damaged = malloc(size);
+    if (!damaged) { check("journal_allocate", 1, 0); goto done; }
+    for (mode = 0; mode < 2; mode++)
+    {
+        memcpy(damaged, data, size);
+        memset(damaged + 4096, 0, size - 4096);
+        ret = reg_hive_set_sequence(damaged, size, 18, 17);
+        check("journal_dirty_header", ret, 0);
+        if (ret) goto done;
+        if (mode) damaged[0] ^= 1;
+        ret = write_fixture(log_path, log, log_size);
+        check("journal_write_log", ret, TRUE);
+        if (!ret) goto remove;
+        ret = write_fixture(path, damaged, size);
+        check("journal_write_main", ret, TRUE);
+        if (!ret) goto remove;
+        ret = RegLoadAppKeyW(path, &root, KEY_READ, REG_PROCESS_APPKEY, 0);
+        check(mode ? "journal_native_bad_header" : "journal_native_torn_body", ret, ERROR_SUCCESS);
+        if (ret) goto remove;
+        ret = RegOpenKeyExW(root, L"Fixture\\Child", 0, KEY_READ, &child);
+        check("journal_native_child", ret, ERROR_SUCCESS);
+        if (!ret)
+        {
+            number = 0;
+            value_size = sizeof(number);
+            ret = RegQueryValueExW(child, L"Number", NULL, &type, (BYTE *)&number, &value_size);
+            check("journal_native_value", ret, ERROR_SUCCESS);
+            check("journal_number_value", !ret && type == REG_DWORD && value_size == sizeof(number) &&
+                  number == 0x12345678, TRUE);
+            check("journal_close_child", RegCloseKey(child), ERROR_SUCCESS);
+            child = NULL;
+        }
+        check("journal_close_root", RegCloseKey(root), ERROR_SUCCESS);
+        root = NULL;
+remove:
+        remove_file(path);
+    }
+done:
+    free(damaged);
+    free(log);
+}
+
 static void test_codec(const WCHAR *path, const WCHAR *directory)
 {
     static const WCHAR text[] = L"application hive fixture";
@@ -265,6 +337,7 @@ static void test_codec(const WCHAR *path, const WCHAR *directory)
     ret = reg_hive_encode(tree, &encoded, &encoded_size);
     check("codec_encode", ret, 0);
     if (ret || encoded_size > MAXDWORD) goto done;
+    test_journal(encoded, encoded_size, directory);
     output = CreateFileW(rewritten, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
     check("codec_output", output == INVALID_HANDLE_VALUE ? GetLastError() : 0, 0);
     if (output == INVALID_HANDLE_VALUE) goto done;
