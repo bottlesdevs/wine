@@ -31,6 +31,83 @@ static void remove_file(const WCHAR *path)
     }
 }
 
+static void test_lifetime(const WCHAR *path)
+{
+    HKEY root = NULL, child = NULL, second = NULL, reader = NULL;
+    DWORD number = 0x11223344, actual = 0, size, type = 0;
+    LONG ret;
+
+    ret = RegLoadAppKeyW(path, &root, KEY_ALL_ACCESS, REG_PROCESS_APPKEY, 0);
+    check("lifetime_load", ret, ERROR_SUCCESS);
+    if (ret) return;
+    ret = RegOpenKeyExW(root, L"Fixture\\Child", 0, KEY_ALL_ACCESS, &child);
+    check("lifetime_child", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    check("lifetime_close_root", RegCloseKey(root), ERROR_SUCCESS);
+    root = NULL;
+    check("lifetime_child_write", RegSetValueExW(child, L"Lifetime", 0, REG_DWORD,
+          (const BYTE *)&number, sizeof(number)), ERROR_SUCCESS);
+    check("lifetime_child_flush", RegFlushKey(child), ERROR_SUCCESS);
+    ret = RegLoadAppKeyW(path, &second, KEY_READ, 0, 0);
+    check("lifetime_child_keeps_private", ret, ERROR_SHARING_VIOLATION);
+    if (!ret) RegCloseKey(second);
+    second = NULL;
+    check("lifetime_close_child", RegCloseKey(child), ERROR_SUCCESS);
+    child = NULL;
+
+    ret = RegLoadAppKeyW(path, &root, KEY_ALL_ACCESS, 0, 0);
+    check("shared_load", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    ret = RegLoadAppKeyW(path, &second, KEY_ALL_ACCESS, 0, 0);
+    check("shared_second_load", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    check("shared_write", RegSetValueExW(root, L"Shared", 0, REG_DWORD,
+          (const BYTE *)&number, sizeof(number)), ERROR_SUCCESS);
+    size = sizeof(actual);
+    check("shared_read", RegQueryValueExW(second, L"Shared", NULL, &type,
+          (BYTE *)&actual, &size), ERROR_SUCCESS);
+    check("shared_type", type, REG_DWORD);
+    check("shared_value", actual, number);
+    ret = RegLoadAppKeyW(path, &reader, KEY_READ, 0, 0);
+    check("shared_read_only_load", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    check("shared_read_only_write", RegSetValueExW(reader, L"Shared", 0, REG_DWORD,
+          (const BYTE *)&number, sizeof(number)), ERROR_ACCESS_DENIED);
+    check("shared_close_first", RegCloseKey(root), ERROR_SUCCESS);
+    root = NULL;
+    check("shared_close_second", RegCloseKey(second), ERROR_SUCCESS);
+    second = NULL;
+    actual = 0;
+    size = sizeof(actual);
+    check("shared_last_reader", RegQueryValueExW(reader, L"Shared", NULL, &type,
+          (BYTE *)&actual, &size), ERROR_SUCCESS);
+    check("shared_last_value", actual, number);
+    check("shared_close_reader", RegCloseKey(reader), ERROR_SUCCESS);
+    reader = NULL;
+
+    ret = RegLoadAppKeyW(path, &root, KEY_READ, REG_PROCESS_APPKEY, 0);
+    check("lifetime_reload", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    actual = 0;
+    size = sizeof(actual);
+    check("lifetime_persisted_root", RegQueryValueExW(root, L"Shared", NULL, &type,
+          (BYTE *)&actual, &size), ERROR_SUCCESS);
+    check("lifetime_persisted_root_value", actual, number);
+    ret = RegOpenKeyExW(root, L"Fixture\\Child", 0, KEY_READ, &child);
+    check("lifetime_reopen_child", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    actual = 0;
+    size = sizeof(actual);
+    check("lifetime_persisted_child", RegQueryValueExW(child, L"Lifetime", NULL, &type,
+          (BYTE *)&actual, &size), ERROR_SUCCESS);
+    check("lifetime_persisted_child_value", actual, number);
+done:
+    if (child) check("lifetime_final_child", RegCloseKey(child), ERROR_SUCCESS);
+    if (reader) check("lifetime_final_reader", RegCloseKey(reader), ERROR_SUCCESS);
+    if (second) check("lifetime_final_second", RegCloseKey(second), ERROR_SUCCESS);
+    if (root) check("lifetime_final_root", RegCloseKey(root), ERROR_SUCCESS);
+}
+
 #ifdef REGISTRY_HIVE_CODEC
 static void test_codec(const WCHAR *path, const WCHAR *directory)
 {
@@ -156,7 +233,7 @@ int wmain(int argc, WCHAR **argv)
     check("short_buffer_size", size, sizeof(text));
     check("flush", RegFlushKey(root), ERROR_SUCCESS);
     ret = RegLoadAppKeyW(path, &second, KEY_READ, 0, 0);
-    printf("{\"case\":\"second_open\",\"result\":%ld}\n", ret);
+    check("second_open", ret, ERROR_SHARING_VIOLATION);
     if (!ret)
     {
         check("second_info", RegQueryInfoKeyW(second, NULL, NULL, NULL, &children,
@@ -218,6 +295,7 @@ close:
     if (subkey) check("final_close_subkey", RegCloseKey(subkey), ERROR_SUCCESS);
     if (root) check("final_close_root", RegCloseKey(root), ERROR_SUCCESS);
     root = NULL;
+    test_lifetime(path);
     check("reserved", RegLoadAppKeyW(path, &root, KEY_READ, 0, 1), ERROR_INVALID_PARAMETER);
     check("null_file", RegLoadAppKeyW(NULL, &root, KEY_READ, 0, 0), ERROR_INVALID_PARAMETER);
     ret = RegLoadAppKeyW(missing, &root, KEY_READ, 0, 0);
