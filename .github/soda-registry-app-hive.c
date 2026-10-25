@@ -321,6 +321,7 @@ int wmain(int argc, WCHAR **argv)
     ret = RegCreateKeyExW(root, L"Fixture\\Child", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &subkey, NULL);
     check("create_subkey", ret, ERROR_SUCCESS);
     if (ret) goto close;
+    test_security(root, subkey);
     check("write_number", RegSetValueExW(subkey, L"Number", 0, REG_DWORD,
           (const BYTE *)&number, sizeof(number)), ERROR_SUCCESS);
     check("write_text", RegSetValueExW(subkey, L"Text", 0, REG_SZ,
