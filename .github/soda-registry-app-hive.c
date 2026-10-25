@@ -135,6 +135,178 @@ static void test_custom_security(HKEY root)
     free(attributes.lpSecurityDescriptor);
 }
 
+static void test_dacl(HKEY key, PSECURITY_DESCRIPTOR reference, BOOL equal)
+{
+    PSECURITY_DESCRIPTOR descriptor;
+    PACL actual = NULL, expected = NULL;
+    BOOL present, defaulted, expected_present;
+    DWORD size = 0;
+    LONG ret;
+
+    check("ordinary_descriptor_size", RegGetKeySecurity(key, DACL_SECURITY_INFORMATION, NULL, &size),
+          ERROR_INSUFFICIENT_BUFFER);
+    if (!size) return;
+    descriptor = malloc(size);
+    if (!descriptor) { check("ordinary_allocate", 1, 0); return; }
+    ret = RegGetKeySecurity(key, DACL_SECURITY_INFORMATION, descriptor, &size);
+    check("ordinary_descriptor_read", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    ret = GetSecurityDescriptorDacl(descriptor, &present, &actual, &defaulted);
+    check("ordinary_actual_dacl", ret, TRUE);
+    if (!ret) goto done;
+    ret = GetSecurityDescriptorDacl(reference, &expected_present, &expected, &defaulted);
+    check("ordinary_expected_dacl", ret, TRUE);
+    if (!ret) goto done;
+    ret = present && expected_present && actual && expected && actual->AclSize == expected->AclSize &&
+          !memcmp(actual, expected, actual->AclSize);
+    check("ordinary_dacl_matches", ret, equal);
+done:
+    free(descriptor);
+}
+
+static void test_ordinary_attributes(void)
+{
+    WCHAR path[MAX_PATH];
+    SECURITY_ATTRIBUTES attributes = {sizeof(attributes), NULL, FALSE};
+    HKEY root = NULL, child = NULL, parent = NULL;
+    DWORD disposition = 0, flags = 0;
+    BOOL created = FALSE;
+    LONG ret;
+
+    swprintf(path, MAX_PATH, L"Software\\SodaRegistry-%lu-%llu", GetCurrentProcessId(), GetTickCount64());
+    ret = RegCreateKeyExW(HKEY_CURRENT_USER, path, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &root, &disposition);
+    check("ordinary_create_root", ret, ERROR_SUCCESS);
+    if (ret) return;
+    check("ordinary_root_new", disposition, REG_CREATED_NEW_KEY);
+    if (disposition != REG_CREATED_NEW_KEY) goto done;
+    created = TRUE;
+    ret = ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;KA;;;WD)", SDDL_REVISION_1,
+            &attributes.lpSecurityDescriptor, NULL);
+    check("ordinary_make_descriptor", ret, TRUE);
+    if (!ret) goto done;
+    ret = RegCreateKeyExW(root, L"Wide\\Leaf", 0, NULL, 0, KEY_ALL_ACCESS, &attributes, &child, NULL);
+    check("ordinary_wide_create", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    test_dacl(child, attributes.lpSecurityDescriptor, TRUE);
+    check("ordinary_wide_close", RegCloseKey(child), ERROR_SUCCESS);
+    child = NULL;
+    ret = RegOpenKeyExW(root, L"Wide", 0, READ_CONTROL, &parent);
+    check("ordinary_intermediate_open", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    test_dacl(parent, attributes.lpSecurityDescriptor, FALSE);
+    check("ordinary_intermediate_close", RegCloseKey(parent), ERROR_SUCCESS);
+    parent = NULL;
+    ret = RegCreateKeyExA(root, "Ansi", 0, NULL, 0, KEY_ALL_ACCESS, &attributes, &child, NULL);
+    check("ordinary_ansi_create", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    test_dacl(child, attributes.lpSecurityDescriptor, TRUE);
+    check("ordinary_ansi_close", RegCloseKey(child), ERROR_SUCCESS);
+    child = NULL;
+    LocalFree(attributes.lpSecurityDescriptor);
+    attributes.lpSecurityDescriptor = NULL;
+    attributes.bInheritHandle = TRUE;
+    ret = RegCreateKeyExW(root, L"Inherit", 0, NULL, 0, KEY_ALL_ACCESS, &attributes, &child, NULL);
+    check("ordinary_inherit_create", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    check("ordinary_handle_info", GetHandleInformation(child, &flags), TRUE);
+    check("ordinary_handle_inherit", !!(flags & HANDLE_FLAG_INHERIT), TRUE);
+done:
+    if (child) check("ordinary_child_close", RegCloseKey(child), ERROR_SUCCESS);
+    if (parent) RegCloseKey(parent);
+    if (created) check("ordinary_delete_tree", RegDeleteTreeW(root, NULL), ERROR_SUCCESS);
+    check("ordinary_root_close", RegCloseKey(root), ERROR_SUCCESS);
+    if (created) check("ordinary_delete_root", RegDeleteKeyW(HKEY_CURRENT_USER, path), ERROR_SUCCESS);
+    LocalFree(attributes.lpSecurityDescriptor);
+}
+
+static int inherited_access(HKEY key, HANDLE start)
+{
+    DWORD number = 0, type = 0, size = sizeof(number);
+    LONG ret;
+
+    if (WaitForSingleObject(start, 20000) != WAIT_OBJECT_0) return 1;
+    CloseHandle(start);
+    ret = RegQueryValueExW(key, L"Value", NULL, &type, (BYTE *)&number, &size);
+    if (ret || type != REG_DWORD || size != sizeof(number) || number != 12345) return 1;
+    number = 67890;
+    ret = RegSetValueExW(key, L"Value", 0, REG_DWORD, (BYTE *)&number, sizeof(number));
+    if (!ret) ret = RegFlushKey(key);
+    if (RegCloseKey(key)) return 1;
+    return !!ret;
+}
+
+static void test_inheritance(const WCHAR *path)
+{
+    SECURITY_ATTRIBUTES attributes = {sizeof(attributes), NULL, TRUE};
+    STARTUPINFOW startup = {0};
+    PROCESS_INFORMATION process = {0};
+    WCHAR executable[MAX_PATH], command[MAX_PATH + 120];
+    HKEY root = NULL, child = NULL, second = NULL;
+    HANDLE start = NULL;
+    DWORD number = 12345, size, type = 0, flags = 0, code;
+    LONG ret;
+
+    ret = RegLoadAppKeyW(path, &root, KEY_ALL_ACCESS, REG_PROCESS_APPKEY, 0);
+    check("inherit_load", ret, ERROR_SUCCESS);
+    if (ret) return;
+    ret = RegCreateKeyExW(root, L"Inherited", 0, NULL, 0, KEY_ALL_ACCESS, &attributes, &child, NULL);
+    check("inherit_create", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    check("inherit_handle_info", GetHandleInformation(child, &flags), TRUE);
+    check("inherit_handle_flag", !!(flags & HANDLE_FLAG_INHERIT), TRUE);
+    check("inherit_set_value", RegSetValueExW(child, L"Value", 0, REG_DWORD,
+          (BYTE *)&number, sizeof(number)), ERROR_SUCCESS);
+    start = CreateEventW(&attributes, TRUE, FALSE, NULL);
+    check("inherit_event", start != NULL, TRUE);
+    if (!start) goto done;
+    code = GetModuleFileNameW(NULL, executable, MAX_PATH);
+    if (!code || code >= MAX_PATH) { check("inherit_executable", 1, 0); goto done; }
+    swprintf(command, sizeof(command) / sizeof(*command), L"\"%ls\" --inherited %llu %llu",
+             executable, (unsigned long long)(ULONG_PTR)child, (unsigned long long)(ULONG_PTR)start);
+    startup.cb = sizeof(startup);
+    ret = CreateProcessW(executable, command, NULL, NULL, TRUE, CREATE_NO_WINDOW,
+                         NULL, NULL, &startup, &process);
+    check("inherit_process", ret, TRUE);
+    if (!ret) goto done;
+    CloseHandle(process.hThread);
+    check("inherit_close_parent_child", RegCloseKey(child), ERROR_SUCCESS);
+    child = NULL;
+    check("inherit_close_parent_root", RegCloseKey(root), ERROR_SUCCESS);
+    root = NULL;
+    ret = RegLoadAppKeyW(path, &second, KEY_READ, 0, 0);
+    check("inherit_child_keeps_private", ret, ERROR_SHARING_VIOLATION);
+    if (!ret) RegCloseKey(second);
+    check("inherit_start_child", SetEvent(start), TRUE);
+    code = WaitForSingleObject(process.hProcess, 20000);
+    check("inherit_wait_child", code, WAIT_OBJECT_0);
+    if (code != WAIT_OBJECT_0) goto done;
+    check("inherit_exit_status", GetExitCodeProcess(process.hProcess, &code), TRUE);
+    check("inherit_child_exit", code, 0);
+    CloseHandle(process.hProcess);
+    process.hProcess = NULL;
+    ret = RegLoadAppKeyW(path, &root, KEY_ALL_ACCESS, REG_PROCESS_APPKEY, 0);
+    check("inherit_reload", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    ret = RegOpenKeyExW(root, L"Inherited", 0, KEY_READ, &child);
+    check("inherit_reopen_child", ret, ERROR_SUCCESS);
+    if (ret) goto done;
+    number = 0;
+    size = sizeof(number);
+    ret = RegQueryValueExW(child, L"Value", NULL, &type, (BYTE *)&number, &size);
+    check("inherit_persisted_read", ret, ERROR_SUCCESS);
+    check("inherit_persisted_value", !ret && type == REG_DWORD && size == sizeof(number) && number == 67890, TRUE);
+done:
+    if (process.hProcess)
+    {
+        TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, INFINITE);
+        CloseHandle(process.hProcess);
+    }
+    if (start) CloseHandle(start);
+    if (child) check("inherit_final_child", RegCloseKey(child), ERROR_SUCCESS);
+    if (root) check("inherit_final_root", RegCloseKey(root), ERROR_SUCCESS);
+}
+
 static LONG run_child(const WCHAR *path, DWORD options, DWORD expected)
 {
     WCHAR executable[MAX_PATH], command[2 * MAX_PATH + 80];
@@ -443,6 +615,9 @@ int wmain(int argc, WCHAR **argv)
 
     if (argc == 5 && !lstrcmpW(argv[1], L"--child"))
         return child_access(argv[2], wcstoul(argv[3], NULL, 0), wcstoul(argv[4], NULL, 0));
+    if (argc == 4 && !lstrcmpW(argv[1], L"--inherited"))
+        return inherited_access((HKEY)(ULONG_PTR)wcstoull(argv[2], NULL, 10),
+                                (HANDLE)(ULONG_PTR)wcstoull(argv[3], NULL, 10));
     if ((argc != 2 && argc != 3) || lstrlenW(argv[1]) > MAX_PATH - 40) return 2;
     swprintf(path, MAX_PATH, L"%ls\\application.dat", argv[1]);
     swprintf(invalid, MAX_PATH, L"%ls\\invalid.dat", argv[1]);
@@ -451,6 +626,7 @@ int wmain(int argc, WCHAR **argv)
         GetFileAttributesW(invalid) != INVALID_FILE_ATTRIBUTES) return 2;
     if (!WideCharToMultiByte(CP_ACP, 0, path, -1, ansi, sizeof(ansi), NULL, NULL)) return 2;
     setvbuf(stdout, NULL, _IONBF, 0);
+    test_ordinary_attributes();
 
     ret = RegLoadAppKeyW(path, &root, KEY_ALL_ACCESS, REG_PROCESS_APPKEY, 0);
     check("create", ret, ERROR_SUCCESS);
@@ -546,6 +722,7 @@ close:
     root = NULL;
     test_lifetime(path);
     test_processes(path);
+    test_inheritance(path);
     check("reserved", RegLoadAppKeyW(path, &root, KEY_READ, 0, 1), ERROR_INVALID_PARAMETER);
     check("null_file", RegLoadAppKeyW(NULL, &root, KEY_READ, 0, 0), ERROR_INVALID_PARAMETER);
     ret = RegLoadAppKeyW(missing, &root, KEY_READ, 0, 0);
