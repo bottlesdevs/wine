@@ -145,6 +145,72 @@ class ManifestTests(unittest.TestCase):
                         self.assertEqual(len(structure['manifests']), 1)
                         self.assertEqual(self.interpret(structure['manifests'], structure)['dpi_aware'], expected)
 
+    def test_manifest_resource_encodings(self):
+        encodings = [('utf-8', 'UTF-8', b''), ('utf-8-sig', 'UTF-8', b''),
+                     ('utf-16-le', 'UTF-16', b'\xff\xfe'),
+                     ('utf-16-be', 'UTF-16', b'\xfe\xff'),
+                     ('utf-16-le', 'UTF-16LE', b''), ('utf-16-be', 'UTF-16BE', b''),
+                     ('iso-8859-1', 'ISO-8859-1', b''), ('cp1252', 'windows-1252', b'')]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'app.c').write_text('int main(void) { return 0; }\n')
+            (root / 'app.rc').write_text('1 24 "app.manifest"\n')
+            for encoding, declaration, bom in encodings:
+                description = 'Caf\u00e9'
+                if encoding.startswith('utf-'):
+                    description += ' \U0001f680'
+                if encoding == 'cp1252':
+                    description += ''.join(bytes([value]).decode('cp1252') for value in range(0x80, 0xa0)
+                                           if value not in (0x81, 0x8d, 0x8f, 0x90, 0x9d))
+                xml = ('<?xml version="1.0" encoding="' + declaration + '"?>'
+                       '<assembly><description>' + description + '</description>'
+                       '<requestedExecutionLevel level="requireAdministrator"/>'
+                       '<dpiAware>true</dpiAware></assembly>')
+                (root / 'app.manifest').write_bytes(bom + xml.encode(encoding))
+                for compiler in ('i686', 'x86_64'):
+                    with self.subTest(compiler=compiler, encoding=encoding, bom=bom):
+                        subprocess.run([compiler + '-w64-mingw32-windres', 'app.rc', 'app.o'], cwd=root, check=True, capture_output=True)
+                        subprocess.run([compiler + '-w64-mingw32-gcc', 'app.c', 'app.o', '-o', 'app.exe'], cwd=root, check=True, capture_output=True)
+                        result = subprocess.run([str(ROOT / 'native/eagle-pe'), str(root / 'app.exe')], capture_output=True, timeout=5)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        structure = json.loads(result.stdout)
+                        self.assertEqual(structure['resource_error'], '')
+                        self.assertEqual(len(structure['manifests']), 1)
+                        self.assertIn(description, structure['manifests'][0])
+                        report = self.interpret(structure['manifests'], structure)
+                        self.assertTrue(report['admin'])
+                        self.assertTrue(report['dpi_aware'])
+
+    def test_invalid_manifest_encoding_does_not_set_flags(self):
+        xml = ('<assembly><requestedExecutionLevel level="requireAdministrator"/>'
+               '<dpiAware>true</dpiAware></assembly>')
+        cases = [b'\xff\xfe' + xml.encode('utf-16-le') + b'\x00',
+                 b'\xfe\xff' + xml.encode('utf-16-be') + b'\x00',
+                 b'\xff\xfe' + (xml + '\x00').encode('utf-16-le'),
+                 b'\xfe\xff' + xml.encode('utf-16-be').replace(b'\x00a', b'\xd8\x00', 1),
+                 b'<?xml version="1.0" encoding="windows-1252"?>' + xml.replace('</assembly>', '\x81</assembly>').encode('latin1'),
+                 b'<?xml version="1.0" encoding="unknown-encoding"?>' + xml.encode()]
+        for encoding, bom, declaration in [
+            ('utf-16-le', b'\xff\xfe', 'UTF-8'), ('utf-16-be', b'\xfe\xff', 'UTF-8'),
+            ('utf-16-le', b'\xff\xfe', 'UTF-16BE'), ('utf-16-be', b'\xfe\xff', 'UTF-16LE'),
+            ('utf-16-le', b'\xff\xfe', 'unknown-encoding')]:
+            cases.append(bom + ('<?xml version="1.0" encoding="' + declaration + '"?>' + xml).encode(encoding))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'app.c').write_text('int main(void) { return 0; }\n')
+            (root / 'app.rc').write_text('1 24 "app.manifest"\n')
+            for index, data in enumerate(cases):
+                (root / 'app.manifest').write_bytes(data)
+                for compiler in ('i686', 'x86_64'):
+                    with self.subTest(case=index, compiler=compiler):
+                        subprocess.run([compiler + '-w64-mingw32-windres', 'app.rc', 'app.o'], cwd=root, check=True, capture_output=True)
+                        subprocess.run([compiler + '-w64-mingw32-gcc', 'app.c', 'app.o', '-o', 'app.exe'], cwd=root, check=True, capture_output=True)
+                        result = subprocess.run([str(ROOT / 'native/eagle-pe'), str(root / 'app.exe')], check=True, capture_output=True, timeout=5)
+                        structure = json.loads(result.stdout)
+                        report = self.interpret(structure['manifests'], structure)
+                        self.assertFalse(report['admin'])
+                        self.assertFalse(report['dpi_aware'])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

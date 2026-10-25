@@ -129,17 +129,21 @@ public:
         }
         throw std::runtime_error("PE RVA is not backed by file data");
     }
-    std::string wide(size_t start, size_t units) const
+    std::string wide(size_t start, size_t units, bool big_endian = false) const
     {
         bounds(start, units * 2);
+        auto read = [this, big_endian](size_t offset) {
+            uint16_t value = word(offset);
+            return big_endian ? static_cast<uint16_t>((value >> 8) | (value << 8)) : value;
+        };
         std::string result;
         for (size_t index = 0; index < units; index++)
         {
-            uint32_t code = word(start + index * 2);
+            uint32_t code = read(start + index * 2);
             if (!code) break;
             if (code >= 0xd800 && code <= 0xdbff && index + 1 < units)
             {
-                uint32_t next = word(start + (index + 1) * 2);
+                uint32_t next = read(start + (index + 1) * 2);
                 if (next >= 0xdc00 && next <= 0xdfff) { code = 0x10000 + ((code-0xd800) << 10) + next-0xdc00; index++; }
                 else code = 0xfffd;
             }
@@ -148,6 +152,63 @@ public:
             else if (code < 0x800) { result += static_cast<char>(0xc0 | (code >> 6)); result += static_cast<char>(0x80 | (code & 63)); }
             else if (code < 0x10000) { result += static_cast<char>(0xe0 | (code >> 12)); result += static_cast<char>(0x80 | ((code >> 6) & 63)); result += static_cast<char>(0x80 | (code & 63)); }
             else { result += static_cast<char>(0xf0 | (code >> 18)); result += static_cast<char>(0x80 | ((code >> 12) & 63)); result += static_cast<char>(0x80 | ((code >> 6) & 63)); result += static_cast<char>(0x80 | (code & 63)); }
+        }
+        return result;
+    }
+    std::string manifest(size_t start, size_t size) const
+    {
+        std::string value;
+        bool little = size >= 4 && word(start) == 0x003c && data[start+3] == 0;
+        bool big = size >= 4 && word(start) == 0x3c00 && data[start+2] == 0;
+        if (size >= 2 && (word(start) == 0xfeff || word(start) == 0xfffe))
+        {
+            big = word(start) == 0xfffe; little = !big; start += 2; size -= 2;
+        }
+        if (little || big)
+        {
+            if (size % 2) return "";
+            bool surrogate = false;
+            for (size_t position = start; position < start+size; position += 2)
+            {
+                uint16_t value = word(position);
+                if (big) value = (value >> 8) | (value << 8);
+                if (!value || (surrogate ? value < 0xdc00 || value > 0xdfff : value >= 0xdc00 && value <= 0xdfff)) return "";
+                surrogate = !surrogate && value >= 0xd800 && value <= 0xdbff;
+            }
+            if (surrogate) return "";
+            value = wide(start, size/2, big);
+        }
+        else value.assign(reinterpret_cast<const char *>(data+start), size);
+        if (value.compare(0, 3, "\xef\xbb\xbf") == 0) value.erase(0, 3);
+        if (value.compare(0, 5, "<?xml")) return value;
+        size_t end = value.find("?>"), position = value.find("encoding", 5);
+        if (position == std::string::npos || end == std::string::npos || position >= end) return value;
+        position = value.find_first_not_of(" \t\r\n", position+8);
+        if (position == std::string::npos || value[position] != '=') return "";
+        position = value.find_first_not_of(" \t\r\n", position+1);
+        if (position == std::string::npos || (value[position] != '\'' && value[position] != '"')) return "";
+        size_t last = value.find(value[position], position+1);
+        if (last == std::string::npos || last >= end) return "";
+        std::string encoding = value.substr(position+1, last-position-1);
+        std::transform(encoding.begin(), encoding.end(), encoding.begin(), [](unsigned char ch) { return std::tolower(ch); });
+        if (little || big) return encoding == "utf-16" || encoding == (big ? "utf-16be" : "utf-16le") ? value : "";
+        if (encoding == "utf-8" || encoding == "utf8" || encoding == "us-ascii" || encoding == "ascii") return value;
+        bool windows = encoding == "windows-1252" || encoding == "cp1252";
+        if (!windows && encoding != "iso-8859-1" && encoding != "iso8859-1" && encoding != "latin1" && encoding != "latin-1") return "";
+        static const uint16_t cp1252[] = {
+            0x20ac, 0, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021,
+            0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017d, 0,
+            0, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014,
+            0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0, 0x017e, 0x0178
+        };
+        std::string result;
+        for (unsigned char ch : value)
+        {
+            uint32_t code = windows && ch >= 0x80 && ch < 0xa0 ? cp1252[ch-0x80] : ch;
+            if (!code) return "";
+            if (code < 0x80) result += static_cast<char>(code);
+            else if (code < 0x800) { result += static_cast<char>(0xc0 | (code >> 6)); result += static_cast<char>(0x80 | (code & 63)); }
+            else { result += static_cast<char>(0xe0 | (code >> 12)); result += static_cast<char>(0x80 | ((code >> 6) & 63)); result += static_cast<char>(0x80 | (code & 63)); }
         }
         return result;
     }
@@ -203,11 +264,7 @@ public:
                 if (size > 2 * 1024 * 1024) throw std::runtime_error("resource payload exceeds limits");
                 size_t position = file_offset(rva, size);
                 if (type == 16 && version.empty()) version_block(position, position+size, 0);
-                if (type == 24)
-                {
-                    if (size >= 2 && word(position) == 0xfeff) manifests.push_back(wide(position+2, (size-2)/2));
-                    else manifests.emplace_back(reinterpret_cast<const char *>(data+position), size);
-                }
+                if (type == 24) manifests.push_back(manifest(position, size));
             }
         }
     }
