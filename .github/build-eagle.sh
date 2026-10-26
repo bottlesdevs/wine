@@ -31,6 +31,10 @@ for architecture in x86_64 i686; do
         "$root/eagle/tests/frame_cache.c" -ldbghelp -o "$work/tests/frame-cache$bits.exe"
     WINEPREFIX="$work/tests/prefix" WINEDEBUG=-all "$runner/bin/wine" \
         "$work/tests/frame-cache$bits.exe" > "$work/tests/frame-cache$bits.log" 2>&1
+    "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
+        "$root/eagle/tests/null_call_return.c" -ldbghelp -o "$work/tests/null-call-return$bits.exe"
+    WINEPREFIX="$work/tests/prefix" WINEDEBUG=-all "$runner/bin/wine" \
+        "$work/tests/null-call-return$bits.exe" > "$work/tests/null-call-return$bits.log" 2>&1
     directory="$work/tests/$bits"
     mkdir -p "$directory"
     "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror \

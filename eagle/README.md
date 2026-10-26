@@ -225,6 +225,11 @@ to 128. Missing stack data differs from an explicitly recorded empty stack.
 Unknown frames remain unknown. Matching fingerprints do not prove identical
 execution or matching module contents; compare inputs and module identities.
 
+A null instruction pointer remains the first frame. If the stack holds a
+readable return address in an executable loaded module, Eagle can resume
+DbgHelp unwinding there. These snapshots record `null-call-return+dbghelp`
+and `initial_leaf_return: true` for this calling-convention fallback.
+
 ## Saved-session symbols
 
 `inspect` and `export` accept `--symbol-images reviewed.json`. The file is a

@@ -63,6 +63,25 @@ class Integration(unittest.TestCase):
                 self.assertEqual(next(item for item in events if item["kind"] == "process_exit")["code"], 0xc0000005)
                 self.assertEqual([item["seq"] for item in events], list(range(1, len(events)+1)))
 
+    def test_null_call_retains_fault_and_unwinds_callers(self):
+        for bits in (64, 32):
+            process, root = self.launch(f"nullcall-{bits}", f"target{bits}.exe", "nullcall")
+            self.assertEqual(process.wait(timeout=40), 0)
+            manifest, events = read_bundle(root)
+            self.assertTrue(manifest["completed"])
+            self.assertEqual(manifest["dropped_events"], 0)
+            fault = next(item for item in events if item["kind"] == "exception" and not item["first_chance"])
+            self.assertEqual(fault["access"], "execute")
+            self.assertEqual(fault["fault_address"], "0x0")
+            stack = next(item for item in events if item["kind"] == "snapshot" and item["tid"] == fault["tid"])
+            self.assertEqual(stack["registers"]["ip"], "0x0")
+            self.assertEqual(stack["frames"][0]["address"], "0x0")
+            self.assertTrue(stack["initial_leaf_return"])
+            self.assertEqual(stack["unwind"], "null-call-return+dbghelp")
+            self.assertEqual([item["symbol"] for item in stack["frames"][1:4]],
+                             ["eagle_null_call", "eagle_null_parent", "main"])
+            self.assertTrue(all(item.get("line", 0) > 0 for item in stack["frames"][1:4]))
+
     def test_parent_exit_does_not_drop_child(self):
         process, root = self.launch("child-tree", argument="child")
         self.assertEqual(process.wait(timeout=40), 0)

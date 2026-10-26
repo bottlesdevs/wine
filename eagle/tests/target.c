@@ -16,6 +16,17 @@ __declspec(noinline) void eagle_crash(void)
     *pointer = eagle_checkpoint(4);
 }
 
+__declspec(noinline) void eagle_null_call(void)
+{
+    void (*volatile target)(void) = NULL;
+    target();
+}
+
+__declspec(noinline) void eagle_null_parent(void)
+{
+    eagle_null_call();
+}
+
 static DWORD WINAPI eagle_worker(void *argument)
 {
     unsigned i;
@@ -29,6 +40,11 @@ static DWORD WINAPI eagle_worker(void *argument)
 
 int main(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "nullcall"))
+    {
+        eagle_null_parent();
+        return 0;
+    }
     if (argc > 2 && !strcmp(argv[1], "paths"))
     {
         char module[MAX_PATH], directory[MAX_PATH];
