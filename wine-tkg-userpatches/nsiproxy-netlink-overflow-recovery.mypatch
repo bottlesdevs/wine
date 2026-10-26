@@ -1,0 +1,190 @@
+diff --git i/dlls/netprofm/tests/monitor-faults.c w/dlls/netprofm/tests/monitor-faults.c
+index de9325e..c867bd4 100644
+--- i/dlls/netprofm/tests/monitor-faults.c
++++ w/dlls/netprofm/tests/monitor-faults.c
+@@ -588,11 +588,12 @@ static void run_nsi_faults(void)
+     HRESULT hr;
+     DWORD ret, bytes, expected_error;
+     unsigned int i;
+-    BOOL control;
++    BOOL control, overflow;
+ 
+     GetEnvironmentVariableA( "WINETEST_NSI_DIR", directory, sizeof(directory) );
+     GetEnvironmentVariableA( "WINETEST_NSI_FAULT", mode, sizeof(mode) );
+     control = !strcmp( mode, "control" );
++    overflow = !strcmp( mode, "overflow" );
+     expected_error = ERROR_GEN_FAILURE;
+     expected = !strcmp( mode, "retained" ) ?
+         NLM_CONNECTIVITY_IPV4_LOCALNETWORK | NLM_CONNECTIVITY_IPV6_INTERNET : NLM_CONNECTIVITY_DISCONNECTED;
+@@ -666,10 +667,10 @@ static void run_nsi_faults(void)
+     wait_marker( "changed" );
+     ret = WaitForSingleObject( closed.hEvent, 10000 );
+     ok( ret == WAIT_OBJECT_0, "closed file request stranded: %lu\n", ret );
+-    ok( (NTSTATUS)closed.Internal == (control ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL),
++    ok( (NTSTATUS)closed.Internal == ((control || overflow) ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL),
+         "closed file completion %#lx\n", (NTSTATUS)closed.Internal );
+     CloseHandle( closed.hEvent );
+-    if (!control)
++    if (!control && !overflow)
+     {
+         ret = WaitForSingleObject( mgr->worker, 10000 );
+         ok( ret == WAIT_OBJECT_0, "monitor did not exit: %lu\n", ret );
+@@ -680,7 +681,7 @@ static void run_nsi_faults(void)
+         ret = WaitForSingleObject( pending[i].hEvent, 10000 );
+         ok( ret == WAIT_OBJECT_0, "pending %u was stranded: %lu\n", i, ret );
+         ret = GetOverlappedResult( handles[i], pending + i, &bytes, FALSE );
+-        ok( control ? ret : !ret && GetLastError() == expected_error,
++        ok( (control || overflow) ? ret : !ret && GetLastError() == expected_error,
+             "completion %u: %lu/%lu\n", i, ret, GetLastError() );
+     }
+     for (i = 0; i < 1000; i++)
+@@ -690,16 +691,16 @@ static void run_nsi_faults(void)
+         Sleep( 10 );
+     }
+     ok( value == expected, "final connectivity %#x, expected %#x\n", value, expected );
+-    ok( mgr->dynamic_topology == control, "final dynamic policy %u\n", mgr->dynamic_topology );
++    ok( mgr->dynamic_topology == (control || overflow), "final dynamic policy %u\n", mgr->dynamic_topology );
+     trace( "%s: final connectivity %#x, dynamic %u\n", mode, value, mgr->dynamic_topology );
+     release_manager( iface );
+     iface = NULL;
+-    /* A terminal error is sticky, even after the socket fault is removed. */
++    /* A terminal error is sticky, but a netlink overflow re-synchronizes. */
+     for (i = 0; i < ARRAY_SIZE(pending); i++)
+     {
+         ResetEvent( pending[i].hEvent );
+         ret = NsiRequestChangeNotification( 0, &npi_ndis_module, NSI_NDIS_IFINFO_TABLE, pending + i, handles + i );
+-        ok( control ? ret == ERROR_IO_PENDING : ret == expected_error,
++        ok( (control || overflow) ? ret == ERROR_IO_PENDING : ret == expected_error,
+             "future subscription %u: %lu\n", i, ret );
+         if (ret == ERROR_IO_PENDING)
+         {
+@@ -710,11 +711,11 @@ static void run_nsi_faults(void)
+     }
+     other = NULL;
+     hr = list_manager_create( (void **)&other );
+-    ok( hr == S_OK && other && impl_from_INetworkListManager( other )->dynamic_topology == control,
++    ok( hr == S_OK && other && impl_from_INetworkListManager( other )->dynamic_topology == (control || overflow),
+         "future manager create %#lx\n", hr );
+     if (other)
+     {
+-        if (control) release_manager( other );
++        if (control || overflow) release_manager( other );
+         else INetworkListManager_Release( other );
+     }
+ done:
+diff --git i/dlls/netprofm/tests/nsi-backend.c w/dlls/netprofm/tests/nsi-backend.c
+index f0e91e4..c6eee9d 100644
+--- i/dlls/netprofm/tests/nsi-backend.c
++++ w/dlls/netprofm/tests/nsi-backend.c
+@@ -15,6 +15,7 @@
+ #include <linux/netlink.h>
+ 
+ static int notification_fd = -1;
++static int overflow_injected;
+ 
+ static void marker( const char *name )
+ {
+@@ -72,8 +73,17 @@ static ssize_t fault_recv( int fd, void *buffer, size_t len, int flags )
+     if (fd == notification_fd)
+     {
+         marker( "polling" );
++        if (!strcmp( getenv( "WINETEST_NSI_FAULT" ), "overflow" ) && !overflow_injected)
++        {
++            overflow_injected = 1;
++            wait_fault();
++            marker( "injected" );
++            errno = ENOBUFS;
++            return -1;
++        }
+         if (strcmp( getenv( "WINETEST_NSI_FAULT" ), "control" ) &&
+-            strcmp( getenv( "WINETEST_NSI_FAULT" ), "startup" ))
++            strcmp( getenv( "WINETEST_NSI_FAULT" ), "startup" ) &&
++            strcmp( getenv( "WINETEST_NSI_FAULT" ), "overflow" ))
+         {
+             wait_fault();
+             marker( "injected" );
+diff --git i/dlls/netprofm/tests/nsi-faults.sh w/dlls/netprofm/tests/nsi-faults.sh
+index d2c7218..6303e2a 100755
+--- i/dlls/netprofm/tests/nsi-faults.sh
++++ w/dlls/netprofm/tests/nsi-faults.sh
+@@ -150,7 +150,7 @@ for arch in $arches; do
+     [ "$result" -eq 0 ] || exit "$result"
+     run_as_user env WINEPREFIX="$prefix" "$build_dir/server/wineserver" -k
+     run_as_user env WINEPREFIX="$prefix" "$build_dir/server/wineserver" -w
+-    for mode in socket bind recv retained control; do
++    for mode in socket bind recv retained control overflow; do
+         rm -f "$work_dir/markers/"*
+         ip addr flush dev nlm0
+         ip addr add 192.0.2.2/24 dev nlm0
+diff --git i/dlls/nsiproxy.sys/nsi.c w/dlls/nsiproxy.sys/nsi.c
+index cac8388..47a3f9c 100644
+--- i/dlls/nsiproxy.sys/nsi.c
++++ w/dlls/nsiproxy.sys/nsi.c
+@@ -221,6 +221,31 @@ static NTSTATUS add_notification( const NPI_MODULEID *module, UINT32 table )
+ }
+ 
+ #if defined(HAVE_LINUX_RTNETLINK_H)
++/* An overflow means one or more multicast changes were lost. Re-subscribe
++ * before publishing a synthetic change for every table used by NLM, so each
++ * client takes a fresh snapshot instead of keeping stale connectivity. */
++static NTSTATUS queue_topology_resync(void)
++{
++    NTSTATUS status;
++
++    if ((status = add_notification( &NPI_MS_NDIS_MODULEID, NSI_NDIS_IFINFO_TABLE ))) return status;
++    if ((status = add_notification( &NPI_MS_IPV4_MODULEID, NSI_IP_UNICAST_TABLE ))) return status;
++    if ((status = add_notification( &NPI_MS_IPV6_MODULEID, NSI_IP_UNICAST_TABLE ))) return status;
++    if ((status = add_notification( &NPI_MS_IPV4_MODULEID, NSI_IP_FORWARD_TABLE ))) return status;
++    return add_notification( &NPI_MS_IPV6_MODULEID, NSI_IP_FORWARD_TABLE );
++}
++
++static NTSTATUS recover_netlink_overflow(void)
++{
++    NTSTATUS status;
++
++    WARN( "netlink notification overflow; re-subscribing and re-synchronizing.\n" );
++    close( netlink_fd );
++    netlink_fd = -1;
++    if ((status = unix_nsi_init_notification( NULL ))) return status;
++    return queue_topology_resync();
++}
++
+ static NTSTATUS poll_events(void)
+ {
+     char initial_buffer[PIPE_BUF], *buffer = initial_buffer;
+@@ -240,6 +265,11 @@ static NTSTATUS poll_events(void)
+         if (len <= 0)
+         {
+             if (len == -1 && errno == EINTR) continue;
++            if (len == -1 && errno == ENOBUFS)
++            {
++                status = recover_netlink_overflow();
++                goto done;
++            }
+             ERR( "error receivng, len %d, errno %d.\n", len, errno );
+             status = STATUS_UNSUCCESSFUL;
+             goto failed;
+@@ -259,6 +289,11 @@ static NTSTATUS poll_events(void)
+         if (len <= 0 || len > buffer_size)
+         {
+             if (len == -1 && errno == EINTR) continue;
++            if (len == -1 && errno == ENOBUFS)
++            {
++                status = recover_netlink_overflow();
++                goto done;
++            }
+             ERR( "incomplete netlink datagram, len %d, buffer size %zu, errno %d.\n",
+                  len, buffer_size, errno );
+             status = STATUS_UNSUCCESSFUL;
+@@ -267,6 +302,11 @@ static NTSTATUS poll_events(void)
+         for (nlh = (struct nlmsghdr *)buffer; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len))
+         {
+             if (nlh->nlmsg_type == NLMSG_DONE) break;
++            if (nlh->nlmsg_type == NLMSG_OVERRUN)
++            {
++                status = recover_netlink_overflow();
++                goto done;
++            }
+             if (nlh->nlmsg_type == RTM_NEWADDR || nlh->nlmsg_type == RTM_DELADDR)
+             {
+                 struct ifaddrmsg *addrmsg = (struct ifaddrmsg *)(nlh + 1);
