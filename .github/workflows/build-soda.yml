@@ -1872,6 +1872,11 @@ jobs:
           assert not list((work / f'fixtures{bits}').iterdir()), 'Registry fixture files remain'
           print(f'Registry {bits}-bit:230checks pass')
           PYCODE
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-crypt32-oid.c" \
+              -O2 -Wall -Wextra -Werror -lcrypt32 -o "$work/oid$bits.exe"
+            env -u GH_TOKEN -u GITHUB_TOKEN "$runner_dir/bin/wine" "$work/oid$bits.exe" \
+              | tr -d '\r' | tee "$work/oid$bits.log"
+            grep -Fx 'OID metadata: 31 checks, 0 failures' "$work/oid$bits.log"
           done
 
       - uses: actions/upload-artifact@v7
@@ -1886,6 +1891,8 @@ jobs:
             ${{ env.REGISTRY_WORK }}/registry64.exe
             ${{ env.REGISTRY_WORK }}/registry32.exe
             ${{ env.REGISTRY_WORK }}/wineboot.log
+            ${{ env.REGISTRY_WORK }}/oid64.log
+            ${{ env.REGISTRY_WORK }}/oid32.log
           if-no-files-found: error
           retention-days: 7
 
@@ -2637,6 +2644,11 @@ jobs:
           assert not list((work / f'fixtures{bits}').iterdir()), 'Registry fixture files remain'
           print(f'Registry {bits}-bit:230checks pass')
           PYCODE
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-crypt32-oid.c" \
+              -O2 -Wall -Wextra -Werror -lcrypt32 -o "$work/oid$bits.exe"
+            env -u GH_TOKEN -u GITHUB_TOKEN "$runner_dir/bin/wine" "$work/oid$bits.exe" \
+              | tr -d '\r' | tee "$work/oid$bits.log"
+            grep -Fx 'OID metadata: 31 checks, 0 failures' "$work/oid$bits.log"
           done
 
       - uses: actions/upload-artifact@v7
@@ -2651,6 +2663,8 @@ jobs:
             ${{ env.REGISTRY_WORK }}/registry64.exe
             ${{ env.REGISTRY_WORK }}/registry32.exe
             ${{ env.REGISTRY_WORK }}/wineboot.log
+            ${{ env.REGISTRY_WORK }}/oid64.log
+            ${{ env.REGISTRY_WORK }}/oid32.log
           if-no-files-found: error
           retention-days: 7
 
