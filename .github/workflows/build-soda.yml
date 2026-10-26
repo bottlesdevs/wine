@@ -21,6 +21,7 @@ on:
           - d2d-reference
           - registry-reference
           - crypt32-reference
+          - msi-reference
         default: x86_64
       pgo:
         description: 'Build a PGO candidate'
@@ -121,6 +122,56 @@ jobs:
         with:
           name: crypt32-reference-${{ github.sha }}
           path: ${{ env.CRYPT32_REFERENCE_DIR }}
+          retention-days: 7
+          if-no-files-found: error
+
+  msi-reference:
+    if: inputs.architecture == 'msi-reference' && inputs.winrt_http_reference != true
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: verify MSI feature handle cleanup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:USERPROFILE "artifacts/Soda-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-msi-reference"
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $env:TMPDIR = $work
+          $env:TMP = $work
+          $env:TEMP = $work
+          "MSI_REFERENCE_DIR=$work" | Add-Content $env:GITHUB_ENV
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$visualStudio) { throw 'Visual C++ tools not found' }
+          $vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvarsall.bat'
+          $source = Join-Path $env:GITHUB_WORKSPACE '.github/soda-msi-feature-handles.c'
+          $failed = $false
+          foreach ($bits in @(64, 32)) {
+            $target = if ($bits -eq 64) { 'amd64' } else { 'x86' }
+            $exe = Join-Path $work "handles$bits.exe"
+            $obj = Join-Path $work "handles$bits.obj"
+            $script = Join-Path $work "build$bits.cmd"
+            @(
+              '@echo off',
+              "call `"$vcvars`" $target",
+              'if errorlevel 1 exit /b %errorlevel%',
+              "cl /nologo /W4 /WX /O2 /TC `"$source`" /Fe:`"$exe`" /Fo:`"$obj`" /link msi.lib ntdll.lib advapi32.lib",
+              'exit /b %errorlevel%'
+            ) | Set-Content -Encoding ascii $script
+            & cmd.exe /d /c $script
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $exe | Tee-Object -FilePath (Join-Path $work "handles$bits.log")
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+          }
+          if ($failed) { exit 1 }
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.MSI_REFERENCE_DIR != ''
+        with:
+          name: msi-reference-${{ github.sha }}
+          path: ${{ env.MSI_REFERENCE_DIR }}
           retention-days: 7
           if-no-files-found: error
 
@@ -285,7 +336,7 @@ jobs:
           if-no-files-found: error
 
   patches:
-    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference'
+    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'msi-reference'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -886,6 +937,28 @@ jobs:
             "$runner_dir/bin/wine" "$directory/client.exe" "Z:$directory" \
               | tr -d '\r' | tee "$directory/runtime.log"
             grep -Fx 'MSI_COMPONENT_RESULT checks=157 failures=0' "$directory/runtime.log"
+          done
+          "$runner_dir/bin/wineserver" -w
+
+      - name: verify MSI feature handle cleanup
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          export WINEDEBUG=-all
+          export WINEPREFIX="$RUNNER_TEMP/soda-msi-feature-prefix"
+          export WINEARCH=win64
+          "$runner_dir/bin/wineboot" -u
+          for bits in 64 32; do
+            if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-msi-feature-handles.c" \
+              -O2 -Wall -Wextra -Werror -lmsi -lntdll -ladvapi32 \
+              -o "$RUNNER_TEMP/soda-msi-handles$bits.exe"
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-msi-handles$bits.exe" \
+              | tr -d '\r' | tee "$RUNNER_TEMP/soda-msi-handles$bits.log"
+            grep -E '^queries=100 handles_before=[0-9]+ handles_after=[0-9]+ delta=0 positive_control=16$' "$RUNNER_TEMP/soda-msi-handles$bits.log"
           done
           "$runner_dir/bin/wineserver" -w
 
@@ -2407,6 +2480,9 @@ jobs:
             "$compiler" .github/soda-msi-components-smoke.c \
               -municode -O2 -Wall -Wextra -Werror -lmsi -ladvapi32 \
               -o "$RUNNER_TEMP/soda-office-winrt/msi-components$bits.exe"
+            "$compiler" .github/soda-msi-feature-handles.c \
+              -O2 -Wall -Wextra -Werror -lmsi -lntdll -ladvapi32 \
+              -o "$RUNNER_TEMP/soda-office-winrt/msi-handles$bits.exe"
             "${compiler%gcc}g++" .github/soda-d2d-dashes-smoke.cpp \
               -O2 -Wall -Wextra -Werror -static-libgcc -static-libstdc++ \
               -ld2d1 -lwindowscodecs -lole32 -luuid \
@@ -2506,6 +2582,9 @@ jobs:
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/msi-components$arch.exe" "Z:$msi_dir" \
               | tr -d '\r' | tee "$msi_dir/runtime.log"
             grep -Fx 'MSI_COMPONENT_RESULT checks=157 failures=0' "$msi_dir/runtime.log"
+            "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/msi-handles$arch.exe" \
+              | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/msi-handles$arch.log"
+            grep -E '^queries=100 handles_before=[0-9]+ handles_after=[0-9]+ delta=0 positive_control=16$' "$RUNNER_TEMP/soda-office-winrt/msi-handles$arch.log"
             LIBGL_ALWAYS_SOFTWARE=1 "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/dashes$arch.exe" \
               "Z:$RUNNER_TEMP/soda-office-winrt/dashes$arch.png" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/dashes$arch.log"
