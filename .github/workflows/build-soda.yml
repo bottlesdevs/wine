@@ -1827,7 +1827,14 @@ jobs:
         if: always() && env.REGISTRY_WORK != ''
         with:
           name: registry-runtime-${{ runner.arch }}-${{ github.sha }}
-          path: ${{ env.REGISTRY_WORK }}
+          path: |
+            ${{ env.REGISTRY_WORK }}/registry64.jsonl
+            ${{ env.REGISTRY_WORK }}/registry32.jsonl
+            ${{ env.REGISTRY_WORK }}/registry64.stderr
+            ${{ env.REGISTRY_WORK }}/registry32.stderr
+            ${{ env.REGISTRY_WORK }}/registry64.exe
+            ${{ env.REGISTRY_WORK }}/registry32.exe
+            ${{ env.REGISTRY_WORK }}/wineboot.log
           if-no-files-found: error
           retention-days: 7
 
@@ -2585,7 +2592,14 @@ jobs:
         if: always() && env.REGISTRY_WORK != ''
         with:
           name: registry-runtime-${{ runner.arch }}-${{ github.sha }}
-          path: ${{ env.REGISTRY_WORK }}
+          path: |
+            ${{ env.REGISTRY_WORK }}/registry64.jsonl
+            ${{ env.REGISTRY_WORK }}/registry32.jsonl
+            ${{ env.REGISTRY_WORK }}/registry64.stderr
+            ${{ env.REGISTRY_WORK }}/registry32.stderr
+            ${{ env.REGISTRY_WORK }}/registry64.exe
+            ${{ env.REGISTRY_WORK }}/registry32.exe
+            ${{ env.REGISTRY_WORK }}/wineboot.log
           if-no-files-found: error
           retention-days: 7
 
