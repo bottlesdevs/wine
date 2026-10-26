@@ -1,0 +1,84 @@
+diff --git a/dlls/msi/registry.c b/dlls/msi/registry.c
+--- a/dlls/msi/registry.c
++++ b/dlls/msi/registry.c
+@@ -589,12 +589,13 @@
+ static WCHAR *expand_c2r_key_path( const WCHAR *installation, const WCHAR *key_path );
+ 
+ static UINT get_c2r_product_component( const WCHAR *component, const WCHAR *product,
+-                                      WCHAR code[GUID_SIZE], WCHAR **path )
++                                      DWORD index, WCHAR code[GUID_SIZE], WCHAR **path )
+ {
+     static const WCHAR configuration_key[] = L"Software\\Microsoft\\Office\\ClickToRun\\Configuration";
+     WIN32_FIND_DATAW data;
+     WCHAR squashed[SQUASHED_GUID_SIZE], *installation, *pattern, *manifest, *text, *manifest_product;
+-    WCHAR *key_path;
++    WCHAR *key_path, (*products)[GUID_SIZE] = NULL, (*tmp)[GUID_SIZE];
++    DWORD count = 0, i;
+     HANDLE find;
+     SIZE_T len;
+     UINT ret = ERROR_UNKNOWN_COMPONENT;
+@@ -636,17 +637,37 @@
+             (!product || !wcsicmp( product, manifest_product )) &&
+             c2r_manifest_has_component( text, component, path ? &key_path : NULL ))
+         {
+-            if (code) lstrcpyW( code, manifest_product );
+-            if (!path || (*path = expand_c2r_key_path( installation, key_path ))) ret = ERROR_SUCCESS;
++            if (code)
++            {
++                for (i = 0; i < count; ++i)
++                    if (!wcsicmp( products[i], manifest_product )) break;
++                if (i == count)
++                {
++                    if ((tmp = realloc( products, (count + 1) * sizeof(*products) )))
++                    {
++                        products = tmp;
++                        lstrcpyW( products[count++], manifest_product );
++                        if (index < count)
++                        {
++                            lstrcpyW( code, products[index] );
++                            ret = ERROR_SUCCESS;
++                        }
++                    }
++                    else ret = ERROR_OUTOFMEMORY;
++                }
++            }
++            if (path && (*path = expand_c2r_key_path( installation, key_path ))) ret = ERROR_SUCCESS;
+         }
+         free( key_path );
+         free( manifest_product );
+         free( text );
+-        if (ret == ERROR_SUCCESS) break;
++        if (ret == ERROR_SUCCESS || ret == ERROR_OUTOFMEMORY) break;
+     } while (FindNextFileW( find, &data ));
+     FindClose( find );
+ 
+ done:
++    if (ret == ERROR_UNKNOWN_COMPONENT && count) ret = ERROR_NO_MORE_ITEMS;
++    free( products );
+     free( pattern );
+     free( installation );
+     return ret;
+@@ -654,12 +675,12 @@
+ 
+ UINT msi_get_c2r_product_code( const WCHAR *component, WCHAR product[GUID_SIZE] )
+ {
+-    return get_c2r_product_component( component, NULL, product, NULL );
++    return get_c2r_product_component( component, NULL, 0, product, NULL );
+ }
+ 
+ UINT msi_get_c2r_component_path( const WCHAR *product, const WCHAR *component, WCHAR **path )
+ {
+-    return get_c2r_product_component( component, product, NULL, path );
++    return get_c2r_product_component( component, product, 0, NULL, path );
+ }
+ 
+ static BOOL find_c2r_component_in_manifest( const WCHAR *text, const WCHAR *component,
+@@ -2032,7 +2053,7 @@
+ 
+     if (MSIREG_OpenUserDataComponentKey(szComponent, NULL, &hkeyComp, FALSE) != ERROR_SUCCESS &&
+         MSIREG_OpenUserDataComponentKey(szComponent, L"S-1-5-18", &hkeyComp, FALSE) != ERROR_SUCCESS)
+-        return ERROR_UNKNOWN_COMPONENT;
++        return get_c2r_product_component( szComponent, NULL, index, szProduct, NULL );
+ 
+     /* see if there are any products at all */
+     sz = SQUASHED_GUID_SIZE;

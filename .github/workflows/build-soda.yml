@@ -834,7 +834,7 @@ jobs:
               -municode -O2 -Wall -Wextra -Werror -lmsi -ladvapi32 -o "$directory/client.exe"
             "$runner_dir/bin/wine" "$directory/client.exe" "Z:$directory" \
               | tr -d '\r' | tee "$directory/runtime.log"
-            grep -Fx 'MSI_COMPONENT_RESULT checks=82 failures=0' "$directory/runtime.log"
+            grep -Fx 'MSI_COMPONENT_RESULT checks=157 failures=0' "$directory/runtime.log"
           done
           "$runner_dir/bin/wineserver" -w
 
@@ -2447,7 +2447,7 @@ jobs:
             mkdir -p "$msi_dir/root/Integration" "$msi_dir/root/Office16"
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/msi-components$arch.exe" "Z:$msi_dir" \
               | tr -d '\r' | tee "$msi_dir/runtime.log"
-            grep -Fx 'MSI_COMPONENT_RESULT checks=82 failures=0' "$msi_dir/runtime.log"
+            grep -Fx 'MSI_COMPONENT_RESULT checks=157 failures=0' "$msi_dir/runtime.log"
             LIBGL_ALWAYS_SOFTWARE=1 "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/dashes$arch.exe" \
               "Z:$RUNNER_TEMP/soda-office-winrt/dashes$arch.png" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/dashes$arch.log"

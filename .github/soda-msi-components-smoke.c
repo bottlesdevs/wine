@@ -49,6 +49,18 @@ static void test_manifest(const char *name, const WCHAR *body, const WCHAR *id, 
     printf("%s ansi=%u\n", name, status);
     check(status == (present ? ERROR_SUCCESS : ERROR_UNKNOWN_COMPONENT), name);
     check(!strcmp(narrow_result, present ? narrow_product : "unchanged"), "ansi result");
+
+    lstrcpyW(result, L"unchanged");
+    status = MsiEnumClientsW(id, 0, result);
+    printf("%s clients=%u\n", name, status);
+    check(status == (present ? ERROR_SUCCESS : ERROR_UNKNOWN_COMPONENT), "client enumeration");
+    check(!lstrcmpW(result, present ? product : L"unchanged"), "client product");
+    status = MsiEnumClientsW(id, 1, result);
+    check(status == (present ? ERROR_NO_MORE_ITEMS : ERROR_UNKNOWN_COMPONENT), "client enumeration end");
+    strcpy(narrow_result, "unchanged");
+    status = MsiEnumClientsA(narrow_id, 0, narrow_result);
+    check(status == (present ? ERROR_SUCCESS : ERROR_UNKNOWN_COMPONENT), "ansi client enumeration");
+    check(!strcmp(narrow_result, present ? narrow_product : "unchanged"), "ansi client product");
 }
 
 static void test_paths(const WCHAR *root)
@@ -173,6 +185,85 @@ static void test_published(const WCHAR *root)
     check(result != ERROR_SUCCESS, "missing qualified file");
 }
 
+
+
+static void test_registered_client(void)
+{
+    static const WCHAR key_path[] =
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\UserData\\S-1-5-18\\Components\\"
+        L"158A2F97ED5F74C4182939047E410586";
+    static const WCHAR registered[] = L"{79F2A857-F5DE-4C47-8192-9340E7145068}";
+    static const WCHAR packed[] = L"758A2F97ED5F74C4182939047E410586";
+    static const WCHAR path[] = L"C:\\missing-fixture.dat";
+    HKEY key;
+    WCHAR found[39];
+    DWORD disposition;
+    LONG status;
+    UINT result;
+
+    status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, key_path, 0, NULL, 0,
+                            KEY_ALL_ACCESS | KEY_WOW64_64KEY, NULL, &key, &disposition);
+    check(!status && disposition == REG_CREATED_NEW_KEY, "owned MSI registration");
+    if (status) return;
+    if (disposition != REG_CREATED_NEW_KEY)
+    {
+        RegCloseKey(key);
+        return;
+    }
+    check(RegSetValueExW(key, packed, 0, REG_SZ, (const BYTE *)path, sizeof(path)) == ERROR_SUCCESS,
+          "registered client value");
+    RegCloseKey(key);
+    lstrcpyW(found, L"unchanged");
+    result = MsiEnumClientsW(component, 0, found);
+    check(result == ERROR_SUCCESS && !lstrcmpW(found, registered), "registry client precedence");
+    result = MsiEnumClientsW(component, 1, found);
+    check(result == ERROR_NO_MORE_ITEMS, "registry enumeration excludes manifest clients");
+    check(RegDeleteKeyExW(HKEY_LOCAL_MACHINE, key_path, KEY_WOW64_64KEY, 0) == ERROR_SUCCESS,
+          "MSI registration cleanup");
+}
+
+static void test_shared_clients(const WCHAR *root)
+{
+    static const WCHAR second_product[] = L"{79F2A856-F5DE-4C47-8192-9340E7145068}";
+    static const WCHAR body[] = L"<Components><Component ComponentId=\"{79F2A851-F5DE-4C47-8192-9340E7145068}\" KeyPath=\"fixture.dat\"/></Components>";
+    WCHAR path[MAX_PATH], duplicate[MAX_PATH], text[1024], clients[3][39];
+    const WCHAR *products[] = {second_product, L"{79f2a852-f5de-4c47-8192-9340e7145068}"};
+    DWORD written, bytes;
+    HANDLE file;
+    UINT status;
+    unsigned int i;
+
+    test_manifest("shared-base", body, component, TRUE);
+    swprintf(path, ARRAYSIZE(path), L"%ls\\root\\Integration\\C2RManifest.second.xml", root);
+    swprintf(duplicate, ARRAYSIZE(duplicate), L"%ls\\root\\Integration\\C2RManifest.duplicate.xml", root);
+    for (i = 0; i < 2; ++i)
+    {
+        swprintf(text, ARRAYSIZE(text), L"\xfeff<Package ProductCode=\"%ls\">%ls</Package>", products[i], body);
+        file = CreateFileW(i ? duplicate : path, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
+        check(file != INVALID_HANDLE_VALUE, "additional client manifest");
+        if (file == INVALID_HANDLE_VALUE) continue;
+        bytes = lstrlenW(text) * sizeof(WCHAR);
+        check(WriteFile(file, text, bytes, &written, NULL) && written == bytes, "additional manifest write");
+        CloseHandle(file);
+    }
+    for (i = 0; i < 3; ++i)
+    {
+        lstrcpyW(clients[i], L"unchanged");
+        status = MsiEnumClientsW(component, i, clients[i]);
+        printf("shared-client-%u=%u\n", i, status);
+        check(status == (i < 2 ? ERROR_SUCCESS : ERROR_NO_MORE_ITEMS), "shared client status");
+    }
+    check(!lstrcmpW(clients[2], L"unchanged"), "client end preserves buffer");
+    check(lstrcmpiW(clients[0], clients[1]) != 0, "unique clients");
+    check((!lstrcmpiW(clients[0], product) && !lstrcmpiW(clients[1], second_product)) ||
+          (!lstrcmpiW(clients[1], product) && !lstrcmpiW(clients[0], second_product)), "both client products");
+    check(MsiEnumClientsW(NULL, 0, clients[0]) == ERROR_INVALID_PARAMETER, "missing component");
+    check(MsiEnumClientsW(component, 0, NULL) == ERROR_INVALID_PARAMETER, "missing client output");
+    test_registered_client();
+    check(DeleteFileW(path), "second manifest cleanup");
+    check(DeleteFileW(duplicate), "duplicate manifest cleanup");
+}
+
 int wmain(int argc, WCHAR **argv)
 {
     static const WCHAR plain[] =
@@ -224,6 +315,7 @@ int wmain(int argc, WCHAR **argv)
     test_manifest("legacy", legacy, component, TRUE);
     test_paths(argv[1]);
     test_published(argv[1]);
+    test_shared_clients(argv[1]);
 
     check(DeleteFileW(manifest), "manifest cleanup");
     check(RegDeleteKeyExW(HKEY_LOCAL_MACHINE, configuration, KEY_WOW64_64KEY, 0) == ERROR_SUCCESS,
