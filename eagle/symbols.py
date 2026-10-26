@@ -251,7 +251,7 @@ def resolve_inline_files(image, rvas, pdb, names, expected_sha256, debug_files, 
             raise ValueError('PDB changed during inline lookup')
         values = resolve_pdb(image, pdb, names, rvas, inlines=True)
     else:
-        if metadata.get('codeview'):
+        if metadata.get('codeview') and not (metadata.get('debug_info') or metadata.get('debuglink')):
             raise ValueError('CodeView inline lookup requires a selected matching PDB')
         selected, _, state = debug_image(image, metadata, deadline)
         if state is not None:

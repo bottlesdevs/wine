@@ -33,7 +33,7 @@ class InlineSymbols(unittest.TestCase):
         self.root = Path(directory.name)
         self.expected_lines = {}
 
-    def build(self, compiler='gcc', version=5, pie=True, split=False, target='x86_64'):
+    def build(self, compiler='gcc', version=5, pie=True, split=False, target='x86_64', build_id=False):
         root = self.root / str(len(list(self.root.iterdir())))
         root.mkdir()
         source = root / 'fixture.c'
@@ -42,7 +42,7 @@ class InlineSymbols(unittest.TestCase):
         if compiler == 'pdb':
             image, obj, pdb = [root / name for name in ('module.exe', 'fixture.obj', 'fixture.pdb')]
             subprocess.run(['clang-cl', '--target=' + target + '-pc-windows-msvc', '/nologo', '/O2', '/Ob3', '/Z7', '/GS-',
-                            '/c', str(source), '/Fo' + str(obj)], check=True, capture_output=True, timeout=30)
+                            '/c', '/Fo' + str(obj), '--', str(source)], check=True, capture_output=True, timeout=30)
             subprocess.run([self.linker, '/nologo', '/entry:entry', '/subsystem:console', '/nodefaultlib', '/debug',
                             '/opt:noref', '/opt:noicf', '/pdb:' + str(pdb), '/pdbaltpath:fixture.pdb', '/out:' + str(image), str(obj)],
                            check=True, capture_output=True, timeout=30)
@@ -55,6 +55,8 @@ class InlineSymbols(unittest.TestCase):
             flags = [] if pe else ['-fPIE', '-pie'] if pie else ['-fno-pie', '-no-pie']
             if split:
                 flags.append('-gsplit-dwarf')
+            if pe and build_id:
+                flags.append('-Wl,--build-id')
             subprocess.run([compiler, '-O2', '-g', '-gdwarf-' + str(version), *flags, str(source), '-o', str(image)],
                            check=True, capture_output=True, timeout=30)
             nm = compiler.removesuffix('gcc') + 'nm' if pe else 'nm'
@@ -143,6 +145,28 @@ class InlineSymbols(unittest.TestCase):
             for version in (4, 5):
                 with self.subTest(architecture=architecture, version=version):
                     self.check(*self.build(architecture + '-w64-mingw32-gcc', version))
+
+    def test_pe_build_id_does_not_require_a_pdb_for_dwarf_inlines(self):
+        for architecture in ('i686', 'x86_64'):
+            for separate in (False, True):
+                with self.subTest(architecture=architecture, separate=separate):
+                    image, pdb, source, rva = self.build(architecture + '-w64-mingw32-gcc', build_id=True)
+                    metadata = symbols.image_metadata(image)
+                    self.assertTrue(metadata['codeview'])
+                    self.assertTrue(all(not record['pdb'] for record in metadata['codeview']))
+                    if separate:
+                        debug = image.parent / 'module.debug'
+                        objcopy = architecture + '-w64-mingw32-objcopy'
+                        subprocess.run([objcopy, '--only-keep-debug', str(image), str(debug)], check=True, capture_output=True)
+                        subprocess.run([objcopy, '--strip-unneeded', '--add-gnu-debuglink=' + str(debug), str(image)], check=True, capture_output=True)
+                    self.check(image, pdb, source, rva)
+
+                    if separate:
+                        with debug.open('ab') as file:
+                            file.write(b'owned-corruption')
+                        frame, = symbols.query(image, rvas=[rva], inlines=True)['resolved']
+                        self.assertEqual(frame['inline_status'], 'unavailable')
+                        self.assertIn('CRC', frame['inline_reason'])
 
     def test_matched_pdb_chains_on_static_pe_architectures(self):
         for target in ('i686', 'x86_64', 'aarch64'):
