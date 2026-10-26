@@ -1,94 +1,152 @@
 diff --git i/dlls/netprofm/tests/monitor-faults.c w/dlls/netprofm/tests/monitor-faults.c
-index de9325e..c867bd4 100644
+index de9325e..11818d3 100644
 --- i/dlls/netprofm/tests/monitor-faults.c
 +++ w/dlls/netprofm/tests/monitor-faults.c
-@@ -588,11 +588,12 @@ static void run_nsi_faults(void)
+@@ -588,11 +588,14 @@ static void run_nsi_faults(void)
      HRESULT hr;
      DWORD ret, bytes, expected_error;
      unsigned int i;
 -    BOOL control;
-+    BOOL control, overflow;
++    BOOL control, recovery, followup;
  
      GetEnvironmentVariableA( "WINETEST_NSI_DIR", directory, sizeof(directory) );
      GetEnvironmentVariableA( "WINETEST_NSI_FAULT", mode, sizeof(mode) );
      control = !strcmp( mode, "control" );
-+    overflow = !strcmp( mode, "overflow" );
++    recovery = !strcmp( mode, "overflow" ) || !strcmp( mode, "overrun" ) ||
++               !strcmp( mode, "overflow-followup" );
++    followup = !strcmp( mode, "overflow-followup" );
      expected_error = ERROR_GEN_FAILURE;
      expected = !strcmp( mode, "retained" ) ?
          NLM_CONNECTIVITY_IPV4_LOCALNETWORK | NLM_CONNECTIVITY_IPV6_INTERNET : NLM_CONNECTIVITY_DISCONNECTED;
-@@ -666,10 +667,10 @@ static void run_nsi_faults(void)
+@@ -666,10 +669,10 @@ static void run_nsi_faults(void)
      wait_marker( "changed" );
      ret = WaitForSingleObject( closed.hEvent, 10000 );
      ok( ret == WAIT_OBJECT_0, "closed file request stranded: %lu\n", ret );
 -    ok( (NTSTATUS)closed.Internal == (control ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL),
-+    ok( (NTSTATUS)closed.Internal == ((control || overflow) ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL),
++    ok( (NTSTATUS)closed.Internal == ((control || recovery) ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL),
          "closed file completion %#lx\n", (NTSTATUS)closed.Internal );
      CloseHandle( closed.hEvent );
 -    if (!control)
-+    if (!control && !overflow)
++    if (!control && !recovery)
      {
          ret = WaitForSingleObject( mgr->worker, 10000 );
          ok( ret == WAIT_OBJECT_0, "monitor did not exit: %lu\n", ret );
-@@ -680,7 +681,7 @@ static void run_nsi_faults(void)
+@@ -680,7 +683,7 @@ static void run_nsi_faults(void)
          ret = WaitForSingleObject( pending[i].hEvent, 10000 );
          ok( ret == WAIT_OBJECT_0, "pending %u was stranded: %lu\n", i, ret );
          ret = GetOverlappedResult( handles[i], pending + i, &bytes, FALSE );
 -        ok( control ? ret : !ret && GetLastError() == expected_error,
-+        ok( (control || overflow) ? ret : !ret && GetLastError() == expected_error,
++        ok( (control || recovery) ? ret : !ret && GetLastError() == expected_error,
              "completion %u: %lu/%lu\n", i, ret, GetLastError() );
      }
      for (i = 0; i < 1000; i++)
-@@ -690,16 +691,16 @@ static void run_nsi_faults(void)
+@@ -690,16 +693,29 @@ static void run_nsi_faults(void)
          Sleep( 10 );
      }
      ok( value == expected, "final connectivity %#x, expected %#x\n", value, expected );
 -    ok( mgr->dynamic_topology == control, "final dynamic policy %u\n", mgr->dynamic_topology );
-+    ok( mgr->dynamic_topology == (control || overflow), "final dynamic policy %u\n", mgr->dynamic_topology );
++    ok( mgr->dynamic_topology == (control || recovery), "final dynamic policy %u\n", mgr->dynamic_topology );
++    if (followup)
++    {
++        expected = NLM_CONNECTIVITY_IPV4_INTERNET | NLM_CONNECTIVITY_IPV6_LOCALNETWORK;
++        marker( "recovered" );
++        wait_marker( "followup" );
++        for (i = 0; i < 1000; i++)
++        {
++            INetworkListManager_GetConnectivity( iface, &value );
++            if (value == expected) break;
++            Sleep( 10 );
++        }
++        ok( value == expected, "post-recovery connectivity %#x, expected %#x\n", value, expected );
++    }
      trace( "%s: final connectivity %#x, dynamic %u\n", mode, value, mgr->dynamic_topology );
      release_manager( iface );
      iface = NULL;
 -    /* A terminal error is sticky, even after the socket fault is removed. */
-+    /* A terminal error is sticky, but a netlink overflow re-synchronizes. */
++    /* A terminal error is sticky, but a recovered netlink loss re-synchronizes. */
      for (i = 0; i < ARRAY_SIZE(pending); i++)
      {
          ResetEvent( pending[i].hEvent );
          ret = NsiRequestChangeNotification( 0, &npi_ndis_module, NSI_NDIS_IFINFO_TABLE, pending + i, handles + i );
 -        ok( control ? ret == ERROR_IO_PENDING : ret == expected_error,
-+        ok( (control || overflow) ? ret == ERROR_IO_PENDING : ret == expected_error,
++        ok( (control || recovery) ? ret == ERROR_IO_PENDING : ret == expected_error,
              "future subscription %u: %lu\n", i, ret );
          if (ret == ERROR_IO_PENDING)
          {
-@@ -710,11 +711,11 @@ static void run_nsi_faults(void)
+@@ -710,11 +726,11 @@ static void run_nsi_faults(void)
      }
      other = NULL;
      hr = list_manager_create( (void **)&other );
 -    ok( hr == S_OK && other && impl_from_INetworkListManager( other )->dynamic_topology == control,
-+    ok( hr == S_OK && other && impl_from_INetworkListManager( other )->dynamic_topology == (control || overflow),
++    ok( hr == S_OK && other && impl_from_INetworkListManager( other )->dynamic_topology == (control || recovery),
          "future manager create %#lx\n", hr );
      if (other)
      {
 -        if (control) release_manager( other );
-+        if (control || overflow) release_manager( other );
++        if (control || recovery) release_manager( other );
          else INetworkListManager_Release( other );
      }
  done:
 diff --git i/dlls/netprofm/tests/nsi-backend.c w/dlls/netprofm/tests/nsi-backend.c
-index f0e91e4..c6eee9d 100644
+index f0e91e4..e732bb3 100644
 --- i/dlls/netprofm/tests/nsi-backend.c
 +++ w/dlls/netprofm/tests/nsi-backend.c
-@@ -15,6 +15,7 @@
+@@ -15,6 +15,17 @@
  #include <linux/netlink.h>
  
  static int notification_fd = -1;
 +static int overflow_injected;
++static int overrun_pending;
++static int overrun_injected;
++
++static int is_overflow_fault(void)
++{
++    const char *mode = getenv( "WINETEST_NSI_FAULT" );
++
++    return !strcmp( mode, "overflow" ) || !strcmp( mode, "overflow-socket" ) ||
++           !strcmp( mode, "overflow-bind" ) || !strcmp( mode, "overflow-followup" );
++}
  
  static void marker( const char *name )
  {
-@@ -72,8 +73,17 @@ static ssize_t fault_recv( int fd, void *buffer, size_t len, int flags )
+@@ -37,7 +48,8 @@ static int fault_socket( int domain, int type, int protocol )
+ {
+     if (domain == PF_NETLINK && protocol == NETLINK_ROUTE)
+     {
+-        if (!strcmp( getenv( "WINETEST_NSI_FAULT" ), "socket" ))
++        if (!strcmp( getenv( "WINETEST_NSI_FAULT" ), "socket" ) ||
++            (!strcmp( getenv( "WINETEST_NSI_FAULT" ), "overflow-socket" ) && overflow_injected))
+         {
+             marker( "injected" );
+             errno = EMFILE;
+@@ -54,7 +66,8 @@ static int fault_bind( int fd, const struct sockaddr *address, socklen_t size )
+     int ret;
+     if (fd == notification_fd)
+     {
+-        if (!strcmp( getenv( "WINETEST_NSI_FAULT" ), "bind" ))
++        if (!strcmp( getenv( "WINETEST_NSI_FAULT" ), "bind" ) ||
++            (!strcmp( getenv( "WINETEST_NSI_FAULT" ), "overflow-bind" ) && overflow_injected))
+         {
+             marker( "injected" );
+             errno = EADDRINUSE;
+@@ -63,7 +76,11 @@ static int fault_bind( int fd, const struct sockaddr *address, socklen_t size )
+         if (!strcmp( getenv( "WINETEST_NSI_FAULT" ), "startup" )) wait_fault();
+     }
+     ret = bind( fd, address, size );
+-    if (!ret && fd == notification_fd) marker( "listening" );
++    if (!ret && fd == notification_fd)
++    {
++        marker( "listening" );
++        if (overflow_injected || overrun_injected) marker( "rebound" );
++    }
+     return ret;
+ }
+ 
+@@ -72,8 +89,40 @@ static ssize_t fault_recv( int fd, void *buffer, size_t len, int flags )
      if (fd == notification_fd)
      {
          marker( "polling" );
-+        if (!strcmp( getenv( "WINETEST_NSI_FAULT" ), "overflow" ) && !overflow_injected)
++        if (is_overflow_fault() && !overflow_injected)
 +        {
 +            overflow_injected = 1;
 +            wait_fault();
@@ -96,15 +154,38 @@ index f0e91e4..c6eee9d 100644
 +            errno = ENOBUFS;
 +            return -1;
 +        }
++        if (!strcmp( getenv( "WINETEST_NSI_FAULT" ), "overrun" ))
++        {
++            struct nlmsghdr *nlh;
++
++            if (!overrun_pending && !overrun_injected && (flags & MSG_PEEK))
++            {
++                wait_fault();
++                overrun_pending = 1;
++                return NLMSG_LENGTH( 0 );
++            }
++            if (overrun_pending && !(flags & MSG_PEEK))
++            {
++                if (len < NLMSG_LENGTH( 0 )) abort();
++                overrun_pending = 0;
++                overrun_injected = 1;
++                marker( "injected" );
++                memset( buffer, 0, NLMSG_LENGTH( 0 ) );
++                nlh = buffer;
++                nlh->nlmsg_len = NLMSG_LENGTH( 0 );
++                nlh->nlmsg_type = NLMSG_OVERRUN;
++                return NLMSG_LENGTH( 0 );
++            }
++        }
          if (strcmp( getenv( "WINETEST_NSI_FAULT" ), "control" ) &&
 -            strcmp( getenv( "WINETEST_NSI_FAULT" ), "startup" ))
 +            strcmp( getenv( "WINETEST_NSI_FAULT" ), "startup" ) &&
-+            strcmp( getenv( "WINETEST_NSI_FAULT" ), "overflow" ))
++            !is_overflow_fault() && strcmp( getenv( "WINETEST_NSI_FAULT" ), "overrun" ))
          {
              wait_fault();
              marker( "injected" );
 diff --git i/dlls/netprofm/tests/nsi-faults.sh w/dlls/netprofm/tests/nsi-faults.sh
-index d2c7218..6303e2a 100755
+index d2c7218..a6d1555 100755
 --- i/dlls/netprofm/tests/nsi-faults.sh
 +++ w/dlls/netprofm/tests/nsi-faults.sh
 @@ -150,7 +150,7 @@ for arch in $arches; do
@@ -112,15 +193,38 @@ index d2c7218..6303e2a 100755
      run_as_user env WINEPREFIX="$prefix" "$build_dir/server/wineserver" -k
      run_as_user env WINEPREFIX="$prefix" "$build_dir/server/wineserver" -w
 -    for mode in socket bind recv retained control; do
-+    for mode in socket bind recv retained control overflow; do
++    for mode in socket bind recv retained control overflow overrun overflow-socket overflow-bind overflow-followup; do
          rm -f "$work_dir/markers/"*
          ip addr flush dev nlm0
          ip addr add 192.0.2.2/24 dev nlm0
+@@ -174,11 +174,21 @@ for arch in $arches; do
+                 [ "$mode" = retained ] || ip addr flush dev nlm0
+                 touch "$work_dir/markers/go" "$work_dir/markers/changed";;
+         esac
++        case "$mode" in
++            overflow-followup)
++                wait_marker recovered
++                ip addr add 192.0.2.2/24 dev nlm0
++                ip -6 addr add 2001:db8::2/64 dev nlm0 nodad
++                ip link set nlm0 up
++                ip route replace default via 192.0.2.1 dev nlm0
++                touch "$work_dir/markers/followup";;
++        esac
+         result=0
+         wait "$test_pid" || result=$?
+         cat "$work_dir/test.log"
+         [ "$mode" = control ] || test -f "$work_dir/markers/injected"
+-        case "$mode" in bind|recv|retained) test -f "$work_dir/markers/closed";; esac
++        case "$mode" in bind|recv|retained|overflow*|overrun) test -f "$work_dir/markers/closed";; esac
++        case "$mode" in overflow|overrun|overflow-followup) test -f "$work_dir/markers/rebound";; esac
+         run_as_user env WINEPREFIX="$prefix" "$build_dir/server/wineserver" -k
+         run_as_user env WINEPREFIX="$prefix" "$build_dir/server/wineserver" -w
+         [ "$result" -eq 0 ] || exit "$result"
 diff --git i/dlls/nsiproxy.sys/nsi.c w/dlls/nsiproxy.sys/nsi.c
-index cac8388..47a3f9c 100644
+index cac8388..e6dee5e 100644
 --- i/dlls/nsiproxy.sys/nsi.c
 +++ w/dlls/nsiproxy.sys/nsi.c
-@@ -221,6 +221,31 @@ static NTSTATUS add_notification( const NPI_MODULEID *module, UINT32 table )
+@@ -221,6 +221,36 @@ static NTSTATUS add_notification( const NPI_MODULEID *module, UINT32 table )
  }
  
  #if defined(HAVE_LINUX_RTNETLINK_H)
@@ -146,13 +250,18 @@ index cac8388..47a3f9c 100644
 +    close( netlink_fd );
 +    netlink_fd = -1;
 +    if ((status = unix_nsi_init_notification( NULL ))) return status;
-+    return queue_topology_resync();
++    if ((status = queue_topology_resync()))
++    {
++        close( netlink_fd );
++        netlink_fd = -1;
++    }
++    return status;
 +}
 +
  static NTSTATUS poll_events(void)
  {
      char initial_buffer[PIPE_BUF], *buffer = initial_buffer;
-@@ -240,6 +265,11 @@ static NTSTATUS poll_events(void)
+@@ -240,6 +270,11 @@ static NTSTATUS poll_events(void)
          if (len <= 0)
          {
              if (len == -1 && errno == EINTR) continue;
@@ -164,7 +273,7 @@ index cac8388..47a3f9c 100644
              ERR( "error receivng, len %d, errno %d.\n", len, errno );
              status = STATUS_UNSUCCESSFUL;
              goto failed;
-@@ -259,6 +289,11 @@ static NTSTATUS poll_events(void)
+@@ -259,6 +294,11 @@ static NTSTATUS poll_events(void)
          if (len <= 0 || len > buffer_size)
          {
              if (len == -1 && errno == EINTR) continue;
@@ -176,7 +285,7 @@ index cac8388..47a3f9c 100644
              ERR( "incomplete netlink datagram, len %d, buffer size %zu, errno %d.\n",
                   len, buffer_size, errno );
              status = STATUS_UNSUCCESSFUL;
-@@ -267,6 +302,11 @@ static NTSTATUS poll_events(void)
+@@ -267,6 +307,11 @@ static NTSTATUS poll_events(void)
          for (nlh = (struct nlmsghdr *)buffer; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len))
          {
              if (nlh->nlmsg_type == NLMSG_DONE) break;
