@@ -1791,7 +1791,7 @@ jobs:
         env:
           COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
         run: |
-          runner_dir="/tmp/$COMPONENT_NAME"
+          runner_dir="/home/runner/work/wine-tkg-git/wine-tkg-git/non-makepkg-builds/$COMPONENT_NAME"
           work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-registry"
           mkdir -p "$work/source"
           echo "REGISTRY_WORK=$work" >> "$GITHUB_ENV"
