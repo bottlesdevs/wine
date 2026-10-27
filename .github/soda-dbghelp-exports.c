@@ -29,6 +29,8 @@ int main(int argc, char **argv)
         if (!SymInitialize(process, "", FALSE)) return 3;
         loaded = SymLoadModuleEx(process, NULL, path, NULL, base, 0, NULL, 0);
         if (!loaded) return 4;
+        printf("exact=%u options=%#lx base=%llx address=%llx path=%s\n",
+               exact, SymGetOptions(), base, address, path);
         for (offset = 0; offset < 2; offset++)
         {
             char buffer[sizeof(SYMBOL_INFO) + 1024] = {0};
@@ -38,9 +40,10 @@ int main(int argc, char **argv)
 
             symbol->SizeOfStruct = sizeof(*symbol);
             symbol->MaxNameLen = 1023;
+            SetLastError(0);
             found = SymFromAddr(process, address + offset, &displacement, symbol);
-            printf("exact=%u offset=%u found=%d symbol=%s displacement=%llu\n",
-                   exact, offset, found, found ? symbol->Name : "", displacement);
+            printf("exact=%u offset=%u found=%d error=%lu symbol=%s displacement=%llu\n",
+                   exact, offset, found, GetLastError(), found ? symbol->Name : "", displacement);
             if (!exact && (!found || (strcmp(symbol->Name, "eagle_export_add") &&
                 strcmp(symbol->Name, name)) || displacement != offset))
                 failures++;
