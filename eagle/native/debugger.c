@@ -349,9 +349,9 @@ static void snapshot(DWORD pid, DWORD tid)
         stack.AddrPC.Mode = stack.AddrFrame.Mode = stack.AddrStack.Mode = AddrModeFlat;
         event("snapshot", pid, threads[i].id);
 #ifdef _WIN64
-        printf(",\"registers\":{\"ip\":\"0x%llx\",\"sp\":\"0x%llx\",\"bp\":\"0x%llx\",\"ax\":\"0x%llx\",\"bx\":\"0x%llx\",\"cx\":\"0x%llx\",\"dx\":\"0x%llx\",\"flags\":%lu}", context.Rip, context.Rsp, context.Rbp, context.Rax, context.Rbx, context.Rcx, context.Rdx, context.EFlags);
+        printf(",\"registers\":{\"ip\":\"0x%llx\",\"sp\":\"0x%llx\",\"bp\":\"0x%llx\",\"ax\":\"0x%llx\",\"bx\":\"0x%llx\",\"cx\":\"0x%llx\",\"dx\":\"0x%llx\",\"si\":\"0x%llx\",\"di\":\"0x%llx\",\"r8\":\"0x%llx\",\"r9\":\"0x%llx\",\"r10\":\"0x%llx\",\"r11\":\"0x%llx\",\"r12\":\"0x%llx\",\"r13\":\"0x%llx\",\"r14\":\"0x%llx\",\"r15\":\"0x%llx\",\"flags\":%lu}", context.Rip, context.Rsp, context.Rbp, context.Rax, context.Rbx, context.Rcx, context.Rdx, context.Rsi, context.Rdi, context.R8, context.R9, context.R10, context.R11, context.R12, context.R13, context.R14, context.R15, context.EFlags);
 #else
-        printf(",\"registers\":{\"ip\":\"0x%lx\",\"sp\":\"0x%lx\",\"bp\":\"0x%lx\",\"ax\":\"0x%lx\",\"bx\":\"0x%lx\",\"cx\":\"0x%lx\",\"dx\":\"0x%lx\",\"flags\":%lu}", context.Eip, context.Esp, context.Ebp, context.Eax, context.Ebx, context.Ecx, context.Edx, context.EFlags);
+        printf(",\"registers\":{\"ip\":\"0x%lx\",\"sp\":\"0x%lx\",\"bp\":\"0x%lx\",\"ax\":\"0x%lx\",\"bx\":\"0x%lx\",\"cx\":\"0x%lx\",\"dx\":\"0x%lx\",\"si\":\"0x%lx\",\"di\":\"0x%lx\",\"flags\":%lu}", context.Eip, context.Esp, context.Ebp, context.Eax, context.Ebx, context.Ecx, context.Edx, context.Esi, context.Edi, context.EFlags);
 #endif
         printf(",\"frames\":["); frame(p->handle, stack.AddrPC.Offset);
         leaf_return = null_call_return(p->handle, &stack, &context);

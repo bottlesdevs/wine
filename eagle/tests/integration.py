@@ -206,6 +206,35 @@ class Integration(unittest.TestCase):
         send_command(root, 'continue')
         self.assertEqual(process.wait(timeout=40), 0)
 
+    def test_register_snapshot_retains_arguments_and_index_registers(self):
+        for bits in (64, 32):
+            process, root = self.launch(f"registers-{bits}", f"target{bits}.exe", "registers", interactive=True)
+            initial = self.wait_event(root, "stopped")
+            send_command(root, "break eagle_register_arguments")
+            self.wait_event(root, "breakpoint_set")
+            send_command(root, "continue")
+            stopped = self.wait_event(root, "stopped", initial["seq"])
+            self.assertEqual(stopped["reason"], "breakpoint")
+            send_command(root, "snapshot")
+            stack = self.wait_event(root, "snapshot", stopped["seq"])
+            self.assertEqual(stack["frames"][0]["symbol"], "eagle_register_arguments")
+            registers = stack["registers"]
+            expected = {"ip", "sp", "bp", "ax", "bx", "cx", "dx", "si", "di", "flags"}
+            if bits == 64:
+                expected.update(f"r{number}" for number in range(8, 16))
+                self.assertEqual(registers["cx"], "0x11")
+                self.assertEqual(registers["dx"], "0x22")
+                self.assertEqual(registers["r8"], "0x8877665544332211")
+                self.assertEqual(registers["r9"], "0x123456789abcdef0")
+            self.assertEqual(set(registers), expected)
+            self.assertTrue(all(isinstance(value, str) and value.startswith("0x")
+                                for name, value in registers.items() if name != "flags"))
+            send_command(root, "continue")
+            self.assertEqual(process.wait(timeout=40), 0)
+            manifest, events = read_bundle(root)
+            self.assertTrue(manifest["completed"])
+            self.assertEqual(next(item for item in events if item["kind"] == "process_exit")["code"], 0)
+
     def test_pause_without_interactive_mode(self):
         for bits in (64, 32):
             marker = ROOT / f'pause-auto-{bits}.marker'
@@ -329,10 +358,15 @@ class Integration(unittest.TestCase):
         stack = request(5, "stackTrace", {"threadId": tid})
         self.assertEqual(stack["stackFrames"][0]["name"], "eagle_checkpoint")
         self.assertGreaterEqual(stack["totalFrames"], 4)
-        request(6, "continue", {"threadId": tid})
+        scopes = request(6, "scopes", {"frameId": stack["stackFrames"][0]["id"]})
+        registers = request(7, "variables", {"variablesReference": scopes["scopes"][0]["variablesReference"]})
+        values = {item["name"]: item["value"] for item in registers["variables"]}
+        self.assertTrue({"si", "di"} | {f"r{i}" for i in range(8, 16)} <= values.keys())
+        self.assertEqual(values["cx"], "0x5")
+        request(8, "continue", {"threadId": tid})
         while read_message(process.stdout).get("event") != "terminated":
             pass
-        request(7, "disconnect")
+        request(9, "disconnect")
         process.stdin.close()
         self.assertEqual(process.wait(timeout=15), 0)
         process.stdout.close()

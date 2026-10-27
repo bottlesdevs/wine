@@ -55,8 +55,20 @@ static DWORD WINAPI eagle_worker(void *argument)
     return 0;
 }
 
+__declspec(noinline) ULONG_PTR eagle_register_arguments(ULONG_PTR first, ULONG_PTR second,
+                                                       ULONG_PTR third, ULONG_PTR fourth)
+{
+    return first ^ second ^ third ^ fourth;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "registers"))
+    {
+        ULONG_PTR third = (ULONG_PTR)0x8877665544332211ULL;
+        ULONG_PTR fourth = (ULONG_PTR)0x123456789abcdef0ULL;
+        return eagle_register_arguments(0x11, 0x22, third, fourth) == (0x11 ^ 0x22 ^ third ^ fourth) ? 0 : 26;
+    }
     if (argc > 1 && (!strcmp(argv[1], "nullcall") || !strcmp(argv[1], "nullcall-handler") ||
         !strcmp(argv[1], "nullcall-handled")))
     {

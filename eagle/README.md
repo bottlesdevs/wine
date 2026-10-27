@@ -204,6 +204,10 @@ within each process. A cycle is evidence of an observed wait relationship,
 not proof of a permanent deadlock. Missing symbols stay marked unavailable.
 Caller frames can report function and source line when matching symbols exist.
 
+Snapshots retain the x86/x64 general-purpose registers, instruction pointer and
+flags. Index registers use `si` and `di`; x64 captures also include `r8` through
+`r15`. The DAP Registers scope displays the same fields.
+
 ## Session comparison
 
 A provider event-budget marker makes a comparison inconclusive, even when the
