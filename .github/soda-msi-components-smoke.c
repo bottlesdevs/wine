@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <msi.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const WCHAR configuration[] = L"Software\\Microsoft\\Office\\ClickToRun\\Configuration";
@@ -22,19 +23,28 @@ static void check(BOOL value, const char *name)
 
 static void test_manifest(const char *name, const WCHAR *body, const WCHAR *id, BOOL present)
 {
-    WCHAR text[4096], result[39];
+    WCHAR *text, result[39];
+    SIZE_T length = lstrlenW(body) + lstrlenW(product) + 64;
     char narrow_id[39], narrow_result[39], narrow_product[39];
     DWORD written, bytes;
     HANDLE file;
     UINT status;
 
-    swprintf(text, ARRAYSIZE(text), L"\xfeff<Package ProductCode=\"%ls\">%ls</Package>", product, body);
+    text = malloc(length * sizeof(*text));
+    check(!!text, "manifest buffer");
+    if (!text) return;
+    swprintf(text, length, L"\xfeff<Package ProductCode=\"%ls\">%ls</Package>", product, body);
     bytes = lstrlenW(text) * sizeof(WCHAR);
     file = CreateFileW(manifest, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
     check(file != INVALID_HANDLE_VALUE, "manifest create");
-    if (file == INVALID_HANDLE_VALUE) return;
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        free(text);
+        return;
+    }
     check(WriteFile(file, text, bytes, &written, NULL) && written == bytes, "manifest write");
     CloseHandle(file);
+    free(text);
 
     lstrcpyW(result, L"unchanged");
     status = MsiGetProductCodeW(id, result);
@@ -61,6 +71,40 @@ static void test_manifest(const char *name, const WCHAR *body, const WCHAR *id, 
     status = MsiEnumClientsA(narrow_id, 0, narrow_result);
     check(status == (present ? ERROR_SUCCESS : ERROR_UNKNOWN_COMPONENT), "ansi client enumeration");
     check(!strcmp(narrow_result, present ? narrow_product : "unchanged"), "ansi client product");
+}
+
+static void test_large_manifest(void)
+{
+    static const WCHAR tail[] =
+        L"--><Components><Component ComponentId=\"{79f2a851-f5de-4c47-8192-9340e7145068}\" "
+        L"KeyPath=\"fixture.dat\"><PublishComponent "
+        L"PublishComponentId=\"{79f2a855-f5de-4c47-8192-9340e7145068}\" "
+        L"Qualifier=\"tail.dat\" AppData=\"TailFiles\"/></Component></Components>";
+    const unsigned int padding = 512 * 1024;
+    WCHAR *body, qualifier[64], data[64];
+    DWORD qualifier_size, data_size;
+    ULONGLONG started;
+    UINT result;
+    unsigned int i;
+
+    body = malloc((padding + 4 + ARRAYSIZE(tail)) * sizeof(*body));
+    check(!!body, "large manifest allocation");
+    if (!body) return;
+    lstrcpyW(body, L"<!--");
+    for (i = 0; i < padding; ++i) body[i + 4] = 'x';
+    lstrcpyW(body + padding + 4, tail);
+    started = GetTickCount64();
+    test_manifest("large-tail", body, component, TRUE);
+    test_manifest("large-absent", body, unknown, FALSE);
+    qualifier_size = ARRAYSIZE(qualifier);
+    data_size = ARRAYSIZE(data);
+    result = MsiEnumComponentQualifiersW(L"{79F2A855-F5DE-4C47-8192-9340E7145068}", 0,
+                                        qualifier, &qualifier_size, data, &data_size);
+    check(result == ERROR_SUCCESS && !lstrcmpW(qualifier, L"tail.dat") &&
+          !lstrcmpW(data, L"TailFiles"), "large published qualifier");
+    printf("large-manifest chars=%lu elapsed_ms=%llu\n", (unsigned long)lstrlenW(body),
+           (unsigned long long)(GetTickCount64() - started));
+    free(body);
 }
 
 static void test_paths(const WCHAR *root)
@@ -313,6 +357,7 @@ int wmain(int argc, WCHAR **argv)
     test_manifest("attribute-boundary", misleading, component, FALSE);
     test_manifest("unknown", plain, unknown, FALSE);
     test_manifest("legacy", legacy, component, TRUE);
+    test_large_manifest();
     test_paths(argv[1]);
     test_published(argv[1]);
     test_shared_clients(argv[1]);
