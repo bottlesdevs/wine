@@ -599,7 +599,7 @@ static int command(const char *line, DEBUG_EVENT *pending, DWORD *status)
         for (i = 0; i < MAX_PROCESSES; i++) if (processes[i].id)
         {
             processes[i].pause_requested = TRUE;
-            if (!DebugBreakProcess(processes[i].handle)) { processes[i].pause_requested = FALSE; error("pause", GetLastError()); }
+            if (!processes[i].initial_break && !DebugBreakProcess(processes[i].handle)) { processes[i].pause_requested = FALSE; error("pause", GetLastError()); }
         }
         return 0;
     }

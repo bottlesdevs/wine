@@ -122,6 +122,8 @@ jobs:
             if test "$architecture" = x86_64; then bits=64; else bits=32; fi
             "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror \
               eagle/tests/target.c -o "$EAGLE_WORK/tests/target$bits.exe"
+            "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
+              eagle/tests/pause.c -ldbghelp -o "$EAGLE_WORK/tests/pause$bits.exe"
           done
 
       - name: verify debugger on x86 and x64
@@ -132,8 +134,13 @@ jobs:
           export WINEPREFIX="$EAGLE_TEST_ROOT/prefix" WINEARCH=win64 WINEDEBUG=-all
           export WINEDLLOVERRIDES='mscoree=d;winemenubuilder.exe=d' LIBGL_ALWAYS_SOFTWARE=1
           trap 'status=$?; set +e; "${EAGLE_TEST_WINE%/wine}/wineserver" -k; "${EAGLE_TEST_WINE%/wine}/wineserver" -w; exit "$status"' EXIT
-          xvfb-run -a sh -ec '"$EAGLE_TEST_WINE" wineboot -u; python3 eagle/tests/integration.py -v' \
-            2>&1 | tee "$EAGLE_TEST_ROOT/integration.log"
+          xvfb-run -a sh -ec '
+            "$EAGLE_TEST_WINE" wineboot -u
+            for bits in 64 32; do
+              "$EAGLE_TEST_WINE" "$EAGLE_TEST_ROOT/pause$bits.exe" > "$EAGLE_TEST_ROOT/pause$bits.log" 2>&1
+            done
+            python3 eagle/tests/integration.py -v
+          ' 2>&1 | tee "$EAGLE_TEST_ROOT/integration.log"
 
       - uses: actions/upload-artifact@v7
         if: always() && env.EAGLE_WORK != ''
