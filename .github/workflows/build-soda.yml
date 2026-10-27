@@ -22,6 +22,7 @@ on:
           - registry-reference
           - crypt32-reference
           - msi-reference
+          - dbghelp-reference
           - eagle-debugger
         default: x86_64
       pgo:
@@ -158,6 +159,61 @@ jobs:
             ${{ env.EAGLE_WORK }}/package/share/eagle/build.json
           retention-days: 7
           if-no-files-found: warn
+
+  dbghelp-reference:
+    if: inputs.architecture == 'dbghelp-reference' && inputs.winrt_http_reference != true
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: verify exported symbol offsets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:USERPROFILE "artifacts/Soda-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-dbghelp-reference"
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $env:TMPDIR = $work
+          $env:TMP = $work
+          $env:TEMP = $work
+          "DBGHELP_REFERENCE_DIR=$work" | Add-Content $env:GITHUB_ENV
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$visualStudio) { throw 'Visual C++ tools not found' }
+          $vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvarsall.bat'
+          $source = Join-Path $env:GITHUB_WORKSPACE '.github/soda-dbghelp-exports.c'
+          $fixture = Join-Path $env:GITHUB_WORKSPACE 'eagle/tests/export.c'
+          $failed = $false
+          foreach ($bits in @(64, 32)) {
+            $target = if ($bits -eq 64) { 'amd64' } else { 'x86' }
+            $exe = Join-Path $work "exports$bits.exe"
+            $dll = Join-Path $work "fixture$bits.dll"
+            $obj = Join-Path $work "exports$bits.obj"
+            $fixtureObj = Join-Path $work "fixture$bits.obj"
+            $script = Join-Path $work "build$bits.cmd"
+            @(
+              '@echo off',
+              "call `"$vcvars`" $target",
+              'if errorlevel 1 exit /b %errorlevel%',
+              "cl /nologo /W4 /WX /O2 /TC /LD `"$fixture`" /Fe:`"$dll`" /Fo:`"$fixtureObj`" /link /IMPLIB:`"$work/fixture$bits.lib`"",
+              'if errorlevel 1 exit /b %errorlevel%',
+              "cl /nologo /W4 /WX /O2 /TC `"$source`" /Fe:`"$exe`" /Fo:`"$obj`" /link dbghelp.lib",
+              'exit /b %errorlevel%'
+            ) | Set-Content -Encoding ascii $script
+            & cmd.exe /d /c $script
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $exe $dll | Tee-Object -FilePath (Join-Path $work "exports$bits.log")
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+          }
+          if ($failed) { exit 1 }
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.DBGHELP_REFERENCE_DIR != ''
+        with:
+          name: dbghelp-reference-${{ github.sha }}
+          path: ${{ env.DBGHELP_REFERENCE_DIR }}
+          retention-days: 7
+          if-no-files-found: error
 
   crypt32-reference:
     if: inputs.architecture == 'crypt32-reference' && inputs.winrt_http_reference != true
@@ -420,7 +476,7 @@ jobs:
           if-no-files-found: error
 
   patches:
-    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'msi-reference' && inputs.architecture != 'eagle-debugger'
+    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'eagle-debugger'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
