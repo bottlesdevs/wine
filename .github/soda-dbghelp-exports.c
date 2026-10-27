@@ -6,6 +6,7 @@
 int main(int argc, char **argv)
 {
     HANDLE process = GetCurrentProcess();
+    HANDLE file;
     HMODULE image;
     const char *name = "eagle_export_add";
     DWORD64 address, base, loaded;
@@ -21,16 +22,27 @@ int main(int argc, char **argv)
         address = (DWORD64)(ULONG_PTR)GetProcAddress(image, name);
     }
     if (!address || !GetModuleFileNameA(image, path, sizeof(path))) return 2;
+    file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL,
+                       OPEN_EXISTING, 0, NULL);
+    if (file == INVALID_HANDLE_VALUE) return 6;
+    SetEnvironmentVariableA("DBGHELP_DBGOUT", "1");
     base = (DWORD64)(ULONG_PTR)image;
     for (exact = 0; exact < 2; exact++)
     {
         SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS |
                       SYMOPT_FAIL_CRITICAL_ERRORS | (exact ? SYMOPT_EXACT_SYMBOLS : 0));
         if (!SymInitialize(process, "", FALSE)) return 3;
-        loaded = SymLoadModuleEx(process, NULL, path, NULL, base, 0, NULL, 0);
+        IMAGEHLP_MODULE64 module = {0};
+
+        loaded = SymLoadModuleEx(process, file, path, NULL, base, 0, NULL, 0);
         if (!loaded) return 4;
         printf("exact=%u options=%#lx base=%llx address=%llx path=%s\n",
                exact, SymGetOptions(), base, address, path);
+        module.SizeOfStruct = sizeof(module);
+        if (SymGetModuleInfo64(process, address, &module))
+            printf("module type=%u symbols=%lu size=%lu\n",
+                   (unsigned)module.SymType, module.NumSyms, module.ImageSize);
+        else printf("module error=%lu\n", GetLastError());
         for (offset = 0; offset < 2; offset++)
         {
             char buffer[sizeof(SYMBOL_INFO) + 1024] = {0};
@@ -62,6 +74,7 @@ int main(int argc, char **argv)
         }
         if (!SymCleanup(process)) return 5;
     }
+    CloseHandle(file);
     FreeLibrary(image);
     printf("failures=%u\n", failures);
     return failures ? 1 : 0;
