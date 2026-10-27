@@ -13,7 +13,7 @@
 #include <cctype>
 #include "ordinals.h"
 
-struct section { uint32_t rva, virtual_size, raw, size; std::string name; };
+struct section { uint32_t rva, virtual_size, raw, size; std::string name; uint32_t flags; };
 
 static void quote(const std::string &value)
 {
@@ -268,7 +268,59 @@ public:
             }
         }
     }
-    void print(bool debug_only = false)
+    void print_exports(uint32_t rva, uint32_t size, uint32_t image_size)
+    {
+        std::map<uint32_t, std::string> names;
+        std::vector<uint32_t> addresses;
+        if (rva)
+        {
+            if (size < 40 || static_cast<uint64_t>(rva) + size > image_size)
+                throw std::runtime_error("invalid export directory");
+            size_t table = file_offset(rva, 40);
+            uint32_t count = dword(table+20), named = dword(table+24);
+            if (count > 65536 || named > 65536) throw std::runtime_error("export count exceeds limits");
+            size_t functions = count ? file_offset(dword(table+28), count*4) : 0;
+            size_t strings = named ? file_offset(dword(table+32), named*4) : 0;
+            size_t ordinals = named ? file_offset(dword(table+36), named*2) : 0;
+            for (uint32_t index = 0; index < count; index++)
+            {
+                uint32_t address = dword(functions + index*4);
+                if (address >= image_size) throw std::runtime_error("export address is outside the image");
+                if (address && !(address >= rva && static_cast<uint64_t>(address) < static_cast<uint64_t>(rva)+size))
+                    addresses.push_back(address);
+            }
+            for (uint32_t index = 0; index < named; index++)
+            {
+                uint16_t ordinal = word(ordinals + index*2);
+                if (ordinal >= count) throw std::runtime_error("invalid export ordinal");
+                uint32_t address = dword(functions + ordinal*4);
+                std::string name = text(file_offset(dword(strings + index*4)));
+                if (!name.empty() && (!names.count(address) || name < names[address])) names[address] = name;
+            }
+        }
+        std::sort(addresses.begin(), addresses.end());
+        addresses.erase(std::unique(addresses.begin(), addresses.end()), addresses.end());
+        printf("{\"exports\":[");
+        bool comma = false;
+        for (size_t index = 0; index < addresses.size(); index++)
+        {
+            uint32_t address = addresses[index];
+            if (!names.count(address)) continue;
+            for (const auto &entry : sections)
+            {
+                uint64_t end = std::min<uint64_t>(image_size, static_cast<uint64_t>(entry.rva) + std::max(entry.virtual_size, entry.size));
+                if (!(entry.flags & 0x20000000) || address < entry.rva || address >= end) continue;
+                if (index + 1 < addresses.size()) end = std::min<uint64_t>(end, addresses[index+1]);
+                if (comma) putchar(',');
+                comma = true;
+                printf("{\"rva\":%u,\"end\":%llu,\"name\":", address, static_cast<unsigned long long>(end));
+                quote(names[address]); putchar('}');
+                break;
+            }
+        }
+        printf("]}\n");
+    }
+    void print(bool debug_only = false, bool exports_only = false)
     {
         if (word(0) != 0x5a4d) throw std::runtime_error("not a DOS image");
         size_t pe = dword(0x3c);
@@ -288,7 +340,13 @@ public:
             size_t offset = optional + optional_size + index * 40;
             bounds(offset, 40);
             std::string name = section_name(data + offset);
-            sections.push_back({dword(offset+12), dword(offset+8), dword(offset+20), dword(offset+16), name});
+            sections.push_back({dword(offset+12), dword(offset+8), dword(offset+20), dword(offset+16), name, dword(offset+36)});
+        }
+        if (exports_only)
+        {
+            print_exports(directory_count ? dword(directory_start) : 0,
+                          directory_count ? dword(directory_start+4) : 0, dword(optional+56));
+            return;
         }
         bool has_debug = false;
         std::string debuglink;
@@ -470,7 +528,8 @@ public:
 int main(int argc, char **argv)
 {
     bool debug_only = argc == 3 && !strcmp(argv[1], "--debug");
-    if (argc != 2 && !debug_only) { fputs("usage: eagle-pe [--debug] IMAGE\n", stderr); return 2; }
-    try { image file(argv[debug_only ? 2 : 1]); file.print(debug_only); return 0; }
+    bool exports_only = argc == 3 && !strcmp(argv[1], "--exports");
+    if (argc != 2 && !debug_only && !exports_only) { fputs("usage: eagle-pe [--debug|--exports] IMAGE\n", stderr); return 2; }
+    try { image file(argv[argc == 3 ? 2 : 1]); file.print(debug_only, exports_only); return 0; }
     catch (const std::exception &error) { fprintf(stderr, "%s\n", error.what()); return 1; }
 }

@@ -261,6 +261,12 @@ exceptions first, then recent snapshots, then other frames. Duplicates reuse
 results. Other frames retain an explicit unavailable reason. Existing bounded
 symbol queries run under an overall deadline checked between operations.
 
+When private symbols do not name a PE frame, offline lookup can report its
+nearest named export and displacement. These results use `pe-export`, have
+no source line and state that the function extent is unavailable. Forwarders
+and exports in non-executable sections are excluded. Each lookup stops at the
+next export or the section boundary. Matching private symbols take precedence.
+
 Exports remove selected paths, source paths and `offline_diagnostic` details,
 keep mode 0600 and still require review. Image hashes match recorded files;
 they do not certify that a prefix-file fallback was the actual runtime image.

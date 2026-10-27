@@ -131,6 +131,11 @@ jobs:
               eagle/tests/pause.c -ldbghelp -o "$EAGLE_WORK/tests/pause$bits.exe"
           done
 
+      - name: verify offline PE export symbols
+        run: |
+          EAGLE_PACKAGE="$EAGLE_WORK/package" python3 -S eagle/tests/test_symbols_exports.py \
+            > "$EAGLE_WORK/tests/symbols-exports.log" 2>&1
+
       - name: verify debugger on x86 and x64
         shell: bash
         run: |

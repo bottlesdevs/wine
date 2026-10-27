@@ -160,6 +160,7 @@ python3 -S "$root/eagle/tests/test_capture_history.py" > "$work/tests/e/capture-
 python3 -S "$root/eagle/tests/test_session_symbols.py" > "$work/tests/e/session-symbols.log" 2>&1
 python3 -S "$root/eagle/tests/test_session_compare.py" > "$work/tests/e/comparison.log" 2>&1
 python3 -S "$root/eagle/tests/test_symbols_offline.py" > "$work/tests/e/symbols-offline.log" 2>&1
+python3 -S "$root/eagle/tests/test_symbols_exports.py" > "$work/tests/e/symbols-exports.log" 2>&1
 python3 -S "$root/eagle/tests/test_inline_symbols.py" > "$work/tests/e/inline-symbols.log" 2>&1
 python3 -S "$root/eagle/tests/test_inline_compression.py" > "$work/tests/e/inline-compression.log" 2>&1
 python3 -S "$root/eagle/tests/test_inline_dwo.py" > "$work/tests/e/inline-dwo.log" 2>&1

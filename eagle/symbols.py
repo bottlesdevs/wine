@@ -9,6 +9,7 @@ import re
 import selectors
 import tempfile
 import time
+from bisect import bisect_right
 from pathlib import Path, PureWindowsPath
 
 def host_path(value, prefix):
@@ -120,6 +121,35 @@ def resolve(image, rvas):
             elif llvm or not frame['symbol']:
                 frame['symbol_reason'] = reason
     return output
+
+def resolve_exports(image, rvas, frames):
+    if not rvas or len(frames) not in (0, len(rvas)) or (frames and all(frame.get('symbol') for frame in frames)):
+        return frames
+    native = Path(__file__).resolve().parent / 'native/eagle-pe'
+    try:
+        result = subprocess.run([str(native), '--exports', str(image)], capture_output=True, text=True, timeout=10)
+    except UnicodeError:
+        return frames
+    if result.returncode:
+        return frames
+    exports = json.loads(result.stdout)['exports']
+    if not exports:
+        return frames
+    if not frames:
+        frames = [dict(symbol=None, source=None, resolver='pe-export') for _ in rvas]
+    addresses = [entry['rva'] for entry in exports]
+    for rva, frame in zip(rvas, frames):
+        if frame.get('symbol') or frame.get('file'):
+            continue
+        offset = int(rva, 0)
+        index = bisect_right(addresses, offset) - 1
+        if index < 0 or offset >= exports[index]['end']:
+            continue
+        entry = exports[index]
+        frame.update(symbol=entry['name'], source=None, resolver='pe-export',
+                     displacement=offset-entry['rva'], export_rva=hex(entry['rva']),
+                     symbol_scope='nearest named export; function extent unavailable')
+    return frames
 
 def host_tool(name):
     tool = shutil.which(name)
@@ -327,6 +357,8 @@ def query(image, pdb=None, rvas=None, artifacts=False, debug_files=None, sources
             frames = resolve_pdb(image, pdb, names, addresses)
         else:
             frames = resolve(image, addresses)
+            if result.get('format') != 'ELF':
+                frames = resolve_exports(image, addresses, frames)
         if len(frames) != len(offsets):
             raise ValueError('symbol resolver unavailable or failed')
         result['resolved'] = []
