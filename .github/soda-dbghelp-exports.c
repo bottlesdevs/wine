@@ -74,6 +74,9 @@ int main(int argc, char **argv)
             found = SymFromAddr(process, base - 1, &displacement, symbol);
             printf("exact=%u before_image found=%d\n", exact, found);
             if (found) failures++;
+            found = SymFromAddr(process, base + image_size, &displacement, symbol);
+            printf("exact=%u after_image found=%d\n", exact, found);
+            if (found) failures++;
         }
         if (!SymCleanup(process)) return 5;
     }

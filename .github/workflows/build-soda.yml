@@ -2090,6 +2090,13 @@ jobs:
             env -u GH_TOKEN -u GITHUB_TOKEN "$runner_dir/bin/wine" "$work/oid$bits.exe" \
               | tr -d '\r' | tee "$work/oid$bits.log"
             grep -Fx 'OID metadata: 31 checks, 0 failures' "$work/oid$bits.log"
+            "$compiler" "$GITHUB_WORKSPACE/eagle/tests/export.c" \
+              -shared -s -O2 -Wall -Wextra -Werror -o "$work/export-fixture$bits.dll"
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-dbghelp-exports.c" \
+              -O2 -Wall -Wextra -Werror -ldbghelp -o "$work/exports$bits.exe"
+            env -u GH_TOKEN -u GITHUB_TOKEN "$runner_dir/bin/wine" "$work/exports$bits.exe" \
+              "export-fixture$bits.dll" | tr -d '\r' | tee "$work/exports$bits.log"
+            grep -Fx 'failures=0' "$work/exports$bits.log"
           done
 
       - uses: actions/upload-artifact@v7
@@ -2106,6 +2113,8 @@ jobs:
             ${{ env.REGISTRY_WORK }}/wineboot.log
             ${{ env.REGISTRY_WORK }}/oid64.log
             ${{ env.REGISTRY_WORK }}/oid32.log
+            ${{ env.REGISTRY_WORK }}/exports64.log
+            ${{ env.REGISTRY_WORK }}/exports32.log
           if-no-files-found: error
           retention-days: 7
 
@@ -2868,6 +2877,13 @@ jobs:
             env -u GH_TOKEN -u GITHUB_TOKEN "$runner_dir/bin/wine" "$work/oid$bits.exe" \
               | tr -d '\r' | tee "$work/oid$bits.log"
             grep -Fx 'OID metadata: 31 checks, 0 failures' "$work/oid$bits.log"
+            "$compiler" "$GITHUB_WORKSPACE/eagle/tests/export.c" \
+              -shared -s -O2 -Wall -Wextra -Werror -o "$work/export-fixture$bits.dll"
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-dbghelp-exports.c" \
+              -O2 -Wall -Wextra -Werror -ldbghelp -o "$work/exports$bits.exe"
+            env -u GH_TOKEN -u GITHUB_TOKEN "$runner_dir/bin/wine" "$work/exports$bits.exe" \
+              "export-fixture$bits.dll" | tr -d '\r' | tee "$work/exports$bits.log"
+            grep -Fx 'failures=0' "$work/exports$bits.log"
           done
 
       - uses: actions/upload-artifact@v7
@@ -2884,6 +2900,8 @@ jobs:
             ${{ env.REGISTRY_WORK }}/wineboot.log
             ${{ env.REGISTRY_WORK }}/oid64.log
             ${{ env.REGISTRY_WORK }}/oid32.log
+            ${{ env.REGISTRY_WORK }}/exports64.log
+            ${{ env.REGISTRY_WORK }}/exports32.log
           if-no-files-found: error
           retention-days: 7
 

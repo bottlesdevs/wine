@@ -1,0 +1,61 @@
+diff --git a/dlls/dbghelp/symbol.c b/dlls/dbghelp/symbol.c
+--- a/dlls/dbghelp/symbol.c
++++ b/dlls/dbghelp/symbol.c
+@@ -1067,7 +1067,7 @@
+ }
+ 
+ /* assume addr is in module */
+-static struct symt_ht* symt_find_nearest_internal(struct module* module, DWORD_PTR addr)
++static struct symt_ht* symt_find_nearest_internal(struct module* module, DWORD_PTR addr, BOOL public_fallback)
+ {
+     int         mid, high, low;
+     ULONG64     ref_addr, ref_size;
+@@ -1090,7 +1090,8 @@
+     {
+         symt_get_address(&module->addr_sorttab[high - 1]->symt, &ref_addr);
+         symt_get_length(module, &module->addr_sorttab[high - 1]->symt, &ref_size);
+-        if (addr >= ref_addr + ref_size) return NULL;
++        if (addr >= ref_addr + ref_size &&
++            (!public_fallback || module->addr_sorttab[high - 1]->symt.tag != SymTagPublicSymbol)) return NULL;
+     }
+     
+     while (high > low + 1)
+@@ -1137,7 +1138,7 @@
+         }
+     }
+     recursive--;
+-    return symt_find_nearest_internal(module, addr);
++    return symt_find_nearest_internal(module, addr, FALSE);
+ }
+ 
+ struct symt_ht* symt_find_symbol_at(struct module* module, DWORD_PTR addr)
+@@ -1553,7 +1554,14 @@
+     struct symt_ht*     sym;
+ 
+     if (!module_init_pair(&pair, hProcess, Address)) return FALSE;
+-    if ((sym = symt_find_symbol_at(pair.effective, Address)) == NULL) return FALSE;
++    if ((sym = symt_find_symbol_at(pair.effective, Address)) == NULL)
++    {
++        if (pair.effective->module.PdbUnmatched || pair.effective->module.DbgUnmatched ||
++            (pair.effective->module.SymType != SymCoff && pair.effective->module.SymType != SymExport)) return FALSE;
++        /* Export tables do not provide symbol extents. */
++        sym = symt_find_nearest_internal(pair.effective, Address, TRUE);
++        if (!sym || sym->symt.tag != SymTagPublicSymbol) return FALSE;
++    }
+ 
+     symt_fill_sym_info(&pair, NULL, &sym->symt, Symbol);
+     if (Displacement)
+diff --git a/dlls/dbghelp/pe_module.c b/dlls/dbghelp/pe_module.c
+--- a/dlls/dbghelp/pe_module.c
++++ b/dlls/dbghelp/pe_module.c
+@@ -848,8 +848,8 @@
+      */
+     if (!ret)
+     {
+-        ret = pe_load_export_debug_info(module) || ret;
+-        module->module.SymType = SymNone;
++        ret = pe_load_export_debug_info(module);
++        module->module.SymType = ret ? SymExport : SymNone;
+     }
+     return ret;
+ }
