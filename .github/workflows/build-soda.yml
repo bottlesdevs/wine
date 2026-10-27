@@ -1081,7 +1081,7 @@ jobs:
               -municode -O2 -Wall -Wextra -Werror -lmsi -ladvapi32 -o "$directory/client.exe"
             "$runner_dir/bin/wine" "$directory/client.exe" "Z:$directory" \
               | tr -d '\r' | tee "$directory/runtime.log"
-            grep -Fx 'MSI_COMPONENT_RESULT checks=157 failures=0' "$directory/runtime.log"
+            grep -Fx 'MSI_COMPONENT_RESULT checks=193 failures=0' "$directory/runtime.log"
           done
           "$runner_dir/bin/wineserver" -w
 
@@ -2735,7 +2735,7 @@ jobs:
             mkdir -p "$msi_dir/root/Integration" "$msi_dir/root/Office16"
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/msi-components$arch.exe" "Z:$msi_dir" \
               | tr -d '\r' | tee "$msi_dir/runtime.log"
-            grep -Fx 'MSI_COMPONENT_RESULT checks=157 failures=0' "$msi_dir/runtime.log"
+            grep -Fx 'MSI_COMPONENT_RESULT checks=193 failures=0' "$msi_dir/runtime.log"
             "$runner_dir/bin/wine" "$RUNNER_TEMP/soda-office-winrt/msi-handles$arch.exe" \
               | tr -d '\r' | tee "$RUNNER_TEMP/soda-office-winrt/msi-handles$arch.log"
             grep -E '^queries=100 handles_before=[0-9]+ handles_after=[0-9]+ delta=0 positive_control=16$' "$RUNNER_TEMP/soda-office-winrt/msi-handles$arch.log"
