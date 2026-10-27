@@ -125,12 +125,13 @@ jobs:
           done
 
       - name: verify debugger on x86 and x64
+        shell: bash
         run: |
           export EAGLE_PACKAGE="$EAGLE_WORK/package" EAGLE_TEST_ROOT="$EAGLE_WORK/tests"
           export EAGLE_TEST_WINE="$EAGLE_WORK/soda-11.0-35-experimental-x86_64/bin/wine"
           export WINEPREFIX="$EAGLE_TEST_ROOT/prefix" WINEARCH=win64 WINEDEBUG=-all
           export WINEDLLOVERRIDES='mscoree=d;winemenubuilder.exe=d' LIBGL_ALWAYS_SOFTWARE=1
-          trap '"${EAGLE_TEST_WINE%/wine}/wineserver" -k; "${EAGLE_TEST_WINE%/wine}/wineserver" -w' EXIT
+          trap 'status=$?; set +e; "${EAGLE_TEST_WINE%/wine}/wineserver" -k; "${EAGLE_TEST_WINE%/wine}/wineserver" -w; exit "$status"' EXIT
           xvfb-run -a sh -ec '"$EAGLE_TEST_WINE" wineboot -u; python3 eagle/tests/integration.py -v' \
             2>&1 | tee "$EAGLE_TEST_ROOT/integration.log"
 
