@@ -1450,6 +1450,20 @@ jobs:
             grep -Fx 'RESULT=00000000' "$smoke_dir/smoke$arch.log"
             "$runner_dir/bin/wineserver" -w
           done
+          for arch in 64 32; do
+            compiler=x86_64-w64-mingw32-gcc
+            test "$arch" = 64 || compiler=i686-w64-mingw32-gcc
+            "$compiler" "$GITHUB_WORKSPACE/.github/soda-typelib-load.c" \
+              -O2 -municode -Wall -Wextra -Werror -loleaut32 -lole32 -luuid \
+              -o "$smoke_dir/load$arch.exe"
+            export WINEARCH="win$arch" WINEPREFIX="$smoke_dir/prefix$arch"
+            "$runner_dir/bin/wine" "$smoke_dir/load$arch.exe" make 4096 "Z:$smoke_dir/owned$arch.tlb"
+            "$runner_dir/bin/wine" "$smoke_dir/load$arch.exe" load 4096 "Z:$smoke_dir/owned$arch.tlb" \
+              | tr -d '\r' | tee "$smoke_dir/load$arch.log"
+            grep -Fx 'CHECK count=4096 checked=4096 hr=00000000' "$smoke_dir/load$arch.log"
+            grep -Fx "RESULT=00000000 POINTER_BITS=$arch" "$smoke_dir/load$arch.log"
+            "$runner_dir/bin/wineserver" -w
+          done
 
       - name: verify WIC presentation errors
         shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
