@@ -1023,6 +1023,10 @@ int main(int argc, char **argv)
                 printf(",\"access\":\"%s\",\"fault_address\":\"0x%llx\"", operation == 0 ? "read" : operation == 1 ? "write" : operation == 8 ? "execute" : "unknown", (unsigned long long)info->ExceptionRecord.ExceptionInformation[1]);
             }
             end_event();
+            if (info->dwFirstChance && code == EXCEPTION_ACCESS_VIOLATION && !address &&
+                info->ExceptionRecord.NumberParameters >= 2 &&
+                info->ExceptionRecord.ExceptionInformation[0] == 8 &&
+                !info->ExceptionRecord.ExceptionInformation[1]) snapshot(debug.dwProcessId, debug.dwThreadId);
             if (!info->dwFirstChance) { snapshot(debug.dwProcessId, 0); dump(debug.dwProcessId, debug.dwThreadId, &info->ExceptionRecord); }
             if (stop && (interactive || !strcmp(reason, "pause")))
             {

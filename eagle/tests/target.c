@@ -27,6 +27,23 @@ __declspec(noinline) void eagle_null_parent(void)
     eagle_null_call();
 }
 
+static BOOL handle_null;
+
+static LONG CALLBACK eagle_null_handler(EXCEPTION_POINTERS *exception)
+{
+    if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        !exception->ExceptionRecord->ExceptionAddress)
+    {
+        if (handle_null) ExitProcess(0);
+#ifdef _WIN64
+        *(ULONG_PTR *)exception->ContextRecord->Rsp = 0;
+#else
+        *(ULONG_PTR *)exception->ContextRecord->Esp = 0;
+#endif
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 static DWORD WINAPI eagle_worker(void *argument)
 {
     unsigned i;
@@ -40,8 +57,11 @@ static DWORD WINAPI eagle_worker(void *argument)
 
 int main(int argc, char **argv)
 {
-    if (argc > 1 && !strcmp(argv[1], "nullcall"))
+    if (argc > 1 && (!strcmp(argv[1], "nullcall") || !strcmp(argv[1], "nullcall-handler") ||
+        !strcmp(argv[1], "nullcall-handled")))
     {
+        handle_null = !strcmp(argv[1], "nullcall-handled");
+        if (strcmp(argv[1], "nullcall") && !AddVectoredExceptionHandler(1, eagle_null_handler)) return 23;
         eagle_null_parent();
         return 0;
     }

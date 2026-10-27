@@ -22,6 +22,7 @@ on:
           - registry-reference
           - crypt32-reference
           - msi-reference
+          - eagle-debugger
         default: x86_64
       pgo:
         description: 'Build a PGO candidate'
@@ -73,6 +74,79 @@ env:
 
 
 jobs:
+  eagle-debugger:
+    if: inputs.architecture == 'eagle-debugger' && inputs.winrt_http_reference != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: setup debugger tests
+        run: |
+          work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-eagle"
+          mkdir -p "$work/scratch" "$HOME/.cache/soda-runners/35"
+          export TMPDIR="$work/scratch" TMP="$work/scratch" TEMP="$work/scratch"
+          printf 'EAGLE_WORK=%s\nTMPDIR=%s/scratch\nTMP=%s/scratch\nTEMP=%s/scratch\n' \
+            "$work" "$work" "$work" "$work" >> "$GITHUB_ENV"
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            g++ gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 xvfb xauth \
+            libc6:i386 libgcc-s1:i386 libunwind8:i386 \
+            libfreetype6:amd64 libfreetype6:i386 libfontconfig1:amd64 libfontconfig1:i386 \
+            libx11-6:amd64 libx11-6:i386 libxext6:amd64 libxext6:i386 \
+            libxrender1:amd64 libxrender1:i386 libxrandr2:amd64 libxrandr2:i386 \
+            libxi6:amd64 libxi6:i386 libxcursor1:amd64 libxcursor1:i386 \
+            libxinerama1:amd64 libxinerama1:i386 libxcomposite1:amd64 libxcomposite1:i386 \
+            libgl1:amd64 libgl1:i386 libgl1-mesa-dri:amd64 libgl1-mesa-dri:i386 \
+            libgnutls30t64:amd64 libgnutls30t64:i386 libdbus-1-3:amd64 libdbus-1-3:i386
+
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/soda-runners/35
+          key: soda-debugger-runtime-9a441b144b9f35cc527da30d6a40b5888e934a354a6309d6394bb444046b97d4
+
+      - name: prepare published runner
+        run: |
+          archive="$HOME/.cache/soda-runners/35/soda-11.0-35-experimental-x86_64.tar.xz"
+          if ! test -f "$archive"; then
+            curl --fail --location --retry 3 \
+              https://github.com/bottlesdevs/wine/releases/download/soda-11.0-35-experimental/soda-11.0-35-experimental-x86_64.tar.xz \
+              -o "$archive"
+          fi
+          printf '%s  %s\n' 9a441b144b9f35cc527da30d6a40b5888e934a354a6309d6394bb444046b97d4 "$archive" | sha256sum --check -
+          tar -xJf "$archive" -C "$EAGLE_WORK"
+          sh eagle/build-debugger.sh "$EAGLE_WORK/package"
+          mkdir -p "$EAGLE_WORK/tests"
+          for architecture in x86_64 i686; do
+            if test "$architecture" = x86_64; then bits=64; else bits=32; fi
+            "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror \
+              eagle/tests/target.c -o "$EAGLE_WORK/tests/target$bits.exe"
+          done
+
+      - name: verify debugger on x86 and x64
+        run: |
+          export EAGLE_PACKAGE="$EAGLE_WORK/package" EAGLE_TEST_ROOT="$EAGLE_WORK/tests"
+          export EAGLE_TEST_WINE="$EAGLE_WORK/soda-11.0-35-experimental-x86_64/bin/wine"
+          export WINEPREFIX="$EAGLE_TEST_ROOT/prefix" WINEARCH=win64 WINEDEBUG=-all
+          export WINEDLLOVERRIDES='mscoree=d;winemenubuilder.exe=d' LIBGL_ALWAYS_SOFTWARE=1
+          trap '"${EAGLE_TEST_WINE%/wine}/wineserver" -k; "${EAGLE_TEST_WINE%/wine}/wineserver" -w' EXIT
+          xvfb-run -a sh -ec '"$EAGLE_TEST_WINE" wineboot -u; python3 eagle/tests/integration.py -v' \
+            2>&1 | tee "$EAGLE_TEST_ROOT/integration.log"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.EAGLE_WORK != ''
+        with:
+          name: eagle-debugger-${{ github.sha }}
+          path: |
+            ${{ env.EAGLE_WORK }}/tests/*.log
+            ${{ env.EAGLE_WORK }}/tests/*.stderr
+            ${{ env.EAGLE_WORK }}/tests/*/manifest.json
+            ${{ env.EAGLE_WORK }}/tests/*/events.jsonl
+            ${{ env.EAGLE_WORK }}/package/share/eagle/build.json
+          retention-days: 7
+          if-no-files-found: warn
+
   crypt32-reference:
     if: inputs.architecture == 'crypt32-reference' && inputs.winrt_http_reference != true
     runs-on: windows-2022
@@ -334,7 +408,7 @@ jobs:
           if-no-files-found: error
 
   patches:
-    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'msi-reference'
+    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'msi-reference' && inputs.architecture != 'eagle-debugger'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

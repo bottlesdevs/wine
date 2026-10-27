@@ -82,6 +82,46 @@ class Integration(unittest.TestCase):
                              ["eagle_null_call", "eagle_null_parent", "main"])
             self.assertTrue(all(item.get("line", 0) > 0 for item in stack["frames"][1:4]))
 
+    def test_null_call_captures_stack_before_exception_handlers(self):
+        for bits in (64, 32):
+            process, root = self.launch(f"null-handler-{bits}", f"target{bits}.exe", "nullcall-handler")
+            self.assertEqual(process.wait(timeout=40), 0)
+            manifest, events = read_bundle(root)
+            self.assertTrue(manifest["completed"])
+            self.assertEqual(manifest["dropped_events"], 0)
+            faults = [item for item in events if item["kind"] == "exception" and item["code"] == "0xc0000005"]
+            self.assertEqual([item["first_chance"] for item in faults], [True, False])
+            stacks = [item for item in events if item["kind"] == "snapshot" and item["tid"] == faults[0]["tid"]]
+            self.assertEqual(len(stacks), 2)
+            self.assertLess(faults[0]["seq"], stacks[0]["seq"])
+            self.assertLess(stacks[0]["seq"], faults[1]["seq"])
+            self.assertLess(faults[1]["seq"], stacks[1]["seq"])
+            for stack in stacks:
+                self.assertEqual(stack["registers"]["ip"], "0x0")
+                self.assertEqual(stack["frames"][0]["address"], "0x0")
+            self.assertTrue(stacks[0]["initial_leaf_return"])
+            self.assertEqual([item["symbol"] for item in stacks[0]["frames"][1:4]],
+                             ["eagle_null_call", "eagle_null_parent", "main"])
+            self.assertFalse(stacks[1]["initial_leaf_return"])
+            self.assertEqual(next(item for item in events if item["kind"] == "process_exit")["code"], 0xc0000005)
+
+    def test_handled_null_call_retains_first_chance_stack(self):
+        for bits in (64, 32):
+            process, root = self.launch(f"null-handled-{bits}", f"target{bits}.exe", "nullcall-handled")
+            self.assertEqual(process.wait(timeout=40), 0)
+            manifest, events = read_bundle(root)
+            self.assertTrue(manifest["completed"])
+            self.assertEqual(manifest["dropped_events"], 0)
+            faults = [item for item in events if item["kind"] == "exception" and item["code"] == "0xc0000005"]
+            self.assertEqual([item["first_chance"] for item in faults], [True])
+            stack = next(item for item in events if item["kind"] == "snapshot")
+            self.assertEqual(stack["tid"], faults[0]["tid"])
+            self.assertGreater(stack["seq"], faults[0]["seq"])
+            self.assertTrue(stack["initial_leaf_return"])
+            self.assertEqual(stack["frames"][1]["symbol"], "eagle_null_call")
+            self.assertFalse(any(item["kind"] == "dump" for item in events))
+            self.assertEqual(next(item for item in events if item["kind"] == "process_exit")["code"], 0)
+
     def test_parent_exit_does_not_drop_child(self):
         process, root = self.launch("child-tree", argument="child")
         self.assertEqual(process.wait(timeout=40), 0)

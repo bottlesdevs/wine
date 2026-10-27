@@ -229,6 +229,9 @@ A null instruction pointer remains the first frame. If the stack holds a
 readable return address in an executable loaded module, Eagle can resume
 DbgHelp unwinding there. These snapshots record `null-call-return+dbghelp`
 and `initial_leaf_return: true` for this calling-convention fallback.
+Null execution faults also capture the faulting thread at first chance,
+before application exception handlers can change its stack. A later snapshot
+records the unhandled exception separately.
 
 ## Saved-session symbols
 
