@@ -3053,7 +3053,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          fetch-depth: 3
 
       - name: verify completed builds
         run: |
