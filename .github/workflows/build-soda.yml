@@ -23,6 +23,7 @@ on:
           - crypt32-reference
           - msi-reference
           - dbghelp-reference
+          - typelib-reference
           - eagle-debugger
         default: x86_64
       pgo:
@@ -317,6 +318,78 @@ jobs:
         with:
           name: msi-reference-${{ github.sha }}
           path: ${{ env.MSI_REFERENCE_DIR }}
+          retention-days: 7
+          if-no-files-found: error
+
+  typelib-reference:
+    if: inputs.architecture == 'typelib-reference' && inputs.winrt_http_reference != true
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: compare imported type library lookup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $work = Join-Path $env:USERPROFILE "artifacts/Soda-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-typelib-reference"
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $env:TMPDIR = $work
+          $env:TMP = $work
+          $env:TEMP = $work
+          "TYPELIB_REFERENCE_DIR=$work" | Add-Content $env:GITHUB_ENV
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$visualStudio) { throw 'Visual C++ tools not found' }
+          $vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvarsall.bat'
+          $source = Join-Path $env:GITHUB_WORKSPACE '.github/soda-typelib-imports.c'
+          $results = @()
+          $failed = $false
+          foreach ($bits in @(64, 32)) {
+            $target = if ($bits -eq 64) { 'amd64' } else { 'x86' }
+            $exe = Join-Path $work "imports$bits.exe"
+            $obj = Join-Path $work "imports$bits.obj"
+            $script = Join-Path $work "build$bits.cmd"
+            @(
+              '@echo off',
+              "call `"$vcvars`" $target",
+              'if errorlevel 1 exit /b %errorlevel%',
+              "cl /nologo /W4 /WX /O2 /TC `"$source`" /Fe:`"$exe`" /Fo:`"$obj`" /link oleaut32.lib ole32.lib uuid.lib",
+              'exit /b %errorlevel%'
+            ) | Set-Content -Encoding ascii $script
+            & cmd.exe /d /c $script
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            foreach ($baseKind in @(32, 64)) {
+              foreach ($aliasKind in @(32, 64)) {
+                $name = "$bits-$baseKind-$aliasKind"
+                $directory = Join-Path $work $name
+                New-Item -ItemType Directory -Path $directory | Out-Null
+                try {
+                  & $exe make $baseKind $aliasKind $directory | Tee-Object -FilePath (Join-Path $work "make-$name.log")
+                  $prepareExit = $LASTEXITCODE
+                  $probeExit = $null
+                  if ($prepareExit -eq 0) {
+                    if (Test-Path (Join-Path $directory 'base-original.tlb')) { throw 'Original type library was not relocated' }
+                    & $exe probe (Join-Path $directory 'importing.tlb') | Tee-Object -FilePath (Join-Path $work "probe-$name.log")
+                    $probeExit = $LASTEXITCODE
+                  } else { $failed = $true }
+                  $results += [ordered]@{bits=$bits; base_kind=$baseKind; alias_kind=$aliasKind; prepare_exit=$prepareExit; probe_exit=$probeExit}
+                } finally {
+                  & $exe cleanup | Tee-Object -FilePath (Join-Path $work "cleanup-$name.log")
+                  if ($LASTEXITCODE -ne 0) { $failed = $true }
+                }
+              }
+            }
+          }
+          $results | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $work 'results.json')
+          if ($failed) { exit 1 }
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.TYPELIB_REFERENCE_DIR != ''
+        with:
+          name: typelib-reference-${{ github.sha }}
+          path: ${{ env.TYPELIB_REFERENCE_DIR }}
           retention-days: 7
           if-no-files-found: error
 
