@@ -734,7 +734,7 @@ int main(int argc, char **argv)
     {
         STARTUPINFOA startup; PROCESS_INFORMATION info;
         SECURITY_ATTRIBUTES security = {sizeof(security), NULL, TRUE};
-        HANDLE output;
+        HANDLE output, diagnostic = NULL;
         BOOL launched;
         DWORD launch_error;
         char *target = _strdup(argv[2]);
@@ -748,8 +748,12 @@ int main(int argc, char **argv)
         startup.hStdInput = startup.hStdOutput = startup.hStdError = output;
         /* Start Wine's desktop before its bootstrap can inherit the debug port. */
         GetDesktopWindow();
+        if (DuplicateHandle(GetCurrentProcess(), GetStdHandle(STD_ERROR_HANDLE), GetCurrentProcess(), &diagnostic, 0, TRUE, DUPLICATE_SAME_ACCESS))
+            startup.hStdError = diagnostic;
+        else error("target_stderr", GetLastError());
         launched = CreateProcessA(NULL, target, NULL, NULL, TRUE, DEBUG_PROCESS, NULL, getenv("EAGLE_TARGET_CWD"), &startup, &info);
         launch_error = GetLastError(); CloseHandle(output);
+        if (diagnostic) CloseHandle(diagnostic);
         if (!launched) { error("launch", launch_error); free(target); return 1; }
         primary_pid = info.dwProcessId;
         CloseHandle(info.hThread); CloseHandle(info.hProcess); free(target);
