@@ -138,6 +138,11 @@ jobs:
           EAGLE_PACKAGE="$EAGLE_WORK/package" python3 -S eagle/tests/test_symbols_exports.py \
             > "$EAGLE_WORK/tests/symbols-exports.log" 2>&1
 
+      - name: verify debugger lifecycle protocol
+        run: |
+          EAGLE_PACKAGE="$EAGLE_WORK/package" python3 -S eagle/tests/test_dap_lifecycle.py -v \
+            > "$EAGLE_WORK/tests/dap-lifecycle.log" 2>&1
+
       - name: verify debugger on x86 and x64
         shell: bash
         run: |

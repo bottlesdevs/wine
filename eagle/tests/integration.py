@@ -371,6 +371,65 @@ class Integration(unittest.TestCase):
         self.assertEqual(process.wait(timeout=15), 0)
         process.stdout.close()
 
+    def test_dap_child_exits_do_not_replace_the_main_exit(self):
+        for bits, architecture in ((32, "x86"), (64, "x86_64")):
+            for mode in ("childjoin", "childwait"):
+                with self.subTest(bits=bits, mode=mode):
+                    bundle = ROOT / f"dap-{mode}-{bits}"
+                    process = subprocess.Popen([str(CLI), "dap"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+                    self.addCleanup(lambda process=process: process.poll() is None and process.terminate())
+                    messages = []
+                    output = (ROOT / f"dap-{mode}-{bits}.log").open("w")
+                    self.addCleanup(output.close)
+                    seq = 0
+                    def receive():
+                        message = read_message(process.stdout)
+                        self.assertIsNotNone(message)
+                        messages.append(message)
+                        output.write(json.dumps(message) + "\n"); output.flush()
+                        return message
+                    def request(command, arguments=None):
+                        nonlocal seq
+                        seq += 1
+                        write_message(process.stdin, {"seq": seq, "type": "request", "command": command, "arguments": arguments or {}})
+                        while True:
+                            message = receive()
+                            if message["type"] == "response" and message["request_seq"] == seq:
+                                self.assertTrue(message["success"], message)
+                                return message["body"]
+                    request("initialize")
+                    request("launch", {"wine": WINE, "prefix": str(ROOT / "prefix"), "session": str(bundle),
+                                       "program": str(ROOT / f"target{bits}.exe"), "args": [mode], "architecture": architecture})
+                    if mode == "childjoin":
+                        self.assertTrue(request("setFunctionBreakpoints", {"breakpoints": [{"name": "eagle_checkpoint"}]})["breakpoints"][0]["verified"])
+                    pending = len(messages)
+                    request("configurationDone")
+                    checkpoint = False
+                    while True:
+                        message = messages[pending] if pending < len(messages) else receive()
+                        pending += 1
+                        if message.get("event") == "terminated": break
+                        if message.get("event") == "stopped":
+                            if message["body"]["reason"] == "breakpoint":
+                                self.assertEqual(mode, "childjoin")
+                                self.assertFalse(any(item.get("event") == "exited" for item in messages))
+                                self.assertEqual(self.wait_event(bundle, "process_exit")["code"], 7)
+                                checkpoint = True
+                            request("continue", {"threadId": message["body"]["threadId"]})
+                    self.assertEqual(checkpoint, mode == "childjoin")
+                    self.assertEqual([item["body"]["exitCode"] for item in messages if item.get("event") == "exited"], [0])
+                    manifest, events = read_bundle(bundle)
+                    self.assertTrue(manifest["completed"])
+                    self.assertEqual(manifest["dropped_events"], 0)
+                    created = [item["pid"] for item in events if item["kind"] == "process_create"]
+                    exited = [(item["pid"], item["code"]) for item in events if item["kind"] == "process_exit"]
+                    self.assertEqual(len(created), 2)
+                    self.assertEqual(exited, [(created[1], 7), (created[0], 0)] if mode == "childjoin" else [(created[0], 0), (created[1], 7)])
+                    request("disconnect")
+                    process.stdin.close()
+                    self.assertEqual(process.wait(timeout=15), 0)
+                    process.stdout.close()
+
     def test_dap_source_stop_x86_and_x64(self):
         for bits, architecture in ((32, "x86"), (64, "x86_64")):
             process = subprocess.Popen([str(CLI), "dap"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)

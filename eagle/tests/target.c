@@ -187,7 +187,7 @@ int main(int argc, char **argv)
         if (!library) return 12;
         FreeLibrary(library);
     }
-    if (argc > 1 && (!strcmp(argv[1], "child") || !strcmp(argv[1], "childwait")))
+    if (argc > 1 && (!strcmp(argv[1], "child") || !strcmp(argv[1], "childwait") || !strcmp(argv[1], "childjoin")))
     {
         STARTUPINFOA startup = {0};
         PROCESS_INFORMATION info;
@@ -196,6 +196,15 @@ int main(int argc, char **argv)
         GetModuleFileNameA(NULL, path, sizeof(path));
         snprintf(command, sizeof(command), "\"%s\" %s", path, !strcmp(argv[1], "childwait") ? "waitexit" : "exit");
         if (!CreateProcessA(NULL, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &info)) return 3;
+        if (!strcmp(argv[1], "childjoin"))
+        {
+            DWORD code = 0;
+            BOOL finished = WaitForSingleObject(info.hProcess, 30000) == WAIT_OBJECT_0 &&
+                            GetExitCodeProcess(info.hProcess, &code) && code == 7;
+            CloseHandle(info.hThread); CloseHandle(info.hProcess);
+            if (!finished) return 27;
+            return eagle_checkpoint(5) == 12 ? 0 : 28;
+        }
         CloseHandle(info.hThread); CloseHandle(info.hProcess);
         return 0;
     }

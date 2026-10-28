@@ -24,6 +24,8 @@ class Adapter:
         self.stopped = None
         self.done = threading.Event()
         self.breakpoints = {}
+        self.primary_pid = None
+        self.exit_reported = False
 
     def send(self, value):
         with self.lock:
@@ -37,13 +39,16 @@ class Adapter:
     def observed(self, value):
         with self.changed:
             self.events.append(value)
+            if value["kind"] == "process_create" and self.primary_pid is None:
+                self.primary_pid = value["pid"]
             if value["kind"] == "snapshot": self.stacks[value["tid"]] = value
             if value["kind"] == "stopped": self.stopped = value
             self.changed.notify_all()
         if value["kind"] == "stopped":
             reason = "breakpoint" if value["reason"] == "module" else value["reason"]
             self.event("stopped", {"reason": reason, "threadId": value["tid"], "allThreadsStopped": True})
-        elif value["kind"] == "process_exit":
+        elif value["kind"] == "process_exit" and value["pid"] == self.primary_pid and not self.exit_reported:
+            self.exit_reported = True
             self.event("exited", {"exitCode": value["code"]})
         elif value["kind"] == "error":
             self.event("output", {"category": "stderr", "output": f"{value['operation']}: Win32 error {value['winerror']}\n"})
@@ -68,6 +73,8 @@ class Adapter:
             self.stacks.clear()
             self.stopped = None
             self.breakpoints.clear()
+            self.primary_pid = args.get("processId") if attach else None
+            self.exit_reported = False
         def run():
             try:
                 capture(args["wine"], self.prefix, self.root, target=None if attach else args.get("program"), arguments=args.get("args", []), pid=args.get("processId") if attach else None, architecture=args.get('architecture', 'x86_64'), interactive=True, timeout=args.get("timeout", 3600), observer=self.observed)
