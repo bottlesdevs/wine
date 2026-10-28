@@ -376,6 +376,9 @@ jobs:
                       if (Test-Path (Join-Path $directory 'base-original.tlb')) { throw 'Original type library was not relocated' }
                       & $exe $probeMode (Join-Path $directory 'importing.tlb') | Tee-Object -FilePath (Join-Path $work "probe-$name.log")
                       $probeExit = $LASTEXITCODE
+                      $expected = if ($registration -eq 'both' -and $baseKind -ne $bits) { 84 } else { 42 }
+                      $probeText = Get-Content -Raw (Join-Path $work "probe-$name.log")
+                      if ($probeExit -ne 0 -or $probeText -notmatch "(?m)^RESOLVED_CONSTANT value=$expected\r?$") { $failed = $true }
                     } else { $failed = $true }
                     $results += [ordered]@{bits=$bits; base_kind=$baseKind; alias_kind=$aliasKind; registration=$registration; prepare_exit=$prepareExit; probe_exit=$probeExit}
                   } finally {
@@ -558,7 +561,7 @@ jobs:
           if-no-files-found: error
 
   patches:
-    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'eagle-debugger'
+    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'typelib-reference' && inputs.architecture != 'eagle-debugger'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -1541,6 +1544,16 @@ jobs:
             grep -Fx "RESULT=00000000 POINTER_BITS=$arch" "$smoke_dir/load$arch.log"
             "$runner_dir/bin/wineserver" -w
           done
+
+      - name: verify imported type library lookup
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 10
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          "$GITHUB_WORKSPACE/.github/check-typelib-imports.sh" "$runner_dir" \
+            "$HOME/artifacts/soda-typelib-imports-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
       - name: verify WIC presentation errors
         shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
@@ -2903,6 +2916,15 @@ jobs:
             done
           done
           "$runner_dir/bin/wineserver" -w
+
+      - name: verify imported type library lookup
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 10
+        env:
+          COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
+        run: |
+          .github/check-typelib-imports.sh "/tmp/$COMPONENT_NAME" \
+            "$HOME/artifacts/soda-typelib-imports-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
       - name: verify service startup timeout
         shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}

@@ -1,0 +1,17 @@
+diff --git a/dlls/oleaut32/typelib.c b/dlls/oleaut32/typelib.c
+--- a/dlls/oleaut32/typelib.c
++++ b/dlls/oleaut32/typelib.c
+@@ -7946,11 +7946,10 @@
+                     BSTR libnam;
+ 
+                     /* Search on disk */
+-                    result = query_typelib_path(TLB_get_guid_null(ref_type->pImpTLInfo->guid),
++                    result = QueryPathOfRegTypeLib(TLB_get_guid_null(ref_type->pImpTLInfo->guid),
+                             ref_type->pImpTLInfo->wVersionMajor,
+                             ref_type->pImpTLInfo->wVersionMinor,
+-                            This->pTypeLib->syskind,
+-                            ref_type->pImpTLInfo->lcid, &libnam, TRUE);
++                            ref_type->pImpTLInfo->lcid, &libnam);
+                     if (FAILED(result))
+                         libnam = SysAllocString(ref_type->pImpTLInfo->name);
+ 
