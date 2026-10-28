@@ -10,24 +10,25 @@ struct callback_record
 };
 
 static DWORD slot;
-static LONG callback_count, reset_done;
-static BOOL reset_value, fiber_set_ok;
-static struct callback_record records[16];
+static LONG callback_count, reset_done, reset_limit;
+static BOOL fiber_set_ok;
+static struct callback_record records[32];
 static void *primary_fiber;
 
 static void CALLBACK cleanup(void *value)
 {
     LONG position = InterlockedIncrement(&callback_count) - 1;
     struct callback_record *record;
-    if (position >= 16) return;
+    if (position >= 32) return;
     record = records + position;
     record->argument = (ULONG_PTR)value;
     SetLastError(0x12345678);
     record->visible = (ULONG_PTR)FlsGetValue(slot);
     record->get_error = GetLastError();
-    if (reset_value && !InterlockedExchange(&reset_done, 1))
+    if (reset_done < reset_limit)
     {
-        record->reset_success = FlsSetValue(slot, (void *)(ULONG_PTR)2);
+        ++reset_done;
+        record->reset_success = FlsSetValue(slot, (void *)(ULONG_PTR)(reset_done + 1));
         if (!record->reset_success) record->reset_error = GetLastError();
     }
 }
@@ -47,16 +48,17 @@ static void WINAPI fiber(void *argument)
 
 int main(void)
 {
-    static const char *names[] = {"free", "free-reset", "thread", "thread-reset", "fiber", "fiber-reset"};
+    static const char *names[] = {"free", "free-reset", "thread", "thread-reset", "fiber", "fiber-reset",
+                                  "free-reset-four", "free-reset-sixteen"};
     unsigned test, i;
     for (test = 0; test < sizeof(names) / sizeof(names[0]); ++test)
     {
         ULONG_PTR parent = 0;
         callback_count = reset_done = 0;
-        reset_value = test % 2;
+        reset_limit = test == 6 ? 4 : test == 7 ? 16 : test % 2;
         memset(records, 0, sizeof(records));
         if ((slot = FlsAlloc(cleanup)) == FLS_OUT_OF_INDEXES) return 1;
-        if (test < 2)
+        if (test < 2 || test >= 6)
         {
             if (!FlsSetValue(slot, (void *)(ULONG_PTR)1) || !FlsFree(slot)) return 2;
         }
@@ -84,7 +86,7 @@ int main(void)
         }
         printf("{\"case\":\"%s\",\"callbacks\":%ld,\"parent\":%llu,\"records\":[",
                 names[test], callback_count, (unsigned long long)parent);
-        for (i = 0; i < (unsigned)callback_count && i < 16; ++i)
+        for (i = 0; i < (unsigned)callback_count && i < 32; ++i)
         {
             struct callback_record *record = records + i;
             printf("%s{\"argument\":%llu,\"visible\":%llu,\"get_error\":%lu,"
