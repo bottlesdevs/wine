@@ -24,6 +24,7 @@ on:
           - msi-reference
           - dbghelp-reference
           - typelib-reference
+          - fls-reference
           - eagle-debugger
         default: x86_64
       pgo:
@@ -125,13 +126,37 @@ jobs:
           tar -xJf "$archive" -C "$EAGLE_WORK"
           sh eagle/build-debugger.sh "$EAGLE_WORK/package"
           mkdir -p "$EAGLE_WORK/tests"
+          sha256sum .github/soda-fls-reference.c > "$EAGLE_WORK/tests/fls-source.log"
           for architecture in x86_64 i686; do
             if test "$architecture" = x86_64; then bits=64; else bits=32; fi
             "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror \
               eagle/tests/target.c -o "$EAGLE_WORK/tests/target$bits.exe"
             "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
               eagle/tests/pause.c -ldbghelp -o "$EAGLE_WORK/tests/pause$bits.exe"
+            "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
+              .github/soda-fls-reference.c -o "$EAGLE_WORK/tests/fls$bits.exe"
           done
+
+      - uses: actions/download-artifact@v7
+        if: inputs.baseline_run_id != ''
+        with:
+          name: fls-reference-${{ github.sha }}
+          path: ${{ env.EAGLE_WORK }}/reference
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.baseline_run_id }}
+
+      - name: verify FLS reference source and executables
+        if: inputs.baseline_run_id != ''
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['EAGLE_WORK']) / 'reference'
+          metadata = json.loads((root / 'source.json').read_text(encoding='utf-8-sig'))
+          assert hashlib.sha256(Path('.github/soda-fls-reference.c').read_bytes()).hexdigest() == metadata['source_sha256']
+          for bits in (32, 64):
+              assert hashlib.sha256((root / f'fls{bits}.exe').read_bytes()).hexdigest() == metadata['executables'][str(bits)]
+          PY
 
       - name: verify offline PE export symbols
         run: |
@@ -157,9 +182,30 @@ jobs:
             "$EAGLE_TEST_WINE" wineboot -u
             for bits in 64 32; do
               "$EAGLE_TEST_WINE" "$EAGLE_TEST_ROOT/pause$bits.exe" > "$EAGLE_TEST_ROOT/pause$bits.log" 2>&1
+              "$EAGLE_TEST_WINE" "$EAGLE_TEST_ROOT/fls$bits.exe" > "$EAGLE_TEST_ROOT/fls$bits.log" 2> "$EAGLE_TEST_ROOT/fls$bits.stderr"
+              if test -d "$EAGLE_WORK/reference"; then
+                "$EAGLE_TEST_WINE" "$EAGLE_WORK/reference/fls$bits.exe" > "$EAGLE_TEST_ROOT/fls-reference$bits.log" 2> "$EAGLE_TEST_ROOT/fls-reference$bits.stderr"
+              fi
             done
             python3 eagle/tests/integration.py -v
           ' 2>&1 | tee "$EAGLE_TEST_ROOT/integration.log"
+
+      - name: compare FLS callbacks with Windows
+        if: inputs.baseline_run_id != ''
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['EAGLE_WORK'])
+          results = []
+          for bits in (32, 64):
+              before = [json.loads(line) for line in (root / 'reference' / f'fls{bits}.log').read_text(encoding='utf-8-sig').splitlines()]
+              after = [json.loads(line) for line in (root / 'tests' / f'fls-reference{bits}.log').read_text().splitlines()]
+              assert len(before) == len(after) == 6
+              results.append({'bits': bits, 'matched': before == after, 'windows': before, 'wine': after})
+          (root / 'tests/fls-comparison.log').write_text(json.dumps(results, indent=2) + '\n')
+          assert all(item['matched'] for item in results), 'FLS callback results differ from Windows'
+          PY
 
       - uses: actions/upload-artifact@v7
         if: always() && env.EAGLE_WORK != ''
@@ -175,6 +221,65 @@ jobs:
             ${{ env.EAGLE_WORK }}/package/share/eagle/build.json
           retention-days: 7
           if-no-files-found: warn
+
+  fls-reference:
+    if: inputs.architecture == 'fls-reference' && inputs.winrt_http_reference != true
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: compare fiber cleanup callbacks
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $work = Join-Path $env:USERPROFILE "artifacts/Soda-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-fls-reference"
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $env:TMPDIR = $work
+          $env:TMP = $work
+          $env:TEMP = $work
+          "FLS_REFERENCE_DIR=$work" | Add-Content $env:GITHUB_ENV
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$visualStudio) { throw 'Visual C++ tools not found' }
+          $vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvarsall.bat'
+          $source = Join-Path $env:GITHUB_WORKSPACE '.github/soda-fls-reference.c'
+          $failed = $false
+          $hashes = @{}
+          foreach ($bits in @(64, 32)) {
+            $target = if ($bits -eq 64) { 'amd64' } else { 'x86' }
+            $exe = Join-Path $work "fls$bits.exe"
+            $obj = Join-Path $work "fls$bits.obj"
+            $script = Join-Path $work "build$bits.cmd"
+            @(
+              '@echo off',
+              "call `"$vcvars`" $target",
+              'if errorlevel 1 exit /b %errorlevel%',
+              "cl /nologo /W4 /WX /O2 /TC `"$source`" /Fe:`"$exe`" /Fo:`"$obj`"",
+              'exit /b %errorlevel%'
+            ) | Set-Content -Encoding ascii $script
+            & cmd.exe /d /c $script
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $exe | Tee-Object -FilePath (Join-Path $work "fls$bits.log")
+            $exitCode = $LASTEXITCODE
+            $hashes["$bits"] = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLower()
+            if ($exitCode -ne 0) { $failed = $true }
+          }
+          @{source_sha256=(Get-FileHash -Algorithm SHA256 $source).Hash.ToLower(); executables=$hashes; os=[Environment]::OSVersion.VersionString} |
+            ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $work 'source.json')
+          if ($failed) { exit 1 }
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.FLS_REFERENCE_DIR != ''
+        with:
+          name: fls-reference-${{ github.sha }}
+          path: |
+            ${{ env.FLS_REFERENCE_DIR }}/*.log
+            ${{ env.FLS_REFERENCE_DIR }}/*.exe
+            ${{ env.FLS_REFERENCE_DIR }}/source.json
+          retention-days: 7
+          if-no-files-found: error
 
   dbghelp-reference:
     if: inputs.architecture == 'dbghelp-reference' && inputs.winrt_http_reference != true
@@ -571,7 +676,7 @@ jobs:
           if-no-files-found: error
 
   patches:
-    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'typelib-reference' && inputs.architecture != 'eagle-debugger'
+    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'typelib-reference' && inputs.architecture != 'fls-reference' && inputs.architecture != 'eagle-debugger'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
