@@ -159,6 +159,18 @@ int main(int argc, char **argv)
         Sleep(1200);
         return 7;
     }
+    if (argc > 1 && !strcmp(argv[1], "stderr"))
+    {
+        char data[4096];
+        const char tail[] = "\neagle stderr tail\xff\0\n";
+        DWORD written;
+        unsigned i;
+        memset(data, 'x', sizeof(data));
+        for (i = 0; i < 300; i++)
+            if (!WriteFile(GetStdHandle(STD_ERROR_HANDLE), data, sizeof(data), &written, NULL) || written != sizeof(data)) return 29;
+        if (!WriteFile(GetStdHandle(STD_ERROR_HANDLE), tail, sizeof(tail) - 1, &written, NULL) || written != sizeof(tail) - 1) return 30;
+        return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "threads"))
     {
         HANDLE workers[2];

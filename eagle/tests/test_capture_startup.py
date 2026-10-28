@@ -1,3 +1,5 @@
+import errno
+import hashlib
 import io
 import json
 import os
@@ -27,10 +29,10 @@ class Commands(io.BytesIO):
 
 
 class Collector:
-    def __init__(self, events=(), live=False, detach=True, terminate=True):
+    def __init__(self, events=(), live=False, detach=True, terminate=True, stderr=b''):
         self.stdin = Commands()
         self.stdout = self.pipe(b''.join(json.dumps(event).encode() + b'\n' for event in events))
-        self.stderr = self.pipe(b'')
+        self.stderr = self.pipe(stderr)
         self.returncode = None if live else 0
         self.detach_works = detach
         self.terminate_works = terminate
@@ -141,6 +143,51 @@ class CaptureStartup(unittest.TestCase):
         report = self.capture(collector, root, observer=observe)
         self.assertTrue(report['manifest']['completed'])
         self.assertEqual(collector.stdin.commands, [b'pause\n'])
+
+    def test_stderr_tail_is_bounded_and_counts_discarded_bytes(self):
+        for size in (0, 1, 127, 128, 129, 4096):
+            with self.subTest(size=size):
+                root = self.root / str(size)
+                data = bytes(index % 256 for index in range(size))
+                collector = Collector([{'seq': 1, 'kind': 'finished', 'pid': 0, 'tid': 0}], stderr=data)
+                with patch('session.MAX_STDERR', 128, create=True):
+                    report = self.capture(collector, root)
+                manifest = report['manifest']
+                self.assertTrue(manifest['completed'])
+                self.assertEqual(manifest['stderr_bytes'], size)
+                self.assertEqual(manifest['discarded_stderr_bytes'], max(0, size - 128))
+                self.assertEqual(manifest['stderr_capture']['limit_bytes'], 128)
+                self.assertEqual(manifest['stderr_capture']['retained_bytes'], min(size, 128))
+                if data:
+                    self.assertEqual((root / 'stderr.log').read_bytes(), data[-128:])
+                    self.assertEqual(manifest['stderr_capture']['sha256'], hashlib.sha256(data[-128:]).hexdigest())
+                else:
+                    self.assertFalse((root / 'stderr.log').exists())
+
+    def test_raw_stderr_stays_private_when_exporting(self):
+        root = self.root / 'private-stderr'
+        data = b'owned private diagnostic /home/reporter/private-file \xff\x00\n'
+        collector = Collector([{'seq': 1, 'kind': 'finished', 'pid': 0, 'tid': 0}], stderr=data)
+        self.capture(collector, root)
+        self.assertEqual((root / 'stderr.log').read_bytes(), data)
+        self.assertEqual((root / 'stderr.log').stat().st_mode & 0o777, 0o600)
+        self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+        destination = self.root / 'upload.log'
+        session.export(root, destination)
+        exported = destination.read_bytes()
+        self.assertNotIn(b'owned private diagnostic', exported)
+        self.assertNotIn(b'/home/reporter/private-file', exported)
+        self.assertEqual(json.loads(exported)['manifest']['stderr_capture']['retained_bytes'], len(data))
+
+    def test_stderr_collision_preserves_existing_file_and_reports_loss(self):
+        root = self.root / 'stderr-collision'
+        collector = Collector([{'seq': 1, 'kind': 'finished', 'pid': 0, 'tid': 0}], stderr=b'new diagnostic')
+        report = self.capture(collector, root, observer=lambda event: (root / 'stderr.log').write_bytes(b'existing'))
+        self.assertTrue(report['manifest']['completed'])
+        self.assertEqual((root / 'stderr.log').read_bytes(), b'existing')
+        self.assertEqual(report['manifest']['stderr_capture']['retained_bytes'], 0)
+        self.assertEqual(report['manifest']['stderr_capture']['error_errno'], errno.EEXIST)
+        self.assertEqual(report['manifest']['discarded_stderr_bytes'], len(b'new diagnostic'))
 
     def test_disconnected_control_client_does_not_end_capture(self):
         root = self.root / 'disconnected-control'

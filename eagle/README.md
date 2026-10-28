@@ -116,6 +116,10 @@ application identifiers, class names and other trace text can contain private
 information. Share the `.log`, runner version and reproduction steps.
 The adjacent `.session` directory contains raw events and can contain dumps;
 it is private diagnostic data, not the upload file.
+When collection ends, `stderr.log` in that directory keeps the last 1 MiB of
+captured Wine and inherited process stderr, including assertion text. It contains raw
+bytes and is not added to exported logs. The manifest records retained and
+discarded byte counts; review the file separately before sharing it.
 Exports are written to a private temporary file in the destination directory,
 flushed, then linked to the final name without replacing existing files.
 Write or flush failures leave no partial final file; tracing retains its live

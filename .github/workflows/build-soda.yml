@@ -142,6 +142,8 @@ jobs:
         run: |
           EAGLE_PACKAGE="$EAGLE_WORK/package" python3 -S eagle/tests/test_dap_lifecycle.py -v \
             > "$EAGLE_WORK/tests/dap-lifecycle.log" 2>&1
+          EAGLE_PACKAGE="$EAGLE_WORK/package" python3 -S eagle/tests/test_capture_startup.py -v \
+            > "$EAGLE_WORK/tests/capture-startup.log" 2>&1
 
       - name: verify debugger on x86 and x64
         shell: bash
@@ -168,6 +170,7 @@ jobs:
             ${{ env.EAGLE_WORK }}/tests/*.stderr
             ${{ env.EAGLE_WORK }}/tests/*/manifest.json
             ${{ env.EAGLE_WORK }}/tests/*/events.jsonl
+            ${{ env.EAGLE_WORK }}/tests/stderr-*/stderr.log
             ${{ env.EAGLE_WORK }}/package/share/eagle/build.json
           retention-days: 7
           if-no-files-found: warn

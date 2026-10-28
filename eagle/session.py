@@ -13,6 +13,7 @@ import math
 import tempfile
 
 SCHEMA = 1
+MAX_STDERR = 1024 * 1024
 
 def windows_path(path, prefix=None):
     path = Path(path).resolve()
@@ -525,7 +526,8 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                         selector.unregister(key.fileobj)
                         continue
                     if kind == "stderr":
-                        manifest["discarded_stderr_bytes"] = manifest.get("discarded_stderr_bytes", 0) + len(data)
+                        manifest["stderr_bytes"] = manifest.get("stderr_bytes", 0) + len(data)
+                        buffers["stderr"] = (buffers["stderr"] + data)[-MAX_STDERR:]
                         continue
                     buffers[kind] += data
                     if len(buffers[kind]) > 2 * 1024 * 1024:
@@ -665,6 +667,19 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
             selector.close(); control.close(); (root / "control.sock").unlink(missing_ok=True)
             for stream in (process.stdin, process.stdout, process.stderr):
                 stream.close()
+            manifest['stderr_bytes'] = manifest.get('stderr_bytes', 0)
+            manifest['discarded_stderr_bytes'] = manifest['stderr_bytes']
+            diagnostic = manifest['stderr_capture'] = {'limit_bytes': MAX_STDERR, 'retained_bytes': 0}
+            if buffers['stderr']:
+                try:
+                    descriptor = os.open(root / 'stderr.log', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+                    with os.fdopen(descriptor, 'wb') as file:
+                        file.write(buffers['stderr'])
+                    diagnostic.update(path='stderr.log', retained_bytes=len(buffers['stderr']),
+                                      sha256=hashlib.sha256(buffers['stderr']).hexdigest())
+                    manifest['discarded_stderr_bytes'] -= len(buffers['stderr'])
+                except OSError as error:
+                    diagnostic['error_errno'] = error.errno
             manifest["ended"] = time.time()
             (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return summary(root)

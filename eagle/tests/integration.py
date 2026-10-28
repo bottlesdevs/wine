@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -121,6 +122,27 @@ class Integration(unittest.TestCase):
             self.assertEqual(stack["frames"][1]["symbol"], "eagle_null_call")
             self.assertFalse(any(item["kind"] == "dump" for item in events))
             self.assertEqual(next(item for item in events if item["kind"] == "process_exit")["code"], 0)
+
+    def test_stderr_tail_survives_real_x86_and_x64_targets(self):
+        tail = b'\neagle stderr tail\xff\x00\n'
+        for bits in (32, 64):
+            with self.subTest(bits=bits):
+                process, root = self.launch(f'stderr-{bits}', f'target{bits}.exe', 'stderr')
+                self.assertEqual(process.wait(timeout=40), 0)
+                manifest, events = read_bundle(root)
+                self.assertTrue(manifest['completed'])
+                self.assertEqual(manifest['dropped_events'], 0)
+                self.assertEqual([item['code'] for item in events if item['kind'] == 'process_exit'], [0])
+                data = (root / 'stderr.log').read_bytes()
+                self.assertEqual(len(data), 1024 * 1024)
+                self.assertTrue(data.endswith(tail))
+                self.assertGreaterEqual(manifest['stderr_bytes'], 300 * 4096 + len(tail))
+                self.assertEqual(manifest['discarded_stderr_bytes'], manifest['stderr_bytes'] - len(data))
+                self.assertEqual(manifest['stderr_capture']['retained_bytes'], len(data))
+                self.assertEqual(manifest['stderr_capture']['sha256'], hashlib.sha256(data).hexdigest())
+                destination = ROOT / f'stderr-{bits}-export.log'
+                subprocess.run([str(CLI), 'export', str(root), str(destination)], check=True, stdout=subprocess.DEVNULL)
+                self.assertNotIn('eagle stderr tail', destination.read_text())
 
     def test_parent_exit_does_not_drop_child(self):
         process, root = self.launch("child-tree", argument="child")
