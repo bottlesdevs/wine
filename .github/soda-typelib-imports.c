@@ -8,7 +8,7 @@ static const GUID base_id = {0x6a7b1c94,0x402e,0x4f8c,{0x86,0xd0,0x14,0x73,0x2a,
 static const GUID alias_id = {0x7af3e4a5,0x8063,0x4f1c,{0x83,0x2d,0x96,0x70,0x2c,0x5e,0x31,0x4a}};
 static const GUID enum_id = {0xc2510e8f,0x535b,0x4f36,{0xa8,0x52,0x5c,0x49,0xe2,0x62,0x97,0xd3}};
 
-static HRESULT make_base(const WCHAR *path, SYSKIND kind)
+static HRESULT make_base(const WCHAR *path, SYSKIND kind, LONG answer)
 {
     ICreateTypeLib2 *library = NULL;
     ICreateTypeInfo *info = NULL;
@@ -25,7 +25,7 @@ static HRESULT make_base(const WCHAR *path, SYSKIND kind)
     CHECK(ICreateTypeInfo_SetGuid(info, &enum_id));
     VariantInit(&value);
     V_VT(&value) = VT_I4;
-    V_I4(&value) = 42;
+    V_I4(&value) = answer;
     desc.memid = 42;
     desc.varkind = VAR_CONST;
     desc.elemdescVar.tdesc.vt = VT_I4;
@@ -66,9 +66,9 @@ done:
 #undef CHECK
 }
 
-static HRESULT prepare(const WCHAR *directory, SYSKIND base_kind, SYSKIND alias_kind)
+static HRESULT prepare(const WCHAR *directory, SYSKIND base_kind, SYSKIND alias_kind, BOOL both)
 {
-    WCHAR original[MAX_PATH], relocated[MAX_PATH], alias[MAX_PATH];
+    WCHAR original[MAX_PATH], relocated[MAX_PATH], alias[MAX_PATH], other[MAX_PATH];
     ITypeLib *library = NULL;
     ITypeInfo *info = NULL;
     HRESULT hr;
@@ -77,7 +77,8 @@ static HRESULT prepare(const WCHAR *directory, SYSKIND base_kind, SYSKIND alias_
     swprintf(original, MAX_PATH, L"%ls\\base-original.tlb", directory);
     swprintf(relocated, MAX_PATH, L"%ls\\base-registered.tlb", directory);
     swprintf(alias, MAX_PATH, L"%ls\\importing.tlb", directory);
-    hr = make_base(original, base_kind);
+    swprintf(other, MAX_PATH, L"%ls\\other-platform.tlb", directory);
+    hr = make_base(original, base_kind, 42);
     if (SUCCEEDED(hr)) hr = LoadTypeLibEx(original, REGKIND_REGISTER, &library);
     if (SUCCEEDED(hr)) hr = ITypeLib_GetTypeInfo(library, 0, &info);
     if (SUCCEEDED(hr)) hr = make_alias(alias, alias_kind, info);
@@ -87,11 +88,19 @@ static HRESULT prepare(const WCHAR *directory, SYSKIND base_kind, SYSKIND alias_
     if (SUCCEEDED(hr) && !MoveFileW(original, relocated)) hr = HRESULT_FROM_WIN32(GetLastError());
     if (SUCCEEDED(hr)) hr = LoadTypeLibEx(relocated, REGKIND_REGISTER, &library);
     if (library) ITypeLib_Release(library);
-    printf("PREPARE base_kind=%u alias_kind=%u hr=%08lx\n", base_kind, alias_kind, (unsigned long)hr);
+    library = NULL;
+    if (both && SUCCEEDED(hr))
+    {
+        hr = make_base(other, base_kind == SYS_WIN32 ? SYS_WIN64 : SYS_WIN32, 84);
+        if (SUCCEEDED(hr)) hr = LoadTypeLibEx(other, REGKIND_REGISTER, &library);
+        if (library) ITypeLib_Release(library);
+    }
+    printf("PREPARE base_kind=%u alias_kind=%u both=%u hr=%08lx\n",
+            (unsigned int)base_kind, (unsigned int)alias_kind, (unsigned int)both, (unsigned long)hr);
     return hr;
 }
 
-static HRESULT probe(const WCHAR *path)
+static HRESULT probe(const WCHAR *path, BOOL both)
 {
     ITypeLib *library = NULL;
     ITypeInfo *info = NULL, *referenced = NULL;
@@ -126,7 +135,13 @@ static HRESULT probe(const WCHAR *path)
     if (SUCCEEDED(hr))
     {
         if (value->memid != 42 || value->varkind != VAR_CONST ||
-                V_VT(value->lpvarValue) != VT_I4 || V_I4(value->lpvarValue) != 42) hr = E_FAIL;
+                V_VT(value->lpvarValue) != VT_I4) hr = E_FAIL;
+        else
+        {
+            LONG answer = V_I4(value->lpvarValue);
+            printf("RESOLVED_CONSTANT value=%ld\n", answer);
+            if (answer != 42 && (!both || answer != 84)) hr = E_FAIL;
+        }
         ITypeInfo_ReleaseVarDesc(referenced, value);
     }
     if (referenced) ITypeInfo_Release(referenced);
@@ -145,12 +160,13 @@ int wmain(int argc, WCHAR **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
     hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr)) return 3;
-    if (!wcscmp(argv[1], L"make") && argc == 5 &&
+    if ((!wcscmp(argv[1], L"make") || !wcscmp(argv[1], L"make-both")) && argc == 5 &&
             (!wcscmp(argv[2], L"32") || !wcscmp(argv[2], L"64")) &&
             (!wcscmp(argv[3], L"32") || !wcscmp(argv[3], L"64")))
         hr = prepare(argv[4], wcscmp(argv[2], L"32") ? SYS_WIN64 : SYS_WIN32,
-                wcscmp(argv[3], L"32") ? SYS_WIN64 : SYS_WIN32);
-    else if (!wcscmp(argv[1], L"probe") && argc == 3) hr = probe(argv[2]);
+                wcscmp(argv[3], L"32") ? SYS_WIN64 : SYS_WIN32, !wcscmp(argv[1], L"make-both"));
+    else if ((!wcscmp(argv[1], L"probe") || !wcscmp(argv[1], L"probe-both")) && argc == 3)
+        hr = probe(argv[2], !wcscmp(argv[1], L"probe-both"));
     else if (!wcscmp(argv[1], L"cleanup") && argc == 2)
     {
         HRESULT win32 = UnRegisterTypeLib(&base_id, 1, 0, 0, SYS_WIN32);

@@ -362,22 +362,26 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             foreach ($baseKind in @(32, 64)) {
               foreach ($aliasKind in @(32, 64)) {
-                $name = "$bits-$baseKind-$aliasKind"
-                $directory = Join-Path $work $name
-                New-Item -ItemType Directory -Path $directory | Out-Null
-                try {
-                  & $exe make $baseKind $aliasKind $directory | Tee-Object -FilePath (Join-Path $work "make-$name.log")
-                  $prepareExit = $LASTEXITCODE
-                  $probeExit = $null
-                  if ($prepareExit -eq 0) {
-                    if (Test-Path (Join-Path $directory 'base-original.tlb')) { throw 'Original type library was not relocated' }
-                    & $exe probe (Join-Path $directory 'importing.tlb') | Tee-Object -FilePath (Join-Path $work "probe-$name.log")
-                    $probeExit = $LASTEXITCODE
-                  } else { $failed = $true }
-                  $results += [ordered]@{bits=$bits; base_kind=$baseKind; alias_kind=$aliasKind; prepare_exit=$prepareExit; probe_exit=$probeExit}
-                } finally {
-                  & $exe cleanup | Tee-Object -FilePath (Join-Path $work "cleanup-$name.log")
-                  if ($LASTEXITCODE -ne 0) { $failed = $true }
+                foreach ($registration in @('one', 'both')) {
+                  $name = "$bits-$baseKind-$aliasKind-$registration"
+                  $directory = Join-Path $work $name
+                  New-Item -ItemType Directory -Path $directory | Out-Null
+                  try {
+                    $makeMode = if ($registration -eq 'both') { 'make-both' } else { 'make' }
+                    $probeMode = if ($registration -eq 'both') { 'probe-both' } else { 'probe' }
+                    & $exe $makeMode $baseKind $aliasKind $directory | Tee-Object -FilePath (Join-Path $work "make-$name.log")
+                    $prepareExit = $LASTEXITCODE
+                    $probeExit = $null
+                    if ($prepareExit -eq 0) {
+                      if (Test-Path (Join-Path $directory 'base-original.tlb')) { throw 'Original type library was not relocated' }
+                      & $exe $probeMode (Join-Path $directory 'importing.tlb') | Tee-Object -FilePath (Join-Path $work "probe-$name.log")
+                      $probeExit = $LASTEXITCODE
+                    } else { $failed = $true }
+                    $results += [ordered]@{bits=$bits; base_kind=$baseKind; alias_kind=$aliasKind; registration=$registration; prepare_exit=$prepareExit; probe_exit=$probeExit}
+                  } finally {
+                    & $exe cleanup | Tee-Object -FilePath (Join-Path $work "cleanup-$name.log")
+                    if ($LASTEXITCODE -ne 0) { $failed = $true }
+                  }
                 }
               }
             }
