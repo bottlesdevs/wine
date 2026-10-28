@@ -16,9 +16,9 @@ from session import read_bundle, send_command, windows_path
 from protocol import read_message, write_message
 
 class Integration(unittest.TestCase):
-    def launch(self, name, target="target64.exe", argument="crash", interactive=False, timeout=30):
+    def launch(self, name, target="target64.exe", argument="crash", interactive=False, timeout=30, profile="crash"):
         bundle = ROOT / name
-        command = [str(CLI), "run", "--wine", WINE, "--prefix", str(ROOT / "prefix"), "--session", str(bundle), "--timeout", str(timeout)]
+        command = [str(CLI), "run", "--wine", WINE, "--prefix", str(ROOT / "prefix"), "--session", str(bundle), "--timeout", str(timeout), "--profile", profile]
         if interactive:
             command.append("--interactive")
         command += [str(ROOT / target), *(argument if isinstance(argument, list) else [argument])]
@@ -122,6 +122,29 @@ class Integration(unittest.TestCase):
             self.assertEqual(stack["frames"][1]["symbol"], "eagle_null_call")
             self.assertFalse(any(item["kind"] == "dump" for item in events))
             self.assertEqual(next(item for item in events if item["kind"] == "process_exit")["code"], 0)
+
+    def test_wine_debug_channel_lookup_with_and_without_loader_tracing(self):
+        for bits in (32, 64):
+            for profile in ('crash', 'loader'):
+                with self.subTest(bits=bits, profile=profile):
+                    name = f'debug-flags-{bits}-{profile}'
+                    marker = ROOT / (name + '.result.json')
+                    process, root = self.launch(name, f'target{bits}.exe',
+                                                ['debug-flags', windows_path(marker, ROOT / 'prefix')], profile=profile)
+                    self.assertEqual(process.wait(timeout=40), 0)
+                    manifest, events = read_bundle(root)
+                    self.assertTrue(manifest['completed'])
+                    self.assertEqual(manifest['dropped_events'], 0)
+                    self.assertEqual([item['code'] for item in events if item['kind'] == 'process_exit'], [0])
+                    self.assertFalse(any(item['kind'] == 'exception' and not item['first_chance'] for item in events))
+                    self.assertEqual(json.loads(marker.read_text()), {'threads': 8, 'lookups': 1024, 'calls': 2048})
+                    providers = [item for item in events if item['kind'] == 'provider']
+                    if profile == 'loader':
+                        lookups = [item['data'] for item in providers if item['data'].get('name') == '__wine_dbg_get_channel_flags']
+                        self.assertGreaterEqual(len(lookups), 1024)
+                        self.assertTrue(all(item['success'] and int(item['address'], 16) for item in lookups))
+                    else:
+                        self.assertEqual(providers, [])
 
     def test_stderr_tail_survives_real_x86_and_x64_targets(self):
         tail = b'\neagle stderr tail\xff\x00\n'

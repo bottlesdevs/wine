@@ -61,8 +61,52 @@ __declspec(noinline) ULONG_PTR eagle_register_arguments(ULONG_PTR first, ULONG_P
     return first ^ second ^ third ^ fourth;
 }
 
+enum { DEBUG_WORKERS = 8, DEBUG_LOOKUPS = 128 };
+
+struct debug_channel
+{
+    unsigned char flags;
+    char name[15];
+};
+
+static DWORD WINAPI debug_channel_worker(void *argument)
+{
+    unsigned char (__cdecl *get_flags)(struct debug_channel *);
+    unsigned i;
+    if (WaitForSingleObject(argument, 10000) != WAIT_OBJECT_0) return 1;
+    for (i = 0; i < DEBUG_LOOKUPS; ++i)
+    {
+        struct debug_channel channel = {0xff, "eagledebug"};
+        get_flags = (void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "__wine_dbg_get_channel_flags");
+        if (!get_flags) return 2;
+        if (get_flags(&channel) || channel.flags || get_flags(&channel)) return 3;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc > 2 && !strcmp(argv[1], "debug-flags"))
+    {
+        HANDLE start = CreateEventW(NULL, TRUE, FALSE, NULL), workers[DEBUG_WORKERS];
+        DWORD code;
+        unsigned i;
+        FILE *result;
+        if (!start) return 31;
+        for (i = 0; i < DEBUG_WORKERS; ++i)
+            if (!(workers[i] = CreateThread(NULL, 0, debug_channel_worker, start, 0, NULL))) return 32;
+        if (!SetEvent(start) || WaitForMultipleObjects(DEBUG_WORKERS, workers, TRUE, 30000) != WAIT_OBJECT_0) return 33;
+        for (i = 0; i < DEBUG_WORKERS; ++i)
+        {
+            if (!GetExitCodeThread(workers[i], &code) || code) return 34;
+            CloseHandle(workers[i]);
+        }
+        CloseHandle(start);
+        if (!(result = fopen(argv[2], "w"))) return 35;
+        fprintf(result, "{\"threads\":%u,\"lookups\":%u,\"calls\":%u}\n",
+                DEBUG_WORKERS, DEBUG_WORKERS * DEBUG_LOOKUPS, DEBUG_WORKERS * DEBUG_LOOKUPS * 2);
+        return fclose(result) ? 36 : 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "registers"))
     {
         ULONG_PTR third = (ULONG_PTR)0x8877665544332211ULL;

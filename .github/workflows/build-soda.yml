@@ -171,6 +171,7 @@ jobs:
             ${{ env.EAGLE_WORK }}/tests/*/manifest.json
             ${{ env.EAGLE_WORK }}/tests/*/events.jsonl
             ${{ env.EAGLE_WORK }}/tests/stderr-*/stderr.log
+            ${{ env.EAGLE_WORK }}/tests/debug-flags-*.result.json
             ${{ env.EAGLE_WORK }}/package/share/eagle/build.json
           retention-days: 7
           if-no-files-found: warn
