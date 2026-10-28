@@ -46,7 +46,7 @@ permissions:
 env:
   WINE_VERSION: '11.0'
   LLVM_TOOLS_VERSION: '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80'
-  REVISION: '35-experimental'
+  REVISION: '36-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -64,15 +64,16 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-35 Experimental, codenamed Windows Escape, adds application registry hives, MSI fixes and better Eagle crash traces. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-36 Experimental, codenamed Windows Escape, improves type library loading, Click-to-Run lookups and Eagle crash traces. It remains a prerelease and does not replace the current stable Soda build.
 
-    - Added application registry hives with transaction log recovery.
-    - Fixed application hive key permissions and inherited handle lifetime.
-    - Fixed MSI enumeration of installed Click-to-Run component clients.
-    - Fixed CNG algorithm names in hash OID metadata.
-    - Fixed registry handle leaks when querying MSI feature states.
-    - Fixed Eagle inline symbol lookup for PE files with build IDs.
-    - Recovered caller names and source lines in Eagle after null calls.
+    - Fixed imported type library lookup between 32-bit and 64-bit applications.
+    - Reduced name and string lookup time when loading large type libraries.
+    - Fixed locale-dependent searches in Click-to-Run component manifests.
+    - Captured null-call stacks before application exception handlers run.
+    - Fixed Eagle pause requests before the initial breakpoint.
+    - Added missing general-purpose registers to Eagle snapshots.
+    - Fixed PE export symbol lookup at addresses inside exported functions.
+    - Added PE export names and offsets to saved Eagle traces.
 
 
 jobs:
