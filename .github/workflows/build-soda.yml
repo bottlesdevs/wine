@@ -3048,7 +3048,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       SOURCE_RUN: ${{ inputs.recovery_run }}
-      SOURCE_COMMIT: 'bc771c1b76056ae0bfb3d4ce659b436175a072cd'
+      SOURCE_COMMIT: '8cbebd4eb93863111d37bdf633ddc888af7f20d0'
       XZ_DEFAULTS: '-T2'
     steps:
       - uses: actions/checkout@v7
@@ -3089,7 +3089,7 @@ jobs:
           print('Completed Wine builds and runtime tests verified; Eagle package tests will run again')
           PYCODE
           git merge-base --is-ancestor "$SOURCE_COMMIT" "$GITHUB_SHA"
-          test -z "$(git diff --name-only "$SOURCE_COMMIT" "$GITHUB_SHA" -- . ':(exclude).github/workflows/build-soda.yml' ':(exclude)eagle/tests/test_tracing.py' ':(exclude)eagle/tests/target.c')"
+          test -z "$(git diff --name-only "$SOURCE_COMMIT" "$GITHUB_SHA" -- . ':(exclude).github/workflows/build-soda.yml' ':(exclude)eagle/tests/identity_bridge.c')"
           python3 - <<'PYCODE'
           import os
           from pathlib import Path

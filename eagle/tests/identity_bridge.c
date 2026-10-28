@@ -133,6 +133,7 @@ int main(int argc, char **argv)
     UINT32 count = 0, error_code = 0;
     BOOL token, interactive, record, force, personal, batch, enumerate;
     const WCHAR *account_authority = L"common";
+    char result_path[MAX_PATH];
     FILE *file;
     if (argc != 2 && (argc != 3 || (strcmp(argv[2], "invalid") && strcmp(argv[2], "silent") && strcmp(argv[2], "interactive") && strcmp(argv[2], "record") && strcmp(argv[2], "refresh") && strcmp(argv[2], "refresh-interactive") && strcmp(argv[2], "device") && strcmp(argv[2], "forced") && strcmp(argv[2], "forced-silent") && strcmp(argv[2], "batch") && strcmp(argv[2], "personal") && strcmp(argv[2], "organization") && strncmp(argv[2], "accounts-", 9)))) return 1;
     enumerate = argc == 3 && !strncmp(argv[2], "accounts-", 9);
@@ -354,10 +355,12 @@ int main(int argc, char **argv)
         IFindAllAccountsResult_Release(result);
         IAsyncOperation_FindAllAccountsResult_Release(operation);
     }
-    if (!(file = fopen(argv[1], "wb"))) return 4;
+    if (snprintf(result_path, sizeof(result_path), "%s.tmp", argv[1]) >= (int)sizeof(result_path)) return 4;
+    if (!(file = fopen(result_path, "wb"))) return 4;
     fprintf(file, "%lu %u %08x %u\n", GetCurrentProcessId(), status, (unsigned)error_code, (unsigned)count);
     if (device) fprintf(file, "%ld %ld %ld\n", dialog_seen, action_taken, dialog_closed);
     if (fclose(file)) return 5;
+    if (!MoveFileExA(result_path, argv[1], MOVEFILE_REPLACE_EXISTING)) return 5;
     IWebAccountProvider_Release(provider);
     IAsyncOperation_WebAccountProvider_Release(provider_operation);
     IWebAuthenticationCoreManagerStatics4_Release(manager4);
