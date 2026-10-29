@@ -2522,10 +2522,13 @@ jobs:
               runner, = (work / label).glob('soda-*-aarch64')
               root = runner / 'share/soda'
               metadata = json.loads((root / 'build.json').read_text())
+              (work / f'results/{label}-build.json').write_text(json.dumps(metadata, indent=2) + '\n')
               for name in ('sources', 'files'):
                   assert hashlib.sha256((root / f'{name}.json').read_bytes()).hexdigest() == metadata[f'{name}_sha256']
               if label == 'candidate':
-                  assert metadata['assembly_source_identity']['revision'] == run['head_sha']
+                  assert metadata['source_identities']['recipe']['revision'] == run['head_sha']
+                  sources = json.loads((root / 'sources.json').read_text())
+                  assert sources['sources']['recipe']['revision'] == run['head_sha']
               files = json.loads((root / 'files.json').read_text())
               for name, record in files.items():
                   assert not Path(name).is_absolute() and '..' not in Path(name).parts
@@ -2536,7 +2539,6 @@ jobs:
                       assert not path.is_symlink() and path.stat().st_size == record['size']
                       with path.open('rb') as file:
                           assert hashlib.file_digest(file, 'sha256').hexdigest() == record['sha256'], name
-              (work / f'results/{label}-build.json').write_text(json.dumps(metadata, indent=2) + '\n')
           PY
 
       - name: compare callbacks and drawing on ARM
