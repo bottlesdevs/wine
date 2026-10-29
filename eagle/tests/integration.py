@@ -78,6 +78,7 @@ class Integration(unittest.TestCase):
             self.assertEqual(stack["registers"]["ip"], "0x0")
             self.assertEqual(stack["frames"][0]["address"], "0x0")
             self.assertTrue(stack["initial_leaf_return"])
+            self.assertEqual(stack["null_call_return_status"], "recovered")
             self.assertEqual(stack["unwind"], "null-call-return+dbghelp")
             self.assertEqual([item["symbol"] for item in stack["frames"][1:4]],
                              ["eagle_null_call", "eagle_null_parent", "main"])
@@ -104,6 +105,8 @@ class Integration(unittest.TestCase):
             self.assertEqual([item["symbol"] for item in stacks[0]["frames"][1:4]],
                              ["eagle_null_call", "eagle_null_parent", "main"])
             self.assertFalse(stacks[1]["initial_leaf_return"])
+            self.assertEqual(stacks[0]["null_call_return_status"], "recovered")
+            self.assertEqual(stacks[1]["null_call_return_status"], "stack-top-zero")
             self.assertEqual(next(item for item in events if item["kind"] == "process_exit")["code"], 0xc0000005)
 
     def test_handled_null_call_retains_first_chance_stack(self):

@@ -211,6 +211,8 @@ jobs:
             "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
               eagle/tests/pause.c -ldbghelp -o "$EAGLE_WORK/tests/pause$bits.exe"
             "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
+              eagle/tests/null_call_return.c -ldbghelp -o "$EAGLE_WORK/tests/null-return$bits.exe"
+            "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
               .github/soda-fls-reference.c -o "$EAGLE_WORK/tests/fls$bits.exe"
           done
 
@@ -262,6 +264,7 @@ jobs:
             "$EAGLE_TEST_WINE" wineboot -u
             for bits in 64 32; do
               "$EAGLE_TEST_WINE" "$EAGLE_TEST_ROOT/pause$bits.exe" > "$EAGLE_TEST_ROOT/pause$bits.log" 2>&1
+              "$EAGLE_TEST_WINE" "$EAGLE_TEST_ROOT/null-return$bits.exe" > "$EAGLE_TEST_ROOT/null-return$bits.log" 2>&1
               "$EAGLE_TEST_WINE" "$EAGLE_TEST_ROOT/fls$bits.exe" > "$EAGLE_TEST_ROOT/fls$bits.log" 2> "$EAGLE_TEST_ROOT/fls$bits.stderr"
               if test -d "$EAGLE_WORK/reference"; then
                 "$EAGLE_TEST_WINE" "$EAGLE_WORK/reference/fls$bits.exe" > "$EAGLE_TEST_ROOT/fls-reference$bits.log" 2> "$EAGLE_TEST_ROOT/fls-reference$bits.stderr"

@@ -9,10 +9,28 @@ PACKAGE = Path(os.environ['EAGLE_PACKAGE'])
 ROOT = Path(os.environ['EAGLE_TRACE_EXPORT_ROOT'])
 sys.path.insert(0, str(PACKAGE / 'lib/eagle'))
 from tracing import trace
-from session import export
+from session import export, summary
 
 
 class TraceExports(unittest.TestCase):
+    def test_null_call_recovery_status_survives_export_and_reload(self):
+        bundle = ROOT / 'null-call-status'
+        bundle.mkdir()
+        statuses = ['recovered', 'stack-unreadable', 'stack-top-zero',
+                    'return-memory-unavailable', 'stack-top-not-executable', 'return-module-unavailable']
+        events = [dict(seq=index, kind='snapshot', pid=1, tid=2,
+                       registers={'ip': '0x0', 'sp': '0x1000'},
+                       frames=[{'address': '0x0'}], null_call_return_status=status)
+                  for index, status in enumerate(statuses, 1)]
+        (bundle / 'manifest.json').write_text(json.dumps({'schema': 1, 'completed': True}))
+        (bundle / 'events.jsonl').write_text(''.join(json.dumps(event) + '\n' for event in events))
+        destination = ROOT / 'null-call-status.log'
+        report = export(bundle, destination)
+        reloaded = summary(destination)
+        for value in (report, reloaded):
+            self.assertEqual([event['null_call_return_status'] for event in value['snapshots']], statuses)
+            self.assertTrue(all(event['frames'] == [{'address': '0x0'}] for event in value['snapshots']))
+
     def test_wait_events_do_not_displace_other_providers(self):
         bundle = ROOT / 'provider-balance'
         bundle.mkdir()

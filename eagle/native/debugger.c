@@ -304,23 +304,32 @@ static void frame(HANDLE handle, DWORD64 address)
     putchar('}');
 }
 
-static BOOL null_call_return(HANDLE handle, STACKFRAME64 *stack, CONTEXT *context)
+static BOOL null_call_return(HANDLE handle, STACKFRAME64 *stack, CONTEXT *context, const char **status)
 {
     MEMORY_BASIC_INFORMATION memory;
     ULONG_PTR address;
     SIZE_T copied;
-    if (stack->AddrPC.Offset || !ReadProcessMemory(handle, (void *)(ULONG_PTR)stack->AddrStack.Offset,
-        &address, sizeof(address), &copied) || copied != sizeof(address) || !address) return FALSE;
-    if (!VirtualQueryEx(handle, (void *)address, &memory, sizeof(memory)) || memory.State != MEM_COMMIT ||
-        (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
-        !(memory.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) ||
-        !SymGetModuleBase64(handle, address)) return FALSE;
+    *status = NULL;
+    if (stack->AddrPC.Offset) return FALSE;
+    *status = "stack-unreadable";
+    if (!ReadProcessMemory(handle, (void *)(ULONG_PTR)stack->AddrStack.Offset,
+        &address, sizeof(address), &copied) || copied != sizeof(address)) return FALSE;
+    *status = "stack-top-zero";
+    if (!address) return FALSE;
+    *status = "return-memory-unavailable";
+    if (!VirtualQueryEx(handle, (void *)address, &memory, sizeof(memory)) || memory.State != MEM_COMMIT) return FALSE;
+    *status = "stack-top-not-executable";
+    if ((memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+        !(memory.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) return FALSE;
+    *status = "return-module-unavailable";
+    if (!SymGetModuleBase64(handle, address)) return FALSE;
 #ifdef _WIN64
     context->Rip = address; context->Rsp += sizeof(address);
 #else
     context->Eip = address; context->Esp += sizeof(address);
 #endif
     stack->AddrPC.Offset = address; stack->AddrStack.Offset += sizeof(address);
+    *status = "recovered";
     return TRUE;
 }
 
@@ -336,6 +345,7 @@ static void snapshot(DWORD pid, DWORD tid)
         DWORD machine;
         unsigned depth, first = 1;
         BOOL leaf_return;
+        const char *return_status;
         memset(&context, 0, sizeof(context)); context.ContextFlags = CONTEXT_FULL;
         if (!GetThreadContext(threads[i].handle, &context)) { error("context", GetLastError()); continue; }
         memset(&stack, 0, sizeof(stack));
@@ -354,7 +364,7 @@ static void snapshot(DWORD pid, DWORD tid)
         printf(",\"registers\":{\"ip\":\"0x%lx\",\"sp\":\"0x%lx\",\"bp\":\"0x%lx\",\"ax\":\"0x%lx\",\"bx\":\"0x%lx\",\"cx\":\"0x%lx\",\"dx\":\"0x%lx\",\"si\":\"0x%lx\",\"di\":\"0x%lx\",\"flags\":%lu}", context.Eip, context.Esp, context.Ebp, context.Eax, context.Ebx, context.Ecx, context.Edx, context.Esi, context.Edi, context.EFlags);
 #endif
         printf(",\"frames\":["); frame(p->handle, stack.AddrPC.Offset);
-        leaf_return = null_call_return(p->handle, &stack, &context);
+        leaf_return = null_call_return(p->handle, &stack, &context, &return_status);
         if (leaf_return) { putchar(','); frame(p->handle, stack.AddrPC.Offset); first++; }
         for (depth = first; depth < 128; depth++)
         {
@@ -371,6 +381,7 @@ static void snapshot(DWORD pid, DWORD tid)
         printf("],\"unwind\":\"%s\",\"initial_leaf_return\":%s,\"truncated\":%s",
                leaf_return ? "null-call-return+dbghelp" : "dbghelp",
                leaf_return ? "true" : "false", depth == 128 ? "true" : "false");
+        if (return_status) { printf(",\"null_call_return_status\":"); string(return_status); }
         end_event();
     }
     event("snapshot_complete", pid, tid); printf(",\"scope\":\"%s\"", tid ? "thread" : "process"); end_event();
