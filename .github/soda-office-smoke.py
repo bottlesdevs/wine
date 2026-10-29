@@ -18,6 +18,7 @@ lock = threading.Lock()
 result = {'installed': False, 'captures_collected': False, 'steps': [], 'launches': [],
           'scope': 'Fresh anonymous bottle using the published Bottles package and normal installer. Sequential launches share the installed prefix; first-run state can change between launches. X11 software rendering in CI; not the cpak supervisor or a signed-in user profile.'}
 config = None
+prefix = None
 
 
 def record(stage, **fields):
@@ -37,6 +38,20 @@ def checked(stage, value):
     return value
 
 
+def stop_prefix():
+    assert prefix is not None and prefix.resolve().is_relative_to(work / 'office-home')
+    env = dict(os.environ, WINEPREFIX=str(prefix))
+    statuses = []
+    for argument in ('-k', '-w'):
+        value = subprocess.run([str(runner / 'bin/wineserver'), argument], env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        statuses.append({'argument': argument, 'exit': value.returncode,
+                         'output': value.stdout.decode(errors='replace')[:1000]})
+        if value.returncode not in ((0, 1) if argument == '-k' else (0,)):
+            raise RuntimeError('Native wineserver cleanup failed: ' + str(statuses))
+    return statuses
+
+
 try:
     record('load-bottles')
     for name, command in (('display', ['xwininfo', '-root']), ('vulkan', ['vulkaninfo', '--summary'])):
@@ -54,7 +69,7 @@ try:
     from bottles.backend.state import EventManager, Events
     from bottles.backend.utils.manager import ManagerUtils
     from bottles.backend.wine.executor import WineExecutor
-    from bottles.backend.wine.wineserver import WineServer
+    from bottles.backend.wine.winecommand import WineCommand
 
     manager = Manager(is_cli=True)
     Logger()
@@ -91,6 +106,7 @@ try:
     record('office-installed', installed=True, files=files, dependencies=config.Installed_Dependencies)
     assert config.Runner == runner.name and tracing_supported(config)
     checked('enable-tracing', manager.update_config(config, 'eagle_tracing', True, 'Parameters'))
+    record('stop-installer-prefix', cleanup=stop_prefix())
     logs = prefix / 'logs/runs'
     for executable, tracing in (('WINWORD.EXE', True), ('WINWORD.EXE', False),
                                 ('WINWORD.EXE', True), ('EXCEL.EXE', True)):
@@ -100,7 +116,7 @@ try:
         sessions = set(logs.glob('*.session'))
         label = f'{len(result["launches"]) + 1}-{executable}-' + ('traced' if tracing else 'plain')
         launch = {'executable': executable, 'tracing': tracing, 'started': time.time(),
-                  'stop_reason': 'Own prefix stopped after the observation deadline'}
+                  'stop_reason': 'Own app terminated after the observation deadline, then its prefix stopped'}
         result['launches'].append(launch)
         record('launch-' + executable)
         def run_program(program=program, launch=launch):
@@ -123,9 +139,21 @@ try:
                        check=True, timeout=15)
         launch['launcher_finished_before_stop'] = not thread.is_alive()
         launch['stop_requested'] = time.time()
-        WineServer(config).kill()
+        command = WineCommand(config, command='taskkill', minimal=True)
+        assert Path(command.env['WINEPREFIX']).resolve() == prefix.resolve()
+        closed = subprocess.run([str(runner / 'bin/wine'), 'taskkill', '/f', '/im', executable],
+                                env=command.env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, timeout=30)
+        launch['app_stop'] = {'exit': closed.returncode,
+                              'output': closed.stdout.decode(errors='replace')[:2000]}
+        thread.join(timeout=10)
+        launch['prefix_cleanup'] = stop_prefix()
         thread.join(timeout=30)
         launch['launcher_pending'] = thread.is_alive()
+        launch['cleanup_completed'] = time.time()
+        with (output / (label + '-after-stop-windows.log')).open('w') as file:
+            subprocess.run(['xwininfo', '-root', '-tree'], stdout=file, stderr=subprocess.STDOUT,
+                           check=True, timeout=10)
         saved = []
         for path in logs.glob('*.log'):
             if path not in before:
@@ -145,13 +173,14 @@ try:
         launch['stderr'] = diagnostics
         assert saved or not tracing, executable + ': no Eagle log collected'
         record('captured-' + executable)
+        assert not launch['launcher_pending'], executable + ': launcher did not finish after cleanup'
     record('finished', captures_collected=True)
 except Exception as error:
     record('failed', error=type(error).__name__ + ': ' + str(error))
 finally:
     if config is not None:
         try:
-            WineServer(config).kill()
+            stop_prefix()
         except Exception as error:
             record('cleanup-failed', cleanup_error=type(error).__name__ + ': ' + str(error))
 raise SystemExit(0 if result['installed'] and result['captures_collected'] and 'cleanup_error' not in result else 1)
