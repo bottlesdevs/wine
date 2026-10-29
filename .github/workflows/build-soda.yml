@@ -143,7 +143,7 @@ jobs:
           mkdir -p "$EAGLE_WORK/downloads" "$EAGLE_WORK/runner" "$EAGLE_WORK/tests"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$EAGLE_WORK/tests/runtime-run.json"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts" > "$EAGLE_WORK/tests/runtime-artifacts.json"
-          name="$(jq -er '[.artifacts[] | select(.expired == false and (.name | endswith("-x86_64")))] | if length == 1 then .[0].name else error("expected one x86_64 runner") end' "$EAGLE_WORK/tests/runtime-artifacts.json")"
+          name="$(jq -er '[.artifacts[] | select(.expired == false and (.name | startswith("soda-") and endswith("-x86_64")))] | if length == 1 then .[0].name else error("expected one x86_64 runner") end' "$EAGLE_WORK/tests/runtime-artifacts.json")"
           gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --name "$name" --dir "$EAGLE_WORK/downloads"
           archive="$(find "$EAGLE_WORK/downloads" -maxdepth 1 -type f -name '*-x86_64.tar.xz' -print -quit)"
           test -n "$archive"
