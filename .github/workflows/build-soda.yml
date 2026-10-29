@@ -2587,7 +2587,50 @@ jobs:
           test -x "$runner_dir/bin/wine"
           echo "CPL_RUNNER=$runner_dir" >> "$GITHUB_ENV"
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-i686 gcc-mingw-w64-x86-64 xvfb xauth
+          sudo apt-get install -y --no-install-recommends \
+            gcc-mingw-w64-i686 gcc-mingw-w64-x86-64 xvfb xauth nsis wixl p7zip-full
+
+      - name: verify ARM analyzer source and files
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          work, runner = Path(os.environ['CPL_WORK']), Path(os.environ['CPL_RUNNER'])
+          run = json.loads((work / 'source-run.json').read_text())
+          assert run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+          assert run['conclusion'] == 'success'
+          root = runner / 'share/soda'
+          metadata = json.loads((root / 'build.json').read_text())
+          (work / 'candidate-build.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          for name in ('sources', 'files'):
+              assert hashlib.sha256((root / f'{name}.json').read_bytes()).hexdigest() == metadata[f'{name}_sha256']
+          sources = json.loads((root / 'sources.json').read_text())
+          assert metadata['source_identities']['recipe']['revision'] == run['head_sha']
+          assert sources['sources']['recipe']['revision'] == run['head_sha']
+          for name, expected in sources['sources']['recipe']['files'].items():
+              if name.startswith('eagle/') and not name.startswith('eagle/tests/'):
+                  assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == expected, name
+          for name, record in json.loads((root / 'files.json').read_text()).items():
+              assert not Path(name).is_absolute() and '..' not in Path(name).parts
+              path = runner / name
+              if record['kind'] == 'symlink':
+                  assert path.is_symlink() and os.readlink(path) == record['target']
+              else:
+                  assert not path.is_symlink() and path.stat().st_size == record['size']
+                  with path.open('rb') as file:
+                      assert hashlib.file_digest(file, 'sha256').hexdigest() == record['sha256'], name
+          PY
+
+      - name: verify ARM installer analysis and metadata refresh
+        run: |
+          export TMPDIR="$CPL_WORK" TMP="$CPL_WORK" TEMP="$CPL_WORK"
+          export EAGLE_PACKAGE="$CPL_RUNNER" PYTHONDONTWRITEBYTECODE=1
+          python3 -S eagle/tests/test_analysis_driver.py -v 2>&1 | tee "$CPL_WORK/analysis-driver.log"
+          grep -qx OK "$CPL_WORK/analysis-driver.log"
+          python3 -S eagle/tests/test_runner_provenance.py \
+            RunnerProvenance.test_refresh_retains_assembly_until_explicitly_replaced -v \
+            2>&1 | tee "$CPL_WORK/metadata-refresh.log"
+          grep -qx OK "$CPL_WORK/metadata-refresh.log"
 
       - name: inspect Control Panel hosting
         shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
