@@ -400,7 +400,7 @@ class Integration(unittest.TestCase):
             message = read_message(process.stdout)
             if message.get("event") == "stopped":
                 tid = message["body"]["threadId"]; break
-        stack = request(5, "stackTrace", {"threadId": tid})
+        stack = request(5, "stackTrace", {"threadId": tid, "levels": 0})
         self.assertEqual(stack["stackFrames"][0]["name"], "eagle_checkpoint")
         self.assertGreaterEqual(stack["totalFrames"], 4)
         scopes = request(6, "scopes", {"frameId": stack["stackFrames"][0]["id"]})
