@@ -39,20 +39,33 @@ def checked(stage, value):
 
 try:
     record('load-bottles')
+    for name, command in (('display', ['xwininfo', '-root']), ('vulkan', ['vulkaninfo', '--summary'])):
+        with (output / (name + '.log')).open('w') as file:
+            status = subprocess.run(command, stdout=file, stderr=subprocess.STDOUT, timeout=30).returncode
+        record('check-' + name, **{name + '_exit': status})
+        if status:
+            raise RuntimeError(name + ' is unavailable in the test container')
     sys.path.insert(0, '/usr/share/bottles')
     gettext.install('com.usebottles.bottles')
     from bottles.backend.globals import Paths
     from bottles.backend.managers.manager import Manager
     from bottles.backend.managers.eagletracing import tracing_supported
+    from bottles.backend.logger import Logger
+    from bottles.backend.state import EventManager, Events
     from bottles.backend.utils.manager import ManagerUtils
     from bottles.backend.wine.executor import WineExecutor
     from bottles.backend.wine.wineserver import WineServer
 
     manager = Manager(is_cli=True)
+    Logger()
     manager.check_app_dirs()
     (Path(Paths.runners) / runner.name).symlink_to(runner, target_is_directory=True)
     record('prepare-components')
-    checked('components', manager.checks(install_latest=True, first_run=True))
+    manager.checks(install_latest=False, first_run=True)
+    for event in (Events.ComponentsOrganizing, Events.DependenciesOrganizing, Events.InstallersOrganizing):
+        EventManager.wait(event)
+    components = manager.checks(install_latest=True, first_run=False)
+    record('components-checked', components_ready=components.ok)
     created = checked('create-bottle', manager.create_bottle(
         name='OfficeStartup', environment='application', runner=runner.name,
         fn_logger=lambda text: record('create-bottle', activity=text)))
@@ -122,4 +135,4 @@ finally:
             WineServer(config).kill()
         except Exception as error:
             record('cleanup-failed', cleanup_error=type(error).__name__ + ': ' + str(error))
-raise SystemExit(0 if result['installed'] and result['captures_collected'] else 1)
+raise SystemExit(0 if result['installed'] and result['captures_collected'] and 'cleanup_error' not in result else 1)

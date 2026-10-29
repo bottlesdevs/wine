@@ -143,6 +143,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN: ${{ inputs.debugger_run_id }}
+          OFFICE_REPRODUCTION: ${{ inputs.office_reproduction }}
         run: |
           [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
           mkdir -p "$EAGLE_WORK/downloads" "$EAGLE_WORK/runner" "$EAGLE_WORK/tests"
@@ -155,7 +156,7 @@ jobs:
           sha256sum "$archive" > "$EAGLE_WORK/tests/runtime.sha256"
           tar -xJf "$archive" -C "$EAGLE_WORK/runner"
           python3 - <<'PY'
-          import hashlib, json, os
+          import hashlib, json, os, subprocess
           from pathlib import Path
           work = Path(os.environ['EAGLE_WORK'])
           run = json.loads((work / 'tests/runtime-run.json').read_text())
@@ -179,6 +180,11 @@ jobs:
           patches = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                      for path in Path('wine-tkg-userpatches').glob('*.mypatch')}
           assert patches == sources['patches']
+          if os.environ.get('OFFICE_REPRODUCTION') == 'true':
+              names = subprocess.check_output(['git', 'ls-files', '-z', '--', 'eagle']).decode().split('\0')
+              for name in names:
+                  if name and not name.startswith('eagle/tests/') and name != 'eagle/dap.py':
+                      assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == sources['sources']['recipe']['files'][name], name
           for name, record in json.loads((root / 'files.json').read_text()).items():
               assert not Path(name).is_absolute() and '..' not in Path(name).parts
               path = runner / name
@@ -193,6 +199,7 @@ jobs:
           PY
 
       - name: build debugger fixtures
+        if: inputs.office_reproduction != true
         run: |
           sh eagle/build-debugger.sh "$EAGLE_WORK/package"
           mkdir -p "$EAGLE_WORK/tests"
@@ -208,7 +215,7 @@ jobs:
           done
 
       - uses: actions/download-artifact@v7
-        if: inputs.baseline_run_id != ''
+        if: inputs.baseline_run_id != '' && inputs.office_reproduction != true
         with:
           name: fls-reference-${{ github.sha }}
           path: ${{ env.EAGLE_WORK }}/reference
@@ -216,7 +223,7 @@ jobs:
           run-id: ${{ inputs.baseline_run_id }}
 
       - name: verify FLS reference source and executables
-        if: inputs.baseline_run_id != ''
+        if: inputs.baseline_run_id != '' && inputs.office_reproduction != true
         run: |
           python3 - <<'PY'
           import hashlib, json, os
@@ -229,11 +236,13 @@ jobs:
           PY
 
       - name: verify offline PE export symbols
+        if: inputs.office_reproduction != true
         run: |
           EAGLE_PACKAGE="$EAGLE_WORK/package" python3 -S eagle/tests/test_symbols_exports.py \
             > "$EAGLE_WORK/tests/symbols-exports.log" 2>&1
 
       - name: verify debugger lifecycle protocol
+        if: inputs.office_reproduction != true
         run: |
           EAGLE_PACKAGE="$EAGLE_WORK/package" python3 -S eagle/tests/test_dap_lifecycle.py -v \
             > "$EAGLE_WORK/tests/dap-lifecycle.log" 2>&1
@@ -241,6 +250,7 @@ jobs:
             > "$EAGLE_WORK/tests/capture-startup.log" 2>&1
 
       - name: verify debugger on x86 and x64
+        if: inputs.office_reproduction != true
         shell: bash
         run: |
           export EAGLE_PACKAGE="$EAGLE_WORK/package" EAGLE_TEST_ROOT="$EAGLE_WORK/tests"
@@ -261,7 +271,7 @@ jobs:
           ' 2>&1 | tee "$EAGLE_TEST_ROOT/integration.log"
 
       - name: compare FLS callbacks with Windows
-        if: inputs.baseline_run_id != ''
+        if: inputs.baseline_run_id != '' && inputs.office_reproduction != true
         run: |
           python3 - <<'PY'
           import json, os
@@ -288,6 +298,7 @@ jobs:
           docker pull --platform linux/amd64 "$image"
           cp .github/soda-office-smoke.py "$EAGLE_WORK/office-smoke.py"
           mkdir "$EAGLE_WORK/office-home"
+          mkdir -m 700 "$EAGLE_WORK/office-runtime"
           xvfb-run -a -s '-screen 0 1440x900x24' \
             docker run --rm --platform linux/amd64 --network host --hostname "$(hostname)" \
               --user "$(id -u):$(id -g)" \
@@ -298,6 +309,7 @@ jobs:
               --env "XDG_DATA_HOME=$EAGLE_WORK/office-home/data" \
               --env "XDG_CONFIG_HOME=$EAGLE_WORK/office-home/config" \
               --env "XDG_CACHE_HOME=$EAGLE_WORK/office-home/cache" \
+              --env "XDG_RUNTIME_DIR=$EAGLE_WORK/office-runtime" \
               --env "TMPDIR=$EAGLE_WORK/scratch" --env "TMP=$EAGLE_WORK/scratch" --env "TEMP=$EAGLE_WORK/scratch" \
               --env DISPLAY --env XAUTHORITY --env LIBGL_ALWAYS_SOFTWARE=1 --env GDK_BACKEND=x11 \
               --entrypoint /usr/bin/python3 "$image" "$EAGLE_WORK/office-smoke.py" \
