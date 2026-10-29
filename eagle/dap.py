@@ -215,7 +215,8 @@ class Adapter:
                     value["source"] = {"name": path.name, "path": str(path)} if path else {"name": frame["file"]}
                 values.append(value)
             start = args.get("startFrame", 0)
-            return {"stackFrames": values[start:start+args.get("levels", len(values))], "totalFrames": len(values)}
+            levels = args.get("levels", 0)
+            return {"stackFrames": values[start:] if levels == 0 else values[start:start+levels], "totalFrames": len(values)}
         if command == "scopes":
             return {"scopes": [{"name": "Registers", "variablesReference": args["frameId"] // 256, "expensive": False}]}
         if command == "variables":

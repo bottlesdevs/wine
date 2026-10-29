@@ -65,6 +65,27 @@ class DapLifecycle(unittest.TestCase):
                 self.assertEqual([m['body']['exitCode'] for m in events if m['event'] == 'exited'], [code])
                 self.assertEqual(sum(m['event'] == 'terminated' for m in events), 1)
 
+    def test_stack_paging_zero_levels_returns_remaining_frames(self):
+        frames = [{'address': hex(index), 'symbol': f'frame{index}'} for index in range(3)]
+        self.observe('stopped', 1, tid=3, reason='breakpoint')
+        def control(command):
+            self.assertEqual(command, 'snapshot')
+            self.observe('snapshot', 1, tid=3, frames=frames)
+            self.observe('snapshot_complete', 1)
+        cases = [({}, [0, 1, 2]), ({'levels': 0}, [0, 1, 2]),
+                 ({'startFrame': 1}, [1, 2]), ({'startFrame': 1, 'levels': 0}, [1, 2]),
+                 ({'levels': 2}, [0, 1]), ({'startFrame': 1, 'levels': 1}, [1]),
+                 ({'startFrame': 2, 'levels': 10}, [2]), ({'startFrame': 3, 'levels': 0}, [])]
+        with patch.object(self.adapter, 'control', side_effect=control):
+            for options, indexes in cases:
+                with self.subTest(options=options):
+                    result = self.adapter.request('stackTrace', dict(threadId=3, **options))
+                    self.assertEqual([frame['name'] for frame in result['stackFrames']],
+                                     [f'frame{index}' for index in indexes])
+                    self.assertEqual([frame['id'] for frame in result['stackFrames']],
+                                     [3 * 256 + index for index in indexes])
+                    self.assertEqual(result['totalFrames'], 3)
+
 
 if __name__ == '__main__':
     unittest.main()
