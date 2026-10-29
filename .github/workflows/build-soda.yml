@@ -1662,6 +1662,28 @@ jobs:
             "$runner_dir/bin/wineserver" -w
           done
 
+      - name: verify FLS callbacks
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          bash "$GITHUB_WORKSPACE/.github/check-fls.sh" "$runner_dir" \
+            "$HOME/artifacts/soda-fls-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+      - name: upload FLS callback logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fls-callbacks-${{ runner.arch }}-${{ github.sha }}
+          path: |
+            /home/runner/artifacts/soda-fls-${{ github.run_id }}-${{ github.run_attempt }}/*.log
+            /home/runner/artifacts/soda-fls-${{ github.run_id }}-${{ github.run_attempt }}/*.stderr
+            /home/runner/artifacts/soda-fls-${{ github.run_id }}-${{ github.run_attempt }}/*.json
+            /home/runner/artifacts/soda-fls-${{ github.run_id }}-${{ github.run_attempt }}/*.sha256
+          if-no-files-found: warn
+
       - name: verify imported type library lookup
         shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
         timeout-minutes: 10
@@ -3033,6 +3055,27 @@ jobs:
             done
           done
           "$runner_dir/bin/wineserver" -w
+
+      - name: verify FLS callbacks
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        timeout-minutes: 5
+        env:
+          COMPONENT_NAME: ${{ steps.identity.outputs.component_name }}
+        run: |
+          bash .github/check-fls.sh "/tmp/$COMPONENT_NAME" \
+            "$HOME/artifacts/soda-fls-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+      - name: upload FLS callback logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fls-callbacks-${{ runner.arch }}-${{ github.sha }}
+          path: |
+            /home/runner/artifacts/soda-fls-${{ github.run_id }}-${{ github.run_attempt }}/*.log
+            /home/runner/artifacts/soda-fls-${{ github.run_id }}-${{ github.run_attempt }}/*.stderr
+            /home/runner/artifacts/soda-fls-${{ github.run_id }}-${{ github.run_attempt }}/*.json
+            /home/runner/artifacts/soda-fls-${{ github.run_id }}-${{ github.run_attempt }}/*.sha256
+          if-no-files-found: warn
 
       - name: verify imported type library lookup
         shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
