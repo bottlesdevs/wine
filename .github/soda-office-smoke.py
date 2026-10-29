@@ -108,8 +108,9 @@ try:
     checked('enable-tracing', manager.update_config(config, 'eagle_tracing', True, 'Parameters'))
     record('stop-installer-prefix', cleanup=stop_prefix())
     logs = prefix / 'logs/runs'
-    for executable, tracing in (('WINWORD.EXE', True), ('WINWORD.EXE', False),
-                                ('WINWORD.EXE', True), ('EXCEL.EXE', True)):
+    for executable, tracing in (('WINWORD.EXE', True), ('EXCEL.EXE', True),
+                                ('EXCEL.EXE', False), ('EXCEL.EXE', True),
+                                ('EXCEL.EXE', False)):
         checked('set-tracing', manager.update_config(config, 'eagle_tracing', tracing, 'Parameters'))
         program, = [item for item in config.External_Programs.values() if item['executable'] == executable]
         before = set(logs.glob('*.log'))
