@@ -16,7 +16,7 @@ output = work / 'office-results'
 output.mkdir(exist_ok=False)
 lock = threading.Lock()
 result = {'installed': False, 'captures_collected': False, 'steps': [], 'launches': [],
-          'scope': 'Fresh anonymous bottle using the published Bottles package and normal installer. X11 software rendering in CI; not the cpak supervisor or a signed-in user profile.'}
+          'scope': 'Fresh anonymous bottle using the published Bottles package and normal installer. Sequential launches share the installed prefix; first-run state can change between launches. X11 software rendering in CI; not the cpak supervisor or a signed-in user profile.'}
 config = None
 
 
@@ -92,10 +92,15 @@ try:
     assert config.Runner == runner.name and tracing_supported(config)
     checked('enable-tracing', manager.update_config(config, 'eagle_tracing', True, 'Parameters'))
     logs = prefix / 'logs/runs'
-    for executable in ('WINWORD.EXE', 'EXCEL.EXE'):
+    for executable, tracing in (('WINWORD.EXE', True), ('WINWORD.EXE', False),
+                                ('WINWORD.EXE', True), ('EXCEL.EXE', True)):
+        checked('set-tracing', manager.update_config(config, 'eagle_tracing', tracing, 'Parameters'))
         program, = [item for item in config.External_Programs.values() if item['executable'] == executable]
         before = set(logs.glob('*.log'))
-        launch = {'executable': executable, 'stop_reason': 'Own prefix stopped after the observation deadline'}
+        sessions = set(logs.glob('*.session'))
+        label = f'{len(result["launches"]) + 1}-{executable}-' + ('traced' if tracing else 'plain')
+        launch = {'executable': executable, 'tracing': tracing, 'started': time.time(),
+                  'stop_reason': 'Own prefix stopped after the observation deadline'}
         result['launches'].append(launch)
         record('launch-' + executable)
         def run_program(program=program, launch=launch):
@@ -104,27 +109,41 @@ try:
                 with lock:
                     launch['launcher_ok'] = value.ok
                     launch['launcher_message'] = value.message
+                    launch['launcher_finished'] = time.time()
             except Exception as error:
                 with lock:
                     launch['launcher_error'] = type(error).__name__ + ': ' + str(error)
         thread = threading.Thread(target=run_program, daemon=True)
         thread.start()
         time.sleep(45)
-        with (output / (executable + '-windows.log')).open('w') as file:
+        with (output / (label + '-windows.log')).open('w') as file:
             subprocess.run(['xwininfo', '-root', '-tree'], stdout=file, stderr=subprocess.STDOUT,
                            check=True, timeout=10)
-        subprocess.run(['import', '-window', 'root', str(output / (executable + '.png'))],
+        subprocess.run(['import', '-window', 'root', str(output / (label + '.png'))],
                        check=True, timeout=15)
+        launch['launcher_finished_before_stop'] = not thread.is_alive()
+        launch['stop_requested'] = time.time()
         WineServer(config).kill()
         thread.join(timeout=30)
         launch['launcher_pending'] = thread.is_alive()
         saved = []
         for path in logs.glob('*.log'):
             if path not in before:
-                shutil.copyfile(path, output / (executable + '-' + path.name))
+                shutil.copyfile(path, output / (label + '-' + path.name))
                 saved.append(path.name)
         launch['logs'] = saved
-        assert saved, executable + ': no Eagle log collected'
+        diagnostics = []
+        for session in set(logs.glob('*.session')) - sessions:
+            path = session / 'stderr.log'
+            if path.is_file():
+                data = path.read_bytes()
+                assert len(data) <= 1024 * 1024
+                name = label + '-' + session.stem + '-stderr.log'
+                (output / name).write_bytes(data)
+                diagnostics.append({'file': name, 'bytes': len(data),
+                                    'sha256': hashlib.sha256(data).hexdigest()})
+        launch['stderr'] = diagnostics
+        assert saved or not tracing, executable + ': no Eagle log collected'
         record('captured-' + executable)
     record('finished', captures_collected=True)
 except Exception as error:
