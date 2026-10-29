@@ -164,8 +164,15 @@ class AnalysisDriver(unittest.TestCase):
                     result, messages = self.invoke(dict(target=str(target), work=str(work), database=str(root / 'missing.sqlite')))
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn({'event': 'step', 'data': 'Found 2 binaries in installer'}, messages)
-                    self.assertIn({'event': 'step', 'data': '[1/2] Scanning: ' + member}, messages)
-                    self.assertIn({'event': 'step', 'data': '[2/2] Scanning: Support.DlL'}, messages)
+                    scans = [message['data'] for message in messages
+                             if message.get('event') == 'step' and '] Scanning: ' in message['data']]
+                    names = [step.split('] Scanning: ', 1)[1] for step in scans]
+                    self.assertCountEqual(names, [member, 'Support.DlL'])
+                    self.assertEqual(scans, [f'[{index}/2] Scanning: {name}' for index, name in enumerate(names, 1)])
+                    if member.lower().endswith('.exe'):
+                        self.assertEqual(names[0], member)
+                    self.assertTrue(messages[-1]['status'])
+                    self.assertEqual(messages[-1]['data']['details']['Analysed Files'], ['package.exe', *names])
                     self.assertEqual(list(work.iterdir()), [])
 
     def test_incomplete_intel_database_keeps_no_match_progress(self):
