@@ -2593,7 +2593,7 @@ jobs:
       - name: verify ARM analyzer source and files
         run: |
           python3 - <<'PY'
-          import hashlib, json, os
+          import hashlib, json, os, subprocess
           from pathlib import Path
           work, runner = Path(os.environ['CPL_WORK']), Path(os.environ['CPL_RUNNER'])
           run = json.loads((work / 'source-run.json').read_text())
@@ -2607,8 +2607,10 @@ jobs:
           sources = json.loads((root / 'sources.json').read_text())
           assert metadata['source_identities']['recipe']['revision'] == run['head_sha']
           assert sources['sources']['recipe']['revision'] == run['head_sha']
-          for name, expected in sources['sources']['recipe']['files'].items():
-              if name.startswith('eagle/') and not name.startswith('eagle/tests/'):
+          names = subprocess.check_output(['git', 'ls-files', '-z', '--', 'eagle']).decode().split('\0')
+          for name in names:
+              if name and not name.startswith('eagle/tests/'):
+                  expected = sources['sources']['recipe']['files'][name]
                   assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == expected, name
           for name, record in json.loads((root / 'files.json').read_text()).items():
               assert not Path(name).is_absolute() and '..' not in Path(name).parts
@@ -2622,6 +2624,7 @@ jobs:
           PY
 
       - name: verify ARM installer analysis and metadata refresh
+        shell: bash
         run: |
           export TMPDIR="$CPL_WORK" TMP="$CPL_WORK" TEMP="$CPL_WORK"
           export EAGLE_PACKAGE="$CPL_RUNNER" PYTHONDONTWRITEBYTECODE=1
@@ -2733,6 +2736,9 @@ jobs:
             g++-mingw-w64-i686 \
             g++-mingw-w64-x86-64 \
             xvfb \
+            nsis \
+            wixl \
+            p7zip-full \
             xz-utils
           command -v docker
           sudo systemctl start docker
