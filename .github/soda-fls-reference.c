@@ -49,7 +49,7 @@ static void WINAPI fiber(void *argument)
 int main(void)
 {
     static const char *names[] = {"free", "free-reset", "thread", "thread-reset", "fiber", "fiber-reset",
-                                  "free-reset-four", "free-reset-sixteen"};
+                                  "free-reset-four", "free-reset-sixteen", "free-fibers", "free-fibers-reset"};
     unsigned test, i;
     for (test = 0; test < sizeof(names) / sizeof(names[0]); ++test)
     {
@@ -58,7 +58,7 @@ int main(void)
         reset_limit = test == 6 ? 4 : test == 7 ? 16 : test % 2;
         memset(records, 0, sizeof(records));
         if ((slot = FlsAlloc(cleanup)) == FLS_OUT_OF_INDEXES) return 1;
-        if (test < 2 || test >= 6)
+        if (test < 2 || test == 6 || test == 7)
         {
             if (!FlsSetValue(slot, (void *)(ULONG_PTR)1) || !FlsFree(slot)) return 2;
         }
@@ -80,9 +80,18 @@ int main(void)
             fiber_set_ok = FALSE;
             SwitchToFiber(child);
             if (!fiber_set_ok) return 8;
-            DeleteFiber(child);
-            parent = (ULONG_PTR)FlsGetValue(slot);
-            if (!FlsSetValue(slot, NULL) || !FlsFree(slot) || !ConvertFiberToThread()) return 9;
+            if (test >= 8)
+            {
+                if (!FlsFree(slot)) return 9;
+                DeleteFiber(child);
+            }
+            else
+            {
+                DeleteFiber(child);
+                parent = (ULONG_PTR)FlsGetValue(slot);
+                if (!FlsSetValue(slot, NULL) || !FlsFree(slot)) return 9;
+            }
+            if (!ConvertFiberToThread()) return 10;
         }
         printf("{\"case\":\"%s\",\"callbacks\":%ld,\"parent\":%llu,\"records\":[",
                 names[test], callback_count, (unsigned long long)parent);

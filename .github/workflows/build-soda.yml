@@ -201,7 +201,7 @@ jobs:
           for bits in (32, 64):
               before = [json.loads(line) for line in (root / 'reference' / f'fls{bits}.log').read_text(encoding='utf-8-sig').splitlines()]
               after = [json.loads(line) for line in (root / 'tests' / f'fls-reference{bits}.log').read_text().splitlines()]
-              assert len(before) == len(after) == 8
+              assert len(before) == len(after) == 10
               results.append({'bits': bits, 'matched': before == after, 'windows': before, 'wine': after})
           (root / 'tests/fls-comparison.log').write_text(json.dumps(results, indent=2) + '\n')
           assert all(item['matched'] for item in results), 'FLS callback results differ from Windows'
