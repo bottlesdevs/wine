@@ -129,8 +129,9 @@ def package_metadata(runner, tools, name, sources, expected, patches=None, input
                'binary_count': sum(value['kind'] in ('elf', 'pe') for value in records.values()),
                'patch_inventory_scope': 'supplied patch files; application order is not attested'}
     if assembly:
-        identity = source_identity(assembly)
-        provenance['assembly_source'] = identity
+        provenance['assembly_source'] = source_identity(assembly)
+    if 'assembly_source' in provenance:
+        identity = provenance['assembly_source']
         summary['assembly_source_identity'] = {key: identity[key] for key in ('revision', 'dirty', 'tree_sha256')}
     write_json(sources_path, provenance)
     write_json(files_path, records)

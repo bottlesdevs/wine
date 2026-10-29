@@ -118,6 +118,29 @@ class RunnerProvenance(unittest.TestCase):
         self.assertEqual(summary['file_count'], first['file_count'] + 1)
         self.assertIn('assembly_source', after)
 
+    def test_refresh_retains_assembly_until_explicitly_replaced(self):
+        first = self.build(assembly=self.source)
+        sources = self.runner / 'share/soda/sources.json'
+        original = sources.read_bytes()
+        (self.source / 'fixture.c').write_text('int main(void) { return 9; }\n')
+        changed = provenance.source_identity(self.source)
+        self.assertNotEqual(changed['tree_sha256'], first['assembly_source_identity']['tree_sha256'])
+        summary = self.build(sources={}, refresh=True)
+        self.assertEqual(summary['assembly_source_identity'], first['assembly_source_identity'])
+        self.assertEqual(sources.read_bytes(), original)
+        record = provenance.runner_identity(self.runner / 'bin/wine')
+        self.assertEqual(record['assembly_source_identity'], first['assembly_source_identity'])
+        bundle = self.root / 'session'
+        bundle.mkdir()
+        (bundle / 'manifest.json').write_text(json.dumps({'schema': 1, 'runner_build': record}))
+        (bundle / 'events.jsonl').write_text('')
+        from session import export
+        report = export(bundle, self.root / 'report.json')
+        self.assertEqual(report['manifest']['runner_build']['assembly_source_identity'], record['assembly_source_identity'])
+        replaced = self.build(sources={}, refresh=True, assembly=self.source)
+        self.assertEqual(replaced['source_identities'], first['source_identities'])
+        self.assertEqual(replaced['assembly_source_identity']['tree_sha256'], changed['tree_sha256'])
+
     def test_prebuilt_source_absence_is_explicit(self):
         with self.assertRaisesRegex(ValueError, 'provenance is unavailable'):
             self.build(sources={}, refresh=True)
