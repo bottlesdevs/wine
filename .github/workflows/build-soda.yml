@@ -9,6 +9,10 @@ on:
         description: 'Run with completed Wine builds and package tests'
         required: false
         type: string
+      debugger_run_id:
+        description: 'Existing x86_64 runner for debugger tests'
+        required: false
+        type: string
       architecture:
         description: 'Candidate architecture'
         required: true
@@ -111,11 +115,13 @@ jobs:
             libgnutls30t64:amd64 libgnutls30t64:i386 libdbus-1-3:amd64 libdbus-1-3:i386
 
       - uses: actions/cache@v5
+        if: inputs.debugger_run_id == ''
         with:
           path: ~/.cache/soda-runners/35
           key: soda-debugger-runtime-9a441b144b9f35cc527da30d6a40b5888e934a354a6309d6394bb444046b97d4
 
       - name: prepare published runner
+        if: inputs.debugger_run_id == ''
         run: |
           archive="$HOME/.cache/soda-runners/35/soda-11.0-35-experimental-x86_64.tar.xz"
           if ! test -f "$archive"; then
@@ -125,6 +131,64 @@ jobs:
           fi
           printf '%s  %s\n' 9a441b144b9f35cc527da30d6a40b5888e934a354a6309d6394bb444046b97d4 "$archive" | sha256sum --check -
           tar -xJf "$archive" -C "$EAGLE_WORK"
+          echo "EAGLE_RUNTIME=$EAGLE_WORK/soda-11.0-35-experimental-x86_64/bin/wine" >> "$GITHUB_ENV"
+
+      - name: prepare existing x86_64 runner
+        if: inputs.debugger_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.debugger_run_id }}
+        run: |
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          mkdir -p "$EAGLE_WORK/downloads" "$EAGLE_WORK/runner" "$EAGLE_WORK/tests"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$EAGLE_WORK/tests/runtime-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts" > "$EAGLE_WORK/tests/runtime-artifacts.json"
+          name="$(jq -er '[.artifacts[] | select(.expired == false and (.name | endswith("-x86_64")))] | if length == 1 then .[0].name else error("expected one x86_64 runner") end' "$EAGLE_WORK/tests/runtime-artifacts.json")"
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --name "$name" --dir "$EAGLE_WORK/downloads"
+          archive="$(find "$EAGLE_WORK/downloads" -maxdepth 1 -type f -name '*-x86_64.tar.xz' -print -quit)"
+          test -n "$archive"
+          sha256sum "$archive" > "$EAGLE_WORK/tests/runtime.sha256"
+          tar -xJf "$archive" -C "$EAGLE_WORK/runner"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          work = Path(os.environ['EAGLE_WORK'])
+          run = json.loads((work / 'tests/runtime-run.json').read_text())
+          assert run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+          assert run['head_branch'] == os.environ['GITHUB_REF_NAME']
+          assert run['path'] == '.github/workflows/build-soda.yml'
+          assert run['status'] == 'completed' and run['conclusion'] == 'success'
+          runner, = (work / 'runner').glob('soda-*-x86_64')
+          root = runner / 'share/soda'
+          metadata = json.loads((root / 'build.json').read_text())
+          (work / 'tests/runtime-build.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          for name in ('sources', 'files'):
+              assert hashlib.sha256((root / f'{name}.json').read_bytes()).hexdigest() == metadata[f'{name}_sha256']
+          sources = json.loads((root / 'sources.json').read_text())
+          assert metadata['source_identities']['recipe']['revision'] == run['head_sha']
+          assert sources['sources']['recipe']['revision'] == run['head_sha']
+          for name, variable in (('wine', 'VALVE_WINE_COMMIT'), ('proton', 'PROTON_COMMIT'),
+                                 ('tkg', 'WINE_TKG_COMMIT'), ('build_tools', 'BUILD_TOOLS_COMMIT'),
+                                 ('openxr', 'OPENXR_SDK_COMMIT')):
+              assert sources['sources'][name]['revision'] == os.environ[variable], name
+          patches = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                     for path in Path('wine-tkg-userpatches').glob('*.mypatch')}
+          assert patches == sources['patches']
+          for name, record in json.loads((root / 'files.json').read_text()).items():
+              assert not Path(name).is_absolute() and '..' not in Path(name).parts
+              path = runner / name
+              if record['kind'] == 'symlink':
+                  assert path.is_symlink() and os.readlink(path) == record['target']
+              else:
+                  assert not path.is_symlink() and path.stat().st_size == record['size']
+                  with path.open('rb') as file:
+                      assert hashlib.file_digest(file, 'sha256').hexdigest() == record['sha256'], name
+          with Path(os.environ['GITHUB_ENV']).open('a') as file:
+              file.write(f'EAGLE_RUNTIME={runner}/bin/wine\n')
+          PY
+
+      - name: build debugger fixtures
+        run: |
           sh eagle/build-debugger.sh "$EAGLE_WORK/package"
           mkdir -p "$EAGLE_WORK/tests"
           sha256sum .github/soda-fls-reference.c > "$EAGLE_WORK/tests/fls-source.log"
@@ -175,7 +239,7 @@ jobs:
         shell: bash
         run: |
           export EAGLE_PACKAGE="$EAGLE_WORK/package" EAGLE_TEST_ROOT="$EAGLE_WORK/tests"
-          export EAGLE_TEST_WINE="$EAGLE_WORK/soda-11.0-35-experimental-x86_64/bin/wine"
+          export EAGLE_TEST_WINE="$EAGLE_RUNTIME"
           export WINEPREFIX="$EAGLE_TEST_ROOT/prefix" WINEARCH=win64 WINEDEBUG=-all
           export WINEDLLOVERRIDES='mscoree=d;winemenubuilder.exe=d' LIBGL_ALWAYS_SOFTWARE=1
           trap 'status=$?; set +e; "${EAGLE_TEST_WINE%/wine}/wineserver" -k; "${EAGLE_TEST_WINE%/wine}/wineserver" -w; exit "$status"' EXIT
@@ -214,6 +278,8 @@ jobs:
           name: eagle-debugger-${{ github.sha }}
           path: |
             ${{ env.EAGLE_WORK }}/tests/*.log
+            ${{ env.EAGLE_WORK }}/tests/runtime-*.json
+            ${{ env.EAGLE_WORK }}/tests/runtime.sha256
             ${{ env.EAGLE_WORK }}/tests/*.stderr
             ${{ env.EAGLE_WORK }}/tests/*/manifest.json
             ${{ env.EAGLE_WORK }}/tests/*/events.jsonl
