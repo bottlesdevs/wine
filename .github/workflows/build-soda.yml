@@ -13,6 +13,11 @@ on:
         description: 'Existing x86_64 runner for debugger tests'
         required: false
         type: string
+      office_reproduction:
+        description: 'Collect Office startup logs in a fresh Bottles installation'
+        required: false
+        type: boolean
+        default: false
       architecture:
         description: 'Candidate architecture'
         required: true
@@ -86,7 +91,7 @@ jobs:
   eagle-debugger:
     if: inputs.architecture == 'eagle-debugger' && inputs.winrt_http_reference != true
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: ${{ inputs.office_reproduction && 120 || 20 }}
     steps:
       - uses: actions/checkout@v7
 
@@ -272,6 +277,33 @@ jobs:
           assert all(item['matched'] for item in results), 'FLS callback results differ from Windows'
           PY
 
+      - name: collect Office startup in a fresh bottle
+        if: inputs.office_reproduction == true
+        env:
+          SOURCE_RUN: ${{ inputs.debugger_run_id }}
+        shell: bash
+        run: |
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          image=ghcr.io/bottlesdevs/bottles@sha256:227e0818dfc230aa482dd33d4a92f19b94284213a272e8b166929bf004c6132b
+          docker pull --platform linux/amd64 "$image"
+          cp .github/soda-office-smoke.py "$EAGLE_WORK/office-smoke.py"
+          mkdir "$EAGLE_WORK/office-home"
+          xvfb-run -a -s '-screen 0 1440x900x24' \
+            docker run --rm --platform linux/amd64 --network host --hostname "$(hostname)" \
+              --user "$(id -u):$(id -g)" \
+              --volume "$EAGLE_WORK:$EAGLE_WORK" \
+              --volume /etc/passwd:/etc/passwd:ro --volume /etc/group:/etc/group:ro \
+              --env "USER=$(id -un)" --env "LOGNAME=$(id -un)" \
+              --env "HOME=$EAGLE_WORK/office-home" \
+              --env "XDG_DATA_HOME=$EAGLE_WORK/office-home/data" \
+              --env "XDG_CONFIG_HOME=$EAGLE_WORK/office-home/config" \
+              --env "XDG_CACHE_HOME=$EAGLE_WORK/office-home/cache" \
+              --env "TMPDIR=$EAGLE_WORK/scratch" --env "TMP=$EAGLE_WORK/scratch" --env "TEMP=$EAGLE_WORK/scratch" \
+              --env DISPLAY --env XAUTHORITY --env LIBGL_ALWAYS_SOFTWARE=1 --env GDK_BACKEND=x11 \
+              --entrypoint /usr/bin/python3 "$image" "$EAGLE_WORK/office-smoke.py" \
+              "$EAGLE_WORK" "$(dirname "$(dirname "$EAGLE_RUNTIME")")" \
+            2>&1 | tee "$EAGLE_WORK/tests/office-console.log"
+
       - uses: actions/upload-artifact@v7
         if: always() && env.EAGLE_WORK != ''
         with:
@@ -286,6 +318,9 @@ jobs:
             ${{ env.EAGLE_WORK }}/tests/stderr-*/stderr.log
             ${{ env.EAGLE_WORK }}/tests/debug-flags-*.result.json
             ${{ env.EAGLE_WORK }}/package/share/eagle/build.json
+            ${{ env.EAGLE_WORK }}/office-results/*.json
+            ${{ env.EAGLE_WORK }}/office-results/*.log
+            ${{ env.EAGLE_WORK }}/office-results/*.png
           retention-days: 7
           if-no-files-found: warn
 
