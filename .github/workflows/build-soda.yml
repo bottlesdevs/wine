@@ -17,6 +17,7 @@ on:
           - x86_64
           - aarch64
           - aarch64-control
+          - aarch64-fls
           - compiler-cache
           - d2d-reference
           - registry-reference
@@ -2469,6 +2470,88 @@ jobs:
             ${{ runner.temp }}/cache-sdk.log
             ${{ runner.temp }}/cache-proton-options.log
           if-no-files-found: error
+          retention-days: 7
+
+  arm64-fls:
+    needs: patches
+    if: inputs.architecture == 'aarch64-fls' && inputs.winrt_http_reference != true
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN: ${{ inputs.baseline_run_id }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: prepare existing ARM runners
+        run: |
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64-fls"
+          mkdir -p "$work/downloads" "$work/candidate" "$work/baseline" "$work/results" "$work/scratch"
+          printf 'FLS_WORK=%s\nTMPDIR=%s/scratch\nTMP=%s/scratch\nTEMP=%s/scratch\n' \
+            "$work" "$work" "$work" "$work" >> "$GITHUB_ENV"
+          export TMPDIR="$work/scratch" TMP="$work/scratch" TEMP="$work/scratch"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$work/results/source-run.json"
+          jq -e --arg repo "$GITHUB_REPOSITORY" '.head_repository.full_name == $repo' "$work/results/source-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts" > "$work/results/source-artifacts.json"
+          name="$(jq -er '[.artifacts[] | select(.expired == false and (.name | endswith("-aarch64")))] | if length == 1 then .[0].name else error("expected one ARM candidate") end' "$work/results/source-artifacts.json")"
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --name "$name" --dir "$work/downloads"
+          archive="$(find "$work/downloads" -maxdepth 1 -type f -name '*-aarch64.tar.xz' -print -quit)"
+          test -n "$archive"
+          sha256sum "$archive" > "$work/results/candidate.sha256"
+          tar -xJf "$archive" -C "$work/candidate"
+          archive="$work/downloads/soda-11.0-36-experimental-aarch64.tar.xz"
+          curl --fail --location --retry 3 \
+            https://github.com/bottlesdevs/wine/releases/download/soda-11.0-36-experimental/soda-11.0-36-experimental-aarch64.tar.xz \
+            -o "$archive"
+          printf '%s  %s\n' 3e3977025aa3417dccd85ab27d217420f7cc6f327590e5a24c92d14fdfa20d6f "$archive" | sha256sum --check -
+          tar -xJf "$archive" -C "$work/baseline"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            g++-mingw-w64-i686-posix g++-mingw-w64-x86-64-posix xvfb xauth
+
+      - name: verify compiled source and runner files
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          work = Path(os.environ['FLS_WORK'])
+          run = json.loads((work / 'results/source-run.json').read_text())
+          assert run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+          for label in ('baseline', 'candidate'):
+              runner, = (work / label).glob('soda-*-aarch64')
+              root = runner / 'share/soda'
+              metadata = json.loads((root / 'build.json').read_text())
+              for name in ('sources', 'files'):
+                  assert hashlib.sha256((root / f'{name}.json').read_bytes()).hexdigest() == metadata[f'{name}_sha256']
+              if label == 'candidate':
+                  assert metadata['assembly_source_identity']['revision'] == run['head_sha']
+              files = json.loads((root / 'files.json').read_text())
+              for name, record in files.items():
+                  assert not Path(name).is_absolute() and '..' not in Path(name).parts
+                  path = runner / name
+                  if record['kind'] == 'symlink':
+                      assert path.is_symlink() and os.readlink(path) == record['target']
+                  else:
+                      assert not path.is_symlink() and path.stat().st_size == record['size']
+                      with path.open('rb') as file:
+                          assert hashlib.file_digest(file, 'sha256').hexdigest() == record['sha256'], name
+              (work / f'results/{label}-build.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          PY
+
+      - name: compare callbacks and drawing on ARM
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          baseline="$(find "$FLS_WORK/baseline" -mindepth 1 -maxdepth 1 -type d -name 'soda-*-aarch64' -print -quit)"
+          candidate="$(find "$FLS_WORK/candidate" -mindepth 1 -maxdepth 1 -type d -name 'soda-*-aarch64' -print -quit)"
+          bash .github/check-arm64-fls.sh "$baseline" "$candidate" "$FLS_WORK"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.FLS_WORK != ''
+        with:
+          name: arm64-fls-${{ github.sha }}
+          path: ${{ env.FLS_WORK }}/results
+          if-no-files-found: warn
           retention-days: 7
 
   arm64-control:
