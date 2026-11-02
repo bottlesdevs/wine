@@ -1,0 +1,415 @@
+From 876438eb823b5187ef1a752eccac89bffb2c75e5 Mon Sep 17 00:00:00 2001
+From: Woonggi Min <62207008+minpeter@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 16:47:37 +0900
+Subject: [PATCH] ntoskrnl: Match queued IRP cancels by cookie and unlock
+ around IoCancelIrp().
+
+A queued cancellation can outlive the IRP, and IoAllocateIrp() can reuse that
+address. Identify live dispatch entries by a monotonic cookie rather than the
+raw IRP pointer.
+
+Mark the entry as canceling and drop irp_completion_cs around IoCancelIrp() so
+a driver cancel routine that waits on another completing IRP cannot deadlock.
+A completion that races cancellation reports its result to wineserver and
+leaves final IRP cleanup to dispatch_cancel().
+---
+ dlls/ntoskrnl.exe/ntoskrnl.c       |  50 ++++++++++-
+ dlls/ntoskrnl.exe/tests/driver.c   | 135 +++++++++++++++++++++++++++++
+ dlls/ntoskrnl.exe/tests/driver.h   |  10 +++
+ dlls/ntoskrnl.exe/tests/ntoskrnl.c |  85 ++++++++++++++++++
+ 4 files changed, 277 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index b3f45751b99e..a1befb15febb 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -75,10 +75,13 @@ static unsigned int load_image_notify_routine_count;
+ 
+ struct irp_data
+ {
++    struct list entry;
++    client_ptr_t cookie;
+     HANDLE handle;
+     IRP *irp;
+     BOOL async;
+     BOOL complete;
++    BOOL canceling;
+ };
+ 
+ static int wine_drivers_rb_compare( const void *key, const struct wine_rb_entry *entry )
+@@ -423,11 +426,14 @@ static void *create_file_object( HANDLE handle )
+ }
+ 
+ DECLARE_CRITICAL_SECTION(irp_completion_cs);
++static struct list dispatch_irps = LIST_INIT(dispatch_irps);
++static client_ptr_t next_irp_cookie;
+ 
+ static void free_dispatch_irp( struct irp_data *irp_data )
+ {
+     IRP *irp = irp_data->irp;
+ 
++    list_remove( &irp_data->entry );
+     if (irp->UserBuffer != irp->AssociatedIrp.SystemBuffer)
+     {
+         HeapFree( GetProcessHeap(), 0, irp->UserBuffer );
+@@ -497,6 +503,13 @@ static NTSTATUS WINAPI dispatch_irp_completion( DEVICE_OBJECT *device, IRP *irp,
+     }
+     SERVER_END_REQ;
+ 
++    if (irp_data->canceling)
++    {
++        /* dispatch_cancel frees the IRP once IoCancelIrp returns */
++        LeaveCriticalSection( &irp_completion_cs );
++        return STATUS_MORE_PROCESSING_REQUIRED;
++    }
++
+     free_dispatch_irp( irp_data );
+ 
+     LeaveCriticalSection( &irp_completion_cs );
+@@ -524,6 +537,12 @@ static NTSTATUS dispatch_irp( DEVICE_OBJECT *device, IRP *irp, struct dispatch_c
+     irp_data->irp = irp;
+     irp_data->async = FALSE;
+     irp_data->complete = FALSE;
++    irp_data->canceling = FALSE;
++
++    EnterCriticalSection( &irp_completion_cs );
++    irp_data->cookie = ++next_irp_cookie;
++    list_add_tail( &dispatch_irps, &irp_data->entry );
++    LeaveCriticalSection( &irp_completion_cs );
+ 
+     IoSetCompletionRoutine( irp, dispatch_irp_completion, irp_data, TRUE, TRUE, TRUE );
+     context->irp_data = irp_data;
+@@ -844,13 +863,38 @@ static NTSTATUS dispatch_free( struct dispatch_context *context )
+ 
+ static NTSTATUS dispatch_cancel( struct dispatch_context *context )
+ {
+-    IRP *irp = wine_server_get_ptr( context->params.cancel.irp );
++    struct irp_data *irp_data;
++    IRP *irp = NULL;
+ 
+-    TRACE( "%p\n", irp );
++    TRACE( "%s\n", wine_dbgstr_longlong(context->params.cancel.irp) );
+ 
++    /* A queued cancellation can outlive the IRP. Cookies also distinguish a new
++     * IRP allocated at the same address from the canceled request. */
+     EnterCriticalSection( &irp_completion_cs );
++    LIST_FOR_EACH_ENTRY( irp_data, &dispatch_irps, struct irp_data, entry )
++    {
++        if (irp_data->cookie != context->params.cancel.irp) continue;
++        if (!irp_data->complete)
++        {
++            irp_data->canceling = TRUE;
++            irp = irp_data->irp;
++        }
++        break;
++    }
++    LeaveCriticalSection( &irp_completion_cs );
++    if (!irp) return STATUS_SUCCESS;
++
++    /* The cancel routine may wait for a thread that is completing an IRP, so
++     * call it without irp_completion_cs. Completion leaves the IRP to us. */
+     IoCancelIrp( irp );
++
++    EnterCriticalSection( &irp_completion_cs );
++    irp_data->canceling = FALSE;
++    if (irp_data->complete) free_dispatch_irp( irp_data );
++    else irp = NULL;
+     LeaveCriticalSection( &irp_completion_cs );
++
++    if (irp) IoCompleteRequest( irp, IO_NO_INCREMENT );
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -960,7 +1004,7 @@ NTSTATUS CDECL wine_ntoskrnl_main_loop( HANDLE stop_event )
+             {
+                 IRP *irp = context.irp_data->irp;
+ 
+-                req->user_ptr = wine_server_client_ptr( irp );
++                req->user_ptr = context.irp_data->cookie;
+                 req->status   = status;
+ 
+                 if (context.irp_data->complete)
+diff --git a/dlls/ntoskrnl.exe/tests/driver.c b/dlls/ntoskrnl.exe/tests/driver.c
+index f30c340e9bd9..acbe52821210 100644
+--- a/dlls/ntoskrnl.exe/tests/driver.c
++++ b/dlls/ntoskrnl.exe/tests/driver.c
+@@ -2696,6 +2696,131 @@ static void cancel_complete(IRP *irp)
+     IoCompleteRequest(irp, IO_NO_INCREMENT);
+ }
+ 
++static KEVENT cancel_wait_start, cancel_wait_done;
++
++/* Completes the canceled IRP and any queued async IRPs. A driver can hold a
++ * lock here that its cancel routine waits for. */
++static void WINAPI cancel_wait_thread(void *context)
++{
++    IRP *irp = context;
++    unsigned int i;
++
++    KeWaitForSingleObject(&cancel_wait_start, Executive, KernelMode, FALSE, NULL);
++
++    for (i = 0; i < queued_async_count; i++)
++        cancel_complete(queued_async_irps[i]);
++    queued_async_count = 0;
++
++    irp->IoStatus.Status = STATUS_CANCELLED;
++    IoCompleteRequest(irp, IO_NO_INCREMENT);
++    KeSetEvent(&cancel_wait_done, IO_NO_INCREMENT, FALSE);
++    PsTerminateSystemThread(STATUS_SUCCESS);
++}
++
++static void WINAPI cancel_wait_irp(DEVICE_OBJECT *device, IRP *irp)
++{
++    LARGE_INTEGER timeout;
++    NTSTATUS ret;
++
++    IoReleaseCancelSpinLock(irp->CancelIrql);
++    KeSetEvent(&cancel_wait_start, IO_NO_INCREMENT, FALSE);
++    timeout.QuadPart = -2000 * 10000;
++    ret = KeWaitForSingleObject(&cancel_wait_done, Executive, KernelMode, FALSE, &timeout);
++    ok(!ret, "IRP completion blocked the cancel routine, ret %#lx\n", ret);
++}
++
++static NTSTATUS cancel_wait_ioctl(IRP *irp)
++{
++    KeInitializeEvent(&cancel_wait_start, NotificationEvent, FALSE);
++    KeInitializeEvent(&cancel_wait_done, NotificationEvent, FALSE);
++    ZwClose(create_thread(cancel_wait_thread, irp));
++    IoSetCancelRoutine(irp, cancel_wait_irp);
++    IoMarkIrpPending(irp);
++    return STATUS_PENDING;
++}
++
++static IRP *stale_irp, *stale_probe;
++static HANDLE stale_entered_handle, stale_canceled_handle;
++static KEVENT *stale_entered, *stale_canceled;
++static LONG stale_victim_cancels;
++static BOOL stale_reused;
++
++static void WINAPI stale_victim_cancel(DEVICE_OBJECT *device, IRP *irp)
++{
++    IoReleaseCancelSpinLock(irp->CancelIrql);
++    InterlockedIncrement(&stale_victim_cancels);
++}
++
++/* The client opens these events after this IRP returns pending. */
++static NTSTATUS stale_hold_ioctl(IRP *irp)
++{
++    UNICODE_STRING name;
++
++    RtlInitUnicodeString(&name, L"\\BaseNamedObjects\\winetest_ntoskrnl_stale_entered");
++    stale_entered = IoCreateSynchronizationEvent(&name, &stale_entered_handle);
++    ok(stale_entered != NULL, "IoCreateSynchronizationEvent failed\n");
++    RtlInitUnicodeString(&name, L"\\BaseNamedObjects\\winetest_ntoskrnl_stale_canceled");
++    stale_canceled = IoCreateSynchronizationEvent(&name, &stale_canceled_handle);
++    ok(stale_canceled != NULL, "IoCreateSynchronizationEvent failed\n");
++    KeClearEvent(stale_entered);
++    KeClearEvent(stale_canceled);
++
++    stale_irp = irp;
++    IoMarkIrpPending(irp);
++    return STATUS_PENDING;
++}
++
++/* On Wine this runs on the thread that dispatches cancels. Wait until the
++ * client has queued a cancel for stale_irp, then free that IRP and reuse its
++ * memory for the probe before the cancel can be dispatched. */
++static NTSTATUS stale_release_ioctl(void)
++{
++    LARGE_INTEGER timeout;
++    CCHAR stack;
++    IRP *old;
++    NTSTATUS ret;
++
++    if (!stale_irp || !stale_entered || !stale_canceled) return STATUS_INVALID_DEVICE_STATE;
++
++    KeSetEvent(stale_entered, IO_NO_INCREMENT, FALSE);
++    timeout.QuadPart = -5000 * 10000;
++    ret = KeWaitForSingleObject(stale_canceled, Executive, KernelMode, FALSE, &timeout);
++    ok(!ret, "got %#lx\n", ret);
++    ZwClose(stale_entered_handle);
++    ZwClose(stale_canceled_handle);
++    stale_entered = stale_canceled = NULL;
++
++    old = stale_irp;
++    stack = old->StackCount;
++    stale_irp = NULL;
++    cancel_complete(old);
++
++    stale_victim_cancels = 0;
++    stale_probe = IoAllocateIrp(stack, FALSE);
++    ok(stale_probe != NULL, "IoAllocateIrp failed\n");
++    if (!stale_probe) return STATUS_NO_MEMORY;
++    stale_reused = stale_probe == old;
++    IoSetCancelRoutine(stale_probe, stale_victim_cancel);
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS stale_result_ioctl(IRP *irp, IO_STACK_LOCATION *stack)
++{
++    struct stale_cancel_result *result = irp->AssociatedIrp.SystemBuffer;
++
++    if (!result || stack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(*result))
++        return STATUS_BUFFER_TOO_SMALL;
++    if (!stale_probe) return STATUS_INVALID_DEVICE_STATE;
++
++    result->reused = stale_reused;
++    result->victim_cancels = stale_victim_cancels;
++    IoSetCancelRoutine(stale_probe, NULL);
++    IoFreeIrp(stale_probe);
++    stale_probe = NULL;
++    irp->IoStatus.Information = sizeof(*result);
++    return STATUS_SUCCESS;
++}
++
+ static NTSTATUS WINAPI driver_IoControl(DEVICE_OBJECT *device, IRP *irp)
+ {
+     IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
+@@ -2744,6 +2869,16 @@ static NTSTATUS WINAPI driver_IoControl(DEVICE_OBJECT *device, IRP *irp)
+             queued_async_count = 0;
+             status = STATUS_SUCCESS;
+             break;
++        case IOCTL_WINETEST_CANCEL_WAIT:
++            return cancel_wait_ioctl(irp);
++        case IOCTL_WINETEST_STALE_HOLD:
++            return stale_hold_ioctl(irp);
++        case IOCTL_WINETEST_STALE_RELEASE:
++            status = stale_release_ioctl();
++            break;
++        case IOCTL_WINETEST_STALE_RESULT:
++            status = stale_result_ioctl(irp, stack);
++            break;
+         case IOCTL_WINETEST_GET_CANCEL_COUNT:
+             status = get_dword(irp, stack, &irp->IoStatus.Information, cancel_cnt);
+             break;
+diff --git a/dlls/ntoskrnl.exe/tests/driver.h b/dlls/ntoskrnl.exe/tests/driver.h
+index 524ba6abeeda..78b459a1df3e 100644
+--- a/dlls/ntoskrnl.exe/tests/driver.h
++++ b/dlls/ntoskrnl.exe/tests/driver.h
+@@ -38,6 +38,10 @@
+ #define IOCTL_WINETEST_COMPLETION               CTL_CODE(FILE_DEVICE_UNKNOWN, 0x80c, METHOD_NEITHER, FILE_ANY_ACCESS)
+ #define IOCTL_WINETEST_QUEUE_ASYNC              CTL_CODE(FILE_DEVICE_UNKNOWN, 0x80d, METHOD_BUFFERED, FILE_ANY_ACCESS)
+ #define IOCTL_WINETEST_COMPLETE_ASYNC           CTL_CODE(FILE_DEVICE_UNKNOWN, 0x80e, METHOD_BUFFERED, FILE_ANY_ACCESS)
++#define IOCTL_WINETEST_CANCEL_WAIT              CTL_CODE(FILE_DEVICE_UNKNOWN, 0x80f, METHOD_BUFFERED, FILE_ANY_ACCESS)
++#define IOCTL_WINETEST_STALE_HOLD               CTL_CODE(FILE_DEVICE_UNKNOWN, 0x810, METHOD_BUFFERED, FILE_ANY_ACCESS)
++#define IOCTL_WINETEST_STALE_RELEASE            CTL_CODE(FILE_DEVICE_UNKNOWN, 0x811, METHOD_BUFFERED, FILE_ANY_ACCESS)
++#define IOCTL_WINETEST_STALE_RESULT             CTL_CODE(FILE_DEVICE_UNKNOWN, 0x812, METHOD_BUFFERED, FILE_ANY_ACCESS)
+ 
+ #define IOCTL_WINETEST_BUS_MAIN             CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+ #define IOCTL_WINETEST_BUS_REGISTER_IFACE   CTL_CODE(FILE_DEVICE_BUS_EXTENDER, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
+@@ -65,6 +69,12 @@ struct test_data
+     LONG skipped;
+ };
+ 
++struct stale_cancel_result
++{
++    DWORD reused;
++    DWORD victim_cancels;
++};
++
+ struct main_test_input
+ {
+     DWORD process_id;
+diff --git a/dlls/ntoskrnl.exe/tests/ntoskrnl.c b/dlls/ntoskrnl.exe/tests/ntoskrnl.c
+index 57e51cff4fef..cd4b37f54552 100644
+--- a/dlls/ntoskrnl.exe/tests/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/tests/ntoskrnl.c
+@@ -723,6 +723,90 @@ static void test_overlapped(void)
+     CloseHandle(file);
+ }
+ 
++static DWORD WINAPI stale_release_thread(void *file)
++{
++    DWORD size;
++    BOOL res;
++
++    res = DeviceIoControl(file, IOCTL_WINETEST_STALE_RELEASE, NULL, 0, NULL, 0, &size, NULL);
++    ok(res, "DeviceIoControl failed: %lu\n", GetLastError());
++    return 0;
++}
++
++static void test_cancel_races(void)
++{
++    struct stale_cancel_result result;
++    OVERLAPPED overlapped, overlapped2;
++    HANDLE file, entered, canceled, thread;
++    DWORD size, ret;
++    BOOL res;
++
++    if (!pCancelIoEx)
++    {
++        win_skip("CancelIoEx is not available.\n");
++        return;
++    }
++
++    overlapped.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
++    overlapped2.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
++    file = CreateFileA("\\\\.\\WineTestDriver", FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
++                       0, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
++    ok(file != INVALID_HANDLE_VALUE, "failed to open device: %lu\n", GetLastError());
++
++    /* The cancel routine waits for another thread to complete an unrelated
++     * IRP and then the canceled IRP itself. */
++    res = DeviceIoControl(file, IOCTL_WINETEST_QUEUE_ASYNC, NULL, 0, NULL, 0, NULL, &overlapped2);
++    ok(!res && GetLastError() == ERROR_IO_PENDING, "DeviceIoControl failed: %lu\n", GetLastError());
++    res = DeviceIoControl(file, IOCTL_WINETEST_CANCEL_WAIT, NULL, 0, NULL, 0, NULL, &overlapped);
++    ok(!res && GetLastError() == ERROR_IO_PENDING, "DeviceIoControl failed: %lu\n", GetLastError());
++    res = pCancelIoEx(file, &overlapped);
++    ok(res, "CancelIoEx failed: %lu\n", GetLastError());
++
++    ret = WaitForSingleObject(overlapped.hEvent, 5000);
++    ok(!ret, "got %#lx\n", ret);
++    res = GetOverlappedResult(file, &overlapped, &size, FALSE);
++    ok(!res && GetLastError() == ERROR_OPERATION_ABORTED, "got %d, error %lu\n", res, GetLastError());
++    ret = WaitForSingleObject(overlapped2.hEvent, 5000);
++    ok(!ret, "got %#lx\n", ret);
++    res = GetOverlappedResult(file, &overlapped2, &size, FALSE);
++    ok(res, "GetOverlappedResult failed: %lu\n", GetLastError());
++
++    /* A cancel queued for an IRP that completes before the cancel is
++     * dispatched must not reach a new IRP at the same address. */
++    ResetEvent(overlapped.hEvent);
++    res = DeviceIoControl(file, IOCTL_WINETEST_STALE_HOLD, NULL, 0, NULL, 0, NULL, &overlapped);
++    ok(!res && GetLastError() == ERROR_IO_PENDING, "DeviceIoControl failed: %lu\n", GetLastError());
++    entered = OpenEventA(SYNCHRONIZE, FALSE, "Global\\winetest_ntoskrnl_stale_entered");
++    canceled = OpenEventA(EVENT_MODIFY_STATE, FALSE, "Global\\winetest_ntoskrnl_stale_canceled");
++    ok(entered && canceled, "OpenEvent failed: %lu\n", GetLastError());
++    thread = CreateThread(NULL, 0, stale_release_thread, file, 0, NULL);
++    ret = WaitForSingleObject(entered, 5000);
++    ok(!ret, "got %#lx\n", ret);
++    res = pCancelIoEx(file, &overlapped);
++    ok(res, "CancelIoEx failed: %lu\n", GetLastError());
++    SetEvent(canceled);
++    ret = WaitForSingleObject(thread, 10000);
++    ok(!ret, "got %#lx\n", ret);
++    CloseHandle(thread);
++
++    ret = WaitForSingleObject(overlapped.hEvent, 5000);
++    ok(!ret, "got %#lx\n", ret);
++    res = GetOverlappedResult(file, &overlapped, &size, FALSE);
++    ok(res, "GetOverlappedResult failed: %lu\n", GetLastError());
++
++    memset(&result, 0xcc, sizeof(result));
++    res = DeviceIoControl(device, IOCTL_WINETEST_STALE_RESULT, NULL, 0, &result, sizeof(result), &size, NULL);
++    ok(res, "DeviceIoControl failed: %lu\n", GetLastError());
++    ok(!result.victim_cancels, "stale cancel canceled the probe IRP %lu times\n", result.victim_cancels);
++    if (!result.reused) skip("The probe IRP did not reuse the freed IRP.\n");
++
++    CloseHandle(entered);
++    CloseHandle(canceled);
++    CloseHandle(overlapped.hEvent);
++    CloseHandle(overlapped2.hEvent);
++    CloseHandle(file);
++}
++
+ static void test_load_driver(SC_HANDLE service)
+ {
+     SERVICE_STATUS status;
+@@ -2583,6 +2667,7 @@ START_TEST(ntoskrnl)
+     test_overlapped();
+     test_load_driver(service2);
+     test_file_handles();
++    test_cancel_races();
+     test_return_status();
+     test_object_info();
+     test_blocking_irp();
