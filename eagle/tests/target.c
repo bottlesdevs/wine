@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <wincrypt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,6 +63,7 @@ __declspec(noinline) ULONG_PTR eagle_register_arguments(ULONG_PTR first, ULONG_P
 }
 
 enum { DEBUG_WORKERS = 8, DEBUG_LOOKUPS = 128 };
+static BOOL crypto_debug;
 
 struct debug_channel
 {
@@ -74,6 +76,16 @@ static DWORD WINAPI debug_channel_worker(void *argument)
     unsigned char (__cdecl *get_flags)(struct debug_channel *);
     unsigned i;
     if (WaitForSingleObject(argument, 10000) != WAIT_OBJECT_0) return 1;
+    if (crypto_debug)
+    {
+        HCRYPTPROV provider;
+        BYTE bytes[32];
+        BOOL generated, released;
+        if (!CryptAcquireContextW(&provider, NULL, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) return 4;
+        generated = CryptGenRandom(provider, sizeof(bytes), bytes);
+        released = CryptReleaseContext(provider, 0);
+        if (!generated || !released) return 5;
+    }
     for (i = 0; i < DEBUG_LOOKUPS; ++i)
     {
         struct debug_channel channel = {0xff, "eagledebug"};
@@ -86,12 +98,13 @@ static DWORD WINAPI debug_channel_worker(void *argument)
 
 int main(int argc, char **argv)
 {
-    if (argc > 2 && !strcmp(argv[1], "debug-flags"))
+    if (argc > 2 && (!strcmp(argv[1], "debug-flags") || !strcmp(argv[1], "crypto-debug-flags")))
     {
         HANDLE start = CreateEventW(NULL, TRUE, FALSE, NULL), workers[DEBUG_WORKERS];
         DWORD code;
         unsigned i;
         FILE *result;
+        crypto_debug = !strcmp(argv[1], "crypto-debug-flags");
         if (!start) return 31;
         for (i = 0; i < DEBUG_WORKERS; ++i)
             if (!(workers[i] = CreateThread(NULL, 0, debug_channel_worker, start, 0, NULL))) return 32;

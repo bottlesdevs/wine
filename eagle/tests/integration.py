@@ -12,7 +12,7 @@ PACKAGE = Path(os.environ["EAGLE_PACKAGE"])
 CLI = PACKAGE / "bin/eagle"
 WINE = os.environ["EAGLE_TEST_WINE"]
 sys.path.insert(0, str(PACKAGE / "lib/eagle"))
-from session import read_bundle, send_command, windows_path
+from session import capture, read_bundle, send_command, windows_path
 from protocol import read_message, write_message
 
 class Integration(unittest.TestCase):
@@ -148,6 +148,23 @@ class Integration(unittest.TestCase):
                         self.assertTrue(all(item['success'] and int(item['address'], 16) for item in lookups))
                     else:
                         self.assertEqual(providers, [])
+
+    def test_crypto_provider_release_before_debug_channel_lookup(self):
+        for bits in (32, 64):
+            for profile in ('crash', 'loader', 'trace'):
+                with self.subTest(bits=bits, profile=profile):
+                    name = f'crypto-debug-flags-{bits}-{profile}'
+                    root = ROOT / name
+                    marker = ROOT / (name + '.result.json')
+                    capture(WINE, ROOT / 'prefix', root, target=ROOT / f'target{bits}.exe',
+                            arguments=['crypto-debug-flags', windows_path(marker, ROOT / 'prefix')],
+                            timeout=30, profile=profile)
+                    manifest, events = read_bundle(root)
+                    self.assertTrue(manifest['completed'])
+                    self.assertEqual(manifest['dropped_events'], 0)
+                    self.assertEqual([item['code'] for item in events if item['kind'] == 'process_exit'], [0])
+                    self.assertFalse(any(item['kind'] == 'exception' and not item['first_chance'] for item in events))
+                    self.assertEqual(json.loads(marker.read_text()), {'threads': 8, 'lookups': 1024, 'calls': 2048})
 
     def test_stderr_tail_survives_real_x86_and_x64_targets(self):
         tail = b'\neagle stderr tail\xff\x00\n'
