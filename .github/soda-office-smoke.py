@@ -53,6 +53,93 @@ def stop_prefix():
     return statuses
 
 
+def restore_prefix():
+    stop_prefix()
+    assert not prefix.is_symlink() and prefix.resolve().is_relative_to(work / 'office-home')
+    shutil.rmtree(prefix)
+    shutil.copytree(baseline, prefix, symlinks=True)
+    assert hives == {name: hashlib.sha256((prefix / name).read_bytes()).hexdigest() for name in hives}
+
+
+def profile_controls():
+    executable, = [item for item in manifest['Executables'] if item['file'] == 'WINWORD.EXE']
+    target = prefix / 'drive_c' / executable['path']
+    assert target.resolve(strict=True).is_relative_to(prefix / 'drive_c')
+    eagle = str(runner / 'bin/eagle')
+    reports = []
+    diagnostics = work / 'office-profile-stderr'
+    diagnostics.mkdir()
+    checked('disable-tracing', manager.update_config(config, 'eagle_tracing', False, 'Parameters'))
+    for attempt in range(1, 4):
+        for profile in ('plain', 'crash', 'loader', 'com', 'wait', 'trace'):
+            restore_prefix()
+            executor = WineExecutor(config=config, exec_path=str(target), environment={}, program_winebridge=False)
+            command = WineCommand(config, command='', environment=executor.environment, cwd=str(target.parent), minimal=True)
+            assert Path(command.env['WINEPREFIX']).resolve() == prefix.resolve()
+            label = f'profile-{profile}-{attempt}'
+            bundle = work / 'office-profile-sessions' / label
+            destination = output / (label + '.log')
+            before = set(logs.glob('*.session'))
+            if profile == 'plain':
+                arguments = [str(runner / 'bin/wine'), str(target), r'C:\office-reproduction.rtf']
+            elif profile == 'trace':
+                arguments = [eagle, 'trace', '--wine', str(runner / 'bin/wine'), '--prefix', str(prefix),
+                             '--logs', str(logs), '--cwd', str(target.parent), '--', str(target), r'C:\office-reproduction.rtf']
+            else:
+                arguments = [eagle, 'run', '--wine', str(runner / 'bin/wine'), '--prefix', str(prefix),
+                             '--session', str(bundle), '--timeout', '60', '--profile', profile,
+                             str(target), r'C:\office-reproduction.rtf']
+            row = {'profile': profile, 'attempt': attempt, 'route': 'direct target', 'winebridge': False,
+                   'prefix_restored': True, 'observation_seconds': 20, 'started': time.time()}
+            reports.append(row)
+            record('profile-started', profile_controls=reports)
+            stderr = diagnostics / (label + '.stderr')
+            with stderr.open('wb') as file:
+                process = subprocess.Popen(arguments, env=command.env, cwd=target.parent,
+                                           stdout=subprocess.DEVNULL, stderr=file)
+                time.sleep(20)
+                row['launcher_finished_before_stop'] = process.poll() is not None
+                subprocess.run(['import', '-window', 'root', str(output / (label + '.png'))], check=True, timeout=15)
+                with (output / (label + '-windows.log')).open('w') as windows:
+                    subprocess.run(['xwininfo', '-root', '-tree'], stdout=windows, stderr=subprocess.STDOUT,
+                                   check=True, timeout=10)
+                row['stop_requested'] = time.time()
+                closed = subprocess.run([str(runner / 'bin/wine'), 'taskkill', '/f', '/im', 'WINWORD.EXE'],
+                                        env=command.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+                row['owned_stop_exit'] = closed.returncode
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    if profile not in ('plain', 'trace'):
+                        subprocess.run([eagle, 'control', str(bundle), 'detach'], check=True,
+                                       stdout=subprocess.DEVNULL, stderr=file, timeout=10)
+                        row['collector_stopped_after_observation'] = True
+                    else:
+                        stop_prefix()
+                    process.wait(timeout=10)
+                row['launcher_exit'] = process.returncode
+            row['cleanup'] = stop_prefix()
+            row['stderr_bytes'] = stderr.stat().st_size
+            with stderr.open('rb') as file:
+                row['stderr_sha256'] = hashlib.file_digest(file, 'sha256').hexdigest()
+            if profile == 'trace':
+                captured, = set(logs.glob('*.session')) - before
+                generated = logs / (captured.stem + '.log')
+                shutil.copyfile(generated, destination)
+            elif profile != 'plain':
+                subprocess.run([eagle, 'export', str(bundle), str(destination)], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+            if profile != 'plain':
+                exported = json.loads(destination.read_text())
+                assert exported['manifest']['completed'], label + ': incomplete capture'
+                row['capture'] = destination.name
+            office_log = label + '-office-metadata.json'
+            subprocess.run([sys.executable, str(work / 'office-diagnostics.py'), str(prefix),
+                            str(output / office_log), str(row['started'])], check=True, timeout=20)
+            row['office_metadata'] = office_log
+            record('profile-collected', profile_controls=reports)
+
+
 try:
     record('load-bottles')
     for name, command in (('display', ['xwininfo', '-root']), ('vulkan', ['vulkaninfo', '--summary'])):
@@ -137,11 +224,7 @@ try:
                                          ('WINWORD.EXE', False, 'rtf'), ('WINWORD.EXE', True, 'rtf'),
                                          ('WINWORD.EXE', False, 'docx'), ('WINWORD.EXE', True, 'docx'),
                                          ('EXCEL.EXE', False, False), ('EXCEL.EXE', True, False)):
-        stop_prefix()
-        assert not prefix.is_symlink() and prefix.resolve().is_relative_to(work / 'office-home')
-        shutil.rmtree(prefix)
-        shutil.copytree(baseline, prefix, symlinks=True)
-        assert hives == {name: hashlib.sha256((prefix / name).read_bytes()).hexdigest() for name in hives}
+        restore_prefix()
         checked('set-tracing', manager.update_config(config, 'eagle_tracing', tracing, 'Parameters'))
         program, = [item for item in config.External_Programs.values() if item['executable'] == executable]
         program = dict(program, winebridge=False)
@@ -216,6 +299,7 @@ try:
         assert saved or not tracing, executable + ': no Eagle log collected'
         record('captured-' + executable)
         assert not launch['launcher_pending'], executable + ': launcher did not finish after cleanup'
+    profile_controls()
     record('finished', captures_collected=True)
 except Exception as error:
     record('failed', error=type(error).__name__ + ': ' + str(error))
