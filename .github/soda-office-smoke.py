@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 
 
 work, runner = (Path(value).resolve(strict=True) for value in sys.argv[1:])
@@ -110,14 +111,31 @@ try:
     logs = prefix / 'logs/runs'
     document = prefix / 'drive_c/office-reproduction.rtf'
     document.write_text(r'{\rtf1\ansi\deff0 {\fonttbl {\f0 Arial;}}\f0\fs24 Office document opening test.\par Second paragraph.}', encoding='ascii')
-    record('prepare-document', document_sha256=hashlib.sha256(document.read_bytes()).hexdigest())
+    with zipfile.ZipFile(document.with_suffix('.docx'), 'w', zipfile.ZIP_DEFLATED) as package:
+        package.writestr('[Content_Types].xml',
+                         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                         '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                         '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                         '</Types>')
+        package.writestr('_rels/.rels',
+                         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+                         '</Relationships>')
+        package.writestr('word/document.xml',
+                         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+                         '<w:p><w:r><w:t>Office document opening test.</w:t></w:r></w:p>'
+                         '<w:p><w:r><w:t>Second paragraph.</w:t></w:r></w:p>'
+                         '</w:body></w:document>')
+    record('prepare-document', documents={kind: hashlib.sha256(document.with_suffix('.' + kind).read_bytes()).hexdigest()
+                                         for kind in ('rtf', 'docx')})
     baseline = work / 'office-initial-prefix'
     shutil.copytree(prefix, baseline, symlinks=True)
     hives = {name: hashlib.sha256((baseline / name).read_bytes()).hexdigest()
              for name in ('system.reg', 'user.reg', 'userdef.reg')}
     record('prefix-baseline', registry_baseline=hives)
     for executable, tracing, opening in (('WINWORD.EXE', False, False), ('WINWORD.EXE', True, False),
-                                         ('WINWORD.EXE', False, True), ('WINWORD.EXE', True, True),
+                                         ('WINWORD.EXE', False, 'rtf'), ('WINWORD.EXE', True, 'rtf'),
+                                         ('WINWORD.EXE', False, 'docx'), ('WINWORD.EXE', True, 'docx'),
                                          ('EXCEL.EXE', False, False), ('EXCEL.EXE', True, False)):
         stop_prefix()
         assert not prefix.is_symlink() and prefix.resolve().is_relative_to(work / 'office-home')
@@ -128,11 +146,12 @@ try:
         program, = [item for item in config.External_Programs.values() if item['executable'] == executable]
         program = dict(program)
         if opening:
-            program.update(arguments='"C:\\office-reproduction.rtf"', arguments_enabled=True)
+            program.update(arguments='"C:\\office-reproduction.' + opening + '"', arguments_enabled=True)
         before = set(logs.glob('*.log'))
         sessions = set(logs.glob('*.session'))
         label = f'{len(result["launches"]) + 1}-{executable}-' + ('traced' if tracing else 'plain')
-        launch = {'executable': executable, 'tracing': tracing, 'opening_document': opening,
+        launch = {'executable': executable, 'tracing': tracing, 'opening_document': bool(opening),
+                  'document_format': opening or None,
                   'prefix_restored': True, 'started': time.time(),
                   'stop_reason': 'Own app terminated after the observation deadline, then its prefix stopped'}
         result['launches'].append(launch)

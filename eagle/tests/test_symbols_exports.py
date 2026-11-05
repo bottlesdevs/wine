@@ -65,6 +65,31 @@ class ExportSymbols(unittest.TestCase):
                     self.assertNotIn('file', frame)
                     self.assertIn('function extent unavailable', frame['symbol_scope'])
 
+    def test_separate_pe_debug_files_resolve_source_lines(self):
+        for architecture in ('i686', 'x86_64'):
+            with self.subTest(architecture=architecture):
+                image, source, addresses = self.build(architecture, stripped=False)
+                debug = image.with_suffix('.debug')
+                subprocess.run([architecture + '-w64-mingw32-objcopy', '--only-keep-debug', str(image), str(debug)],
+                               check=True, capture_output=True)
+                subprocess.run([architecture + '-w64-mingw32-objcopy', '--strip-debug', str(image)],
+                               check=True, capture_output=True)
+                subprocess.run([architecture + '-w64-mingw32-objcopy', '--add-gnu-debuglink=' + str(debug), str(image)],
+                               check=True, capture_output=True)
+                frame, = symbols.resolve(image, [hex(addresses['eagle_export_add'])])
+                self.assertEqual(frame['symbol'], 'eagle_export_add')
+                self.assertEqual(Path(frame['file']).resolve(), source.resolve())
+                self.assertGreater(frame['line'], 0)
+
+    def test_partial_pe_queries_keep_existing_source_locations(self):
+        image, source, addresses = self.build('x86_64', stripped=False)
+        address = hex(addresses['eagle_export_add'])
+        expected, = symbols.resolve(image, [address])
+        found, missing = symbols.resolve(image, [address, '0x0'])
+        self.assertEqual(found, expected)
+        self.assertIsNone(missing['symbol'])
+        self.assertEqual(Path(found['file']).resolve(), source.resolve())
+
     def test_data_headers_and_unnamed_exports_have_no_function_label(self):
         for architecture in ('i686', 'x86_64'):
             image, _, addresses = self.build(architecture)
