@@ -144,7 +144,7 @@ try:
         assert hives == {name: hashlib.sha256((prefix / name).read_bytes()).hexdigest() for name in hives}
         checked('set-tracing', manager.update_config(config, 'eagle_tracing', tracing, 'Parameters'))
         program, = [item for item in config.External_Programs.values() if item['executable'] == executable]
-        program = dict(program)
+        program = dict(program, winebridge=False)
         if opening:
             program.update(arguments='"C:\\office-reproduction.' + opening + '"', arguments_enabled=True)
         before = set(logs.glob('*.log'))
@@ -152,6 +152,7 @@ try:
         label = f'{len(result["launches"]) + 1}-{executable}-' + ('traced' if tracing else 'plain')
         launch = {'executable': executable, 'tracing': tracing, 'opening_document': bool(opening),
                   'document_format': opening or None,
+                  'winebridge': False,
                   'prefix_restored': True, 'started': time.time(),
                   'stop_reason': 'Own app terminated after the observation deadline, then its prefix stopped'}
         result['launches'].append(launch)
