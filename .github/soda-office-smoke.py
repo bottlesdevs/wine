@@ -71,16 +71,18 @@ def profile_controls():
     diagnostics.mkdir()
     checked('disable-tracing', manager.update_config(config, 'eagle_tracing', False, 'Parameters'))
     for attempt in range(1, 4):
-        for profile in ('plain', 'crash', 'loader', 'com', 'wait', 'trace'):
+        for profile in ('plain', 'plain-no-logs', 'crash', 'loader', 'com', 'wait', 'trace'):
             restore_prefix()
             executor = WineExecutor(config=config, exec_path=str(target), environment={}, program_winebridge=False)
             command = WineCommand(config, command='', environment=executor.environment, cwd=str(target.parent), minimal=True)
             assert Path(command.env['WINEPREFIX']).resolve() == prefix.resolve()
+            if profile == 'plain-no-logs':
+                command.env['WINEDEBUG'] = '-all'
             label = f'profile-{profile}-{attempt}'
             bundle = work / 'office-profile-sessions' / label
             destination = output / (label + '.log')
             before = set(logs.glob('*.session'))
-            if profile == 'plain':
+            if profile in ('plain', 'plain-no-logs'):
                 arguments = [str(runner / 'bin/wine'), str(target), r'C:\office-reproduction.rtf']
             elif profile == 'trace':
                 arguments = [eagle, 'trace', '--wine', str(runner / 'bin/wine'), '--prefix', str(prefix),
@@ -90,6 +92,7 @@ def profile_controls():
                              '--session', str(bundle), '--timeout', '60', '--profile', profile,
                              str(target), r'C:\office-reproduction.rtf']
             row = {'profile': profile, 'attempt': attempt, 'route': 'direct target', 'winebridge': False,
+                   'wine_debug': command.env.get('WINEDEBUG') if profile in ('plain', 'plain-no-logs') else '-all',
                    'prefix_restored': True, 'observation_seconds': 20, 'started': time.time()}
             reports.append(row)
             record('profile-started', profile_controls=reports)
@@ -110,7 +113,7 @@ def profile_controls():
                 try:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    if profile not in ('plain', 'trace'):
+                    if profile not in ('plain', 'plain-no-logs', 'trace'):
                         subprocess.run([eagle, 'control', str(bundle), 'detach'], check=True,
                                        stdout=subprocess.DEVNULL, stderr=file, timeout=10)
                         row['collector_stopped_after_observation'] = True
@@ -126,10 +129,10 @@ def profile_controls():
                 captured, = set(logs.glob('*.session')) - before
                 generated = logs / (captured.stem + '.log')
                 shutil.copyfile(generated, destination)
-            elif profile != 'plain':
+            elif profile not in ('plain', 'plain-no-logs'):
                 subprocess.run([eagle, 'export', str(bundle), str(destination)], check=True,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
-            if profile != 'plain':
+            if profile not in ('plain', 'plain-no-logs'):
                 exported = json.loads(destination.read_text())
                 assert exported['manifest']['completed'], label + ': incomplete capture'
                 row['capture'] = destination.name
