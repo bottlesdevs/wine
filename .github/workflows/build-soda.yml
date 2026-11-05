@@ -329,6 +329,8 @@ jobs:
               --env "XDG_CONFIG_HOME=$EAGLE_WORK/office-home/config" \
               --env "XDG_CACHE_HOME=$EAGLE_WORK/office-home/cache" \
               --env "XDG_RUNTIME_DIR=$EAGLE_WORK/office-runtime" \
+              --env PERSONAL_DEPENDENCIES=https://raw.githubusercontent.com/bottlesdevs/dependencies/79d3db76c517d25812af1e33c5baf4aefe963ceb/ \
+              --env PERSONAL_INSTALLERS=https://raw.githubusercontent.com/bottlesdevs/programs/e137e8db4b838ff5049c10c1f8203ee12c31de2c/ \
               --env "TMPDIR=$EAGLE_WORK/scratch" --env "TMP=$EAGLE_WORK/scratch" --env "TEMP=$EAGLE_WORK/scratch" \
               --env DISPLAY --env XAUTHORITY --env LIBGL_ALWAYS_SOFTWARE=1 --env GDK_BACKEND=x11 \
               --entrypoint /usr/bin/python3 "$image" "$EAGLE_WORK/office-smoke.py" \
