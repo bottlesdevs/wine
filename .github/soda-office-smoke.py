@@ -16,7 +16,7 @@ output = work / 'office-results'
 output.mkdir(exist_ok=False)
 lock = threading.Lock()
 result = {'installed': False, 'captures_collected': False, 'steps': [], 'launches': [],
-          'scope': 'Fresh anonymous bottle using the published Bottles package and normal installer. Sequential launches share the installed prefix; first-run state can change between launches. X11 software rendering in CI; not the cpak supervisor or a signed-in user profile.'}
+          'scope': 'Fresh anonymous bottle using the published Bottles package and normal installer. Each launch restores the same stopped post-install prefix. X11 software rendering in CI; not the cpak supervisor or a signed-in user profile.'}
 config = None
 prefix = None
 
@@ -111,9 +111,19 @@ try:
     document = prefix / 'drive_c/office-reproduction.rtf'
     document.write_text(r'{\rtf1\ansi\deff0 {\fonttbl {\f0 Arial;}}\f0\fs24 Office document opening test.\par Second paragraph.}', encoding='ascii')
     record('prepare-document', document_sha256=hashlib.sha256(document.read_bytes()).hexdigest())
-    for executable, tracing, opening in (('WINWORD.EXE', True, False), ('WINWORD.EXE', False, False),
-                                         ('WINWORD.EXE', True, True), ('WINWORD.EXE', False, True),
-                                         ('EXCEL.EXE', True, False)):
+    baseline = work / 'office-initial-prefix'
+    shutil.copytree(prefix, baseline, symlinks=True)
+    hives = {name: hashlib.sha256((baseline / name).read_bytes()).hexdigest()
+             for name in ('system.reg', 'user.reg', 'userdef.reg')}
+    record('prefix-baseline', registry_baseline=hives)
+    for executable, tracing, opening in (('WINWORD.EXE', False, False), ('WINWORD.EXE', True, False),
+                                         ('WINWORD.EXE', False, True), ('WINWORD.EXE', True, True),
+                                         ('EXCEL.EXE', False, False), ('EXCEL.EXE', True, False)):
+        stop_prefix()
+        assert not prefix.is_symlink() and prefix.resolve().is_relative_to(work / 'office-home')
+        shutil.rmtree(prefix)
+        shutil.copytree(baseline, prefix, symlinks=True)
+        assert hives == {name: hashlib.sha256((prefix / name).read_bytes()).hexdigest() for name in hives}
         checked('set-tracing', manager.update_config(config, 'eagle_tracing', tracing, 'Parameters'))
         program, = [item for item in config.External_Programs.values() if item['executable'] == executable]
         program = dict(program)
@@ -122,7 +132,8 @@ try:
         before = set(logs.glob('*.log'))
         sessions = set(logs.glob('*.session'))
         label = f'{len(result["launches"]) + 1}-{executable}-' + ('traced' if tracing else 'plain')
-        launch = {'executable': executable, 'tracing': tracing, 'opening_document': opening, 'started': time.time(),
+        launch = {'executable': executable, 'tracing': tracing, 'opening_document': opening,
+                  'prefix_restored': True, 'started': time.time(),
                   'stop_reason': 'Own app terminated after the observation deadline, then its prefix stopped'}
         result['launches'].append(launch)
         record('launch-' + executable)

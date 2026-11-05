@@ -43,6 +43,8 @@ class OfficeDiagnostics(unittest.TestCase):
         primary = self.temp / 'Diagnostics/WINWORD/Primary.log'
         primary.parent.mkdir(parents=True)
         primary.write_text(self.line('private printer and document', 'Word Print', '4qjru') + '\0' * 1024)
+        os.utime(self.temp / 'owned.log', (10, 10))
+        os.utime(primary, (20, 20))
         (self.root / 'system.reg').write_text('[Software\\\\Microsoft\\\\Office\\\\ClickToRun\\\\Configuration] 42\n'
                                                '"VersionToReport"="16.0.20527.20088"\n"Account"="private-account"\n')
         result = diagnostics.collect(self.root)
