@@ -223,6 +223,8 @@ jobs:
             if test "$architecture" = x86_64; then bits=64; else bits=32; fi
             "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror \
               eagle/tests/target.c -o "$EAGLE_WORK/tests/target$bits.exe"
+            "$architecture-w64-mingw32-gcc" -O0 -g -gdwarf-4 -Wall -Wextra -Werror \
+              eagle/tests/wininet_tls.c -lwininet -lcrypt32 -o "$EAGLE_WORK/tests/wininet-tls$bits.exe"
             "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
               eagle/tests/pause.c -ldbghelp -o "$EAGLE_WORK/tests/pause$bits.exe"
             "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
@@ -286,6 +288,7 @@ jobs:
               fi
             done
             python3 eagle/tests/integration.py -v
+            python3 -S eagle/tests/test_wininet_tls.py -v > "$EAGLE_TEST_ROOT/wininet-tls.log" 2>&1
           ' 2>&1 | tee "$EAGLE_TEST_ROOT/integration.log"
 
       - name: compare FLS callbacks with Windows
@@ -349,6 +352,7 @@ jobs:
             ${{ env.EAGLE_WORK }}/tests/*/manifest.json
             ${{ env.EAGLE_WORK }}/tests/*/events.jsonl
             ${{ env.EAGLE_WORK }}/tests/stderr-*/stderr.log
+            ${{ env.EAGLE_WORK }}/tests/wininet-tls-*/stderr.log
             ${{ env.EAGLE_WORK }}/tests/debug-flags-*.result.json
             ${{ env.EAGLE_WORK }}/package/share/eagle/build.json
             ${{ env.EAGLE_WORK }}/office-results/*.json
