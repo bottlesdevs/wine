@@ -183,7 +183,7 @@ jobs:
           if os.environ.get('OFFICE_REPRODUCTION') == 'true':
               names = subprocess.check_output(['git', 'ls-files', '-z', '--', 'eagle']).decode().split('\0')
               for name in names:
-                  if name and not name.startswith('eagle/tests/') and name != 'eagle/dap.py':
+                  if name and not name.startswith('eagle/tests/') and name not in ('eagle/dap.py', 'eagle/native/debugger.c'):
                       assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == sources['sources']['recipe']['files'][name], name
           for name, record in json.loads((root / 'files.json').read_text()).items():
               assert not Path(name).is_absolute() and '..' not in Path(name).parts
@@ -197,6 +197,21 @@ jobs:
           with Path(os.environ['GITHUB_ENV']).open('a') as file:
               file.write(f'EAGLE_RUNTIME={runner}/bin/wine\n')
           PY
+
+      - name: compose Office test collectors
+        if: inputs.office_reproduction == true
+        run: |
+          python3 -B .github/tests/test-soda-office.py
+          mkdir "$EAGLE_WORK/office-debugger"
+          for architecture in x86_64 i686; do
+            if test "$architecture" = x86_64; then bits=64; else bits=32; fi
+            "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
+              eagle/native/debugger.c -ldbghelp -o "$EAGLE_WORK/office-debugger/eagle-debug$bits.exe"
+          done
+          python3 -S .github/soda-office-compose.py "${EAGLE_RUNTIME%/bin/wine}" "$EAGLE_WORK/office-debugger" \
+            > "$EAGLE_WORK/tests/runtime-composition.json"
+          runner="$(jq -er '.runner' "$EAGLE_WORK/tests/runtime-composition.json")"
+          echo "EAGLE_RUNTIME=$runner/bin/wine" >> "$GITHUB_ENV"
 
       - name: build debugger fixtures
         if: inputs.office_reproduction != true
@@ -300,6 +315,7 @@ jobs:
           image=ghcr.io/bottlesdevs/bottles@sha256:62d481f926b6f06160cfd3f442c6d1fb6f12a8b0e7efc470ae541b2cc7ab1660
           docker pull --platform linux/amd64 "$image"
           cp .github/soda-office-smoke.py "$EAGLE_WORK/office-smoke.py"
+          cp .github/soda-office-diagnostics.py "$EAGLE_WORK/office-diagnostics.py"
           mkdir "$EAGLE_WORK/office-home"
           mkdir -m 700 "$EAGLE_WORK/office-runtime"
           xvfb-run -a -s '-screen 0 1440x900x24' \

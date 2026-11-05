@@ -108,15 +108,21 @@ try:
     checked('enable-tracing', manager.update_config(config, 'eagle_tracing', True, 'Parameters'))
     record('stop-installer-prefix', cleanup=stop_prefix())
     logs = prefix / 'logs/runs'
-    for executable, tracing in (('WINWORD.EXE', True), ('EXCEL.EXE', True),
-                                ('EXCEL.EXE', False), ('EXCEL.EXE', True),
-                                ('EXCEL.EXE', False)):
+    document = prefix / 'drive_c/office-reproduction.rtf'
+    document.write_text(r'{\rtf1\ansi\deff0 {\fonttbl {\f0 Arial;}}\f0\fs24 Office document opening test.\par Second paragraph.}', encoding='ascii')
+    record('prepare-document', document_sha256=hashlib.sha256(document.read_bytes()).hexdigest())
+    for executable, tracing, opening in (('WINWORD.EXE', True, False), ('WINWORD.EXE', False, False),
+                                         ('WINWORD.EXE', True, True), ('WINWORD.EXE', False, True),
+                                         ('EXCEL.EXE', True, False)):
         checked('set-tracing', manager.update_config(config, 'eagle_tracing', tracing, 'Parameters'))
         program, = [item for item in config.External_Programs.values() if item['executable'] == executable]
+        program = dict(program)
+        if opening:
+            program.update(arguments='"C:\\office-reproduction.rtf"', arguments_enabled=True)
         before = set(logs.glob('*.log'))
         sessions = set(logs.glob('*.session'))
         label = f'{len(result["launches"]) + 1}-{executable}-' + ('traced' if tracing else 'plain')
-        launch = {'executable': executable, 'tracing': tracing, 'started': time.time(),
+        launch = {'executable': executable, 'tracing': tracing, 'opening_document': opening, 'started': time.time(),
                   'stop_reason': 'Own app terminated after the observation deadline, then its prefix stopped'}
         result['launches'].append(launch)
         record('launch-' + executable)
@@ -172,6 +178,10 @@ try:
                 diagnostics.append({'file': name, 'bytes': len(data),
                                     'sha256': hashlib.sha256(data).hexdigest()})
         launch['stderr'] = diagnostics
+        office_log = label + '-office-metadata.json'
+        subprocess.run([sys.executable, str(work / 'office-diagnostics.py'), str(prefix),
+                        str(output / office_log), str(launch['started'])], check=True, timeout=20)
+        launch['office_metadata'] = office_log
         assert saved or not tracing, executable + ': no Eagle log collected'
         record('captured-' + executable)
         assert not launch['launcher_pending'], executable + ': launcher did not finish after cleanup'
