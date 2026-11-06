@@ -60,6 +60,7 @@ try:
     (output / 'installer.json').write_text(json.dumps(manifest, indent=2) + '\n')
     checked('install-office', manager.installer_manager.install(
         config, (installer, manager.supported_installers[installer]),
+        step_fn=lambda *args: record('install-step'),
         log_fn=lambda text: print(text, flush=True)))
     files = {}
     for entry in manifest['Executables']:
