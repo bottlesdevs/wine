@@ -20,6 +20,7 @@ result = {'installed': False, 'captures_collected': False, 'steps': [], 'launche
           'scope': 'Fresh anonymous bottle using the published Bottles package and normal installer. Each launch restores the same stopped post-install prefix. X11 software rendering in CI; not the cpak supervisor or a signed-in user profile.'}
 config = None
 prefix = None
+launcher_comparison = os.environ.get('OFFICE_LAUNCHER_COMPARISON') == 'true'
 
 
 def record(stage, **fields):
@@ -70,28 +71,39 @@ def profile_controls():
     diagnostics = work / 'office-profile-stderr'
     diagnostics.mkdir()
     checked('disable-tracing', manager.update_config(config, 'eagle_tracing', False, 'Parameters'))
+    cases = [(profile, False) for profile in ('plain', 'plain-no-logs', 'crash', 'loader', 'com', 'wait', 'trace')]
+    if launcher_comparison:
+        launcher, = [path for path in target.parent.parent.rglob('*') if path.name.lower() == 'appvlp.exe']
+        assert launcher.is_file() and not launcher.is_symlink() and launcher.resolve().is_relative_to(prefix / 'drive_c')
+        record('office-launcher', office_launcher={'path': str(launcher.relative_to(prefix)),
+                                                   'sha256': hashlib.sha256(launcher.read_bytes()).hexdigest()})
+        cases = [(profile, wrapped) for profile in ('plain-no-logs', 'trace') for wrapped in (False, True)]
     for attempt in range(1, 4):
-        for profile in ('plain', 'plain-no-logs', 'crash', 'loader', 'com', 'wait', 'trace'):
+        for profile, wrapped in cases:
             restore_prefix()
-            executor = WineExecutor(config=config, exec_path=str(target), environment={}, program_winebridge=False)
+            launched = launcher if wrapped else target
+            application_args = [r'C:\office-reproduction.rtf']
+            if wrapped:
+                application_args.insert(0, 'C:\\' + target.relative_to(prefix / 'drive_c').as_posix().replace('/', '\\'))
+            executor = WineExecutor(config=config, exec_path=str(launched), environment={}, program_winebridge=False)
             command = WineCommand(config, command='', environment=executor.environment, cwd=str(target.parent), minimal=True)
             assert Path(command.env['WINEPREFIX']).resolve() == prefix.resolve()
             if profile == 'plain-no-logs':
                 command.env['WINEDEBUG'] = '-all'
-            label = f'profile-{profile}-{attempt}'
+            label = f'profile-{profile}-{attempt}' if not wrapped else f'profile-appvlp-{profile}-{attempt}'
             bundle = work / 'office-profile-sessions' / label
             destination = output / (label + '.log')
             before = set(logs.glob('*.session'))
             if profile in ('plain', 'plain-no-logs'):
-                arguments = [str(runner / 'bin/wine'), str(target), r'C:\office-reproduction.rtf']
+                arguments = [str(runner / 'bin/wine'), str(launched), *application_args]
             elif profile == 'trace':
                 arguments = [eagle, 'trace', '--wine', str(runner / 'bin/wine'), '--prefix', str(prefix),
-                             '--logs', str(logs), '--cwd', str(target.parent), '--', str(target), r'C:\office-reproduction.rtf']
+                             '--logs', str(logs), '--cwd', str(target.parent), '--', str(launched), *application_args]
             else:
                 arguments = [eagle, 'run', '--wine', str(runner / 'bin/wine'), '--prefix', str(prefix),
                              '--session', str(bundle), '--timeout', '60', '--profile', profile,
-                             str(target), r'C:\office-reproduction.rtf']
-            row = {'profile': profile, 'attempt': attempt, 'route': 'direct target', 'winebridge': False,
+                             str(launched), *application_args]
+            row = {'profile': profile, 'attempt': attempt, 'route': 'office launcher' if wrapped else 'direct target', 'winebridge': False,
                    'wine_debug': command.env.get('WINEDEBUG') if profile in ('plain', 'plain-no-logs') else '-all',
                    'prefix_restored': True, 'observation_seconds': 20, 'started': time.time()}
             reports.append(row)
@@ -223,10 +235,13 @@ try:
     hives = {name: hashlib.sha256((baseline / name).read_bytes()).hexdigest()
              for name in ('system.reg', 'user.reg', 'userdef.reg')}
     record('prefix-baseline', registry_baseline=hives)
-    for executable, tracing, opening in (('WINWORD.EXE', False, False), ('WINWORD.EXE', True, False),
-                                         ('WINWORD.EXE', False, 'rtf'), ('WINWORD.EXE', True, 'rtf'),
-                                         ('WINWORD.EXE', False, 'docx'), ('WINWORD.EXE', True, 'docx'),
-                                         ('EXCEL.EXE', False, False), ('EXCEL.EXE', True, False)):
+    launches = (('WINWORD.EXE', False, False), ('WINWORD.EXE', True, False),
+                ('WINWORD.EXE', False, 'rtf'), ('WINWORD.EXE', True, 'rtf'),
+                ('WINWORD.EXE', False, 'docx'), ('WINWORD.EXE', True, 'docx'),
+                ('EXCEL.EXE', False, False), ('EXCEL.EXE', True, False))
+    if launcher_comparison:
+        launches = ()
+    for executable, tracing, opening in launches:
         restore_prefix()
         checked('set-tracing', manager.update_config(config, 'eagle_tracing', tracing, 'Parameters'))
         program, = [item for item in config.External_Programs.values() if item['executable'] == executable]
