@@ -23,6 +23,11 @@ on:
         required: false
         type: boolean
         default: false
+      office_offreg_control:
+        description: 'Compare ARM installer retry with its own OffReg in system32'
+        required: false
+        type: boolean
+        default: false
       architecture:
         description: 'Candidate architecture'
         required: true
@@ -2699,6 +2704,8 @@ jobs:
 
       - name: install in an anonymous ARM bottle
         shell: bash
+        env:
+          OFFICE_OFFREG_CONTROL: ${{ inputs.office_offreg_control }}
         run: |
           image=ghcr.io/bottlesdevs/bottles@sha256:62d481f926b6f06160cfd3f442c6d1fb6f12a8b0e7efc470ae541b2cc7ab1660
           docker pull --platform linux/arm64 "$image"
@@ -2715,6 +2722,7 @@ jobs:
               --env "XDG_CONFIG_HOME=$OFFICE_WORK/office-home/config" \
               --env "XDG_CACHE_HOME=$OFFICE_WORK/office-home/cache" \
               --env "XDG_RUNTIME_DIR=$OFFICE_WORK/office-runtime" \
+              --env OFFICE_OFFREG_CONTROL \
               --env PERSONAL_DEPENDENCIES=https://raw.githubusercontent.com/bottlesdevs/dependencies/79d3db76c517d25812af1e33c5baf4aefe963ceb/ \
               --env PERSONAL_INSTALLERS=https://raw.githubusercontent.com/bottlesdevs/programs/e137e8db4b838ff5049c10c1f8203ee12c31de2c/ \
               --env "TMPDIR=$OFFICE_WORK/scratch" --env "TMP=$OFFICE_WORK/scratch" --env "TEMP=$OFFICE_WORK/scratch" \

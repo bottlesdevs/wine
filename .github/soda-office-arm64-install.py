@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -58,10 +59,34 @@ try:
     manifest = manager.installer_manager.get_installer(installer)
     assert isinstance(manifest, dict)
     (output / 'installer.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    checked('install-office', manager.installer_manager.install(
-        config, (installer, manager.supported_installers[installer]),
-        step_fn=lambda *args: record('install-step'),
-        log_fn=lambda text: print(text, flush=True)))
+    def install_office():
+        return manager.installer_manager.install(
+            config, (installer, manager.supported_installers[installer]),
+            step_fn=lambda *args: record('install-step'),
+            log_fn=lambda text: print(text, flush=True))
+
+    installed = install_office()
+    if not installed.ok and os.environ.get('OFFICE_OFFREG_CONTROL') == 'true':
+        record('baseline-failed', baseline_error=installed.message)
+        installed = install_office()
+        record('retry-without-copy', retry_without_copy_ok=installed.ok)
+        if not installed.ok:
+            for argument in ('-k', '-w'):
+                stopped = subprocess.run([str(runner / 'bin/wineserver'), argument],
+                                         env=dict(os.environ, WINEPREFIX=str(prefix)), timeout=30)
+                assert stopped.returncode in ((0, 1) if argument == '-k' else (0,))
+            source = prefix / 'drive_c/Program Files/Common Files/Microsoft Shared/ClickToRun/offreg.dll'
+            destination = prefix / 'drive_c/windows/system32/OffReg.dll'
+            assert source.is_file() and not source.is_symlink()
+            assert not any(path.name.casefold() == 'offreg.dll' for path in destination.parent.iterdir())
+            shutil.copyfile(source, destination)
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            assert hashlib.sha256(destination.read_bytes()).hexdigest() == digest
+            record('stage-owned-offreg', offreg_copy={'source': str(source.relative_to(prefix)),
+                                                     'destination': str(destination.relative_to(prefix)),
+                                                     'sha256': digest})
+            installed = install_office()
+    checked('install-office', installed)
     files = {}
     for entry in manifest['Executables']:
         path = prefix / 'drive_c' / entry['path']
