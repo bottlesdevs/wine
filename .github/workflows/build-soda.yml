@@ -375,6 +375,44 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  offreg-cabinet:
+    if: inputs.architecture == 'offreg-reference' && inputs.winrt_http_reference != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: inspect the existing Office dependency cabinet
+        shell: bash
+        run: |
+          work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-offreg-cabinet"
+          mkdir -p "$work/results" "$work/scratch" "$work/selected"
+          printf 'OFFREG_CAB_WORK=%s\nTMPDIR=%s/scratch\nTMP=%s/scratch\nTEMP=%s/scratch\n' \
+            "$work" "$work" "$work" "$work" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cabextract
+          curl --fail --location --retry 3 \
+            https://download.windowsupdate.com/msdownload/update/software/svpk/2011/02/windows6.1-kb976932-x64_74865ef2562006e51d7f9333b4a8d45b7a749dab.exe \
+            -o "$work/source.exe"
+          printf '%s  %s\n' 28d3932f714bf71d78e75d36aa2e0fb8 "$work/source.exe" | md5sum --check -
+          sha256sum "$work/source.exe" > "$work/results/source.sha256"
+          cabextract -l "$work/source.exe" > "$work/members.txt"
+          python3 - "$work" <<'PYTHON'
+          from pathlib import Path
+          import sys
+          work = Path(sys.argv[1])
+          rows = [line for line in (work / 'members.txt').read_text().splitlines() if 'offreg' in line.casefold()]
+          (work / 'results/offreg-members.txt').write_text('\n'.join(rows) + '\n')
+          print('\n'.join(rows) if rows else 'No OffReg member in the existing dependency cabinet')
+          PYTHON
+          rm "$work/source.exe" "$work/members.txt"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.OFFREG_CAB_WORK != ''
+        with:
+          name: offreg-cabinet-${{ github.sha }}
+          path: ${{ env.OFFREG_CAB_WORK }}/results
+          if-no-files-found: error
+          retention-days: 7
+
   offreg-reference:
     if: inputs.architecture == 'offreg-reference' && inputs.winrt_http_reference != true
     runs-on: windows-2022
