@@ -87,6 +87,12 @@ int main(int argc, char **argv)
         CertCloseStore(store, 0);
         return 6;
     }
+    if (!CertControlStore(store, 0, CERT_STORE_CTRL_COMMIT, NULL))
+    {
+        CertDeleteCertificateFromStore(certificate);
+        CertCloseStore(store, 0);
+        return 8;
+    }
     start = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (!start) ok = FALSE;
     else
