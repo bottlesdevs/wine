@@ -67,6 +67,28 @@ class OfficeDiagnostics(unittest.TestCase):
         (self.temp / 'external.log').symlink_to(outside)
         self.assertEqual(diagnostics.collect(self.root, since=2)['events'], [])
 
+    def test_clicktorun_flat_failure_keeps_codes_without_error_message(self):
+        message = json.dumps({'Name': 'Office.ClickToRun.VirtualRegistry.MergeAndStageRegistry',
+                              'Success': False, 'Duration': 607245, 'Result.Code': 30117,
+                              'Data.ErrorCode': 126, 'Data.ErrorMessage': 'private-path',
+                              'CV': 'private-correlation'})
+        self.assertEqual(diagnostics.event_metadata(self.line('ActivityEnded ' + message)), {
+            'activity': 'Office.ClickToRun.VirtualRegistry.MergeAndStageRegistry',
+            'Success': False, 'Duration': 607245, 'result_code': 30117, 'error_code': 126,
+        })
+
+    def test_failure_codes_accept_only_integers_in_both_formats(self):
+        for code in (126, 'private-token', True, None, {'secret': 'private-token'}):
+            for fields in ({'Name': 'Office.Test.Failure', 'Result.Code': code, 'Data.ErrorCode': code},
+                           {'EventName': 'Office.Test.Failure', 'Activity': {'Result': {'Code': code}},
+                            'Data': {'ErrorCode': code}}):
+                with self.subTest(code=code, fields=fields):
+                    result = diagnostics.event_metadata(self.line(json.dumps(fields)))
+                    expected = {'activity': 'Office.Test.Failure'}
+                    if type(code) is int:
+                        expected.update(result_code=code, error_code=code)
+                    self.assertEqual(result, expected)
+
     def test_limits_and_invalid_activity_values_remain_explicit(self):
         message = json.dumps({'EventName': 'Office.Text.Sample', 'Activity': {
             'Duration': 10**300, 'Success': 'private-token', 'Count': float('nan')}})

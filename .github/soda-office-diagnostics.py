@@ -84,7 +84,7 @@ def collect(prefix, since=0):
     events = deque(maxlen=EVENT_LIMIT)
     result = {'schema': 1, 'office_version': office_version(prefix), 'files_considered': len(paths),
               'files_omitted': max(0, len(paths) - FILE_LIMIT), 'files_truncated': 0,
-              'events_omitted': 0, 'scope': 'Bounded Office activity/category metadata; message, Data, correlation, user and path fields omitted'}
+              'events_omitted': 0, 'scope': 'Bounded Office activity/category metadata and numeric failure codes; free-form messages, correlation, user and path fields omitted'}
     for path in paths[-FILE_LIMIT:]:
         with path.open('rb') as file:
             raw = file.read(BYTE_LIMIT + 1)
