@@ -46,9 +46,10 @@ def event_metadata(line):
             data = json.loads(message[start:])
         except ValueError:
             data = None
-        if isinstance(data, dict) and re.fullmatch(r'Office\.[A-Za-z0-9_.]{1,180}', str(data.get('EventName', ''))):
-            row['activity'] = data['EventName']
-            activity = data.get('Activity')
+        name = data.get('EventName', data.get('Name', '')) if isinstance(data, dict) else ''
+        if re.fullmatch(r'Office\.[A-Za-z0-9_.]{1,180}', str(name)):
+            row['activity'] = name
+            activity = data.get('Activity', data)
             if isinstance(activity, dict):
                 for key in ('Duration', 'Count', 'Success', 'AggMode'):
                     value = activity.get(key)
@@ -56,6 +57,16 @@ def event_metadata(line):
                         row[key] = value
                     elif key != 'Success' and type(value) in (int, float) and 0 <= value <= 10**16 and math.isfinite(value):
                         row[key] = value
+                outcome = activity.get('Result')
+                if isinstance(outcome, dict) and type(outcome.get('Code')) is int:
+                    row['result_code'] = outcome['Code']
+                if type(activity.get('Result.Code')) is int:
+                    row['result_code'] = activity['Result.Code']
+                if type(activity.get('Data.ErrorCode')) is int:
+                    row['error_code'] = activity['Data.ErrorCode']
+            details = data.get('Data')
+            if isinstance(details, dict) and type(details.get('ErrorCode')) is int:
+                row['error_code'] = details['ErrorCode']
     return row or None
 
 
