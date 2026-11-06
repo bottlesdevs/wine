@@ -56,6 +56,8 @@ class WininetTLS(unittest.TestCase):
                                                 f'crlDistributionPoints=URI:http://127.0.0.1:{revocation.server_port}/fixture.crl\n')
             for command in commands:
                 subprocess.run(['openssl', *command], cwd=directory, check=True, capture_output=True, timeout=30)
+            with (directory / 'server.pem').open('ab') as chain:
+                chain.write((directory / 'ca.pem').read_bytes())
             revocation_thread = threading.Thread(target=revocation.serve_forever, daemon=True)
             revocation_thread.start()
             self.addCleanup(revocation_thread.join, 5)
