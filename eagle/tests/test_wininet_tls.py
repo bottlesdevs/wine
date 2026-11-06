@@ -3,6 +3,7 @@ import http.server
 import json
 import os
 from pathlib import Path
+import socket
 import ssl
 import subprocess
 import sys
@@ -52,7 +53,7 @@ class WininetTLS(unittest.TestCase):
                 ['ca', '-gencrl', '-config', 'ca.conf', '-out', 'fixture.pem'],
                 ['crl', '-in', 'fixture.pem', '-outform', 'DER', '-out', 'fixture.crl'],
             ]
-            (directory / 'server.ext').write_text('basicConstraints=critical,CA:FALSE\nsubjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\n'
+            (directory / 'server.ext').write_text('basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\n'
                                                 f'crlDistributionPoints=URI:http://127.0.0.1:{revocation.server_port}/fixture.crl\n')
             for command in commands:
                 subprocess.run(['openssl', *command], cwd=directory, check=True, capture_output=True, timeout=30)
@@ -82,9 +83,22 @@ class WininetTLS(unittest.TestCase):
             context.minimum_version = ssl.TLSVersion.TLSv1_2
             context.load_cert_chain(directory / 'server.pem', directory / 'server.key')
             server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+            self.addCleanup(server.server_close)
+            class IPv6Server(http.server.ThreadingHTTPServer):
+                address_family = socket.AF_INET6
+
+                def server_bind(self):
+                    self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                    super().server_bind()
+
+            server6 = IPv6Server(('::1', server.server_port), Handler)
+            self.addCleanup(server6.server_close)
             server.socket = context.wrap_socket(server.socket, server_side=True)
+            server6.socket = context.wrap_socket(server6.socket, server_side=True)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread6 = threading.Thread(target=server6.serve_forever, daemon=True)
             thread.start()
+            thread6.start()
             rows = []
             try:
                 for bits in (32, 64):
@@ -123,8 +137,11 @@ class WininetTLS(unittest.TestCase):
                             self.assertEqual(len(received), 16)
             finally:
                 server.shutdown()
+                server6.shutdown()
                 server.server_close()
+                server6.server_close()
                 thread.join(timeout=5)
+                thread6.join(timeout=5)
 
 
 if __name__ == '__main__':

@@ -22,7 +22,7 @@ static BOOL request(void)
     if (!InternetSetOptionW(session, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout)) ||
         !InternetSetOptionW(session, INTERNET_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout)) ||
         !InternetSetOptionW(session, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout))) goto done;
-    connection = InternetConnectW(session, L"127.0.0.1", port, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
+    connection = InternetConnectW(session, L"localhost", port, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
     if (!connection) goto done;
     request = HttpOpenRequestW(connection, L"GET", L"/owned-fixture", NULL, NULL, NULL,
                               INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_AUTO_REDIRECT, 0);
