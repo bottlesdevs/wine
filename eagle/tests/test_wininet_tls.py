@@ -21,17 +21,45 @@ class WininetTLS(unittest.TestCase):
     def test_loopback_certificate_chain_with_and_without_providers(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             directory = Path(directory)
+            class RevocationHandler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path != '/fixture.crl':
+                        self.send_error(404)
+                        return
+                    body = (directory / 'fixture.crl').read_bytes()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/pkix-crl')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, *args):
+                    pass
+
+            revocation = http.server.ThreadingHTTPServer(('127.0.0.1', 0), RevocationHandler)
+            self.addCleanup(revocation.server_close)
+            (directory / 'index').write_text('')
+            (directory / 'crlnumber').write_text('01\n')
+            (directory / 'ca.conf').write_text('[ca]\ndefault_ca=fixture\n[fixture]\ndatabase=index\ncertificate=ca.pem\nprivate_key=ca.key\ncrlnumber=crlnumber\ndefault_md=sha256\ndefault_crl_days=1\n')
             commands = [
                 ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=Eagle owned root',
-                 '-keyout', 'ca.key', '-out', 'ca.pem', '-addext', 'basicConstraints=critical,CA:TRUE'],
+                 '-keyout', 'ca.key', '-out', 'ca.pem', '-addext', 'basicConstraints=critical,CA:TRUE',
+                 '-addext', 'keyUsage=critical,keyCertSign,cRLSign'],
                 ['req', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=localhost', '-keyout', 'server.key', '-out', 'server.csr'],
                 ['x509', '-req', '-in', 'server.csr', '-CA', 'ca.pem', '-CAkey', 'ca.key', '-CAcreateserial',
                  '-days', '1', '-out', 'server.pem', '-extfile', 'server.ext'],
                 ['x509', '-in', 'ca.pem', '-outform', 'DER', '-out', 'ca.der'],
+                ['ca', '-gencrl', '-config', 'ca.conf', '-out', 'fixture.pem'],
+                ['crl', '-in', 'fixture.pem', '-outform', 'DER', '-out', 'fixture.crl'],
             ]
-            (directory / 'server.ext').write_text('basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\n')
+            (directory / 'server.ext').write_text('basicConstraints=critical,CA:FALSE\nsubjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\n'
+                                                f'crlDistributionPoints=URI:http://127.0.0.1:{revocation.server_port}/fixture.crl\n')
             for command in commands:
                 subprocess.run(['openssl', *command], cwd=directory, check=True, capture_output=True, timeout=30)
+            revocation_thread = threading.Thread(target=revocation.serve_forever, daemon=True)
+            revocation_thread.start()
+            self.addCleanup(revocation_thread.join, 5)
+            self.addCleanup(revocation.shutdown)
             requests = []
             lock = threading.Lock()
             class Handler(http.server.BaseHTTPRequestHandler):
