@@ -353,7 +353,7 @@ jobs:
             ${{ env.EAGLE_WORK }}/tests/*/events.jsonl
             ${{ env.EAGLE_WORK }}/tests/stderr-*/stderr.log
             ${{ env.EAGLE_WORK }}/tests/wininet-tls-*/stderr.log
-            ${{ env.EAGLE_WORK }}/tests/debug-flags-*.result.json
+            ${{ env.EAGLE_WORK }}/tests/*debug-flags-*.result.json
             ${{ env.EAGLE_WORK }}/package/share/eagle/build.json
             ${{ env.EAGLE_WORK }}/office-results/*.json
             ${{ env.EAGLE_WORK }}/office-results/*.log

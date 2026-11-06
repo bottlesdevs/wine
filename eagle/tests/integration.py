@@ -173,6 +173,24 @@ class Integration(unittest.TestCase):
                     self.assertFalse(any(item['kind'] == 'exception' and not item['first_chance'] for item in events))
                     self.assertEqual(json.loads(marker.read_text()), {'threads': 8, 'lookups': 1024, 'calls': 2048})
 
+    def test_wait_observer_preserves_expanded_thread_local_storage(self):
+        for bits in (32, 64):
+            for profile in ('crash', 'wait', 'trace'):
+                with self.subTest(bits=bits, profile=profile):
+                    name = f'tls-crypto-debug-flags-{bits}-{profile}'
+                    root = ROOT / name
+                    marker = ROOT / (name + '.result.json')
+                    capture(WINE, ROOT / 'prefix', root, target=ROOT / f'target{bits}.exe',
+                            arguments=['tls-crypto-debug-flags', windows_path(marker, ROOT / 'prefix')],
+                            timeout=30, profile=profile)
+                    manifest, events = read_bundle(root)
+                    self.assertTrue(manifest['completed'])
+                    self.assertEqual(manifest['dropped_events'], 0)
+                    self.assertEqual([item['code'] for item in events if item['kind'] == 'process_exit'], [0])
+                    self.assertFalse(any(item['kind'] == 'exception' and not item['first_chance'] for item in events))
+                    self.assertEqual(json.loads(marker.read_text()),
+                                     {'threads': 8, 'lookups': 1024, 'calls': 2048, 'tls_slots': 80})
+
     def test_stderr_tail_survives_real_x86_and_x64_targets(self):
         tail = b'\neagle stderr tail\xff\x00\n'
         for bits in (32, 64):

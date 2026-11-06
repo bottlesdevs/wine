@@ -63,6 +63,8 @@ __declspec(noinline) ULONG_PTR eagle_register_arguments(ULONG_PTR first, ULONG_P
 
 enum { DEBUG_WORKERS = 8, DEBUG_LOOKUPS = 128 };
 static BOOL crypto_debug;
+static DWORD tls_slots[80];
+static unsigned tls_count;
 
 struct debug_channel
 {
@@ -73,7 +75,10 @@ struct debug_channel
 static DWORD WINAPI debug_channel_worker(void *argument)
 {
     unsigned char (__cdecl *get_flags)(struct debug_channel *);
+    DWORD thread_id = GetCurrentThreadId();
     unsigned i;
+    for (i = 0; i < tls_count; i++)
+        if (!TlsSetValue(tls_slots[i], (void *)(ULONG_PTR)thread_id)) return 6;
     if (WaitForSingleObject(argument, 10000) != WAIT_OBJECT_0) return 1;
     if (crypto_debug)
     {
@@ -92,19 +97,29 @@ static DWORD WINAPI debug_channel_worker(void *argument)
         if (!get_flags) return 2;
         if (get_flags(&channel) || channel.flags || get_flags(&channel)) return 3;
     }
+    for (i = 0; i < tls_count; i++)
+        if (TlsGetValue(tls_slots[i]) != (void *)(ULONG_PTR)thread_id) return 7;
     return 0;
 }
 
 int main(int argc, char **argv)
 {
-    if (argc > 2 && (!strcmp(argv[1], "debug-flags") || !strcmp(argv[1], "crypto-debug-flags")))
+    if (argc > 2 && (!strcmp(argv[1], "debug-flags") || !strcmp(argv[1], "crypto-debug-flags") ||
+                     !strcmp(argv[1], "tls-crypto-debug-flags")))
     {
         HANDLE start = CreateEventW(NULL, TRUE, FALSE, NULL), workers[DEBUG_WORKERS];
         DWORD code;
         unsigned i;
         FILE *result;
-        crypto_debug = !strcmp(argv[1], "crypto-debug-flags");
+        crypto_debug = strcmp(argv[1], "debug-flags") != 0;
         if (!start) return 31;
+        if (!strcmp(argv[1], "tls-crypto-debug-flags"))
+            for (tls_count = 0; tls_count < ARRAYSIZE(tls_slots); tls_count++)
+            {
+                tls_slots[tls_count] = TlsAlloc();
+                if (tls_slots[tls_count] == TLS_OUT_OF_INDEXES ||
+                    !TlsSetValue(tls_slots[tls_count], (void *)(ULONG_PTR)(tls_count + 1))) return 37;
+            }
         for (i = 0; i < DEBUG_WORKERS; ++i)
             if (!(workers[i] = CreateThread(NULL, 0, debug_channel_worker, start, 0, NULL))) return 32;
         if (!SetEvent(start) || WaitForMultipleObjects(DEBUG_WORKERS, workers, TRUE, 30000) != WAIT_OBJECT_0) return 33;
@@ -114,9 +129,13 @@ int main(int argc, char **argv)
             CloseHandle(workers[i]);
         }
         CloseHandle(start);
+        for (i = 0; i < tls_count; i++)
+            if (TlsGetValue(tls_slots[i]) != (void *)(ULONG_PTR)(i + 1) || !TlsFree(tls_slots[i])) return 38;
         if (!(result = fopen(argv[2], "w"))) return 35;
-        fprintf(result, "{\"threads\":%u,\"lookups\":%u,\"calls\":%u}\n",
+        fprintf(result, "{\"threads\":%u,\"lookups\":%u,\"calls\":%u",
                 DEBUG_WORKERS, DEBUG_WORKERS * DEBUG_LOOKUPS, DEBUG_WORKERS * DEBUG_LOOKUPS * 2);
+        if (tls_count) fprintf(result, ",\"tls_slots\":%u", tls_count);
+        fputs("}\n", result);
         return fclose(result) ? 36 : 0;
     }
     if (argc > 1 && !strcmp(argv[1], "registers"))
