@@ -41,6 +41,7 @@ on:
           - dbghelp-reference
           - typelib-reference
           - fls-reference
+          - offreg-reference
           - eagle-debugger
         default: x86_64
       pgo:
@@ -368,6 +369,59 @@ jobs:
             ${{ env.EAGLE_WORK }}/office-results/*.png
           retention-days: 7
           if-no-files-found: warn
+
+  offreg-reference:
+    if: inputs.architecture == 'offreg-reference' && inputs.winrt_http_reference != true
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - name: check native offline registry library
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:USERPROFILE "artifacts/Soda-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-offreg"
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          "OFFREG_WORK=$work" | Add-Content $env:GITHUB_ENV
+          Add-Type @'
+          using System;
+          using System.Text;
+          using System.Runtime.InteropServices;
+          public static class OffregReference {
+              [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+              public static extern IntPtr LoadLibraryW(string name);
+              [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+              public static extern uint GetModuleFileNameW(IntPtr module, StringBuilder name, int size);
+              [DllImport("kernel32.dll")]
+              public static extern bool FreeLibrary(IntPtr module);
+          }
+          '@
+          $module = [OffregReference]::LoadLibraryW('OffReg.dll')
+          $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+          $record = @{os=[Environment]::OSVersion.VersionString; load_succeeded=($module -ne [IntPtr]::Zero)}
+          if ($module -eq [IntPtr]::Zero) {
+            $record.error_code = $errorCode
+          } else {
+            $path = [Text.StringBuilder]::new(1024)
+            if ([OffregReference]::GetModuleFileNameW($module, $path, $path.Capacity) -eq 0) { throw 'Module path unavailable' }
+            $file = Get-Item $path.ToString()
+            $record.module = $file.FullName
+            $record.version = $file.VersionInfo.FileVersion
+            $record.sha256 = (Get-FileHash -Algorithm SHA256 $file.FullName).Hash.ToLower()
+            [void][OffregReference]::FreeLibrary($module)
+          }
+          foreach ($directory in @('System32', 'SysWOW64')) {
+            $record[$directory] = Test-Path (Join-Path $env:WINDIR "$directory/OffReg.dll")
+          }
+          $record | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $work 'results.json')
+          Get-Content (Join-Path $work 'results.json')
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.OFFREG_WORK != ''
+        with:
+          name: offreg-reference-${{ github.sha }}
+          path: ${{ env.OFFREG_WORK }}/results.json
+          if-no-files-found: error
+          retention-days: 7
 
   fls-reference:
     if: inputs.architecture == 'fls-reference' && inputs.winrt_http_reference != true
