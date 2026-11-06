@@ -390,7 +390,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cabextract
           curl --fail --location --retry 3 \
-            https://download.windowsupdate.com/msdownload/update/software/svpk/2011/02/windows6.1-kb976932-x64_74865ef2562006e51d7f9333b4a8d45b7a749dab.exe \
+            http://download.windowsupdate.com/msdownload/update/software/svpk/2011/02/windows6.1-kb976932-x64_74865ef2562006e51d7f9333b4a8d45b7a749dab.exe \
             -o "$work/source.exe"
           printf '%s  %s\n' 28d3932f714bf71d78e75d36aa2e0fb8 "$work/source.exe" | md5sum --check -
           sha256sum "$work/source.exe" > "$work/results/source.sha256"
