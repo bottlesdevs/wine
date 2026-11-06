@@ -69,7 +69,7 @@ permissions:
 env:
   WINE_VERSION: '11.0'
   LLVM_TOOLS_VERSION: '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80'
-  REVISION: '36-experimental'
+  REVISION: '37-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -87,16 +87,15 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-36 Experimental, codenamed Windows Escape, improves type library loading, Click-to-Run lookups and Eagle crash traces. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-37 Experimental, codenamed Windows Escape, fixes fiber-local storage cleanup and improves Eagle crash reports. It remains a prerelease and does not replace the current stable Soda build.
 
-    - Fixed imported type library lookup between 32-bit and 64-bit applications.
-    - Reduced name and string lookup time when loading large type libraries.
-    - Fixed locale-dependent searches in Click-to-Run component manifests.
-    - Captured null-call stacks before application exception handlers run.
-    - Fixed Eagle pause requests before the initial breakpoint.
-    - Added missing general-purpose registers to Eagle snapshots.
-    - Fixed PE export symbol lookup at addresses inside exported functions.
-    - Added PE export names and offsets to saved Eagle traces.
+    - Fixed cleanup of fiber-local values when freeing FLS slots.
+    - Fixed Eagle reporting a child process exit as the end of the debug session.
+    - Fixed missing Wine stderr in saved Eagle sessions.
+    - Fixed truncated call stacks requested through DAP.
+    - Added executable stack candidates to Eagle reports for jumps to a null address.
+    - Explained missing caller frames in null-address crash reports.
+    - Preserved assembly identities when refreshing runner metadata.
 
 
 jobs:
