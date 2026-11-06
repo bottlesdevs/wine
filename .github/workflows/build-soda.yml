@@ -2760,7 +2760,7 @@ jobs:
               --env "XDG_CACHE_HOME=$OFFICE_WORK/office-home/cache" \
               --env "XDG_RUNTIME_DIR=$OFFICE_WORK/office-runtime" \
               --env OFFICE_OFFREG_CONTROL \
-              --env PERSONAL_DEPENDENCIES=https://raw.githubusercontent.com/bottlesdevs/dependencies/79d3db76c517d25812af1e33c5baf4aefe963ceb/ \
+              --env PERSONAL_DEPENDENCIES=https://raw.githubusercontent.com/bottlesdevs/dependencies/8c72988d1106c0bf788f1d5803844ee7758cee19/ \
               --env PERSONAL_INSTALLERS=https://raw.githubusercontent.com/bottlesdevs/programs/e137e8db4b838ff5049c10c1f8203ee12c31de2c/ \
               --env "TMPDIR=$OFFICE_WORK/scratch" --env "TMP=$OFFICE_WORK/scratch" --env "TEMP=$OFFICE_WORK/scratch" \
               --env DISPLAY --env XAUTHORITY --env LIBGL_ALWAYS_SOFTWARE=1 --env GDK_BACKEND=x11 \
