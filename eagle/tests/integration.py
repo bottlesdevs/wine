@@ -107,6 +107,13 @@ class Integration(unittest.TestCase):
             self.assertFalse(stacks[1]["initial_leaf_return"])
             self.assertEqual(stacks[0]["null_call_return_status"], "recovered")
             self.assertEqual(stacks[1]["null_call_return_status"], "stack-top-zero")
+            candidates = stacks[1]['stack_candidates']
+            self.assertTrue(candidates)
+            self.assertLessEqual(len(candidates), 16)
+            self.assertIn('not unwound frames', stacks[1]['stack_candidates_scope'])
+            self.assertTrue(all(0 < item['stack_offset'] < 128 * (bits // 8) for item in candidates))
+            self.assertTrue(all(item['frame'].get('module') for item in candidates))
+            self.assertEqual(stacks[1]['frames'], [{'address': '0x0', 'symbol': None}])
             self.assertEqual(next(item for item in events if item["kind"] == "process_exit")["code"], 0xc0000005)
 
     def test_handled_null_call_retains_first_chance_stack(self):

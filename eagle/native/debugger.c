@@ -333,6 +333,35 @@ static BOOL null_call_return(HANDLE handle, STACKFRAME64 *stack, CONTEXT *contex
     return TRUE;
 }
 
+static void null_stack_candidates(HANDLE handle, DWORD64 sp)
+{
+    ULONG_PTR addresses[128];
+    MEMORY_BASIC_INFORMATION memory;
+    SIZE_T copied, size;
+    unsigned i, count = 0;
+
+    printf(",\"stack_candidates\":[");
+    if (!VirtualQueryEx(handle, (void *)(ULONG_PTR)sp, &memory, sizeof(memory)) ||
+        memory.State != MEM_COMMIT || (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS))) goto done;
+    size = (ULONG_PTR)memory.BaseAddress + memory.RegionSize - sp;
+    if (size > sizeof(addresses)) size = sizeof(addresses);
+    if (!ReadProcessMemory(handle, (void *)(ULONG_PTR)sp, addresses, size, &copied)) goto done;
+    for (i = 0; i < copied / sizeof(addresses[0]) && count < 16; i++)
+    {
+        ULONG_PTR address = addresses[i];
+        if (!address || !VirtualQueryEx(handle, (void *)address, &memory, sizeof(memory)) ||
+            memory.State != MEM_COMMIT || (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+            !(memory.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) ||
+            !SymGetModuleBase64(handle, address)) continue;
+        if (count++) putchar(',');
+        printf("{\"stack_offset\":%u,\"frame\":", (unsigned)(i * sizeof(addresses[0])));
+        frame(handle, address);
+        putchar('}');
+    }
+done:
+    printf("],\"stack_candidates_scope\":\"executable module addresses in at most 128 stack words; not unwound frames\"");
+}
+
 static void snapshot(DWORD pid, DWORD tid)
 {
     struct process *p = process(pid);
@@ -343,6 +372,7 @@ static void snapshot(DWORD pid, DWORD tid)
         CONTEXT context;
         STACKFRAME64 stack;
         DWORD machine;
+        DWORD64 original_sp;
         unsigned depth, first = 1;
         BOOL leaf_return;
         const char *return_status;
@@ -357,6 +387,7 @@ static void snapshot(DWORD pid, DWORD tid)
         stack.AddrPC.Offset = context.Eip; stack.AddrFrame.Offset = context.Ebp; stack.AddrStack.Offset = context.Esp;
 #endif
         stack.AddrPC.Mode = stack.AddrFrame.Mode = stack.AddrStack.Mode = AddrModeFlat;
+        original_sp = stack.AddrStack.Offset;
         event("snapshot", pid, threads[i].id);
 #ifdef _WIN64
         printf(",\"registers\":{\"ip\":\"0x%llx\",\"sp\":\"0x%llx\",\"bp\":\"0x%llx\",\"ax\":\"0x%llx\",\"bx\":\"0x%llx\",\"cx\":\"0x%llx\",\"dx\":\"0x%llx\",\"si\":\"0x%llx\",\"di\":\"0x%llx\",\"r8\":\"0x%llx\",\"r9\":\"0x%llx\",\"r10\":\"0x%llx\",\"r11\":\"0x%llx\",\"r12\":\"0x%llx\",\"r13\":\"0x%llx\",\"r14\":\"0x%llx\",\"r15\":\"0x%llx\",\"flags\":%lu}", context.Rip, context.Rsp, context.Rbp, context.Rax, context.Rbx, context.Rcx, context.Rdx, context.Rsi, context.Rdi, context.R8, context.R9, context.R10, context.R11, context.R12, context.R13, context.R14, context.R15, context.EFlags);
@@ -382,6 +413,7 @@ static void snapshot(DWORD pid, DWORD tid)
                leaf_return ? "null-call-return+dbghelp" : "dbghelp",
                leaf_return ? "true" : "false", depth == 128 ? "true" : "false");
         if (return_status) { printf(",\"null_call_return_status\":"); string(return_status); }
+        if (return_status && !leaf_return) null_stack_candidates(p->handle, original_sp);
         end_event();
     }
     event("snapshot_complete", pid, tid); printf(",\"scope\":\"%s\"", tid ? "thread" : "process"); end_event();
