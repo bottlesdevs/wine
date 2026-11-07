@@ -682,6 +682,86 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  mlang-runtime:
+    needs: mlang-reference
+    if: inputs.architecture == 'mlang-reference' && inputs.winrt_http_reference != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: prepare codepage control
+        run: |
+          work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-mlang"
+          mkdir -p "$work/scratch" "$HOME/.cache/soda-runners/37"
+          printf 'MLANG_WORK=%s\nTMPDIR=%s/scratch\nTMP=%s/scratch\nTEMP=%s/scratch\n' \
+            "$work" "$work" "$work" "$work" >> "$GITHUB_ENV"
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth \
+            libc6:i386 libgcc-s1:i386 libunwind8:i386 \
+            libfreetype6:amd64 libfreetype6:i386 libfontconfig1:amd64 libfontconfig1:i386 \
+            libx11-6:amd64 libx11-6:i386 libxext6:amd64 libxext6:i386 \
+            libxrender1:amd64 libxrender1:i386 libxrandr2:amd64 libxrandr2:i386 \
+            libxi6:amd64 libxi6:i386 libxcursor1:amd64 libxcursor1:i386 \
+            libxinerama1:amd64 libxinerama1:i386 libxcomposite1:amd64 libxcomposite1:i386 \
+            libgnutls30t64:amd64 libgnutls30t64:i386 libdbus-1-3:amd64 libdbus-1-3:i386
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: mlang-reference-${{ github.sha }}
+          path: ${{ env.MLANG_WORK }}/reference
+
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/soda-runners/37
+          key: soda-mlang-runtime-476a2230f94c55501bf62171490faa38a5c8060cbe083ed7fe8c4efaff4448b2
+
+      - name: compare published Soda codepage detection
+        run: |
+          archive="$HOME/.cache/soda-runners/37/soda-11.0-37-experimental-x86_64.tar.xz"
+          if ! test -f "$archive"; then
+            curl --fail --location --retry 3 \
+              https://github.com/bottlesdevs/wine/releases/download/soda-11.0-37-experimental/soda-11.0-37-experimental-x86_64.tar.xz \
+              -o "$archive"
+          fi
+          printf '%s  %s\n' 476a2230f94c55501bf62171490faa38a5c8060cbe083ed7fe8c4efaff4448b2 "$archive" | sha256sum --check -
+          tar -xJf "$archive" -C "$MLANG_WORK"
+          export WINEPREFIX="$MLANG_WORK/prefix" WINEDEBUG=fixme-all,+mlang
+          runner="$MLANG_WORK/soda-11.0-37-experimental-x86_64"
+          xvfb-run -a "$runner/bin/wine" wineboot -u
+          for bits in 64 32; do
+            xvfb-run -a "$runner/bin/wine" "$MLANG_WORK/reference/mlang$bits.exe" \
+              > "$MLANG_WORK/mlang$bits.log" 2> "$MLANG_WORK/mlang$bits.stderr"
+          done
+          "$runner/bin/wineserver" -w
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          work = Path(os.environ['MLANG_WORK'])
+          results = {}
+          for bits in (64, 32):
+              def records(path):
+                  rows = [line for line in path.read_text().splitlines() if line.startswith('case=')]
+                  assert len(rows) == 8, (path, len(rows))
+                  return rows
+              results[str(bits)] = {'windows': records(work / f'reference/mlang{bits}.log'),
+                                    'soda37': records(work / f'mlang{bits}.log')}
+          (work / 'comparison.json').write_text(json.dumps(results, indent=2) + '\n')
+          print(json.dumps(results, indent=2))
+          PYTHON
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.MLANG_WORK != ''
+        with:
+          name: mlang-runtime-${{ github.sha }}
+          path: |
+            ${{ env.MLANG_WORK }}/*.log
+            ${{ env.MLANG_WORK }}/*.stderr
+            ${{ env.MLANG_WORK }}/comparison.json
+          retention-days: 7
+          if-no-files-found: error
+
   msi-reference:
     if: inputs.architecture == 'msi-reference' && inputs.winrt_http_reference != true
     runs-on: windows-2022
