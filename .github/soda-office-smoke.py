@@ -183,7 +183,7 @@ def outlook_controls():
         record('outlook-started', outlook_controls=reports)
         with (output / (label + '-wine.log')).open('wb') as stderr:
             process = subprocess.Popen(arguments, env=command.env, cwd=target.parent,
-                                       stdout=subprocess.DEVNULL, stderr=stderr)
+                                       stdout=stderr, stderr=subprocess.STDOUT)
             time.sleep(45)
             row['launcher_finished_before_stop'] = process.poll() is not None
             subprocess.run(['import', '-window', 'root', str(output / (label + '.png'))], check=True, timeout=15)

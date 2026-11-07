@@ -231,7 +231,8 @@ jobs:
           xvfb-run -a "$EAGLE_RUNTIME" "$EAGLE_WORK/mlang-positive-control/mlang64.exe" \
             > "$EAGLE_WORK/tests/mlang-positive.log" 2> "$EAGLE_WORK/tests/mlang-positive.stderr"
           "${EAGLE_RUNTIME%/wine}/wineserver" -w
-          grep -E 'DetectInputCodepage|DetectCodepageInIStream' "$EAGLE_WORK/tests/mlang-positive.stderr"
+          grep -E ':(fixme|trace):mlang:.*(DetectInputCodepage|DetectCodepageInIStream)' \
+            "$EAGLE_WORK/tests/mlang-positive.log" "$EAGLE_WORK/tests/mlang-positive.stderr"
 
       - name: compose Office test collectors
         if: inputs.office_reproduction == true && inputs.office_outlook_control != true
