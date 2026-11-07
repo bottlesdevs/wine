@@ -23,6 +23,7 @@ config = None
 prefix = None
 launcher_comparison = os.environ.get('OFFICE_LAUNCHER_COMPARISON') == 'true'
 outlook_control = os.environ.get('OFFICE_OUTLOOK_CONTROL') == 'true'
+ui_control = os.environ.get('OFFICE_UI_CONTROL') == 'true'
 
 
 def record(stage, **fields):
@@ -74,7 +75,9 @@ def profile_controls():
     diagnostics.mkdir()
     checked('disable-tracing', manager.update_config(config, 'eagle_tracing', False, 'Parameters'))
     cases = [(profile, False) for profile in ('plain', 'plain-no-logs', 'crash', 'loader', 'com', 'wait', 'trace')]
-    if launcher_comparison:
+    if ui_control:
+        cases = [('plain-ui', False)]
+    elif launcher_comparison:
         launcher, = [path for path in target.parent.parent.rglob('*') if path.name.lower() == 'appvlp.exe']
         assert launcher.is_file() and not launcher.is_symlink() and launcher.resolve().is_relative_to(prefix / 'drive_c')
         record('office-launcher', office_launcher={'path': str(launcher.relative_to(prefix)),
@@ -144,12 +147,19 @@ def profile_controls():
             with stderr.open('rb') as file:
                 row['stderr_sha256'] = hashlib.file_digest(file, 'sha256').hexdigest()
             if profile == 'plain-ui':
+                text = stderr.read_text(errors='replace')
                 messages = {}
                 for level, method in re.findall(r':(fixme|err):ui:([A-Za-z_][A-Za-z0-9_]*)',
-                                                 stderr.read_text(errors='replace')):
+                                                 text):
                     key = level + ':' + method
                     messages[key] = messages.get(key, 0) + 1
                 row['wine_ui_messages'] = messages
+                interfaces = {}
+                for iid in re.findall(r':fixme:ui:composition_drawing_surface_interop_BeginDraw [^\r\n]*?iid '
+                                      r'(\{[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\})', text):
+                    iid = iid.lower()
+                    interfaces[iid] = interfaces.get(iid, 0) + 1
+                row['drawing_surface_update_interfaces'] = interfaces
                 row['diagnostic_streams'] = 'stdout+stderr'
             if profile == 'trace':
                 captured, = set(logs.glob('*.session')) - before
@@ -359,7 +369,7 @@ try:
                 ('WINWORD.EXE', False, 'rtf'), ('WINWORD.EXE', True, 'rtf'),
                 ('WINWORD.EXE', False, 'docx'), ('WINWORD.EXE', True, 'docx'),
                 ('EXCEL.EXE', False, False), ('EXCEL.EXE', True, False))
-    if launcher_comparison or outlook_control:
+    if launcher_comparison or outlook_control or ui_control:
         launches = ()
     for executable, tracing, opening in launches:
         restore_prefix()

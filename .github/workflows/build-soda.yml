@@ -28,6 +28,11 @@ on:
         required: false
         type: boolean
         default: false
+      office_ui_control:
+        description: 'Collect Word composition interface counts without Eagle'
+        required: false
+        type: boolean
+        default: false
       office_offreg_control:
         description: 'Compare ARM installer retry with its own OffReg in system32'
         required: false
@@ -383,6 +388,7 @@ jobs:
           SOURCE_RUN: ${{ inputs.debugger_run_id }}
           OFFICE_LAUNCHER_COMPARISON: ${{ inputs.office_launcher_comparison }}
           OFFICE_OUTLOOK_CONTROL: ${{ inputs.office_outlook_control }}
+          OFFICE_UI_CONTROL: ${{ inputs.office_ui_control }}
         shell: bash
         run: |
           [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
@@ -403,7 +409,7 @@ jobs:
               --env "XDG_CONFIG_HOME=$EAGLE_WORK/office-home/config" \
               --env "XDG_CACHE_HOME=$EAGLE_WORK/office-home/cache" \
               --env "XDG_RUNTIME_DIR=$EAGLE_WORK/office-runtime" \
-              --env OFFICE_LAUNCHER_COMPARISON --env OFFICE_OUTLOOK_CONTROL \
+              --env OFFICE_LAUNCHER_COMPARISON --env OFFICE_OUTLOOK_CONTROL --env OFFICE_UI_CONTROL \
               --env PERSONAL_DEPENDENCIES=https://raw.githubusercontent.com/bottlesdevs/dependencies/8c72988d1106c0bf788f1d5803844ee7758cee19/ \
               --env PERSONAL_INSTALLERS=https://raw.githubusercontent.com/bottlesdevs/programs/9a2330a669beff6e413913b7cc03bd883db23fae/ \
               --env "TMPDIR=$EAGLE_WORK/scratch" --env "TMP=$EAGLE_WORK/scratch" --env "TEMP=$EAGLE_WORK/scratch" \
