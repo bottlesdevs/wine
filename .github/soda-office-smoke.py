@@ -21,6 +21,7 @@ result = {'installed': False, 'captures_collected': False, 'steps': [], 'launche
 config = None
 prefix = None
 launcher_comparison = os.environ.get('OFFICE_LAUNCHER_COMPARISON') == 'true'
+outlook_control = os.environ.get('OFFICE_OUTLOOK_CONTROL') == 'true'
 
 
 def record(stage, **fields):
@@ -155,6 +156,55 @@ def profile_controls():
             record('profile-collected', profile_controls=reports)
 
 
+def outlook_controls():
+    executable, = [item for item in manifest['Executables'] if item['file'] == 'OUTLOOK.EXE']
+    target = prefix / 'drive_c' / executable['path']
+    assert target.resolve(strict=True).is_relative_to(prefix / 'drive_c')
+    reports = []
+    for tracing in (False, True):
+        restore_prefix()
+        checked('disable-bottles-tracing', manager.update_config(config, 'eagle_tracing', False, 'Parameters'))
+        executor = WineExecutor(config=config, exec_path=str(target), environment={}, program_winebridge=False)
+        command = WineCommand(config, command='', environment=executor.environment, cwd=str(target.parent), minimal=True)
+        assert Path(command.env['WINEPREFIX']).resolve() == prefix.resolve()
+        command.env['WINEDEBUG'] = '+mlang'
+        arguments = [str(runner / 'bin/wine'), str(target), '/PIM', 'SodaMLangControl']
+        if tracing:
+            arguments = [str(runner / 'bin/eagle'), 'trace', '--wine', str(runner / 'bin/wine'),
+                         '--prefix', str(prefix), '--logs', str(logs), '--cwd', str(target.parent),
+                         '--', str(target), '/PIM', 'SodaMLangControl']
+        label = 'outlook-pim-' + ('traced' if tracing else 'plain')
+        row = {'profile': 'SodaMLangControl', 'tracing': tracing, 'prefix_restored': True,
+               'wine_debug': '-all' if tracing else command.env['WINEDEBUG'],
+               'observation_seconds': 45, 'started': time.time(),
+               'scope': 'New local PIM profile without an email account. No signed-in mailbox or IMAP synchronization.'}
+        reports.append(row)
+        before = set(logs.glob('*.log'))
+        record('outlook-started', outlook_controls=reports)
+        with (output / (label + '-wine.log')).open('wb') as stderr:
+            process = subprocess.Popen(arguments, env=command.env, cwd=target.parent,
+                                       stdout=subprocess.DEVNULL, stderr=stderr)
+            time.sleep(45)
+            row['launcher_finished_before_stop'] = process.poll() is not None
+            subprocess.run(['import', '-window', 'root', str(output / (label + '.png'))], check=True, timeout=15)
+            with (output / (label + '-windows.log')).open('w') as windows:
+                subprocess.run(['xwininfo', '-root', '-tree'], stdout=windows, stderr=subprocess.STDOUT,
+                               check=True, timeout=10)
+            row['owned_stop_requested'] = time.time()
+            row['cleanup'] = stop_prefix()
+            process.wait(timeout=30)
+            row['launcher_exit'] = process.returncode
+        row['stores'] = [{'path': str(path.relative_to(prefix)), 'bytes': path.stat().st_size}
+                         for path in (prefix / 'drive_c/users').rglob('*.pst')
+                         if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(prefix)]
+        row['logs'] = []
+        for path in set(logs.glob('*.log')) - before:
+            destination = output / (label + '-' + path.name)
+            shutil.copyfile(path, destination)
+            row['logs'].append(destination.name)
+        record('outlook-collected', outlook_controls=reports)
+
+
 try:
     record('load-bottles')
     for name, command in (('display', ['xwininfo', '-root']), ('vulkan', ['vulkaninfo', '--summary'])):
@@ -239,7 +289,7 @@ try:
                 ('WINWORD.EXE', False, 'rtf'), ('WINWORD.EXE', True, 'rtf'),
                 ('WINWORD.EXE', False, 'docx'), ('WINWORD.EXE', True, 'docx'),
                 ('EXCEL.EXE', False, False), ('EXCEL.EXE', True, False))
-    if launcher_comparison:
+    if launcher_comparison or outlook_control:
         launches = ()
     for executable, tracing, opening in launches:
         restore_prefix()
@@ -317,7 +367,10 @@ try:
         assert saved or not tracing, executable + ': no Eagle log collected'
         record('captured-' + executable)
         assert not launch['launcher_pending'], executable + ': launcher did not finish after cleanup'
-    profile_controls()
+    if outlook_control:
+        outlook_controls()
+    else:
+        profile_controls()
     record('finished', captures_collected=True)
 except Exception as error:
     record('failed', error=type(error).__name__ + ': ' + str(error))
