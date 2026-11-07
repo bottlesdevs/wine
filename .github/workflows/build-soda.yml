@@ -163,6 +163,7 @@ jobs:
           SOURCE_RUN: ${{ inputs.debugger_run_id }}
           OFFICE_REPRODUCTION: ${{ inputs.office_reproduction }}
           OFFICE_OUTLOOK_CONTROL: ${{ inputs.office_outlook_control }}
+          OFFICE_LAUNCHER_COMPARISON: ${{ inputs.office_launcher_comparison }}
         run: |
           [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
           mkdir -p "$EAGLE_WORK/downloads" "$EAGLE_WORK/runner" "$EAGLE_WORK/tests"
@@ -200,7 +201,9 @@ jobs:
           patches = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                      for path in Path('wine-tkg-userpatches').glob('*.mypatch')}
           assert patches == sources['patches']
-          if os.environ.get('OFFICE_REPRODUCTION') == 'true' and os.environ.get('OFFICE_OUTLOOK_CONTROL') != 'true':
+          if (os.environ.get('OFFICE_REPRODUCTION') == 'true' and
+              os.environ.get('OFFICE_OUTLOOK_CONTROL') != 'true' and
+              os.environ.get('OFFICE_LAUNCHER_COMPARISON') != 'true'):
               names = subprocess.check_output(['git', 'ls-files', '-z', '--', 'eagle']).decode().split('\0')
               for name in names:
                   if name and not name.startswith('eagle/tests/') and name not in ('eagle/dap.py', 'eagle/native/debugger.c'):
@@ -237,7 +240,7 @@ jobs:
             "$EAGLE_WORK/tests/mlang-positive.log" "$EAGLE_WORK/tests/mlang-positive.stderr"
 
       - name: compose Office test collectors
-        if: inputs.office_reproduction == true && inputs.office_outlook_control != true
+        if: inputs.office_reproduction == true && inputs.office_outlook_control != true && inputs.office_launcher_comparison != true
         run: |
           python3 -B .github/tests/test-soda-office.py
           mkdir "$EAGLE_WORK/office-debugger"
