@@ -311,6 +311,15 @@ jobs:
           EAGLE_PACKAGE="$EAGLE_WORK/package" python3 -S eagle/tests/test_capture_startup.py -v \
             > "$EAGLE_WORK/tests/capture-startup.log" 2>&1
 
+      - name: verify debugger reports
+        if: inputs.office_reproduction != true
+        run: |
+          export EAGLE_PACKAGE="$EAGLE_WORK/package" EAGLE_TRACE_EXPORT_ROOT="$EAGLE_WORK/tests/trace-export"
+          mkdir "$EAGLE_TRACE_EXPORT_ROOT"
+          for name in trace_export report_size export_finalization capture_history session_reports; do
+            python3 -S "eagle/tests/test_$name.py" -v > "$EAGLE_WORK/tests/$name.log" 2>&1
+          done
+
       - name: verify debugger on x86 and x64
         if: inputs.office_reproduction != true
         shell: bash

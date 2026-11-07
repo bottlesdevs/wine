@@ -70,6 +70,29 @@ class TraceExports(unittest.TestCase):
         self.assertEqual(len(report['providers']), 2000)
         self.assertEqual(report['provider_events_omitted'], 1003)
 
+    def test_child_provider_history_survives_busy_parent_processes(self):
+        from session import summarize
+        events = [{'seq': seq, 'pid': 2, 'kind': 'provider', 'data': {
+            'provider': 8, 'event': 'WaitBegin',
+        }} for seq in range(10)]
+        events[0]['data']['hresult'] = '0x80070005'
+        for provider, pid in ((8, 1), (8, 3), (4, 1)):
+            start = len(events)
+            events.extend({'seq': seq, 'pid': pid, 'kind': 'provider', 'data': {
+                'provider': provider, 'event': 'fixture',
+            }} for seq in range(start, start + 3000))
+        report = summarize({'schema': 1}, events)
+        selected = report['providers']
+        self.assertEqual([event for event in selected if event['pid'] == 2], events[:10])
+        counts = [sum(event['data']['provider'] == provider for event in selected) for provider in (4, 8)]
+        self.assertLessEqual(max(counts) - min(counts), 1)
+        parents = [sum(event['pid'] == pid and event['data']['provider'] == 8 for event in selected)
+                   for pid in (1, 3)]
+        self.assertLessEqual(max(parents) - min(parents), 1)
+        self.assertEqual(len(selected), 2000)
+        self.assertEqual(report['provider_events_omitted'], 7010)
+        self.assertEqual([event['seq'] for event in selected], sorted(event['seq'] for event in selected))
+
     def test_pending_and_invalid_statuses_do_not_displace_recent_events(self):
         from session import summarize
         for status in ('0x8000000a', '0x00000001', 'invalid', None):

@@ -1,9 +1,8 @@
 import json
 import os
 import stat
-import collections
 
-from session import provider_failed, summarize, validate_event, validate_manifest
+from session import provider_order, summarize, validate_event, validate_manifest
 
 MAX_REPORT = 32 * 1024 * 1024
 EVENT_LISTS = ('timeline', 'snapshots', 'terminal_exceptions', 'providers', 'observed_wait_cycles', 'dumps')
@@ -43,18 +42,7 @@ def bound_export(report):
     if remaining < 0:
         raise ValueError('session report metadata exceeds export size limit')
     indices = {name: list(range(len(values))) for name, values in records.items()}
-    groups = collections.defaultdict(list)
-    for index, event in enumerate(records['providers']):
-        groups[event.get('data', {}).get('provider')].append((provider_failed(event), index))
-    for group in groups.values():
-        group.sort()
-    provider_order = []
-    while groups:
-        for provider in list(groups):
-            provider_order.append(groups[provider].pop()[1])
-            if not groups[provider]:
-                del groups[provider]
-    indices['providers'] = provider_order[::-1]
+    indices['providers'] = list(provider_order(records['providers']))[::-1]
     pending = {name: values for name, values in indices.items() if values}
     selected = {name: [] for name in records}
     while pending:

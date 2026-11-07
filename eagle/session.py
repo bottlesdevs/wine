@@ -225,28 +225,39 @@ def provider_failed(event):
         status = 0
     return data.get('success') is False or bool(status & 0x80000000 and status != 0x8000000a)
 
+def provider_order(events):
+    groups = collections.defaultdict(lambda: collections.defaultdict(list))
+    for index, event in enumerate(events):
+        groups[event.get('data', {}).get('provider')][event.get('pid')].append((provider_failed(event), index))
+    for provider, processes in groups.items():
+        for group in processes.values():
+            group.sort()
+        groups[provider] = collections.deque(processes.values())
+    while groups:
+        for provider in list(groups):
+            processes = groups[provider]
+            yield processes[0].pop()[1]
+            if processes[0]:
+                processes.rotate(-1)
+            else:
+                processes.popleft()
+            if not processes:
+                del groups[provider]
+
 def summarize(manifest, events):
     exits = [{key: event[key] for key in ("pid", "code")} for event in events if event["kind"] == "process_exit"]
     faults = [event for event in events if event["kind"] == "exception" and not event["first_chance"]]
     providers = [event for event in events if event['kind'] == 'provider']
-    groups = collections.defaultdict(list)
-    for index, event in enumerate(providers):
-        groups[event.get('data', {}).get('provider')].append((provider_failed(event), index))
-    for group in groups.values():
-        group.sort()
     selected = []
-    while groups and len(selected) < 2000:
-        for provider in list(groups):
-            selected.append(groups[provider].pop()[1])
-            if not groups[provider]:
-                del groups[provider]
-            if len(selected) == 2000:
-                break
+    for index in provider_order(providers):
+        selected.append(index)
+        if len(selected) == 2000:
+            break
     selected_providers = [providers[index] for index in sorted(selected)]
     cycles = [event for event in providers if event.get('wait_graph', {}).get('cycles')]
     timeline = [event for event in events if event['kind'] not in ('provider', 'snapshot', 'dump', 'memory') and not (event['kind'] == 'exception' and event.get('internal'))]
     dumps = [{key: event[key] for key in ('seq', 'time_ms', 'kind', 'pid', 'tid', 'path', 'size') if key in event} for event in events if event['kind'] == 'dump']
-    report = {"manifest": manifest, "counts": dict(collections.Counter(event["kind"] for event in events)), "exits": exits, "terminal_exceptions": faults, "snapshots": [event for event in events if event["kind"] == "snapshot"], "dumps": dumps, 'providers': selected_providers, 'provider_selection': 'up to 2000 events balanced across providers, failures before recent successes', 'timeline': timeline[-4096:], 'timeline_events_omitted': max(0, len(timeline) - 4096), 'provider_events_omitted': len(providers) - len(selected_providers), 'observed_wait_cycles': cycles[:100], 'wait_cycles_omitted': max(0, len(cycles) - 100)}
+    report = {"manifest": manifest, "counts": dict(collections.Counter(event["kind"] for event in events)), "exits": exits, "terminal_exceptions": faults, "snapshots": [event for event in events if event["kind"] == "snapshot"], "dumps": dumps, 'providers': selected_providers, 'provider_selection': 'up to 2000 events balanced across providers and processes, failures before recent successes', 'timeline': timeline[-4096:], 'timeline_events_omitted': max(0, len(timeline) - 4096), 'provider_events_omitted': len(providers) - len(selected_providers), 'observed_wait_cycles': cycles[:100], 'wait_cycles_omitted': max(0, len(cycles) - 100)}
     return report
 
 def summary(root, symbol_images=None):
