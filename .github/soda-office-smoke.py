@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -80,6 +81,7 @@ def profile_controls():
                                                    'sha256': hashlib.sha256(launcher.read_bytes()).hexdigest()})
         cases = [(profile, False) for profile in ('crash', 'loader', 'com', 'wait')]
         cases += [(profile, wrapped) for profile in ('plain-no-logs', 'trace') for wrapped in (False, True)]
+        cases.append(('plain-ui', False))
     for attempt in range(1, 4):
         for profile, wrapped in (cases if attempt % 2 else reversed(cases)):
             restore_prefix()
@@ -92,11 +94,13 @@ def profile_controls():
             assert Path(command.env['WINEPREFIX']).resolve() == prefix.resolve()
             if profile == 'plain-no-logs':
                 command.env['WINEDEBUG'] = '-all'
+            elif profile == 'plain-ui':
+                command.env['WINEDEBUG'] = '-all,fixme+ui,err+ui'
             label = f'profile-{profile}-{attempt}' if not wrapped else f'profile-appvlp-{profile}-{attempt}'
             bundle = work / 'office-profile-sessions' / label
             destination = output / (label + '.log')
             before = set(logs.glob('*.session'))
-            if profile in ('plain', 'plain-no-logs'):
+            if profile in ('plain', 'plain-no-logs', 'plain-ui'):
                 arguments = [str(runner / 'bin/wine'), str(launched), *application_args]
             elif profile == 'trace':
                 arguments = [eagle, 'trace', '--wine', str(runner / 'bin/wine'), '--prefix', str(prefix),
@@ -106,14 +110,14 @@ def profile_controls():
                              '--session', str(bundle), '--timeout', '60', '--profile', profile,
                              str(launched), *application_args]
             row = {'profile': profile, 'attempt': attempt, 'route': 'office launcher' if wrapped else 'direct target', 'winebridge': False,
-                   'wine_debug': command.env.get('WINEDEBUG') if profile in ('plain', 'plain-no-logs') else '-all',
+                   'wine_debug': command.env.get('WINEDEBUG') if profile in ('plain', 'plain-no-logs', 'plain-ui') else '-all',
                    'prefix_restored': True, 'observation_seconds': 20, 'started': time.time()}
             reports.append(row)
             record('profile-started', profile_controls=reports)
             stderr = diagnostics / (label + '.stderr')
             with stderr.open('wb') as file:
                 process = subprocess.Popen(arguments, env=command.env, cwd=target.parent,
-                                           stdout=subprocess.DEVNULL, stderr=file)
+                                           stdout=file if profile == 'plain-ui' else subprocess.DEVNULL, stderr=file)
                 time.sleep(20)
                 row['launcher_finished_before_stop'] = process.poll() is not None
                 subprocess.run(['import', '-window', 'root', str(output / (label + '.png'))], check=True, timeout=15)
@@ -127,7 +131,7 @@ def profile_controls():
                 try:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    if profile not in ('plain', 'plain-no-logs', 'trace'):
+                    if profile not in ('plain', 'plain-no-logs', 'plain-ui', 'trace'):
                         subprocess.run([eagle, 'control', str(bundle), 'detach'], check=True,
                                        stdout=subprocess.DEVNULL, stderr=file, timeout=10)
                         row['collector_stopped_after_observation'] = True
@@ -139,14 +143,22 @@ def profile_controls():
             row['stderr_bytes'] = stderr.stat().st_size
             with stderr.open('rb') as file:
                 row['stderr_sha256'] = hashlib.file_digest(file, 'sha256').hexdigest()
+            if profile == 'plain-ui':
+                messages = {}
+                for level, method in re.findall(r':(fixme|err):ui:([A-Za-z_][A-Za-z0-9_]*)',
+                                                 stderr.read_text(errors='replace')):
+                    key = level + ':' + method
+                    messages[key] = messages.get(key, 0) + 1
+                row['wine_ui_messages'] = messages
+                row['diagnostic_streams'] = 'stdout+stderr'
             if profile == 'trace':
                 captured, = set(logs.glob('*.session')) - before
                 generated = logs / (captured.stem + '.log')
                 shutil.copyfile(generated, destination)
-            elif profile not in ('plain', 'plain-no-logs'):
+            elif profile not in ('plain', 'plain-no-logs', 'plain-ui'):
                 subprocess.run([eagle, 'export', str(bundle), str(destination)], check=True,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
-            if profile not in ('plain', 'plain-no-logs'):
+            if profile not in ('plain', 'plain-no-logs', 'plain-ui'):
                 exported = json.loads(destination.read_text())
                 assert exported['manifest']['completed'], label + ': incomplete capture'
                 row['capture'] = destination.name
