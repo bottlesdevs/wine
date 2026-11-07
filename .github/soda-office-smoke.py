@@ -240,6 +240,30 @@ try:
     config = created.data['config']
     prefix = Path(ManagerUtils.get_bottle_path(config))
     assert config.Runner == runner.name
+    if outlook_control:
+        from bottles.backend.wine.winecfg import WineCfg
+        import inspect
+        query = WineCfg(config)
+        value = query.launch(args='-v', communicate=True, action_name='version-control')
+        parsed = query.get_windows_version()
+        module = Path(inspect.getfile(WineCfg))
+        command = WineCommand(config, command='', minimal=True)
+        direct = []
+        for new_session in (False, True):
+            process = subprocess.run([str(runner / 'bin/wine'), 'winecfg', '-v'], env=command.env,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     start_new_session=new_session, timeout=30)
+            direct.append({'new_session': new_session, 'exit': process.returncode,
+                           'stdout': process.stdout.decode(errors='replace')[:4096],
+                           'stderr': process.stderr.decode(errors='replace')[:4096]})
+        record('windows-version-probe', windows_version_probe={
+            'module': str(module), 'module_sha256': hashlib.sha256(module.read_bytes()).hexdigest(),
+            'raw_status': value.ok, 'raw_type': type(value.data).__name__,
+            'raw_data': value.data[:4096] if isinstance(value.data, str) else repr(value.data),
+            'raw_message': value.message, 'parsed_status': parsed.ok, 'parsed_version': parsed.data,
+            'parsed_message': parsed.message, 'direct': direct})
+        if not parsed.ok:
+            raise RuntimeError('Windows version probe failed before Office dependencies')
     manifest = manager.installer_manager.get_installer('microsoft365enterprise')
     assert isinstance(manifest, dict)
     (output / 'installer.json').write_text(json.dumps(manifest, indent=2) + '\n')
