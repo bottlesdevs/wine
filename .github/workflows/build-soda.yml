@@ -272,6 +272,8 @@ jobs:
               eagle/tests/null_call_return.c -ldbghelp -o "$EAGLE_WORK/tests/null-return$bits.exe"
             "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
               .github/soda-fls-reference.c -o "$EAGLE_WORK/tests/fls$bits.exe"
+            "$architecture-w64-mingw32-gcc" -std=c11 -O2 -g -Wall -Wextra -Werror -static \
+              eagle/tests/wait_provider.c -o "$EAGLE_WORK/tests/wait-provider$bits.exe"
           done
 
       - uses: actions/download-artifact@v7
@@ -328,6 +330,18 @@ jobs:
                 "$EAGLE_TEST_WINE" "$EAGLE_WORK/reference/fls$bits.exe" > "$EAGLE_TEST_ROOT/fls-reference$bits.log" 2> "$EAGLE_TEST_ROOT/fls-reference$bits.stderr"
               fi
             done
+            initial_prefix="$WINEPREFIX"
+            for bits in 64 32; do
+              export EAGLE_WAIT_TEST_ROOT="$EAGLE_TEST_ROOT/wait$bits"
+              export WINEPREFIX="$EAGLE_WAIT_TEST_ROOT/prefix"
+              mkdir -p "$EAGLE_WAIT_TEST_ROOT"
+              cp "$EAGLE_TEST_ROOT/wait-provider$bits.exe" "$EAGLE_WAIT_TEST_ROOT/target.exe"
+              "$EAGLE_TEST_WINE" wineboot -u > "$EAGLE_WAIT_TEST_ROOT/setup.log" 2>&1
+              EAGLE_CANDIDATE="${EAGLE_RUNTIME%/bin/wine}" python3 -B eagle/tests/test_wait_provider.py -v
+              "${EAGLE_TEST_WINE%/wine}/wineserver" -k || test "$?" -eq 1
+              "${EAGLE_TEST_WINE%/wine}/wineserver" -w
+            done
+            export WINEPREFIX="$initial_prefix"
             python3 eagle/tests/integration.py -v
             python3 -S eagle/tests/test_wininet_tls.py -v > "$EAGLE_TEST_ROOT/wininet-tls.log" 2>&1
           ' 2>&1 | tee "$EAGLE_TEST_ROOT/integration.log"

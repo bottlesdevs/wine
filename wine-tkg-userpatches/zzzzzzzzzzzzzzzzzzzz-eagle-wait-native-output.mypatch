@@ -1,0 +1,11 @@
+--- a/include/eagle_trace.h
++++ b/include/eagle_trace.h
+@@ -114,7 +114,7 @@ static inline void eagle_trace_wait(const char *name, HANDLE object, DWORD value,
+         snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":8,\"event\":\"ObserverBudgetExceeded\",\"limit\":50000}");
+     else
+         snprintf(text, sizeof(text), "EAGLE/1 {\"provider\":8,\"event\":\"%s\",\"object\":\"%p\",\"value\":%lu,\"timeout_ms\":%lu}", name, object, value, timeout);
+-    OutputDebugStringA(text);
++    DbgPrint("%s", text);
+     TlsSetValue(index, NULL);
+     SetLastError(saved_error);
+     NtCurrentTeb()->LastStatusValue = saved_status;
