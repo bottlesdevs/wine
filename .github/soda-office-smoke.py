@@ -78,9 +78,10 @@ def profile_controls():
         assert launcher.is_file() and not launcher.is_symlink() and launcher.resolve().is_relative_to(prefix / 'drive_c')
         record('office-launcher', office_launcher={'path': str(launcher.relative_to(prefix)),
                                                    'sha256': hashlib.sha256(launcher.read_bytes()).hexdigest()})
-        cases = [(profile, wrapped) for profile in ('plain-no-logs', 'trace') for wrapped in (False, True)]
+        cases = [(profile, False) for profile in ('crash', 'loader', 'com', 'wait')]
+        cases += [(profile, wrapped) for profile in ('plain-no-logs', 'trace') for wrapped in (False, True)]
     for attempt in range(1, 4):
-        for profile, wrapped in cases:
+        for profile, wrapped in (cases if attempt % 2 else reversed(cases)):
             restore_prefix()
             launched = launcher if wrapped else target
             application_args = [r'C:\office-reproduction.rtf']
