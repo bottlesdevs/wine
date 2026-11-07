@@ -820,11 +820,47 @@ jobs:
           path: ${{ env.SURFACE_WORK }}/reference
 
       - uses: actions/cache@v5
+        if: inputs.debugger_run_id == ''
         with:
           path: ~/.cache/soda-runners/37
           key: soda-mlang-runtime-476a2230f94c55501bf62171490faa38a5c8060cbe083ed7fe8c4efaff4448b2
 
-      - name: compare published Soda surface updates
+      - name: prepare candidate surface runner
+        if: inputs.debugger_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.debugger_run_id }}
+        run: |
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          mkdir -p "$SURFACE_WORK/downloads" "$SURFACE_WORK/runner"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$SURFACE_WORK/runtime-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts" > "$SURFACE_WORK/runtime-artifacts.json"
+          name="$(jq -er '[.artifacts[] | select(.expired == false and (.name | startswith("soda-") and endswith("-x86_64")))] | if length == 1 then .[0].name else error("expected one x86_64 runner") end' "$SURFACE_WORK/runtime-artifacts.json")"
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --name "$name" --dir "$SURFACE_WORK/downloads"
+          archive="$(find "$SURFACE_WORK/downloads" -maxdepth 1 -type f -name '*-x86_64.tar.xz' -print -quit)"
+          test -n "$archive"
+          sha256sum "$archive" > "$SURFACE_WORK/runtime.sha256"
+          tar -xJf "$archive" -C "$SURFACE_WORK/runner"
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          work = Path(os.environ['SURFACE_WORK'])
+          run = json.loads((work / 'runtime-run.json').read_text())
+          assert run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+          assert run['head_branch'] == os.environ['GITHUB_REF_NAME']
+          assert run['path'] == '.github/workflows/build-soda.yml'
+          assert run['status'] == 'completed' and run['conclusion'] == 'success'
+          runner, = (work / 'runner').glob('soda-*-x86_64')
+          metadata = json.loads((runner / 'share/soda/build.json').read_text())
+          assert metadata['source_identities']['recipe']['revision'] == run['head_sha']
+          assert run['head_sha'] == os.environ['GITHUB_SHA']
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'SURFACE_RUNNER={runner}\n')
+          PYTHON
+
+      - name: compare Soda surface updates
+        env:
+          SOURCE_RUN: ${{ inputs.debugger_run_id }}
         run: |
           python3 - <<'PYTHON'
           import hashlib, json, os, struct
@@ -841,15 +877,17 @@ jobs:
               assert data[offset:offset+4] == b'PE\0\0'
               assert struct.unpack_from('<H', data, offset+4)[0] == machine
           PYTHON
-          archive="$HOME/.cache/soda-runners/37/soda-11.0-37-experimental-x86_64.tar.xz"
-          if ! test -f "$archive"; then
-            curl --fail --location --retry 3 \
-              https://github.com/bottlesdevs/wine/releases/download/soda-11.0-37-experimental/soda-11.0-37-experimental-x86_64.tar.xz \
-              -o "$archive"
+          if test -z "$SOURCE_RUN"; then
+            archive="$HOME/.cache/soda-runners/37/soda-11.0-37-experimental-x86_64.tar.xz"
+            if ! test -f "$archive"; then
+              curl --fail --location --retry 3 \
+                https://github.com/bottlesdevs/wine/releases/download/soda-11.0-37-experimental/soda-11.0-37-experimental-x86_64.tar.xz \
+                -o "$archive"
+            fi
+            printf '%s  %s\n' 476a2230f94c55501bf62171490faa38a5c8060cbe083ed7fe8c4efaff4448b2 "$archive" | sha256sum --check -
+            tar -xJf "$archive" -C "$SURFACE_WORK"
+            export SURFACE_RUNNER="$SURFACE_WORK/soda-11.0-37-experimental-x86_64"
           fi
-          printf '%s  %s\n' 476a2230f94c55501bf62171490faa38a5c8060cbe083ed7fe8c4efaff4448b2 "$archive" | sha256sum --check -
-          tar -xJf "$archive" -C "$SURFACE_WORK"
-          export SURFACE_RUNNER="$SURFACE_WORK/soda-11.0-37-experimental-x86_64"
           export WINEPREFIX="$SURFACE_WORK/prefix" WINEARCH=win64 WINEDEBUG=-all LIBGL_ALWAYS_SOFTWARE=1
           export WINEDLLOVERRIDES='mscoree=d;winemenubuilder.exe=d'
           trap 'status=$?; set +e; "$SURFACE_RUNNER/bin/wineserver" -k; "$SURFACE_RUNNER/bin/wineserver" -w; exit "$status"' EXIT
@@ -873,10 +911,12 @@ jobs:
                   return rows
               native = records(work / f'reference/composition-surface{bits}.log')
               soda = records(work / f'composition-surface{bits}.log')
-              results[str(bits)] = {'windows': native, 'soda37': soda,
-                  'differences': [{'windows': a, 'soda37': b} for a, b in zip(native, soda) if a != b]}
+              results[str(bits)] = {'windows': native, 'soda': soda,
+                  'differences': [{'windows': a, 'soda': b} for a, b in zip(native, soda) if a != b]}
           (work / 'comparison.json').write_text(json.dumps(results, indent=2) + '\n')
           print(json.dumps(results, indent=2))
+          if os.environ['SOURCE_RUN']:
+              assert all(not result['differences'] for result in results.values()), 'surface updates differ from Windows'
           PYTHON
 
       - uses: actions/upload-artifact@v7
@@ -887,6 +927,8 @@ jobs:
             ${{ env.SURFACE_WORK }}/*.log
             ${{ env.SURFACE_WORK }}/*.stderr
             ${{ env.SURFACE_WORK }}/comparison.json
+            ${{ env.SURFACE_WORK }}/runtime*.json
+            ${{ env.SURFACE_WORK }}/runtime.sha256
           retention-days: 7
           if-no-files-found: error
 

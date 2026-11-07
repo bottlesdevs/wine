@@ -1,0 +1,80 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -23,6 +23,7 @@
+ #include <stdint.h>
+ #include "private.h"
+ #include "initguid.h"
++#include "corerror.h"
+ #include "dcomp.h"
+ #include "d2d1_1.h"
+ #include "d3d11.h"
+@@ -714,6 +715,7 @@
+     ID2D1Bitmap1 *committed_bitmap;
+     RECT update_rect;
+     BOOL drawing;
++    BOOL d2d_update;
+     BOOL suspended;
+     Size size;
+     enum __x_ABI_CWindows_CGraphics_CDirectX_CDirectXPixelFormat format;
+@@ -11142,7 +11144,6 @@
+     {
+         ID2D1DeviceContext_SetTarget( impl->context, (ID2D1Image *)impl->bitmap );
+         ID2D1DeviceContext_BeginDraw( impl->context );
+-        impl->drawing = TRUE;
+         ID2D1DeviceContext_AddRef( impl->context );
+         *update_object = impl->context;
+     }
+@@ -11151,6 +11152,9 @@
+         if (FAILED(hr = ID2D1Bitmap1_GetSurface( impl->bitmap, &surface ))) return hr;
+         *update_object = surface;
+     }
++    impl->drawing = TRUE;
++    impl->d2d_update = IsEqualGUID( iid, &IID_ID2D1DeviceContext );
++    impl->suspended = FALSE;
+     impl->update_rect = update_rect ? *update_rect : (RECT){0, 0, size.width, size.height};
+     if (impl->virtual)
+         impl->bitmap_offset = (POINT){update_rect->left, update_rect->top};
+@@ -12083,12 +12087,14 @@
+     HRESULT hr;
+ 
+     FIXME( "iface %p.\n", iface );
+-    if (impl->drawing)
+-    {
+-        impl->drawing = FALSE;
+-        if (!impl->suspended && FAILED(hr = ID2D1DeviceContext_EndDraw( impl->context, NULL, NULL ))) return hr;
+-        impl->suspended = FALSE;
+-    }
++    if (!impl->drawing) return COR_E_INVALIDOPERATION;
++    impl->drawing = FALSE;
++    hr = S_OK;
++    if (impl->d2d_update && !impl->suspended)
++        hr = ID2D1DeviceContext_EndDraw( impl->context, NULL, NULL );
++    impl->suspended = FALSE;
++    impl->d2d_update = FALSE;
++    if (FAILED(hr)) return hr;
+     if (!impl->bitmap) return S_OK;
+     if (impl->virtual) hr = drawing_surface_update_tiles( impl );
+     else hr = drawing_surface_publish_bitmap( impl );
+@@ -12155,8 +12161,11 @@
+ 
+     FIXME( "iface %p.\n", iface );
+     if (!impl->drawing || !impl->suspended) return D2DERR_WRONG_STATE;
+-    ID2D1DeviceContext_SetTarget( impl->context, (ID2D1Image *)impl->bitmap );
+-    ID2D1DeviceContext_BeginDraw( impl->context );
++    if (impl->d2d_update)
++    {
++        ID2D1DeviceContext_SetTarget( impl->context, (ID2D1Image *)impl->bitmap );
++        ID2D1DeviceContext_BeginDraw( impl->context );
++    }
+     impl->suspended = FALSE;
+     return S_OK;
+ }
+@@ -12168,7 +12177,7 @@
+ 
+     FIXME( "iface %p.\n", iface );
+     if (!impl->drawing || impl->suspended) return D2DERR_WRONG_STATE;
+-    if (FAILED(hr = ID2D1DeviceContext_EndDraw( impl->context, NULL, NULL ))) return hr;
++    if (impl->d2d_update && FAILED(hr = ID2D1DeviceContext_EndDraw( impl->context, NULL, NULL ))) return hr;
+     impl->suspended = TRUE;
+     return S_OK;
+ }
