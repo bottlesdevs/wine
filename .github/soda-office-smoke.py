@@ -293,11 +293,12 @@ try:
             files[program['file']] = {'bytes': path.stat().st_size,
                                       'sha256': hashlib.file_digest(file, 'sha256').hexdigest()}
     if outlook_control:
+        record('office-binary-check', files=files)
+        assert files['OUTLOOK.EXE']['sha256'] == reference_outlook, 'Installed Outlook differs from the reported binary'
         subprocess.run([sys.executable, str(work / 'office-diagnostics.py'), str(prefix),
-                        str(output / 'office-installed-metadata.json')], check=True, timeout=20)
+                        str(output / 'office-installed-metadata.json'), '0'], check=True, timeout=20)
         metadata = json.loads((output / 'office-installed-metadata.json').read_text())
         record('office-version-check', office_version=metadata['office_version'], files=files)
-        assert files['OUTLOOK.EXE']['sha256'] == reference_outlook, 'Installed Outlook differs from the reported binary'
     record('office-installed', installed=True, files=files, dependencies=config.Installed_Dependencies)
     assert config.Runner == runner.name and tracing_supported(config)
     checked('enable-tracing', manager.update_config(config, 'eagle_tracing', True, 'Parameters'))
