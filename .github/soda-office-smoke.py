@@ -204,6 +204,14 @@ def outlook_controls():
                 subprocess.run(['xwininfo', '-root', '-tree'], stdout=windows, stderr=subprocess.STDOUT,
                                check=True, timeout=10)
             row['owned_stop_requested'] = time.time()
+            if process.poll() is None:
+                closed = subprocess.run([str(runner / 'bin/wine'), 'taskkill', '/f', '/im', target.name],
+                                        env=command.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+                row['owned_stop_exit'] = closed.returncode
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    row['launcher_running_after_target_stop'] = True
             row['cleanup'] = stop_prefix()
             process.wait(timeout=30)
             row['launcher_exit'] = process.returncode
@@ -215,7 +223,12 @@ def outlook_controls():
             destination = output / (label + '-' + path.name)
             shutil.copyfile(path, destination)
             row['logs'].append(destination.name)
+        if tracing:
+            captured, = row['logs']
+            row['capture_completed'] = json.loads((output / captured).read_text())['manifest']['completed']
         record('outlook-collected', outlook_controls=reports)
+        if tracing:
+            assert row['capture_completed'], label + ': incomplete capture'
 
 
 try:
