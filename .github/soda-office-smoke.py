@@ -266,6 +266,18 @@ try:
             raise RuntimeError('Windows version probe failed before Office dependencies')
     manifest = manager.installer_manager.get_installer('microsoft365enterprise')
     assert isinstance(manifest, dict)
+    if outlook_control:
+        requested_version = '16.0.20430.20146'
+        reference_outlook = '8d379fb9535e2016ab2240ed2a424627da019f7aee94ec1c55d5740a70b1120f'
+        addition = '<Add OfficeClientEdition="64" Channel="Current">'
+        scripts = [step for step in manifest['Steps'] if step.get('action') == 'run_script'
+                   and addition in step.get('script', '')]
+        assert len(scripts) == 1
+        scripts[0]['script'] = scripts[0]['script'].replace(addition,
+            '<Add OfficeClientEdition="64" Channel="Current" Version="' + requested_version + '">', 1)
+        assert manager.installer_manager.get_installer('microsoft365enterprise') is manifest
+        record('requested-office-version', requested_office_version=requested_version,
+               reference_outlook_sha256=reference_outlook)
     (output / 'installer.json').write_text(json.dumps(manifest, indent=2) + '\n')
     record('install-office')
     checked('install-office', manager.installer_manager.install(
@@ -280,6 +292,12 @@ try:
         with path.open('rb') as file:
             files[program['file']] = {'bytes': path.stat().st_size,
                                       'sha256': hashlib.file_digest(file, 'sha256').hexdigest()}
+    if outlook_control:
+        subprocess.run([sys.executable, str(work / 'office-diagnostics.py'), str(prefix),
+                        str(output / 'office-installed-metadata.json')], check=True, timeout=20)
+        metadata = json.loads((output / 'office-installed-metadata.json').read_text())
+        record('office-version-check', office_version=metadata['office_version'], files=files)
+        assert files['OUTLOOK.EXE']['sha256'] == reference_outlook, 'Installed Outlook differs from the reported binary'
     record('office-installed', installed=True, files=files, dependencies=config.Installed_Dependencies)
     assert config.Runner == runner.name and tracing_supported(config)
     checked('enable-tracing', manager.update_config(config, 'eagle_tracing', True, 'Parameters'))
