@@ -29,9 +29,9 @@ class Commands(io.BytesIO):
 
 
 class Collector:
-    def __init__(self, events=(), live=False, detach=True, terminate=True, stderr=b''):
+    def __init__(self, events=(), live=False, detach=True, terminate=True, stderr=b'', stdout=b'', trailing=b''):
         self.stdin = Commands()
-        self.stdout = self.pipe(b''.join(json.dumps(event).encode() + b'\n' for event in events))
+        self.stdout = self.pipe(stdout + b''.join(json.dumps(event).encode() + b'\n' for event in events) + trailing)
         self.stderr = self.pipe(stderr)
         self.returncode = None if live else 0
         self.detach_works = detach
@@ -188,6 +188,58 @@ class CaptureStartup(unittest.TestCase):
         self.assertEqual(report['manifest']['stderr_capture']['retained_bytes'], 0)
         self.assertEqual(report['manifest']['stderr_capture']['error_errno'], errno.EEXIST)
         self.assertEqual(report['manifest']['discarded_stderr_bytes'], len(b'new diagnostic'))
+
+    def test_stdout_keeps_only_target_output_and_stays_private_when_exporting(self):
+        root = self.root / 'private-stdout'
+        data = b'018c:fixme:mlang:DetectInputCodepage private-token /home/reporter/private-file\n'
+        data += b'{"private-field":"private-value"}\n'
+        trailing = b'private trailing diagnostic \xff\x00'
+        events = [{'seq': 1, 'kind': 'finished', 'pid': 0, 'tid': 0}]
+        report = self.capture(Collector(events, stdout=data, trailing=trailing), root)
+        retained = data + trailing
+        self.assertTrue(report['manifest']['completed'])
+        self.assertEqual([json.loads(line) for line in (root / 'events.jsonl').read_text().splitlines()], events)
+        self.assertEqual((root / 'stdout.log').read_bytes(), retained)
+        self.assertEqual((root / 'stdout.log').stat().st_mode & 0o777, 0o600)
+        self.assertEqual(report['manifest']['stdout_bytes'], len(retained))
+        self.assertEqual(report['manifest']['discarded_target_output_bytes'], 0)
+        self.assertEqual(report['manifest']['stdout_capture']['sha256'], hashlib.sha256(retained).hexdigest())
+        destination = self.root / 'stdout-upload.log'
+        session.export(root, destination)
+        exported = destination.read_bytes()
+        for value in (b'private-token', b'private-field', b'private-value', b'/home/reporter/private-file', trailing):
+            self.assertNotIn(value, exported)
+        self.assertEqual(json.loads(exported)['manifest']['stdout_capture']['retained_bytes'], len(retained))
+
+    def test_stdout_retains_a_bounded_tail_without_losing_protocol_events(self):
+        for size in (0, 1, 127, 128, 129, 1024):
+            with self.subTest(size=size):
+                root = self.root / ('stdout-' + str(size))
+                data = (b'owned diagnostic\n' * 65)[:size]
+                collector = Collector([{'seq': 1, 'kind': 'finished', 'pid': 0, 'tid': 0}], trailing=data)
+                with patch('session.MAX_STDOUT', 128, create=True):
+                    report = self.capture(collector, root)
+                manifest = report['manifest']
+                self.assertTrue(manifest['completed'])
+                self.assertEqual(manifest['stdout_bytes'], size)
+                self.assertEqual(manifest['discarded_target_output_bytes'], max(0, size - 128))
+                self.assertEqual(manifest['stdout_capture']['limit_bytes'], 128)
+                self.assertEqual(manifest['stdout_capture']['retained_bytes'], min(size, 128))
+                if data:
+                    self.assertEqual((root / 'stdout.log').read_bytes(), data[-128:])
+                else:
+                    self.assertFalse((root / 'stdout.log').exists())
+
+    def test_stdout_collision_preserves_existing_file_and_reports_loss(self):
+        root = self.root / 'stdout-collision'
+        data = b'new stdout diagnostic\n'
+        collector = Collector([{'seq': 1, 'kind': 'finished', 'pid': 0, 'tid': 0}], stdout=data)
+        report = self.capture(collector, root, observer=lambda event: (root / 'stdout.log').write_bytes(b'existing'))
+        self.assertTrue(report['manifest']['completed'])
+        self.assertEqual((root / 'stdout.log').read_bytes(), b'existing')
+        self.assertEqual(report['manifest']['stdout_capture']['retained_bytes'], 0)
+        self.assertEqual(report['manifest']['stdout_capture']['error_errno'], errno.EEXIST)
+        self.assertEqual(report['manifest']['discarded_target_output_bytes'], len(data))
 
     def test_disconnected_control_client_does_not_end_capture(self):
         root = self.root / 'disconnected-control'
