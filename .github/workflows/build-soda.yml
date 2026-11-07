@@ -691,7 +691,7 @@ jobs:
               '@echo off',
               "call `"$vcvars`" $target",
               'if errorlevel 1 exit /b %errorlevel%',
-              "cl /nologo /W4 /WX /O2 /MT /EHsc /std:c++17 /TP `"$source`" /Fe:`"$exe`" /Fo:`"$obj`" /link runtimeobject.lib ole32.lib uuid.lib",
+              "cl /nologo /W4 /WX /O2 /MT /EHsc /std:c++17 /TP `"$source`" /Fe:`"$exe`" /Fo:`"$obj`" /link runtimeobject.lib ole32.lib uuid.lib d2d1.lib",
               'exit /b %errorlevel%'
             ) | Set-Content -Encoding ascii $script
             & cmd.exe /d /c $script

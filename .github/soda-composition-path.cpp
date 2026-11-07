@@ -1,6 +1,8 @@
 #include <windows.h>
 #include <roapi.h>
 #include <windows.ui.composition.h>
+#include <windows.graphics.interop.h>
+#include <d2d1.h>
 #include <wrl.h>
 #include <stdio.h>
 
@@ -8,14 +10,38 @@ using namespace ABI::Windows::Graphics;
 using namespace ABI::Windows::UI::Composition;
 using namespace Microsoft::WRL;
 
-static LONG destroyed;
+static LONG destroyed, geometry_calls, factory_calls;
 
-class GeometrySource : public RuntimeClass<RuntimeClassFlags<WinRt>, IGeometrySource2D>
+class BareGeometrySource : public RuntimeClass<RuntimeClassFlags<WinRt>, IGeometrySource2D>
 {
     InspectableClass(L"Soda.GeometrySource", BaseTrust);
+};
+
+class GeometrySource : public RuntimeClass<RuntimeClassFlags<WinRtClassicComMix>,
+                                         IGeometrySource2D, IGeometrySource2DInterop>
+{
+    InspectableClass(L"Soda.GeometrySource", BaseTrust);
+    ComPtr<ID2D1Geometry> geometry;
 
 public:
+    explicit GeometrySource(ID2D1Geometry *value) : geometry(value) {}
     ~GeometrySource() { InterlockedIncrement(&destroyed); }
+
+    HRESULT STDMETHODCALLTYPE GetGeometry(ID2D1Geometry **value) override
+    {
+        InterlockedIncrement(&geometry_calls);
+        return geometry.CopyTo(value);
+    }
+
+    HRESULT STDMETHODCALLTYPE TryGetGeometryUsingFactory(ID2D1Factory *factory, ID2D1Geometry **value) override
+    {
+        ComPtr<ID2D1Factory> owner;
+        InterlockedIncrement(&factory_calls);
+        if (!value) return E_POINTER;
+        *value = nullptr;
+        geometry->GetFactory(owner.GetAddressOf());
+        return owner.Get() == factory ? geometry.CopyTo(value) : S_OK;
+    }
 };
 
 static void query(IUnknown *object, const char *name, REFIID iid)
@@ -31,8 +57,11 @@ int main()
     ComPtr<ICompositionPathFactory> factory;
     ComPtr<ICompositionPath> path;
     ComPtr<IGeometrySource2D> source;
+    ComPtr<ID2D1Factory> d2d;
+    ComPtr<ID2D1RectangleGeometry> geometry;
     HSTRING name = nullptr, runtime_name = nullptr;
     HRESULT hr;
+    bool created;
 
     setvbuf(stdout, nullptr, _IONBF, 0);
     hr = RoInitialize(RO_INIT_MULTITHREADED);
@@ -50,14 +79,28 @@ int main()
     hr = factory->Create(nullptr, path.GetAddressOf());
     printf("case=null-source hr=%#lx object=%d\n", hr, path != nullptr);
     path.Reset();
-    source = Make<GeometrySource>();
+    source = Make<BareGeometrySource>();
     if (!source) { factory.Reset(); RoUninitialize(); return 1; }
     hr = factory->Create(source.Get(), path.GetAddressOf());
+    printf("case=bare-source hr=%#lx object=%d\n", hr, path != nullptr);
+    path.Reset();
+    source.Reset();
+    hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2d.GetAddressOf());
+    printf("case=d2d-factory hr=%#lx\n", hr);
+    if (FAILED(hr)) { factory.Reset(); RoUninitialize(); return 1; }
+    hr = d2d->CreateRectangleGeometry(D2D1::RectF(1, 2, 30, 40), geometry.GetAddressOf());
+    printf("case=rectangle hr=%#lx\n", hr);
+    if (FAILED(hr)) { d2d.Reset(); factory.Reset(); RoUninitialize(); return 1; }
+    source = Make<GeometrySource>(geometry.Get());
+    if (!source) { geometry.Reset(); d2d.Reset(); factory.Reset(); RoUninitialize(); return 1; }
+    hr = factory->Create(source.Get(), path.GetAddressOf());
     printf("case=owned-source hr=%#lx object=%d\n", hr, path != nullptr);
+    created = SUCCEEDED(hr) && path != nullptr;
     if (path)
     {
         query(path.Get(), "path-geometry-source", __uuidof(IGeometrySource2D));
         query(path.Get(), "path-agile", __uuidof(IAgileObject));
+        query(path.Get(), "path-geometry-interop", __uuidof(IGeometrySource2DInterop));
         hr = path->GetRuntimeClassName(&runtime_name);
         printf("case=class-name hr=%#lx matches=%d\n", hr,
                 runtime_name && !wcscmp(WindowsGetStringRawBuffer(runtime_name, nullptr), class_name));
@@ -71,7 +114,10 @@ int main()
     printf("case=source-released destroyed=%ld\n", destroyed);
     path.Reset();
     printf("case=path-released destroyed=%ld\n", destroyed);
+    printf("case=source-calls geometry=%ld factory=%ld\n", geometry_calls, factory_calls);
+    geometry.Reset();
+    d2d.Reset();
     factory.Reset();
     RoUninitialize();
-    return 0;
+    return created ? 0 : 1;
 }
