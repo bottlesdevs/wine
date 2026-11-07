@@ -161,6 +161,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN: ${{ inputs.debugger_run_id }}
           OFFICE_REPRODUCTION: ${{ inputs.office_reproduction }}
+          OFFICE_OUTLOOK_CONTROL: ${{ inputs.office_outlook_control }}
         run: |
           [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
           mkdir -p "$EAGLE_WORK/downloads" "$EAGLE_WORK/runner" "$EAGLE_WORK/tests"
@@ -198,7 +199,7 @@ jobs:
           patches = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                      for path in Path('wine-tkg-userpatches').glob('*.mypatch')}
           assert patches == sources['patches']
-          if os.environ.get('OFFICE_REPRODUCTION') == 'true':
+          if os.environ.get('OFFICE_REPRODUCTION') == 'true' and os.environ.get('OFFICE_OUTLOOK_CONTROL') != 'true':
               names = subprocess.check_output(['git', 'ls-files', '-z', '--', 'eagle']).decode().split('\0')
               for name in names:
                   if name and not name.startswith('eagle/tests/') and name not in ('eagle/dap.py', 'eagle/native/debugger.c'):
@@ -353,7 +354,7 @@ jobs:
         shell: bash
         run: |
           [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
-          image=ghcr.io/bottlesdevs/bottles@sha256:23050d2343f2ec0e6018f56fe7103f084314d7ba9d085c279a67f492a46ec2bb
+          image=ghcr.io/bottlesdevs/bottles@sha256:2e18e8a944b8d3770d4539db4ff60cb062f681487e250618ff80af3f367d7f84
           docker pull --platform linux/amd64 "$image"
           cp .github/soda-office-smoke.py "$EAGLE_WORK/office-smoke.py"
           cp .github/soda-office-diagnostics.py "$EAGLE_WORK/office-diagnostics.py"
