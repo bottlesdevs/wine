@@ -202,6 +202,7 @@ jobs:
           patches = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                      for path in Path('wine-tkg-userpatches').glob('*.mypatch')}
           assert patches == sources['patches']
+          compose_collectors = False
           if (os.environ.get('OFFICE_REPRODUCTION') == 'true' and
               os.environ.get('OFFICE_OUTLOOK_CONTROL') != 'true' and
               os.environ.get('OFFICE_LAUNCHER_COMPARISON') != 'true'):
@@ -209,6 +210,8 @@ jobs:
               for name in names:
                   if name and not name.startswith('eagle/tests/') and name not in ('eagle/dap.py', 'eagle/native/debugger.c'):
                       assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == sources['sources']['recipe']['files'][name], name
+              collector_source = sources['sources']['recipe']['files']['eagle/native/debugger.c']
+              compose_collectors = hashlib.sha256(Path('eagle/native/debugger.c').read_bytes()).hexdigest() != collector_source
           for name, record in json.loads((root / 'files.json').read_text()).items():
               assert not Path(name).is_absolute() and '..' not in Path(name).parts
               path = runner / name
@@ -220,6 +223,7 @@ jobs:
                       assert hashlib.file_digest(file, 'sha256').hexdigest() == record['sha256'], name
           with Path(os.environ['GITHUB_ENV']).open('a') as file:
               file.write(f'EAGLE_RUNTIME={runner}/bin/wine\n')
+              file.write(f'OFFICE_COMPOSE_COLLECTORS={str(compose_collectors).lower()}\n')
           PY
 
       - uses: actions/download-artifact@v8
@@ -241,7 +245,7 @@ jobs:
             "$EAGLE_WORK/tests/mlang-positive.log" "$EAGLE_WORK/tests/mlang-positive.stderr"
 
       - name: compose Office test collectors
-        if: inputs.office_reproduction == true && inputs.office_outlook_control != true && inputs.office_launcher_comparison != true
+        if: inputs.office_reproduction == true && inputs.office_outlook_control != true && inputs.office_launcher_comparison != true && env.OFFICE_COMPOSE_COLLECTORS == 'true'
         run: |
           python3 -B .github/tests/test-soda-office.py
           mkdir "$EAGLE_WORK/office-debugger"
