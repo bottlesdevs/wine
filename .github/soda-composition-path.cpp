@@ -98,6 +98,9 @@ int main()
     created = SUCCEEDED(hr) && path != nullptr;
     if (path)
     {
+        ComPtr<IGeometrySource2DInterop> interop;
+        ComPtr<ID2D1Geometry> returned;
+        ComPtr<ID2D1Factory> other_factory;
         query(path.Get(), "path-geometry-source", __uuidof(IGeometrySource2D));
         query(path.Get(), "path-agile", __uuidof(IAgileObject));
         query(path.Get(), "path-geometry-interop", __uuidof(IGeometrySource2DInterop));
@@ -109,6 +112,23 @@ int main()
         source.As(&source_identity);
         path.As(&path_identity);
         printf("case=source-identity shared=%d\n", source_identity.Get() == path_identity.Get());
+        hr = path.As(&interop);
+        if (SUCCEEDED(hr))
+        {
+            hr = interop->GetGeometry(returned.GetAddressOf());
+            printf("case=get-geometry hr=%#lx same=%d\n", hr, returned.Get() == geometry.Get());
+            returned.Reset();
+            hr = interop->TryGetGeometryUsingFactory(d2d.Get(), returned.GetAddressOf());
+            printf("case=same-factory hr=%#lx same=%d\n", hr, returned.Get() == geometry.Get());
+            returned.Reset();
+            hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, other_factory.GetAddressOf());
+            if (SUCCEEDED(hr))
+            {
+                hr = interop->TryGetGeometryUsingFactory(other_factory.Get(), returned.GetAddressOf());
+                printf("case=other-factory hr=%#lx object=%d\n", hr, returned != nullptr);
+            }
+            else printf("case=other-factory-create hr=%#lx\n", hr);
+        }
     }
     source.Reset();
     printf("case=source-released destroyed=%ld\n", destroyed);
