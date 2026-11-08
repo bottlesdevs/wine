@@ -230,6 +230,20 @@ static bool observe_layered_child(HWND parent)
                 round ? "layered-unclipped" : "layered-clipped", desktop_pixel(parent, 110, 50),
                 desktop_pixel(parent, 24, 16));
     }
+    ShowWindow(parent, SW_MINIMIZE);
+    pump(500);
+    {
+        HDC screen = GetDC(nullptr);
+        if (!screen) goto done;
+        printf("desktop=hybrid phase=layered-minimized background=%06lx visual=%06lx\n",
+                GetPixel(screen, 130, 70), GetPixel(screen, 36, 36));
+        ReleaseDC(nullptr, screen);
+    }
+    ShowWindow(parent, SW_RESTORE);
+    UpdateWindow(parent);
+    pump(500);
+    printf("desktop=hybrid phase=layered-unminimized background=%06lx visual=%06lx\n",
+            desktop_pixel(parent, 110, 50), desktop_pixel(parent, 16, 16));
     success = true;
 
 done:

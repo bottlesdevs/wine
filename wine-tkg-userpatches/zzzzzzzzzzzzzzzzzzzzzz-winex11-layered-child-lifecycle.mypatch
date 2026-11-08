@@ -1,0 +1,229 @@
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -731,6 +731,62 @@
+ }
+ 
+ 
++static void sync_layered_child_shape( struct x11drv_win_data *data )
++{
++#ifdef HAVE_LIBXSHAPE
++    HWND parent = NtUserGetAncestor( data->hwnd, GA_PARENT );
++    UINT dpi = NtUserGetWinMonitorDpi( data->hwnd, MDT_RAW_DPI );
++    RECT bounds = data->rects.visible, rect;
++    RGNDATA *region_data;
++    HRGN region;
++
++    if (!parent || parent == NtUserGetDesktopWindow()) return;
++    OffsetRect( &bounds, -bounds.left, -bounds.top );
++    while (parent && parent != NtUserGetDesktopWindow())
++    {
++        if (!NtUserGetClientRect( parent, &rect, dpi )) return;
++        NtUserMapWindowPoints( parent, data->hwnd, (POINT *)&rect, 2, dpi );
++        OffsetRect( &rect, data->rects.client.left - data->rects.visible.left,
++                    data->rects.client.top - data->rects.visible.top );
++        if (!intersect_rect( &bounds, &bounds, &rect )) break;
++        parent = NtUserGetAncestor( parent, GA_PARENT );
++    }
++    if (!(region = NtGdiCreateRectRgn( bounds.left, bounds.top, bounds.right, bounds.bottom ))) return;
++    if ((region_data = X11DRV_GetRegionData( region, 0 )))
++    {
++        XShapeCombineMask( gdi_display, data->whole_window, ShapeBounding,
++                           data->surface_shape_offset.x, data->surface_shape_offset.y, data->surface_shape, ShapeSet );
++        XShapeCombineRectangles( gdi_display, data->whole_window, ShapeBounding, 0, 0,
++                                 (XRectangle *)region_data->Buffer, region_data->rdh.nCount, ShapeIntersect, YXBanded );
++        free( region_data );
++    }
++    NtGdiDeleteObjectApp( region );
++#endif
++}
++
++void set_window_surface_shape( HWND hwnd, Window window, Pixmap shape, int x, int y )
++{
++#ifdef HAVE_LIBXSHAPE
++    struct x11drv_win_data *data = get_win_data( hwnd );
++    HWND parent = NtUserGetAncestor( hwnd, GA_PARENT );
++
++    if (data && data->whole_window == window && parent && parent != NtUserGetDesktopWindow())
++    {
++        if (data->surface_shape) XFreePixmap( gdi_display, data->surface_shape );
++        data->surface_shape = shape;
++        data->surface_shape_offset.x = x;
++        data->surface_shape_offset.y = y;
++        sync_layered_child_shape( data );
++        release_win_data( data );
++        return;
++    }
++    release_win_data( data );
++    XShapeCombineMask( gdi_display, window, ShapeBounding, x, y, shape, ShapeSet );
++    if (shape) XFreePixmap( gdi_display, shape );
++#endif
++}
++
++
+ /***********************************************************************
+  *              sync_window_opacity
+  */
+@@ -2960,6 +3016,8 @@
+             XDestroyWindow( data->display, data->whole_window );
+         }
+     }
++    if (data->surface_shape) XFreePixmap( gdi_display, data->surface_shape );
++    data->surface_shape = None;
+     if (data->whole_colormap) XFreeColormap( data->display, data->whole_colormap );
+     data->whole_window = data->client_window = 0;
+     data->whole_colormap = 0;
+@@ -3749,6 +3807,47 @@
+ }
+ 
+ 
++static BOOL is_layered_child_visible( HWND hwnd )
++{
++    for (; hwnd && hwnd != NtUserGetDesktopWindow(); hwnd = NtUserGetAncestor( hwnd, GA_PARENT ))
++        if ((NtUserGetWindowLongW( hwnd, GWL_STYLE ) & (WS_VISIBLE | WS_MINIMIZE)) != WS_VISIBLE) return FALSE;
++    return TRUE;
++}
++
++static void sync_layered_child( HWND hwnd )
++{
++    struct x11drv_win_data *data = get_win_data( hwnd );
++    DWORD style = NtUserGetWindowLongW( hwnd, GWL_STYLE );
++
++    if (data && data->whole_window && data->layered)
++    {
++        if (!is_layered_child_visible( hwnd )) style &= ~WS_VISIBLE;
++        sync_window_position( data, SWP_NOACTIVATE | SWP_NOZORDER, &data->rects );
++        sync_layered_child_shape( data );
++        window_set_wm_state( data, get_desired_wm_state( style, &data->rects ), FALSE );
++        XFlush( gdi_display );
++        XFlush( data->display );
++    }
++    release_win_data( data );
++}
++
++static void sync_layered_children( HWND parent )
++{
++    HWND child;
++
++    for (child = NtUserGetWindowRelative( parent, GW_CHILD ); child;
++         child = NtUserGetWindowRelative( child, GW_HWNDNEXT ))
++    {
++        if (NtUserGetWindowLongW( child, GWL_EXSTYLE ) & WS_EX_LAYERED)
++        {
++            if (NtUserGetWindowThread( child, NULL ) == GetCurrentThreadId()) sync_layered_child( child );
++            else NtUserPostMessage( child, WM_X11DRV_SYNC_LAYERED_CHILD, 0, 0 );
++        }
++        sync_layered_children( child );
++    }
++}
++
++
+ /***********************************************************************
+  *		WindowPosChanged   (X11DRV.@)
+  */
+@@ -3759,7 +3858,7 @@
+     UINT ex_style = NtUserGetWindowLongW( hwnd, GWL_EXSTYLE ), new_style = NtUserGetWindowLongW( hwnd, GWL_STYLE );
+     UINT desired_state;
+     struct window_rects old_rects;
+-    BOOL is_managed, was_fullscreen, stage_office_popup = FALSE;
++    BOOL update_children, is_managed, was_fullscreen, stage_office_popup = FALSE;
+     BOOL activate = !(swp_flags & SWP_NOACTIVATE);
+     BOOL fullscreen = !!(swp_flags & WINE_SWP_FULLSCREEN);
+ 
+@@ -3770,6 +3869,13 @@
+     if (is_managed) window_set_managed( data, TRUE );
+ 
+     old_rects = data->rects;
++    update_children = !EqualRect( &old_rects.client, &new_rects->client ) ||
++                      (swp_flags & (SWP_SHOWWINDOW | SWP_HIDEWINDOW | SWP_STATECHANGED | SWP_FRAMECHANGED));
++    if ((new_style & WS_CHILD) && !is_layered_child_visible( hwnd ))
++    {
++        new_style &= ~WS_VISIBLE;
++        swp_flags |= SWP_HIDEWINDOW;
++    }
+     was_fullscreen = data->is_fullscreen;
+     if (!(new_style & WS_MINIMIZE) || is_virtual_desktop()) data->rects = *new_rects;
+     data->is_fullscreen = fullscreen;
+@@ -3809,6 +3915,7 @@
+     if (!data->whole_window)
+     {
+         release_win_data( data );
++        if (update_children) sync_layered_children( hwnd );
+         return;
+     }
+ 
+@@ -3859,6 +3966,7 @@
+ #endif
+     }
+ 
++    if (data->layered && (new_style & WS_CHILD)) sync_layered_child_shape( data );
+     desired_state = get_desired_wm_state( new_style, new_rects );
+     if (data->pending_state.wm_state == WithdrawnState && surface && desired_state == NormalState &&
+         is_office_popup( hwnd ) && (new_style & WS_POPUP) && (ex_style & WS_EX_TOOLWINDOW) &&
+@@ -3892,6 +4000,7 @@
+     XFlush( data->display );  /* make sure changes are done before we start painting again */
+     release_win_data( data );
+ 
++    if (update_children) sync_layered_children( hwnd );
+     if (was_fullscreen) NtUserClipCursor( NULL );
+ }
+ 
+@@ -4103,6 +4212,9 @@
+             sync_window_region( data, (HRGN)1 );
+             release_win_data( data );
+         }
++        return 0;
++    case WM_X11DRV_SYNC_LAYERED_CHILD:
++        sync_layered_child( hwnd );
+         return 0;
+     case WM_X11DRV_DELETE_TAB:
+         taskbar_delete_tab( hwnd );
+--- a/dlls/winex11.drv/bitblt.c
++++ b/dlls/winex11.drv/bitblt.c
+@@ -1852,7 +1852,7 @@
+ 
+ #ifdef HAVE_LIBXSHAPE
+         if (!shape_bits)
+-            XShapeCombineMask( gdi_display, surface->window, ShapeBounding, 0, 0, None, ShapeSet );
++            set_window_surface_shape( window_surface->hwnd, surface->window, None, 0, 0 );
+         else
+         {
+             struct gdi_image_bits bits = {.ptr = (void *)shape_bits};
+@@ -1861,8 +1861,7 @@
+ 
+             vis.depth = 1;
+             shape = create_pixmap_from_image( 0, &vis, shape_info, &bits, DIB_RGB_COLORS );
+-            XShapeCombineMask( gdi_display, surface->window, ShapeBounding, surface->x_offset, surface->y_offset, shape, ShapeSet );
+-            XFreePixmap( gdi_display, shape );
++            set_window_surface_shape( window_surface->hwnd, surface->window, shape, surface->x_offset, surface->y_offset );
+         }
+ #endif /* HAVE_LIBXSHAPE */
+     }
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -637,7 +637,8 @@
+     WM_X11DRV_UPDATE_CLIPBOARD = WM_WINE_FIRST_DRIVER_MSG,
+     WM_X11DRV_SET_WIN_REGION,
+     WM_X11DRV_DELETE_TAB,
+-    WM_X11DRV_ADD_TAB
++    WM_X11DRV_ADD_TAB,
++    WM_X11DRV_SYNC_LAYERED_CHILD
+ };
+ 
+ /* _NET_WM_STATE properties that we keep track of */
+@@ -683,6 +684,8 @@
+     HWND        hwnd;           /* hwnd that this private data belongs to */
+     Window      whole_window;   /* X window for the complete window */
+     Window      client_window;  /* X window for the client area */
++    Pixmap      surface_shape;  /* unclipped shape for a layered child */
++    POINT       surface_shape_offset;
+     struct window_rects rects;  /* window rects in monitor DPI, relative to parent client area */
+     struct host_window *parent; /* the host window parent, frame or embedder, NULL if root_window */
+     XIC         xic;            /* X input context */
+@@ -729,6 +732,7 @@
+ extern Window get_dummy_parent(void);
+ 
+ extern void set_surface_window_rects( struct window_surface *window_surface, const struct window_rects *rects );
++extern void set_window_surface_shape( HWND hwnd, Window window, Pixmap shape, int x, int y );
+ extern BOOL prepare_window_surface_flush( HWND hwnd, Window window, XImage *image, const RECT *dirty );
+ extern void reveal_window_after_surface_flush( HWND hwnd, Window window );
+ extern BOOL window_is_reparenting( HWND hwnd );
