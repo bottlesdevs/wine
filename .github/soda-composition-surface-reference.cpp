@@ -206,7 +206,7 @@ done:
 }
 
 static bool record_scene(HWND window, bool control, BOOL topmost, const char *phase,
-                         COLORREF initial_background, COLORREF initial_foreground, bool small)
+                         COLORREF initial_background, COLORREF initial_foreground, bool small_visual)
 {
     COLORREF background = desktop_pixel(window, 110, 50);
     COLORREF foreground = desktop_pixel(window, 16, 16);
@@ -217,11 +217,11 @@ static bool record_scene(HWND window, bool control, BOOL topmost, const char *ph
             control ? "static" : "window", topmost, phase, background, foreground);
     printf("scene=%s topmost=%d phase=%s background=%s visual=%s size=%ux%u\n",
             control ? "static" : "window", topmost, phase,
-            background == initial_background ? "preserved" : "changed", pixel, small ? 20u : 32u, small ? 15u : 32u);
+            background == initial_background ? "preserved" : "changed", pixel, small_visual ? 20u : 32u, small_visual ? 15u : 32u);
     return true;
 }
 
-static bool observe_desktop(BOOL topmost, bool control, bool diagnostic, bool small = false)
+static bool observe_desktop(BOOL topmost, bool control, bool diagnostic, bool small_visual = false)
 {
     ComPtr<Core::ICompositorController> controller;
     ComPtr<IInspectable> instance;
@@ -264,7 +264,7 @@ static bool observe_desktop(BOOL topmost, bool control, bool diagnostic, bool sm
     initial_foreground = foreground;
     if (diagnostic)
     {
-        if (!record_scene(window, control, topmost, "base", initial_background, initial_foreground, small)) goto done;
+        if (!record_scene(window, control, topmost, "base", initial_background, initial_foreground, small_visual)) goto done;
     }
     else
     {
@@ -278,7 +278,7 @@ static bool observe_desktop(BOOL topmost, bool control, bool diagnostic, bool sm
             !check("desktop-brush", color.As(&brush)) ||
             !check("desktop-sprite", compositor->CreateSpriteVisual(sprite.GetAddressOf())) ||
             !check("desktop-visual", sprite.As(&visual)) ||
-            !check("desktop-size", visual->put_Size({small ? 20.0f : 32.0f, small ? 15.0f : 32.0f})) ||
+            !check("desktop-size", visual->put_Size({small_visual ? 20.0f : 32.0f, small_visual ? 15.0f : 32.0f})) ||
             !check("desktop-offset", visual->put_Offset({8.0f, 8.0f, 0.0f})) ||
             !check("desktop-set-brush", sprite->put_Brush(brush.Get())) ||
             !check("desktop-root", target->put_Root(visual.Get()))) goto done;
@@ -292,7 +292,7 @@ static bool observe_desktop(BOOL topmost, bool control, bool diagnostic, bool sm
         const char *phase = round == 2 ? "alpha" : round ? "blue" : "green";
         if (diagnostic)
         {
-            if (!record_scene(window, control, topmost, phase, initial_background, initial_foreground, small)) goto done;
+            if (!record_scene(window, control, topmost, phase, initial_background, initial_foreground, small_visual)) goto done;
         }
         else printf("desktop=hybrid phase=%s background=%06lx visual=%06lx\n", phase, background, foreground);
         if (background == CLR_INVALID || foreground == CLR_INVALID) goto done;
@@ -302,7 +302,7 @@ static bool observe_desktop(BOOL topmost, bool control, bool diagnostic, bool sm
     pump(500);
     if (diagnostic)
     {
-        if (!record_scene(window, control, topmost, "detached", initial_background, initial_foreground, small)) goto done;
+        if (!record_scene(window, control, topmost, "detached", initial_background, initial_foreground, small_visual)) goto done;
     }
     else printf("desktop=hybrid phase=detached background=%06lx visual=%06lx\n",
             desktop_pixel(window, 110, 50), desktop_pixel(window, 16, 16));
