@@ -1032,29 +1032,38 @@ jobs:
               timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/reference/composition-legacy$bits.exe" legacy \
                 > "$SURFACE_WORK/composition-legacy$bits.log" 2> "$SURFACE_WORK/composition-legacy$bits.stderr"
             done
+            export WINEDLLOVERRIDES="dxgi,d3d11,d3d10core,windows.ui=b;winewayland.drv=d;mscoree=d;winemenubuilder.exe=d"
+            "$SURFACE_RUNNER/bin/wine" reg add "HKCU\Software\Wine\Direct3D" \
+              /v renderer /t REG_SZ /d gl /f > "$SURFACE_WORK/renderer-gl.log" 2>&1
+            for bits in 64 32; do
+              timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/reference/composition-surface$bits.exe" \
+                > "$SURFACE_WORK/composition-surface$bits-gl.log" 2> "$SURFACE_WORK/composition-surface$bits-gl.stderr"
+              timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/reference/composition-legacy$bits.exe" legacy \
+                > "$SURFACE_WORK/composition-legacy$bits-gl.log" 2> "$SURFACE_WORK/composition-legacy$bits-gl.stderr"
+            done
           '
           python3 - <<'PYTHON'
           import json, os
           from pathlib import Path
           work = Path(os.environ['SURFACE_WORK'])
           results = {}
-          for bits in (64, 32):
+          for bits, suffix in ((64, ""), (32, ""), (64, "-gl"), (32, "-gl")):
               def records(path):
                   rows = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
                           if line.startswith('surface=') and ' operation=' in line]
                   assert len(rows) == 36, (path, len(rows))
                   return rows
               native = records(work / f'reference/composition-surface{bits}.log')
-              soda = records(work / f'composition-surface{bits}.log')
+              soda = records(work / f'composition-surface{bits}{suffix}.log')
               desktop = {}
               for label, path in (('windows', work / f'reference/composition-surface{bits}.log'),
-                                  ('soda', work / f'composition-surface{bits}.log')):
+                                  ('soda', work / f'composition-surface{bits}{suffix}.log')):
                   desktop[label] = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
                                     if line.startswith('desktop=hybrid ')]
                   assert len(desktop[label]) == 10, (path, desktop[label])
               alpha = {}
               for label, path in (('windows', work / f'reference/composition-surface{bits}.log'),
-                                  ('soda', work / f'composition-surface{bits}.log')):
+                                  ('soda', work / f'composition-surface{bits}{suffix}.log')):
                   alpha[label] = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
                                   if line.startswith('d2d=alpha ')]
                   assert len(alpha[label]) == 2, (path, alpha[label])
@@ -1062,12 +1071,12 @@ jobs:
               for variant in ('surface', 'legacy'):
                   scenes[variant] = {}
                   for label, path in (('windows', work / f'reference/composition-{variant}{bits}.log'),
-                                      ('soda', work / f'composition-{variant}{bits}.log')):
+                                      ('soda', work / f'composition-{variant}{bits}{suffix}.log')):
                       rows = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
                               if line.startswith('scene=')]
                       assert len(rows) == 20, (path, rows)
                       scenes[variant][label] = rows
-              results[str(bits)] = {'windows': native, 'soda': soda, 'desktop': desktop, 'alpha': alpha, 'scenes': scenes,
+              results[f'{bits}{suffix}'] = {'windows': native, 'soda': soda, 'desktop': desktop, 'alpha': alpha, 'scenes': scenes,
                   'differences': [{'windows': a, 'soda': b} for a, b in zip(native, soda) if a != b] +
                       [{'windows': a, 'soda': b} for a, b in zip(desktop['windows'], desktop['soda']) if a != b] +
                       [{'windows': a, 'soda': b} for a, b in zip(alpha['windows'], alpha['soda']) if a != b] +
