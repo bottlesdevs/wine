@@ -87,10 +87,12 @@ def main():
         event, error = C.c_int(), C.c_int()
         if not xext.XShapeQueryExtension(display, C.byref(event), C.byref(error)):
             raise RuntimeError('XShape extension unavailable')
-        window = find(display, x11.XDefaultRootWindow(display), args.title)
+        root = x11.XDefaultRootWindow(display)
+        window = find(display, root, args.title)
         if window is None:
             raise RuntimeError('fixture window not found')
-        print(json.dumps(describe(display, window), indent=2))
+        print(json.dumps({'fixture': describe(display, window),
+                          'root_windows': [describe(display, child, 4) for child in children(display, root)]}, indent=2))
     finally:
         x11.XCloseDisplay(display)
 
