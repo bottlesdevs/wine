@@ -821,9 +821,11 @@ jobs:
             ) | Set-Content -Encoding ascii $script
             & cmd.exe /d /c $script
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & $legacyExe legacy | Tee-Object -FilePath (Join-Path $work "composition-legacy$bits.log")
-            if ($LASTEXITCODE -ne 0) { $failed = $true }
-            foreach ($variant in @('surface', 'legacy')) {
+            foreach ($mode in @('legacy', 'mta')) {
+              & $legacyExe $mode | Tee-Object -FilePath (Join-Path $work "composition-$mode$bits.log")
+              if ($LASTEXITCODE -ne 0) { $failed = $true }
+            }
+            foreach ($variant in @('surface', 'legacy', 'mta')) {
               $sceneRows = @(Get-Content (Join-Path $work "composition-$variant$bits.log") | Where-Object { $_.StartsWith('scene=') })
               if ($sceneRows.Count -ne 20) { throw "Incomplete $variant scene control: $($sceneRows.Count)" }
             }
@@ -1031,6 +1033,8 @@ jobs:
                 > "$SURFACE_WORK/composition-surface$bits.log" 2> "$SURFACE_WORK/composition-surface$bits.stderr"
               timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/reference/composition-legacy$bits.exe" legacy \
                 > "$SURFACE_WORK/composition-legacy$bits.log" 2> "$SURFACE_WORK/composition-legacy$bits.stderr"
+              timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/reference/composition-legacy$bits.exe" mta \
+                > "$SURFACE_WORK/composition-mta$bits.log" 2> "$SURFACE_WORK/composition-mta$bits.stderr"
             done
             export WINEDLLOVERRIDES="dxgi,d3d11,d3d10core,windows.ui=b;winewayland.drv=d;mscoree=d;winemenubuilder.exe=d"
             "$SURFACE_RUNNER/bin/wine" reg add "HKCU\Software\Wine\Direct3D" \
@@ -1040,6 +1044,8 @@ jobs:
                 > "$SURFACE_WORK/composition-surface$bits-gl.log" 2> "$SURFACE_WORK/composition-surface$bits-gl.stderr"
               timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/reference/composition-legacy$bits.exe" legacy \
                 > "$SURFACE_WORK/composition-legacy$bits-gl.log" 2> "$SURFACE_WORK/composition-legacy$bits-gl.stderr"
+              timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/reference/composition-legacy$bits.exe" mta \
+                > "$SURFACE_WORK/composition-mta$bits-gl.log" 2> "$SURFACE_WORK/composition-mta$bits-gl.stderr"
             done
           '
           python3 - <<'PYTHON'
@@ -1068,7 +1074,7 @@ jobs:
                                   if line.startswith('d2d=alpha ')]
                   assert len(alpha[label]) == 2, (path, alpha[label])
               scenes = {}
-              for variant in ('surface', 'legacy'):
+              for variant in ('surface', 'legacy', 'mta'):
                   scenes[variant] = {}
                   for label, path in (('windows', work / f'reference/composition-{variant}{bits}.log'),
                                       ('soda', work / f'composition-{variant}{bits}{suffix}.log')):
