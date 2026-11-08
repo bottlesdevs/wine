@@ -153,6 +153,9 @@ int main(int argc,char **argv)
     BOOL flat=argc>2 && strstr(argv[2], "flat");
     BOOL pow2=argc>2 && strstr(argv[2], "pow2");
     BOOL topmost=argc>2 && strstr(argv[2], "top");
+    BOOL custom=argc>2 && strstr(argv[2], "custom");
+    BOOL update=argc>2 && strstr(argv[2], "update");
+    WNDCLASSW cls={0};
     BOOL candidate=argc>1 && strcmp(argv[1], "inspect");
     inspect_pixels=argc>1 && !strcmp(argv[1], "inspect");
     verify_pixels=candidate || inspect_pixels;
@@ -187,9 +190,18 @@ int main(int argc,char **argv)
     ICompositionPropertySet_AddRef(layout);refs_before=ICompositionPropertySet_Release(layout);
     printf("LAYOUT_REFS_ACTIVE=%lu\n",refs_before);
     check("desktop",ICompositor_QueryInterface(compositor,&IID_ICompositorDesktopInterop,(void **)&desktop));
-    window=CreateWindowExW(topmost ? WS_EX_TOPMOST : 0,L"STATIC",L"Dynamic tracker pixel test",WS_POPUP,10,10,pow2 ? 128 : 160,pow2 ? 64 : 100,NULL,NULL,GetModuleHandleW(NULL),NULL);if(!window)return 3;
+    if(custom)
+    {
+        cls.lpfnWndProc=DefWindowProcW;
+        cls.hInstance=GetModuleHandleW(NULL);
+        cls.lpszClassName=L"SodaTrackerBackdrop";
+        cls.hbrBackground=(HBRUSH)GetStockObject(WHITE_BRUSH);
+        if(!RegisterClassW(&cls))return 3;
+    }
+    window=CreateWindowExW(topmost ? WS_EX_TOPMOST : 0,custom ? cls.lpszClassName : L"STATIC",L"Dynamic tracker pixel test",WS_POPUP,10,10,pow2 ? 128 : 160,pow2 ? 64 : 100,NULL,NULL,GetModuleHandleW(NULL),NULL);if(!window)return 3;
     pixel_window=window;
     ShowWindow(window,SW_SHOWNOACTIVATE);
+    if(update || custom)UpdateWindow(window);
     check("target",ICompositorDesktopInterop_CreateDesktopWindowTarget(desktop,window,FALSE,&desktop_target));
     check("target interface",IDesktopWindowTarget_QueryInterface(desktop_target,&IID_ICompositionTarget,(void **)&target));
     check("color",ICompositor_CreateColorBrushWithColor(compositor,((struct Color){255,255,0,0}),&color));
@@ -245,6 +257,7 @@ int main(int argc,char **argv)
     ICompositionObject_Release(layout_object);ICompositionPropertySet_Release(layout);WindowsDeleteString(size);
     ICompositionTarget_Release(target);IDesktopWindowTarget_Release(desktop_target);ICompositorDesktopInterop_Release(desktop);
     ICompositor_Release(compositor);ICompositorController_Release(controller);DestroyWindow(window);
+    if(custom)UnregisterClassW(cls.lpszClassName,cls.hInstance);
     if(queue)IUnknown_Release((IUnknown *)queue);
     RoUninitialize();puts("TRACKER_DONE");return 0;
 }

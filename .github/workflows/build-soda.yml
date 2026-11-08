@@ -1108,12 +1108,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix
           test -f "$SURFACE_RUNNER/include/wine/windows/windows.ui.composition.h"
           for bits in 64 32; do
-            if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
+            if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; resource=x86_64-w64-mingw32-windres; else compiler=i686-w64-mingw32-gcc; resource=i686-w64-mingw32-windres; fi
             "$compiler" .github/soda-composition-tracker-smoke.c \
               -I"$SURFACE_RUNNER/include/wine/windows" -D__WINESRC__ \
-              -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
-              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid \
-              -o "$SURFACE_WORK/tracker$bits.exe"
+              -O2 -Wall -Wextra -Wno-unused-parameter -Werror -c -o "$SURFACE_WORK/tracker$bits.o"
+            printf '1 24 "%s"\n' "$GITHUB_WORKSPACE/.github/soda-composition-surface-reference.manifest" > "$SURFACE_WORK/tracker-manifest.rc"
+            "$resource" "$SURFACE_WORK/tracker-manifest.rc" -O coff -o "$SURFACE_WORK/tracker$bits-manifest.o"
+            "$compiler" "$SURFACE_WORK/tracker$bits.o" -lole32 -lruntimeobject -luser32 -lgdi32 -luuid -o "$SURFACE_WORK/tracker$bits.exe"
+            "$compiler" "$SURFACE_WORK/tracker$bits.o" "$SURFACE_WORK/tracker$bits-manifest.o" \
+              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid -o "$SURFACE_WORK/tracker$bits-manifest.exe"
           done
           export WINEPREFIX="$SURFACE_WORK/tracker-prefix" WINEARCH=win64 WINEDEBUG=-all,+ui LIBGL_ALWAYS_SOFTWARE=1
           export WINEDLLOVERRIDES="dxgi,d3d11,d3d10core,windows.ui=b;winewayland.drv=d;winemenubuilder.exe=d"
@@ -1123,10 +1126,12 @@ jobs:
             "$SURFACE_RUNNER/bin/wine" reg add "HKCU\Software\Wine\Direct3D" \
               /v renderer /t REG_SZ /d gl /f > "$SURFACE_WORK/tracker-renderer.log" 2>&1
             for bits in 64 32; do
-              for mode in bare queue-flat queue-flat-top queue-flat-pow2 queue-flat-pump queue-flat-top-pow2-pump; do
-                timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/tracker$bits.exe" inspect "$mode" \
-                  > "$SURFACE_WORK/tracker$bits-$mode.log" 2> "$SURFACE_WORK/tracker$bits-$mode.stderr"
-                grep -q "TRACKER_DONE" "$SURFACE_WORK/tracker$bits-$mode.log"
+              for suffix in "" "-manifest"; do
+                for mode in queue-flat queue-flat-update queue-flat-custom; do
+                  timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/tracker$bits$suffix.exe" inspect "$mode" \
+                    > "$SURFACE_WORK/tracker$bits$suffix-$mode.log" 2> "$SURFACE_WORK/tracker$bits$suffix-$mode.stderr"
+                  grep -q "TRACKER_DONE" "$SURFACE_WORK/tracker$bits$suffix-$mode.log"
+                done
               done
             done
           '
