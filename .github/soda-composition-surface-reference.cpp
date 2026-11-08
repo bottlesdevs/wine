@@ -85,7 +85,7 @@ static bool observe_layered_child(HWND parent)
 {
     BITMAPINFO info = {};
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    POINT origin = {8, 8}, source = {};
+    POINT source = {};
     SIZE size = {32, 32};
     HWND window = nullptr;
     HBITMAP bitmap = nullptr;
@@ -109,16 +109,19 @@ static bool observe_layered_child(HWND parent)
             WS_CHILD | WS_DISABLED | WS_VISIBLE, 8, 8, size.cx, size.cy, parent, nullptr,
             GetModuleHandleW(nullptr), nullptr);
     if (!window) { printf("case=layered-child-window error=%lu\n", GetLastError()); goto done; }
-    if (!ClientToScreen(parent, &origin)) { printf("case=layered-child-origin error=%lu\n", GetLastError()); goto done; }
     for (unsigned round = 0; round < 2; ++round)
     {
         for (unsigned i = 0; i < 32 * 32; ++i) pixels[i] = round ? 0x80000080 : 0xff00ff00;
-        if (!UpdateLayeredWindow(window, nullptr, &origin, &size, dc, &source, 0, &blend, ULW_ALPHA))
+        if (!UpdateLayeredWindow(window, nullptr, nullptr, &size, dc, &source, 0, &blend, ULW_ALPHA))
         {
             printf("case=layered-child-update error=%lu\n", GetLastError());
             goto done;
         }
         pump(200);
+        RECT rect = {};
+        GetWindowRect(window, &rect);
+        printf("case=layered-child-bounds round=%u rect=%ld,%ld,%ld,%ld\n",
+                round, rect.left, rect.top, rect.right, rect.bottom);
         printf("desktop=hybrid phase=%s background=%06lx visual=%06lx\n",
                 round ? "layered-alpha" : "layered-opaque", desktop_pixel(parent, 110, 50),
                 desktop_pixel(parent, 16, 16));
