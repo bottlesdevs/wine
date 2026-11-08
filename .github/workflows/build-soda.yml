@@ -790,6 +790,8 @@ jobs:
             $lines = Get-Content $log
             foreach ($expected in @(
               'desktop=hybrid phase=base background=0000ff visual=0000ff',
+              'desktop=hybrid phase=layered-opaque background=0000ff visual=00ff00',
+              'desktop=hybrid phase=layered-alpha background=0000ff visual=80007f',
               'desktop=hybrid phase=green background=0000ff visual=00ff00',
               'desktop=hybrid phase=blue background=0000ff visual=ff0000',
               'desktop=hybrid phase=detached background=0000ff visual=0000ff'
@@ -936,7 +938,7 @@ jobs:
                                   ('soda', work / f'composition-surface{bits}.log')):
                   desktop[label] = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
                                     if line.startswith('desktop=hybrid ')]
-                  assert len(desktop[label]) == 4, (path, desktop[label])
+                  assert len(desktop[label]) == 6, (path, desktop[label])
               results[str(bits)] = {'windows': native, 'soda': soda, 'desktop': desktop,
                   'differences': [{'windows': a, 'soda': b} for a, b in zip(native, soda) if a != b] +
                       [{'windows': a, 'soda': b} for a, b in zip(desktop['windows'], desktop['soda']) if a != b]}

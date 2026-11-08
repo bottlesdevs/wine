@@ -81,6 +81,58 @@ static COLORREF desktop_pixel(HWND window, int x, int y)
     return value;
 }
 
+static bool observe_layered_child(HWND parent)
+{
+    BITMAPINFO info = {};
+    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    POINT origin = {8, 8}, source = {};
+    SIZE size = {32, 32};
+    HWND window = nullptr;
+    HBITMAP bitmap = nullptr;
+    HGDIOBJ previous = nullptr;
+    HDC dc = CreateCompatibleDC(nullptr);
+    DWORD *pixels = nullptr;
+    bool success = false;
+
+    if (!dc) return false;
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = size.cx;
+    info.bmiHeader.biHeight = -size.cy;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, reinterpret_cast<void **>(&pixels), nullptr, 0);
+    if (!bitmap) goto done;
+    previous = SelectObject(dc, bitmap);
+    if (!previous || previous == HGDI_ERROR) goto done;
+    window = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE, L"STATIC", nullptr,
+            WS_CHILD | WS_DISABLED | WS_VISIBLE, 8, 8, size.cx, size.cy, parent, nullptr,
+            GetModuleHandleW(nullptr), nullptr);
+    if (!window || !ClientToScreen(parent, &origin)) goto done;
+    for (unsigned round = 0; round < 2; ++round)
+    {
+        for (unsigned i = 0; i < 32 * 32; ++i) pixels[i] = round ? 0x80000080 : 0xff00ff00;
+        if (!UpdateLayeredWindow(window, nullptr, &origin, &size, dc, &source, 0, &blend, ULW_ALPHA))
+        {
+            printf("case=layered-child-update error=%lu\n", GetLastError());
+            goto done;
+        }
+        pump(200);
+        printf("desktop=hybrid phase=%s background=%06lx visual=%06lx\n",
+                round ? "layered-alpha" : "layered-opaque", desktop_pixel(parent, 110, 50),
+                desktop_pixel(parent, 16, 16));
+    }
+    success = true;
+
+done:
+    if (window) DestroyWindow(window);
+    if (previous && previous != HGDI_ERROR) SelectObject(dc, previous);
+    if (bitmap) DeleteObject(bitmap);
+    DeleteDC(dc);
+    pump(200);
+    return success;
+}
+
 static bool observe_desktop()
 {
     ComPtr<Core::ICompositorController> controller;
@@ -122,6 +174,7 @@ static bool observe_desktop()
     foreground = desktop_pixel(window, 16, 16);
     printf("desktop=hybrid phase=base background=%06lx visual=%06lx\n", background, foreground);
     if (background != RGB(255, 0, 0) || foreground != background) goto done;
+    if (!observe_layered_child(window)) goto done;
     if (!check("desktop-target", desktop->CreateDesktopWindowTarget(window, TRUE, desktop_target.GetAddressOf())) ||
             !check("desktop-target-interface", desktop_target.As(&target)) ||
             !check("desktop-color", compositor->CreateColorBrushWithColor({255, 0, 255, 0}, color.GetAddressOf())) ||
