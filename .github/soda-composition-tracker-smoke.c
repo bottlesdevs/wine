@@ -65,12 +65,23 @@ static void start(ICompositor *compositor,ICompositionObject *target,const WCHAR
     check("start",ICompositionObject_StartAnimation(target,name,value));
     WindowsDeleteString(name);ICompositionAnimation_Release(value);
 }
-static BOOL verify_pixels, inspect_pixels;
+static BOOL verify_pixels, inspect_pixels, pump_events;
 static HWND pixel_window;
 static void stage(ICompositorController *controller,IVisual *visual,const char *name)
 {
     MSG message;UINT i;
-    for(i=0;i<2;++i){check("commit",ICompositorController_Commit(controller));while(PeekMessageW(&message,NULL,0,0,PM_REMOVE))DispatchMessageW(&message);Sleep(200);}
+    for(i=0;i<2;++i)
+    {
+        ULONGLONG end=GetTickCount64()+200;
+        check("commit",ICompositorController_Commit(controller));
+        do
+        {
+            while(PeekMessageW(&message,NULL,0,0,PM_REMOVE))DispatchMessageW(&message);
+            if(!pump_events)break;
+            MsgWaitForMultipleObjects(0,NULL,FALSE,10,QS_ALLINPUT);
+        }while(GetTickCount64()<end);
+        if(!pump_events)Sleep(200);
+    }
     if (verify_pixels)
     {
         int left = !strcmp(name,"INITIAL") ? 50 : !strcmp(name,"RESIZED") ? 70 : 40;
@@ -81,6 +92,8 @@ static void stage(ICompositorController *controller,IVisual *visual,const char *
         if (inspect_pixels)
         {
             RECT rect;
+            HWND hit,child;
+            WCHAR class_name[80];
             struct Vector3 offset;
             struct Vector2 size;
             POINT point = {left - 10 + 5, 25};
@@ -91,6 +104,18 @@ static void stage(ICompositorController *controller,IVisual *visual,const char *
             ReleaseDC(NULL, screen);
             printf("TRACKER_WINDOW_%s=%ld,%ld,%ld,%ld client_pixel=%08lx\n", name,
                     rect.left, rect.top, rect.right, rect.bottom, (unsigned long)inside);
+            hit=WindowFromPoint(point);
+            class_name[0]=0;
+            GetClassNameW(hit,class_name,ARRAYSIZE(class_name));
+            printf("TRACKER_HIT_%s parent=%p hit=%p class=%ls\n",name,(void *)pixel_window,(void *)hit,class_name);
+            if((child=GetTopWindow(pixel_window)))
+            {
+                GetWindowRect(child,&rect);
+                printf("TRACKER_LAYER_%s visible=%d rect=%ld,%ld,%ld,%ld style=%08lx exstyle=%08lx\n",name,
+                        IsWindowVisible(child),rect.left,rect.top,rect.right,rect.bottom,
+                        (unsigned long)GetWindowLongW(child,GWL_STYLE),(unsigned long)GetWindowLongW(child,GWL_EXSTYLE));
+            }
+            else printf("TRACKER_LAYER_%s absent\n",name);
             check("inspect visual offset",IVisual_get_Offset(visual,&offset));
             check("inspect visual size",IVisual_get_Size(visual,&size));
             printf("TRACKER_VISUAL_%s offset=%g,%g,%g size=%g,%g\n",name,
@@ -126,9 +151,12 @@ int main(int argc,char **argv)
     PDISPATCHERQUEUECONTROLLER queue=NULL;
     DispatcherQueueOptions options={sizeof(options),DQTYPE_THREAD_CURRENT,DQTAT_COM_NONE};
     BOOL flat=argc>2 && strstr(argv[2], "flat");
+    BOOL pow2=argc>2 && strstr(argv[2], "pow2");
+    BOOL topmost=argc>2 && strstr(argv[2], "top");
     BOOL candidate=argc>1 && strcmp(argv[1], "inspect");
     inspect_pixels=argc>1 && !strcmp(argv[1], "inspect");
     verify_pixels=candidate || inspect_pixels;
+    pump_events=argc>2 && strstr(argv[2], "pump");
 
     check("initialize",RoInitialize(RO_INIT_MULTITHREADED));
     if(argc>2 && strstr(argv[2], "queue"))
@@ -159,7 +187,7 @@ int main(int argc,char **argv)
     ICompositionPropertySet_AddRef(layout);refs_before=ICompositionPropertySet_Release(layout);
     printf("LAYOUT_REFS_ACTIVE=%lu\n",refs_before);
     check("desktop",ICompositor_QueryInterface(compositor,&IID_ICompositorDesktopInterop,(void **)&desktop));
-    window=CreateWindowExW(0,L"STATIC",L"Dynamic tracker pixel test",WS_POPUP,10,10,160,100,NULL,NULL,GetModuleHandleW(NULL),NULL);if(!window)return 3;
+    window=CreateWindowExW(topmost ? WS_EX_TOPMOST : 0,L"STATIC",L"Dynamic tracker pixel test",WS_POPUP,10,10,pow2 ? 128 : 160,pow2 ? 64 : 100,NULL,NULL,GetModuleHandleW(NULL),NULL);if(!window)return 3;
     pixel_window=window;
     ShowWindow(window,SW_SHOWNOACTIVATE);
     check("target",ICompositorDesktopInterop_CreateDesktopWindowTarget(desktop,window,FALSE,&desktop_target));
