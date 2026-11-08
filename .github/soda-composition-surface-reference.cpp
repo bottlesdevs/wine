@@ -194,6 +194,19 @@ static bool observe_layered_child(HWND parent)
                 phase, desktop_pixel(parent, 110, 50),
                 desktop_pixel(parent, 16, 16));
     }
+    for (unsigned round = 0; round < 2; ++round)
+    {
+        if (!SetWindowPos(parent, nullptr, round ? 20 : 180, round ? 20 : 120,
+                0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE))
+        {
+            printf("case=layered-child-parent-move error=%lu\n", GetLastError());
+            goto done;
+        }
+        pump(200);
+        printf("desktop=hybrid phase=%s background=%06lx visual=%06lx\n",
+                round ? "layered-restored" : "layered-moved", desktop_pixel(parent, 110, 50),
+                desktop_pixel(parent, 16, 16));
+    }
     success = true;
 
 done:

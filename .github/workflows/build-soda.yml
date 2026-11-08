@@ -803,6 +803,8 @@ jobs:
               'desktop=hybrid phase=layered-layer-style background=0000ff visual=00ff00',
               'desktop=hybrid phase=layered-layer-bottom background=0000ff visual=00ff00',
               'desktop=hybrid phase=layered-small background=0000ff visual=00ff00',
+              'desktop=hybrid phase=layered-moved background=0000ff visual=00ff00',
+              'desktop=hybrid phase=layered-restored background=0000ff visual=00ff00',
               'desktop=hybrid phase=green background=0000ff visual=00ff00',
               'desktop=hybrid phase=blue background=0000ff visual=ff0000',
               'desktop=hybrid phase=alpha background=0000ff visual=80007f',
@@ -1074,7 +1076,7 @@ jobs:
                                   ('soda', work / f'composition-surface{bits}{suffix}.log')):
                   desktop[label] = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
                                     if line.startswith('desktop=hybrid ')]
-                  assert len(desktop[label]) == 11, (path, desktop[label])
+                  assert len(desktop[label]) == 13, (path, desktop[label])
               alpha = {}
               for label, path in (('windows', work / f'reference/composition-surface{bits}.log'),
                                   ('soda', work / f'composition-surface{bits}{suffix}.log')):
