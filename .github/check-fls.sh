@@ -17,7 +17,7 @@ if test -f "$runner_dir/share/fex-emu/Config.json"; then
     export FEX_APP_CONFIG="$runner_dir/share/fex-emu/Config.json"
     export FEX_APP_CONFIG_LOCATION="$runner_dir/share/fex-emu"
 fi
-trap '"$runner_dir/bin/wineserver" -k; "$runner_dir/bin/wineserver" -w' EXIT
+trap '"$runner_dir/bin/wineserver" -k || true; "$runner_dir/bin/wineserver" -w' EXIT
 
 "$runner_dir/bin/wine" wineboot -u >"$work_dir/wineboot.log" 2>&1
 sha256sum "$source_dir/soda-fls-reference.c" >"$work_dir/source.sha256"
