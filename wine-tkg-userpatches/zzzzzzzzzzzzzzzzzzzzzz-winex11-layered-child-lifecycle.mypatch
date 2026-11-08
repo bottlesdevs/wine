@@ -76,7 +76,7 @@
      if (data->whole_colormap) XFreeColormap( data->display, data->whole_colormap );
      data->whole_window = data->client_window = 0;
      data->whole_colormap = 0;
-@@ -3749,6 +3811,56 @@
+@@ -3749,6 +3811,116 @@
  }
  
  
@@ -113,8 +113,9 @@
 +    }
 +}
 +
-+static void sync_layered_children( HWND parent, BOOL repaint )
++static BOOL sync_layered_child_positions( HWND parent, BOOL repaint )
 +{
++    BOOL layered = FALSE;
 +    HWND child;
 +
 +    for (child = NtUserGetWindowRelative( parent, GW_CHILD ); child;
@@ -122,18 +123,77 @@
 +    {
 +        if (NtUserGetWindowLongW( child, GWL_EXSTYLE ) & WS_EX_LAYERED)
 +        {
++            layered = TRUE;
 +            if (NtUserGetWindowThread( child, NULL ) == GetCurrentThreadId()) sync_layered_child( child, repaint );
 +            else NtUserPostMessage( child, WM_X11DRV_SYNC_LAYERED_CHILD, repaint, 0 );
 +        }
-+        sync_layered_children( child, repaint );
++        layered |= sync_layered_child_positions( child, repaint );
 +    }
++    return layered;
++}
++
++static Window get_layered_stack_window( Display *display, HWND hwnd )
++{
++    Window window = None, root, parent, *children;
++    unsigned int count;
++    BOOL success;
++
++    while (hwnd && hwnd != NtUserGetDesktopWindow() && !(window = X11DRV_get_whole_window( hwnd )))
++        hwnd = NtUserGetAncestor( hwnd, GA_PARENT );
++    while (window && window != root_window)
++    {
++        children = NULL;
++        X11DRV_expect_error( display, host_window_error, NULL );
++        success = XQueryTree( display, window, &root, &parent, &children, &count );
++        if (children) XFree( children );
++        if (X11DRV_check_error() || !success) return None;
++        if (parent == root_window || parent == root) return window;
++        window = parent;
++    }
++    return None;
++}
++
++static void restack_layered_children( Display *display, HWND parent, Window anchor )
++{
++    HWND child;
++
++    for (child = NtUserGetWindowRelative( parent, GW_CHILD ); child;
++         child = NtUserGetWindowRelative( child, GW_HWNDNEXT ))
++    {
++        Window window = None;
++
++        if (!is_layered_child_visible( child )) continue;
++        if ((NtUserGetWindowLongW( child, GWL_EXSTYLE ) & WS_EX_LAYERED) &&
++            (window = X11DRV_get_whole_window( child )) && window != anchor)
++        {
++            XWindowChanges changes = { .sibling = anchor, .stack_mode = Above };
++
++            /* Insert each subtree above its parent, below earlier siblings. */
++            XConfigureWindow( display, window, CWSibling | CWStackMode, &changes );
++        }
++        restack_layered_children( display, child, window ? window : anchor );
++    }
++}
++
++static void sync_layered_children( HWND parent, BOOL repaint )
++{
++    Display *display = x11drv_thread_data()->display;
++    Window anchor;
++
++    if (!sync_layered_child_positions( parent, repaint )) return;
++    if (!is_layered_child_visible( parent )) return;
++    if (!(anchor = get_layered_stack_window( display, parent ))) return;
++    X11DRV_expect_error( display, host_window_error, NULL );
++    restack_layered_children( display, parent, anchor );
++    if (X11DRV_check_error()) TRACE( "Layered child disappeared during restacking\n" );
++    XFlush( display );
 +}
 +
 +
  /***********************************************************************
   *		WindowPosChanged   (X11DRV.@)
   */
-@@ -3759,7 +3871,7 @@
+@@ -3759,7 +3931,7 @@
      UINT ex_style = NtUserGetWindowLongW( hwnd, GWL_EXSTYLE ), new_style = NtUserGetWindowLongW( hwnd, GWL_STYLE );
      UINT desired_state;
      struct window_rects old_rects;
@@ -142,7 +202,7 @@
      BOOL activate = !(swp_flags & SWP_NOACTIVATE);
      BOOL fullscreen = !!(swp_flags & WINE_SWP_FULLSCREEN);
  
-@@ -3770,8 +3882,20 @@
+@@ -3770,8 +3942,20 @@
      if (is_managed) window_set_managed( data, TRUE );
  
      old_rects = data->rects;
@@ -164,7 +224,7 @@
      data->is_fullscreen = fullscreen;
      data->is_resizable = !!(swp_flags & WINE_SWP_RESIZABLE);
  
-@@ -3809,6 +3933,7 @@
+@@ -3809,6 +3993,7 @@
      if (!data->whole_window)
      {
          release_win_data( data );
@@ -172,7 +232,7 @@
          return;
      }
  
-@@ -3859,6 +3984,7 @@
+@@ -3859,6 +4044,7 @@
  #endif
      }
  
@@ -180,7 +240,7 @@
      desired_state = get_desired_wm_state( new_style, new_rects );
      if (data->pending_state.wm_state == WithdrawnState && surface && desired_state == NormalState &&
          is_office_popup( hwnd ) && (new_style & WS_POPUP) && (ex_style & WS_EX_TOOLWINDOW) &&
-@@ -3892,6 +4018,9 @@
+@@ -3892,6 +4078,9 @@
      XFlush( data->display );  /* make sure changes are done before we start painting again */
      release_win_data( data );
  
@@ -190,7 +250,7 @@
      if (was_fullscreen) NtUserClipCursor( NULL );
  }
  
-@@ -4103,6 +4232,9 @@
+@@ -4103,6 +4292,9 @@
              sync_window_region( data, (HRGN)1 );
              release_win_data( data );
          }
