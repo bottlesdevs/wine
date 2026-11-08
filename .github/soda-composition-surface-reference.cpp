@@ -189,15 +189,15 @@ static bool observe_desktop()
             !check("desktop-offset", visual->put_Offset({8.0f, 8.0f, 0.0f})) ||
             !check("desktop-set-brush", sprite->put_Brush(brush.Get())) ||
             !check("desktop-root", target->put_Root(visual.Get()))) goto done;
-    for (unsigned round = 0; round < 2; ++round)
+    for (unsigned round = 0; round < 3; ++round)
     {
-        if (round && !check("desktop-recolor", color->put_Color({255, 0, 0, 255}))) goto done;
+        if (round && !check("desktop-recolor", color->put_Color({static_cast<BYTE>(round == 2 ? 128 : 255), 0, 0, 255}))) goto done;
         if (!check("desktop-commit", controller->Commit())) goto done;
         pump(500);
         background = desktop_pixel(window, 110, 50);
         foreground = desktop_pixel(window, 16, 16);
         printf("desktop=hybrid phase=%s background=%06lx visual=%06lx\n",
-                round ? "blue" : "green", background, foreground);
+                round == 2 ? "alpha" : round ? "blue" : "green", background, foreground);
         if (background == CLR_INVALID || foreground == CLR_INVALID) goto done;
     }
     if (!check("desktop-detach", target->put_Root(nullptr)) ||

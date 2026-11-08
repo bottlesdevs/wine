@@ -134,7 +134,7 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            g++ gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix xvfb xauth \
+            g++ gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix xvfb xauth xcompmgr \
             libc6:i386 libgcc-s1:i386 libunwind8:i386 \
             libfreetype6:amd64 libfreetype6:i386 libfontconfig1:amd64 libfontconfig1:i386 \
             libx11-6:amd64 libx11-6:i386 libxext6:amd64 libxext6:i386 \
@@ -399,6 +399,7 @@ jobs:
           mkdir "$EAGLE_WORK/office-home"
           mkdir -m 700 "$EAGLE_WORK/office-runtime"
           xvfb-run -a -s '-screen 0 1440x900x24' \
+            bash .github/soda-test-desktop.sh "$EAGLE_WORK/tests/compositor.log" \
             docker run --rm --platform linux/amd64 --network host --hostname "$(hostname)" \
               --user "$(id -u):$(id -g)" \
               --volume "$EAGLE_WORK:$EAGLE_WORK" \
@@ -795,6 +796,7 @@ jobs:
               'desktop=hybrid phase=layered-alpha background=0000ff visual=80007f',
               'desktop=hybrid phase=green background=0000ff visual=00ff00',
               'desktop=hybrid phase=blue background=0000ff visual=ff0000',
+              'desktop=hybrid phase=alpha background=0000ff visual=80007f',
               'desktop=hybrid phase=detached background=0000ff visual=0000ff'
             )) {
               if ($lines -notcontains $expected) { throw "Desktop pixel control missing: $expected" }
@@ -917,13 +919,8 @@ jobs:
           export WINEPREFIX="$SURFACE_WORK/prefix" WINEARCH=win64 WINEDEBUG=-all LIBGL_ALWAYS_SOFTWARE=1
           export WINEDLLOVERRIDES='mscoree=d;winemenubuilder.exe=d'
           trap 'status=$?; set +e; "$SURFACE_RUNNER/bin/wineserver" -k; "$SURFACE_RUNNER/bin/wineserver" -w; exit "$status"' EXIT
-          xvfb-run -a sh -ec '
-            xcompmgr -n > "$SURFACE_WORK/compositor.log" 2>&1 &
-            compositor_pid=$!
-            trap "kill $compositor_pid; wait $compositor_pid || true" EXIT
-            sleep 1
-            kill -0 "$compositor_pid"
-            dpkg-query -W xcompmgr > "$SURFACE_WORK/compositor-version.log"
+          dpkg-query -W xcompmgr > "$SURFACE_WORK/compositor-version.log"
+          xvfb-run -a bash .github/soda-test-desktop.sh "$SURFACE_WORK/compositor.log" sh -ec '
             "$SURFACE_RUNNER/bin/wine" wineboot -u > "$SURFACE_WORK/setup.log" 2>&1
             for bits in 64 32; do
               timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/reference/composition-surface$bits.exe" \
@@ -948,7 +945,7 @@ jobs:
                                   ('soda', work / f'composition-surface{bits}.log')):
                   desktop[label] = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
                                     if line.startswith('desktop=hybrid ')]
-                  assert len(desktop[label]) == 6, (path, desktop[label])
+                  assert len(desktop[label]) == 7, (path, desktop[label])
               results[str(bits)] = {'windows': native, 'soda': soda, 'desktop': desktop,
                   'differences': [{'windows': a, 'soda': b} for a, b in zip(native, soda) if a != b] +
                       [{'windows': a, 'soda': b} for a, b in zip(desktop['windows'], desktop['soda']) if a != b]}
@@ -1523,7 +1520,8 @@ jobs:
             libglx-mesa0:i386 \
             "monado-service=$MONADO_VERSION" \
             ninja-build \
-            xvfb
+            xvfb \
+            xcompmgr
           sudo apt-get check
           mkdir -p "$HOME/artifacts"
           llvm_key="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-llvm.asc"
@@ -2144,6 +2142,11 @@ jobs:
         timeout-minutes: 5
         working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
         run: |
+          xcompmgr -n > "$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-tracker-compositor.log" 2>&1 &
+          compositor_pid=$!
+          trap 'kill "$compositor_pid" 2>/dev/null || true; wait "$compositor_pid" 2>/dev/null || true' EXIT
+          sleep 1
+          kill -0 "$compositor_pid"
           runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
           test -n "$runner_dir"
           for bits in 64 32; do

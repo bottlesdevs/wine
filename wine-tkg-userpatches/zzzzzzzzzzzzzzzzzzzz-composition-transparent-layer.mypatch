@@ -1,0 +1,280 @@
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -234,11 +234,11 @@
+     IDesktopWindowTargetInterop IDesktopWindowTargetInterop_iface;
+     IVisual *root;
+     IDCompositionTarget *dcomp_target;
+-    IDXGISwapChain1 *swapchain;
+     ID2D1Device *render_device;
+     ID2D1DeviceContext *render_context;
+     ID2D1Bitmap1 *render_bitmap;
+     ID2D1Bitmap1 *render_snapshot;
++    ID2D1Bitmap1 *readback_bitmap;
+     struct list entry;
+     struct list layer_entry;
+     CRITICAL_SECTION render_cs;
+@@ -317,12 +317,12 @@
+     if (impl->render_bitmap) ID2D1Bitmap1_Release( impl->render_bitmap );
+     if (impl->render_context) ID2D1DeviceContext_Release( impl->render_context );
+     if (impl->render_device) ID2D1Device_Release( impl->render_device );
+-    if (impl->swapchain) IDXGISwapChain1_Release( impl->swapchain );
++    if (impl->readback_bitmap) ID2D1Bitmap1_Release( impl->readback_bitmap );
+     impl->render_bitmap = NULL;
+     impl->render_snapshot = NULL;
+     impl->render_context = NULL;
+     impl->render_device = NULL;
+-    impl->swapchain = NULL;
++    impl->readback_bitmap = NULL;
+     impl->width = 0;
+     impl->height = 0;
+ }
+@@ -632,7 +632,7 @@
+         hr = HRESULT_FROM_WIN32( GetLastError() );
+         goto failed;
+     }
+-    impl->render_hwnd = CreateWindowExW( WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_NOPARENTNOTIFY,
++    impl->render_hwnd = CreateWindowExW( WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_NOPARENTNOTIFY,
+             layer_class_name, NULL, WS_CHILD | WS_DISABLED | WS_CLIPSIBLINGS, 0, 0,
+             max( 1, rect.right ), max( 1, rect.bottom ), hwnd, NULL, layer_instance, NULL );
+     if (!impl->render_hwnd)
+@@ -11755,19 +11755,75 @@
+     return NULL;
+ }
+ 
++static HRESULT desktop_window_target_present( struct desktop_window_target *target )
++{
++    D2D1_BITMAP_PROPERTIES1 properties = {0};
++    D2D1_MAPPED_RECT mapped;
++    BITMAPINFO info = {{0}};
++    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
++    SIZE size = {(LONG)target->width, (LONG)target->height};
++    POINT source = {0, 0};
++    HGDIOBJ previous = NULL;
++    HBITMAP bitmap = NULL;
++    HDC dc = NULL;
++    BYTE *pixels;
++    SIZE_T stride = (SIZE_T)target->width * 4;
++    UINT y;
++    HRESULT hr;
++
++    if (!target->readback_bitmap)
++    {
++        properties.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
++        properties.pixelFormat.alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED;
++        properties.dpiX = properties.dpiY = 96.0f;
++        properties.bitmapOptions = D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW;
++        if (FAILED(hr = ID2D1DeviceContext_CreateBitmap( target->render_context,
++                (D2D1_SIZE_U){target->width, target->height}, NULL, 0,
++                &properties, &target->readback_bitmap ))) return hr;
++    }
++    if (FAILED(hr = ID2D1Bitmap1_CopyFromBitmap( target->readback_bitmap, NULL,
++            (ID2D1Bitmap *)target->render_snapshot, NULL ))) return hr;
++    hr = E_OUTOFMEMORY;
++    if (!(dc = CreateCompatibleDC( NULL ))) goto done;
++    info.bmiHeader.biSize = sizeof(info.bmiHeader);
++    info.bmiHeader.biWidth = target->width;
++    info.bmiHeader.biHeight = -(LONG)target->height;
++    info.bmiHeader.biPlanes = 1;
++    info.bmiHeader.biBitCount = 32;
++    info.bmiHeader.biCompression = BI_RGB;
++    if (!(bitmap = CreateDIBSection( dc, &info, DIB_RGB_COLORS, (void **)&pixels, NULL, 0 ))) goto done;
++    if (!(previous = SelectObject( dc, bitmap )) || previous == HGDI_ERROR)
++    {
++        previous = NULL;
++        hr = E_FAIL;
++        goto done;
++    }
++    if (FAILED(hr = ID2D1Bitmap1_Map( target->readback_bitmap, D2D1_MAP_OPTIONS_READ, &mapped ))) goto done;
++    for (y = 0; y < target->height; ++y)
++        memcpy( pixels + y * stride, mapped.bits + (SIZE_T)y * mapped.pitch, stride );
++    if (FAILED(hr = ID2D1Bitmap1_Unmap( target->readback_bitmap ))) goto done;
++    if (!UpdateLayeredWindow( target->render_hwnd, NULL, NULL, &size,
++            dc, &source, 0, &blend, ULW_ALPHA ))
++    {
++        hr = HRESULT_FROM_WIN32( GetLastError() );
++        if (SUCCEEDED(hr)) hr = E_FAIL;
++    }
++
++done:
++    if (previous) SelectObject( dc, previous );
++    if (bitmap) DeleteObject( bitmap );
++    if (dc) DeleteDC( dc );
++    return hr;
++}
++
+ static HRESULT desktop_window_target_render_locked( struct desktop_window_target *target )
+ {
+     struct composition_drawing_surface *source;
+-    ID2D1Bitmap1 *source_bitmap;
+     D2D1_BITMAP_PROPERTIES1 properties = {0};
+     D2D1_MATRIX_3X2_F identity = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+-    DXGI_SWAP_CHAIN_DESC1 desc = {0};
+-    D2D1_COLOR_F white = {1.0f, 1.0f, 1.0f, 1.0f};
+-    IDXGISurface *surface = NULL, *backbuffer = NULL;
++    D2D1_COLOR_F transparent = {0.0f, 0.0f, 0.0f, 0.0f};
+     ID3D11Device *d3d_device = NULL;
+     IDXGIDevice *dxgi_device = NULL;
+-    IDXGIAdapter *adapter = NULL;
+-    IDXGIFactory2 *factory = NULL;
+     RECT client;
+     UINT width, height;
+     const char *stage = "initialization";
+@@ -11795,37 +11851,20 @@
+     }
+     if (source && target->render_device && target->render_device != source->device)
+         desktop_window_target_reset_renderer( target );
+-    if (target->swapchain && (target->width != width || target->height != height))
+-    {
+-        stage = "resize composition buffers";
+-        if (target->render_context) ID2D1DeviceContext_SetTarget( target->render_context, NULL );
+-        if (target->render_bitmap) ID2D1Bitmap1_Release( target->render_bitmap );
++    if (target->render_bitmap && (target->width != width || target->height != height))
++    {
++        ID2D1DeviceContext_SetTarget( target->render_context, NULL );
++        ID2D1Bitmap1_Release( target->render_bitmap );
+         if (target->render_snapshot) ID2D1Bitmap1_Release( target->render_snapshot );
+-        target->render_bitmap = NULL;
+-        target->render_snapshot = NULL;
+-        hr = IDXGISwapChain1_ResizeBuffers( target->swapchain, 1, width, height,
+-                DXGI_FORMAT_B8G8R8A8_UNORM, 0 );
+-        if (FAILED(hr)) goto done;
+-        target->width = width;
+-        target->height = height;
+-    }
+-
+-    if (!target->swapchain)
++        if (target->readback_bitmap) ID2D1Bitmap1_Release( target->readback_bitmap );
++        target->render_bitmap = target->render_snapshot = target->readback_bitmap = NULL;
++    }
++    if (!target->render_device)
+     {
+         if (source)
+         {
+-            source_bitmap = source->virtual ? source->bitmap : source->committed_bitmap;
+-            if (!source_bitmap && !list_empty( &source->tiles ))
+-                source_bitmap = LIST_ENTRY( list_head( &source->tiles ), struct composition_surface_tile, entry )->bitmap;
+-            if (!source_bitmap) {hr = S_FALSE; goto done;}
+-            stage = "get source surface";
+-            if (FAILED(hr = ID2D1Bitmap1_GetSurface( source_bitmap, &surface ))) goto done;
+-            stage = "get d3d device";
+-            if (FAILED(hr = IDXGISurface_GetDevice( surface, &IID_ID3D11Device,
+-                    (void **)&d3d_device ))) goto done;
+-            stage = "get dxgi device";
+-            if (FAILED(hr = IDXGISurface_GetDevice( surface, &IID_IDXGIDevice,
+-                    (void **)&dxgi_device ))) goto done;
++            target->render_device = source->device;
++            ID2D1Device_AddRef( target->render_device );
+         }
+         else
+         {
+@@ -11838,55 +11877,29 @@
+             stage = "create d2d device";
+             if (FAILED(hr = D2D1CreateDevice( dxgi_device, NULL, &target->render_device ))) goto done;
+         }
+-        stage = "get adapter";
+-        if (FAILED(hr = IDXGIDevice_GetAdapter( dxgi_device, &adapter ))) goto done;
+-        stage = "get factory";
+-        if (FAILED(hr = IDXGIAdapter_GetParent( adapter, &IID_IDXGIFactory2,
+-                (void **)&factory ))) goto done;
+-        desc.Width = width;
+-        desc.Height = height;
+-        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+-        desc.SampleDesc.Count = 1;
+-        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+-        desc.BufferCount = 1;
+-        desc.Scaling = DXGI_SCALING_STRETCH;
+-        desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+-        desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+-        stage = "create swapchain";
+-        if (FAILED(hr = IDXGIFactory2_CreateSwapChainForHwnd( factory, (IUnknown *)d3d_device,
+-                target->render_hwnd, &desc, NULL, NULL, &target->swapchain ))) goto done;
+-        target->width = width;
+-        target->height = height;
+     }
+     if (!target->render_context)
+     {
+-        if (!target->render_device)
+-        {
+-            target->render_device = source->device;
+-            ID2D1Device_AddRef( target->render_device );
+-        }
+         stage = "create render context";
+         if (FAILED(hr = ID2D1Device_CreateDeviceContext( target->render_device,
+                 D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &target->render_context ))) goto done;
+     }
++    properties.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
++    properties.pixelFormat.alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED;
++    properties.dpiX = properties.dpiY = 96.0f;
+     if (!target->render_bitmap)
+     {
+-        stage = "get backbuffer";
+-        if (FAILED(hr = IDXGISwapChain1_GetBuffer( target->swapchain, 0,
+-                &IID_IDXGISurface, (void **)&backbuffer ))) goto done;
+-        properties.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
+-        properties.pixelFormat.alphaMode = D2D1_ALPHA_MODE_IGNORE;
++        stage = "create render bitmap";
+         properties.bitmapOptions = D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW;
+-        properties.dpiX = properties.dpiY = 96.0f;
+-        stage = "create render bitmap";
+-        if (FAILED(hr = ID2D1DeviceContext_CreateBitmapFromDxgiSurface( target->render_context,
+-                backbuffer, &properties, &target->render_bitmap ))) goto done;
+-    }
+-
++        if (FAILED(hr = ID2D1DeviceContext_CreateBitmap( target->render_context,
++                (D2D1_SIZE_U){width, height}, NULL, 0, &properties, &target->render_bitmap ))) goto done;
++        target->width = width;
++        target->height = height;
++    }
+     ID2D1DeviceContext_SetTarget( target->render_context, (ID2D1Image *)target->render_bitmap );
+     ID2D1DeviceContext_SetTransform( target->render_context, &identity );
+     ID2D1DeviceContext_BeginDraw( target->render_context );
+-    ID2D1DeviceContext_Clear( target->render_context, &white );
++    ID2D1DeviceContext_Clear( target->render_context, &transparent );
+     draw = draw_composition_visual( target->render_context, target->root, 0.0f, 0.0f,
+             width, height, 1.0f, 0 );
+     stage = "end draw";
+@@ -11896,9 +11909,6 @@
+     stage = "retain committed frame";
+     if (!target->render_snapshot)
+     {
+-        properties.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
+-        properties.pixelFormat.alphaMode = D2D1_ALPHA_MODE_IGNORE;
+-        properties.dpiX = properties.dpiY = 96.0f;
+         properties.bitmapOptions = D2D1_BITMAP_OPTIONS_NONE;
+         hr = ID2D1DeviceContext_CreateBitmap( target->render_context, (D2D1_SIZE_U){width, height},
+                 NULL, 0, &properties, &target->render_snapshot );
+@@ -11907,16 +11917,12 @@
+     if (FAILED(hr = ID2D1Bitmap1_CopyFromBitmap( target->render_snapshot, NULL,
+             (ID2D1Bitmap *)target->render_bitmap, NULL ))) goto done;
+     stage = "present";
+-    hr = IDXGISwapChain1_Present( target->swapchain, 0, 0 );
++    hr = desktop_window_target_present( target );
+ 
+ done:
+     if (source) ICompositionDrawingSurface_Release( &source->ICompositionDrawingSurface_iface );
+-    if (factory) IDXGIFactory2_Release( factory );
+-    if (adapter) IDXGIAdapter_Release( adapter );
+     if (dxgi_device) IDXGIDevice_Release( dxgi_device );
+     if (d3d_device) ID3D11Device_Release( d3d_device );
+-    if (backbuffer) IDXGISurface_Release( backbuffer );
+-    if (surface) IDXGISurface_Release( surface );
+     if (FAILED(hr))
+     {
+         ERR( "render failed at %s, hr %#lx.\n", stage, hr );
+@@ -11945,14 +11951,10 @@
+     HRESULT hr;
+ 
+     EnterCriticalSection( &target->render_cs );
+-    if (!target->rendering && target->render_snapshot && target->swapchain &&
+-            IsWindow( target->render_hwnd ))
++    if (!target->rendering && target->render_snapshot && IsWindow( target->render_hwnd ))
+     {
+         target->rendering = TRUE;
+-        /* Present discards the backbuffer; repaint only the last committed image. */
+-        hr = ID2D1Bitmap1_CopyFromBitmap( target->render_bitmap, NULL,
+-                (ID2D1Bitmap *)target->render_snapshot, NULL );
+-        if (SUCCEEDED(hr)) hr = IDXGISwapChain1_Present( target->swapchain, 0, 0 );
++        hr = desktop_window_target_present( target );
+         if (FAILED(hr)) WARN( "composition layer repaint failed, hr %#lx.\n", hr );
+         target->rendering = FALSE;
+     }
