@@ -512,7 +512,8 @@ jobs:
           selection.write_text(json.dumps(images))
           output = work / 'office-results'
           output.mkdir()
-          reports = sorted((saved / 'office-results').glob('profile-*.log'))
+          reports = sorted(path for path in (saved / 'office-results').glob('profile-*.log')
+                           if not path.name.endswith('-windows.log'))
           assert reports
           results = []
           for report in reports:
