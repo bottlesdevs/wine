@@ -1122,7 +1122,7 @@ jobs:
             "$SURFACE_RUNNER/bin/wine" reg add "HKCU\Software\Wine\Direct3D" \
               /v renderer /t REG_SZ /d gl /f > "$SURFACE_WORK/tracker-renderer.log" 2>&1
             for bits in 64 32; do
-              for mode in queue-flat queue-flat-short queue-flat-simple queue-flat-simple-green; do
+              for mode in queue-flat-simple-green queue-flat-simple-green-prepaint queue-flat-simple-green-sdk-pump-update queue-flat-simple-green-sdk-pump-update-large-parent queue-flat-simple-green-sdk-pump-update-small-sprite queue-flat-simple-green-sdk-pump-update-far-offset queue-flat-simple-green-sdk-pump-update-origin; do
                 timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/tracker$bits.exe" inspect "$mode" \
                   > "$SURFACE_WORK/tracker$bits-$mode.log" 2> "$SURFACE_WORK/tracker$bits-$mode.stderr"
                 grep -q "TRACKER_DONE" "$SURFACE_WORK/tracker$bits-$mode.log"

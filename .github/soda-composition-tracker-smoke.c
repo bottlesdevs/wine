@@ -100,7 +100,10 @@ static void stage(ICompositorController *controller,IVisual *visual,const char *
             struct Color color;
             boolean visible;
             FLOAT opacity;
-            POINT point = {left - 10 + 5, 25};
+            POINT point;
+            check("inspect visual offset",IVisual_get_Offset(visual,&offset));
+            point.x=(LONG)offset.X+5;
+            point.y=(LONG)offset.Y+5;
             GetWindowRect(pixel_window, &rect);
             ClientToScreen(pixel_window, &point);
             screen = GetDC(NULL);
@@ -120,7 +123,6 @@ static void stage(ICompositorController *controller,IVisual *visual,const char *
                         (unsigned long)GetWindowLongW(child,GWL_STYLE),(unsigned long)GetWindowLongW(child,GWL_EXSTYLE));
             }
             else printf("TRACKER_LAYER_%s absent\n",name);
-            check("inspect visual offset",IVisual_get_Offset(visual,&offset));
             check("inspect visual size",IVisual_get_Size(visual,&size));
             printf("TRACKER_VISUAL_%s offset=%g,%g,%g size=%g,%g\n",name,
                     offset.X,offset.Y,offset.Z,size.X,size.Y);
@@ -165,6 +167,12 @@ int main(int argc,char **argv)
     BOOL simple=argc>2 && strstr(argv[2], "simple");
     BOOL short_key=argc>2 && strstr(argv[2], "short");
     BOOL green=argc>2 && strstr(argv[2], "green");
+    BOOL sdk=argc>2 && strstr(argv[2], "sdk");
+    BOOL large_parent=argc>2 && strstr(argv[2], "large-parent");
+    BOOL small_sprite=argc>2 && strstr(argv[2], "small-sprite");
+    BOOL far_offset=argc>2 && strstr(argv[2], "far-offset");
+    BOOL origin=argc>2 && strstr(argv[2], "origin");
+    BOOL prepaint=argc>2 && strstr(argv[2], "prepaint");
     BOOL pow2=argc>2 && strstr(argv[2], "pow2");
     BOOL topmost=argc>2 && strstr(argv[2], "top");
     BOOL custom=argc>2 && strstr(argv[2], "custom");
@@ -215,10 +223,20 @@ int main(int argc,char **argv)
         cls.hbrBackground=(HBRUSH)GetStockObject(WHITE_BRUSH);
         if(!RegisterClassW(&cls))return 3;
     }
-    window=CreateWindowExW(topmost ? WS_EX_TOPMOST : 0,custom ? cls.lpszClassName : L"STATIC",L"Dynamic tracker pixel test",WS_POPUP,10,10,pow2 ? 128 : 160,pow2 ? 64 : 100,NULL,NULL,GetModuleHandleW(NULL),NULL);if(!window)return 3;
+    window=CreateWindowExW(topmost ? WS_EX_TOPMOST : 0,custom ? cls.lpszClassName : L"STATIC",L"Dynamic tracker pixel test",WS_POPUP,sdk && !origin ? 20 : 10,sdk && !origin ? 20 : 10,(pow2 || sdk) && !large_parent ? 128 : 160,(pow2 || sdk) && !large_parent ? 64 : 100,NULL,NULL,GetModuleHandleW(NULL),NULL);if(!window)return 3;
     pixel_window=window;
     ShowWindow(window,SW_SHOWNOACTIVATE);
     if(update || custom)UpdateWindow(window);
+    if(sdk || prepaint)
+    {
+        MSG message;
+        ULONGLONG end=GetTickCount64()+200;
+        do
+        {
+            while(PeekMessageW(&message,NULL,0,0,PM_REMOVE))DispatchMessageW(&message);
+            MsgWaitForMultipleObjects(0,NULL,FALSE,10,QS_ALLINPUT);
+        }while(GetTickCount64()<end);
+    }
     check("target",ICompositorDesktopInterop_CreateDesktopWindowTarget(desktop,window,FALSE,&desktop_target));
     check("target interface",IDesktopWindowTarget_QueryInterface(desktop_target,&IID_ICompositionTarget,(void **)&target));
     check("color",ICompositor_CreateColorBrushWithColor(compositor,((struct Color){255,green ? 0 : 255,green ? 255 : 0,0}),&color));
@@ -227,10 +245,10 @@ int main(int argc,char **argv)
     check("sprite",ICompositor_CreateSpriteVisual(compositor,&sprite));
     check("visual",ISpriteVisual_QueryInterface(sprite,&IID_IVisual,(void **)&visual));
     check("object",IVisual_QueryInterface(visual,&IID_ICompositionObject,(void **)&object));
-    check("size",IVisual_put_Size(visual,((struct Vector2){20,15})));
+    check("size",IVisual_put_Size(visual,((struct Vector2){sdk && !small_sprite ? 32 : 20,sdk && !small_sprite ? 32 : 15})));
     check("offset",IVisual_put_Offset(visual,((struct Vector3){0,20,0})));
     check("brush set",ISpriteVisual_put_Brush(sprite,brush));
-    if(flat)check("flat initial offset",IVisual_put_Offset(visual,((struct Vector3){40,20,0})));
+    if(flat)check("flat initial offset",IVisual_put_Offset(visual,((struct Vector3){sdk && !far_offset ? 8 : 40,sdk && !far_offset ? 8 : 20,0})));
     else start(compositor,object,L"Offset.X",L"-tracker.Position.X",L"tracker",tracker_object);
     check("root",ICompositionTarget_put_Root(target,visual));
     stage(controller,visual,"INITIAL");
