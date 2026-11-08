@@ -126,13 +126,27 @@ static COLORREF desktop_pixel(HWND window, int x, int y)
     return value;
 }
 
+static bool record_parent_state(HWND window, const char *phase)
+{
+    RECT rect = {};
+    WINDOWPLACEMENT placement = {};
+    placement.length = sizeof(placement);
+    if (!GetWindowRect(window, &rect) || !GetWindowPlacement(window, &placement)) return false;
+    printf("case=layered-parent phase=%s style=%08lx visible=%d iconic=%d rect=%ld,%ld,%ld,%ld min=%ld,%ld normal=%ld,%ld,%ld,%ld\n",
+            phase, static_cast<unsigned long>(GetWindowLongPtrW(window, GWL_STYLE)), IsWindowVisible(window), IsIconic(window),
+            rect.left, rect.top, rect.right, rect.bottom, placement.ptMinPosition.x, placement.ptMinPosition.y,
+            placement.rcNormalPosition.left, placement.rcNormalPosition.top,
+            placement.rcNormalPosition.right, placement.rcNormalPosition.bottom);
+    return true;
+}
+
 static bool observe_layered_child(HWND parent)
 {
     BITMAPINFO info = {};
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
     POINT source = {};
     SIZE size = {32, 32};
-    HWND window = nullptr;
+    HWND window = nullptr, intermediate = nullptr;
     HBITMAP bitmap = nullptr;
     HGDIOBJ previous = nullptr;
     HDC dc = CreateCompatibleDC(nullptr);
@@ -230,8 +244,39 @@ static bool observe_layered_child(HWND parent)
                 round ? "layered-unclipped" : "layered-clipped", desktop_pixel(parent, 110, 50),
                 desktop_pixel(parent, 24, 16));
     }
+    intermediate = CreateWindowExW(0, L"STATIC", nullptr, WS_CHILD | WS_VISIBLE | SS_WHITERECT,
+            -30, 0, 10, 32, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!intermediate || !SetParent(window, intermediate) ||
+            !SetWindowPos(window, nullptr, -10, 8, 32, 32, SWP_NOZORDER | SWP_NOACTIVATE) ||
+            !UpdateLayeredWindow(window, nullptr, nullptr, &size, dc, &source, 0, &blend, ULW_ALPHA))
+    {
+        printf("case=layered-child-ancestors error=%lu\n", GetLastError());
+        goto done;
+    }
+    pump(200);
+    {
+        HDC screen = GetDC(nullptr);
+        if (!screen) goto done;
+        printf("desktop=hybrid phase=layered-ancestors background=%06lx visual=%06lx\n",
+                desktop_pixel(parent, 110, 50), GetPixel(screen, 2, 36));
+        ReleaseDC(nullptr, screen);
+    }
+    if (!SetParent(window, parent) ||
+            !SetWindowPos(window, nullptr, 8, 8, 32, 32, SWP_NOZORDER | SWP_NOACTIVATE) ||
+            !UpdateLayeredWindow(window, nullptr, nullptr, &size, dc, &source, 0, &blend, ULW_ALPHA))
+    {
+        printf("case=layered-child-ancestors-restore error=%lu\n", GetLastError());
+        goto done;
+    }
+    DestroyWindow(intermediate);
+    intermediate = nullptr;
+    pump(200);
+    printf("desktop=hybrid phase=layered-ancestors-restored background=%06lx visual=%06lx\n",
+            desktop_pixel(parent, 110, 50), desktop_pixel(parent, 16, 16));
+    if (!record_parent_state(parent, "before-minimize")) goto done;
     ShowWindow(parent, SW_MINIMIZE);
     pump(500);
+    if (!record_parent_state(parent, "minimized")) goto done;
     {
         HDC screen = GetDC(nullptr);
         if (!screen) goto done;
@@ -242,12 +287,14 @@ static bool observe_layered_child(HWND parent)
     ShowWindow(parent, SW_RESTORE);
     UpdateWindow(parent);
     pump(500);
+    if (!record_parent_state(parent, "restored")) goto done;
     printf("desktop=hybrid phase=layered-unminimized background=%06lx visual=%06lx\n",
             desktop_pixel(parent, 110, 50), desktop_pixel(parent, 16, 16));
     success = true;
 
 done:
     if (window) DestroyWindow(window);
+    if (intermediate) DestroyWindow(intermediate);
     if (previous && previous != HGDI_ERROR) SelectObject(dc, previous);
     if (bitmap) DeleteObject(bitmap);
     DeleteDC(dc);

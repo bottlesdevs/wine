@@ -1,6 +1,6 @@
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -731,6 +731,62 @@
+@@ -731,6 +731,66 @@
  }
  
  
@@ -21,7 +21,11 @@
 +        NtUserMapWindowPoints( parent, data->hwnd, (POINT *)&rect, 2, dpi );
 +        OffsetRect( &rect, data->rects.client.left - data->rects.visible.left,
 +                    data->rects.client.top - data->rects.visible.top );
-+        if (!intersect_rect( &bounds, &bounds, &rect )) break;
++        if (!intersect_rect( &bounds, &bounds, &rect ))
++        {
++            SetRect( &bounds, 0, 0, 0, 0 );
++            break;
++        }
 +        parent = NtUserGetAncestor( parent, GA_PARENT );
 +    }
 +    if (!(region = NtGdiCreateRectRgn( bounds.left, bounds.top, bounds.right, bounds.bottom ))) return;
@@ -63,7 +67,7 @@
  /***********************************************************************
   *              sync_window_opacity
   */
-@@ -2960,6 +3016,8 @@
+@@ -2960,6 +3020,8 @@
              XDestroyWindow( data->display, data->whole_window );
          }
      }
@@ -72,7 +76,7 @@
      if (data->whole_colormap) XFreeColormap( data->display, data->whole_colormap );
      data->whole_window = data->client_window = 0;
      data->whole_colormap = 0;
-@@ -3749,6 +3807,47 @@
+@@ -3749,6 +3811,47 @@
  }
  
  
@@ -120,7 +124,7 @@
  /***********************************************************************
   *		WindowPosChanged   (X11DRV.@)
   */
-@@ -3759,7 +3858,7 @@
+@@ -3759,7 +3862,7 @@
      UINT ex_style = NtUserGetWindowLongW( hwnd, GWL_EXSTYLE ), new_style = NtUserGetWindowLongW( hwnd, GWL_STYLE );
      UINT desired_state;
      struct window_rects old_rects;
@@ -129,7 +133,7 @@
      BOOL activate = !(swp_flags & SWP_NOACTIVATE);
      BOOL fullscreen = !!(swp_flags & WINE_SWP_FULLSCREEN);
  
-@@ -3770,6 +3869,13 @@
+@@ -3770,6 +3873,13 @@
      if (is_managed) window_set_managed( data, TRUE );
  
      old_rects = data->rects;
@@ -143,7 +147,7 @@
      was_fullscreen = data->is_fullscreen;
      if (!(new_style & WS_MINIMIZE) || is_virtual_desktop()) data->rects = *new_rects;
      data->is_fullscreen = fullscreen;
-@@ -3809,6 +3915,7 @@
+@@ -3809,6 +3919,7 @@
      if (!data->whole_window)
      {
          release_win_data( data );
@@ -151,7 +155,7 @@
          return;
      }
  
-@@ -3859,6 +3966,7 @@
+@@ -3859,6 +3970,7 @@
  #endif
      }
  
@@ -159,7 +163,7 @@
      desired_state = get_desired_wm_state( new_style, new_rects );
      if (data->pending_state.wm_state == WithdrawnState && surface && desired_state == NormalState &&
          is_office_popup( hwnd ) && (new_style & WS_POPUP) && (ex_style & WS_EX_TOOLWINDOW) &&
-@@ -3892,6 +4000,7 @@
+@@ -3892,6 +4004,7 @@
      XFlush( data->display );  /* make sure changes are done before we start painting again */
      release_win_data( data );
  
@@ -167,7 +171,7 @@
      if (was_fullscreen) NtUserClipCursor( NULL );
  }
  
-@@ -4103,6 +4212,9 @@
+@@ -4103,6 +4216,9 @@
              sync_window_region( data, (HRGN)1 );
              release_win_data( data );
          }
