@@ -1105,7 +1105,7 @@ jobs:
             "$compiler" .github/soda-composition-tracker-smoke.c \
               -I"$SURFACE_RUNNER/include/wine/windows" -D__WINESRC__ \
               -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
-              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid -lcoremessaging \
+              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid \
               -o "$SURFACE_WORK/tracker$bits.exe"
           done
           export WINEPREFIX="$SURFACE_WORK/tracker-prefix" WINEARCH=win64 WINEDEBUG=-all,+ui LIBGL_ALWAYS_SOFTWARE=1
@@ -1116,7 +1116,7 @@ jobs:
             "$SURFACE_RUNNER/bin/wine" reg add "HKCU\Software\Wine\Direct3D" \
               /v renderer /t REG_SZ /d gl /f > "$SURFACE_WORK/tracker-renderer.log" 2>&1
             for bits in 64 32; do
-              for mode in bare queue; do
+              for mode in bare queue flat queue-flat; do
                 timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/tracker$bits.exe" inspect "$mode" \
                   > "$SURFACE_WORK/tracker$bits-$mode.log" 2> "$SURFACE_WORK/tracker$bits-$mode.stderr"
                 grep -q "TRACKER_DONE" "$SURFACE_WORK/tracker$bits-$mode.log"
@@ -2327,7 +2327,7 @@ jobs:
             "$compiler" "$GITHUB_WORKSPACE/.github/soda-composition-tracker-smoke.c" \
               -I"$runner_dir/include/wine/windows" -D__WINESRC__ \
               -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
-              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid -lcoremessaging \
+              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid \
               -o "$RUNNER_TEMP/soda-composition-tracker$bits.exe"
             "$compiler" "$GITHUB_WORKSPACE/.github/soda-composition-binding-smoke.c" \
               -I"$runner_dir/include/wine/windows" -D__WINESRC__ \

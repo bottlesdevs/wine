@@ -67,7 +67,7 @@ static void start(ICompositor *compositor,ICompositionObject *target,const WCHAR
 }
 static BOOL verify_pixels, inspect_pixels;
 static HWND pixel_window;
-static void stage(ICompositorController *controller,const char *name)
+static void stage(ICompositorController *controller,IVisual *visual,const char *name)
 {
     MSG message;UINT i;
     for(i=0;i<2;++i){check("commit",ICompositorController_Commit(controller));while(PeekMessageW(&message,NULL,0,0,PM_REMOVE))DispatchMessageW(&message);Sleep(200);}
@@ -81,6 +81,8 @@ static void stage(ICompositorController *controller,const char *name)
         if (inspect_pixels)
         {
             RECT rect;
+            struct Vector3 offset;
+            struct Vector2 size;
             POINT point = {left - 10 + 5, 25};
             GetWindowRect(pixel_window, &rect);
             ClientToScreen(pixel_window, &point);
@@ -89,6 +91,10 @@ static void stage(ICompositorController *controller,const char *name)
             ReleaseDC(NULL, screen);
             printf("TRACKER_WINDOW_%s=%ld,%ld,%ld,%ld client_pixel=%08lx\n", name,
                     rect.left, rect.top, rect.right, rect.bottom, (unsigned long)inside);
+            check("inspect visual offset",IVisual_get_Offset(visual,&offset));
+            check("inspect visual size",IVisual_get_Size(visual,&size));
+            printf("TRACKER_VISUAL_%s offset=%g,%g,%g size=%g,%g\n",name,
+                    offset.X,offset.Y,offset.Z,size.X,size.Y);
         }
         else if (inside != RGB(255,0,0) || before != RGB(255,255,255) || after != RGB(255,255,255)) ExitProcess(7);
     }
@@ -119,14 +125,20 @@ int main(int argc,char **argv)
     HRESULT result;ULONG refs_before,refs_after;HANDLE threads[2];struct stress_context stress;
     PDISPATCHERQUEUECONTROLLER queue=NULL;
     DispatcherQueueOptions options={sizeof(options),DQTYPE_THREAD_CURRENT,DQTAT_COM_NONE};
+    BOOL flat=argc>2 && strstr(argv[2], "flat");
     BOOL candidate=argc>1 && strcmp(argv[1], "inspect");
     inspect_pixels=argc>1 && !strcmp(argv[1], "inspect");
     verify_pixels=candidate || inspect_pixels;
 
     check("initialize",RoInitialize(RO_INIT_MULTITHREADED));
-    if(argc>2 && !strcmp(argv[2], "queue"))
+    if(argc>2 && strstr(argv[2], "queue"))
     {
-        check("dispatcher queue",CreateDispatcherQueueController(options,&queue));
+        HRESULT (WINAPI *create_queue)(DispatcherQueueOptions,PDISPATCHERQUEUECONTROLLER *);
+        HMODULE module=LoadLibraryExW(L"CoreMessaging.dll",NULL,LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if(!module)return 8;
+        create_queue=(void *)GetProcAddress(module,"CreateDispatcherQueueController");
+        if(!create_queue)return 8;
+        check("dispatcher queue",create_queue(options,&queue));
         puts("TRACKER_QUEUE_READY");
     }
     name=string(RuntimeClass_Windows_UI_Composition_Core_CompositorController);
@@ -160,14 +172,17 @@ int main(int argc,char **argv)
     check("size",IVisual_put_Size(visual,((struct Vector2){20,15})));
     check("offset",IVisual_put_Offset(visual,((struct Vector3){0,20,0})));
     check("brush set",ISpriteVisual_put_Brush(sprite,brush));
-    start(compositor,object,L"Offset.X",L"-tracker.Position.X",L"tracker",tracker_object);
+    if(flat)check("flat initial offset",IVisual_put_Offset(visual,((struct Vector3){40,20,0})));
+    else start(compositor,object,L"Offset.X",L"-tracker.Position.X",L"tracker",tracker_object);
     check("root",ICompositionTarget_put_Root(target,visual));
-    stage(controller,"INITIAL");
+    stage(controller,visual,"INITIAL");
     check("position",IInteractionTracker_get_Position(tracker,&position));printf("INITIAL_POSITION=%g\n",position.X);
     check("resize",ICompositionPropertySet_InsertVector3(layout,size,((struct Vector3){120,20,0})));
-    stage(controller,"RESIZED");
+    if(flat)check("flat resized offset",IVisual_put_Offset(visual,((struct Vector3){60,20,0})));
+    stage(controller,visual,"RESIZED");
     check("zoom",IInteractionTracker_TryUpdateScale(tracker,4,((struct Vector3){0}),&request));
-    stage(controller,"SCALED");
+    if(flat)check("flat scaled offset",IVisual_put_Offset(visual,((struct Vector3){30,20,0})));
+    stage(controller,visual,"SCALED");
     if(candidate)
     {
         stress.object=tracker_object;stress.tracker=tracker;stress.animation=animation(compositor,L"0",NULL,NULL);
@@ -188,9 +203,9 @@ int main(int argc,char **argv)
             if(candidate && (FAILED(result) || position.X!=-30))return 5;
         }
     }
-    stage(controller,"POSITION");
+    stage(controller,visual,"POSITION");
     start(compositor,tracker_object,L"MinPosition.X",L"1/0",NULL,NULL);
-    stage(controller,"INVALID");
+    stage(controller,visual,"INVALID");
     check("closable",IInteractionTracker_QueryInterface(tracker,&IID_IClosable,(void **)&closable));
     check("close",IClosable_Close(closable));check("close again",IClosable_Close(closable));IClosable_Release(closable);
     ICompositionPropertySet_AddRef(layout);refs_after=ICompositionPropertySet_Release(layout);
