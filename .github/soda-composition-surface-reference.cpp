@@ -132,7 +132,7 @@ static bool observe_layered_child(HWND parent)
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
     POINT source = {};
     SIZE size = {32, 32};
-    HWND window = nullptr, backdrop = nullptr;
+    HWND window = nullptr;
     HBITMAP bitmap = nullptr;
     HGDIOBJ previous = nullptr;
     HDC dc = CreateCompatibleDC(nullptr);
@@ -150,11 +150,6 @@ static bool observe_layered_child(HWND parent)
     if (!bitmap) { printf("case=layered-child-bitmap error=%lu\n", GetLastError()); goto done; }
     previous = SelectObject(dc, bitmap);
     if (!previous || previous == HGDI_ERROR) { printf("case=layered-child-select error=%lu\n", GetLastError()); goto done; }
-    backdrop = CreateWindowExW(0, L"STATIC", nullptr, WS_POPUP | SS_WHITERECT,
-            0, 0, 320, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (!backdrop) { printf("case=layered-child-backdrop error=%lu\n", GetLastError()); goto done; }
-    ShowWindow(backdrop, SW_SHOWNOACTIVATE);
-    UpdateWindow(backdrop);
     window = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE, L"STATIC", nullptr,
             WS_CHILD | WS_DISABLED | WS_VISIBLE, 8, 8, size.cx, size.cy, parent, nullptr,
             GetModuleHandleW(nullptr), nullptr);
@@ -239,7 +234,6 @@ static bool observe_layered_child(HWND parent)
 
 done:
     if (window) DestroyWindow(window);
-    if (backdrop) DestroyWindow(backdrop);
     if (previous && previous != HGDI_ERROR) SelectObject(dc, previous);
     if (bitmap) DeleteObject(bitmap);
     DeleteDC(dc);
@@ -278,7 +272,7 @@ static bool observe_desktop(BOOL topmost, bool control, bool diagnostic, bool sm
     const WCHAR class_name[] = L"Windows.UI.Composition.Core.CompositorController";
     HSTRING name = nullptr;
     WNDCLASSW cls = {};
-    HWND window = nullptr;
+    HWND window = nullptr, backdrop = nullptr;
     bool success = false;
     COLORREF background, foreground, initial_background, initial_foreground;
 
@@ -294,6 +288,14 @@ static bool observe_desktop(BOOL topmost, bool control, bool diagnostic, bool sm
     cls.hbrBackground = CreateSolidBrush(RGB(255, 0, 0));
     if (!cls.hbrBackground) return false;
     if (!RegisterClassW(&cls)) goto done;
+    if (!diagnostic)
+    {
+        backdrop = CreateWindowExW(0, L"STATIC", nullptr, WS_POPUP | SS_WHITERECT,
+                0, 0, 320, 200, nullptr, nullptr, cls.hInstance, nullptr);
+        if (!backdrop) { printf("case=layered-child-backdrop error=%lu\n", GetLastError()); goto done; }
+        ShowWindow(backdrop, SW_SHOWNOACTIVATE);
+        UpdateWindow(backdrop);
+    }
     window = CreateWindowExW(diagnostic ? 0 : WS_EX_TOPMOST, control ? L"STATIC" : cls.lpszClassName, L"Composition background control", WS_POPUP,
             20, 20, 128, 64, nullptr, nullptr, cls.hInstance, nullptr);
     if (!window) goto done;
@@ -355,6 +357,7 @@ done:
     target.Reset();
     desktop_target.Reset();
     if (window) DestroyWindow(window);
+    if (backdrop) DestroyWindow(backdrop);
     UnregisterClassW(cls.lpszClassName, cls.hInstance);
     DeleteObject(cls.hbrBackground);
     return success;
