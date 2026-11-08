@@ -37,6 +37,7 @@
 #include "windows.ui.composition.interop.h"
 #define WIDL_using_Windows_UI_Composition_Interactions
 #include "windows.ui.composition.interactions.h"
+#include "dispatcherqueue.h"
 
 static void check(const char *name,HRESULT hr)
 {
@@ -116,11 +117,18 @@ int main(int argc,char **argv)
     IInteractionTrackerStatics *factory;IInteractionTracker *tracker;ICompositionPropertySet *layout;
     IClosable *closable;HSTRING name,size;HWND window;INT32 request;struct Vector3 position;
     HRESULT result;ULONG refs_before,refs_after;HANDLE threads[2];struct stress_context stress;
+    PDISPATCHERQUEUECONTROLLER queue=NULL;
+    DispatcherQueueOptions options={sizeof(options),DQTYPE_THREAD_CURRENT,DQTAT_COM_NONE};
     BOOL candidate=argc>1 && strcmp(argv[1], "inspect");
     inspect_pixels=argc>1 && !strcmp(argv[1], "inspect");
     verify_pixels=candidate || inspect_pixels;
 
     check("initialize",RoInitialize(RO_INIT_MULTITHREADED));
+    if(argc>2 && !strcmp(argv[2], "queue"))
+    {
+        check("dispatcher queue",CreateDispatcherQueueController(options,&queue));
+        puts("TRACKER_QUEUE_READY");
+    }
     name=string(RuntimeClass_Windows_UI_Composition_Core_CompositorController);
     check("activate",RoActivateInstance(name,&instance));WindowsDeleteString(name);
     check("controller",IInspectable_QueryInterface(instance,&IID_ICompositorController,(void **)&controller));IInspectable_Release(instance);
@@ -193,5 +201,7 @@ int main(int argc,char **argv)
     ICompositionObject_Release(tracker_object);IInteractionTracker_Release(tracker);
     ICompositionObject_Release(layout_object);ICompositionPropertySet_Release(layout);WindowsDeleteString(size);
     ICompositionTarget_Release(target);IDesktopWindowTarget_Release(desktop_target);ICompositorDesktopInterop_Release(desktop);
-    ICompositor_Release(compositor);ICompositorController_Release(controller);DestroyWindow(window);RoUninitialize();puts("TRACKER_DONE");return 0;
+    ICompositor_Release(compositor);ICompositorController_Release(controller);DestroyWindow(window);
+    if(queue)IUnknown_Release((IUnknown *)queue);
+    RoUninitialize();puts("TRACKER_DONE");return 0;
 }
