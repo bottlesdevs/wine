@@ -62,7 +62,7 @@ static bool observe_alpha(ID2D1Device *device)
     ComPtr<ID2D1Bitmap1> target, snapshot, readback;
     ComPtr<ID2D1SolidColorBrush> brush;
     D2D1_BITMAP_PROPERTIES1 properties = {};
-    const D2D1_RECT_F rect = {0.0f, 0.0f, 8.0f, 8.0f};
+    const D2D1_RECT_F rect = {8.0f, 8.0f, 28.0f, 23.0f};
     const D2D1_COLOR_F transparent = {};
 
     if (!check("alpha-context", device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
@@ -70,11 +70,11 @@ static bool observe_alpha(ID2D1Device *device)
     properties.pixelFormat = {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED};
     properties.dpiX = properties.dpiY = 96.0f;
     properties.bitmapOptions = static_cast<D2D1_BITMAP_OPTIONS>(D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW);
-    if (!check("alpha-target", context->CreateBitmap({16, 16}, nullptr, 0, &properties, target.GetAddressOf()))) return false;
+    if (!check("alpha-target", context->CreateBitmap({128, 64}, nullptr, 0, &properties, target.GetAddressOf()))) return false;
     properties.bitmapOptions = D2D1_BITMAP_OPTIONS_NONE;
-    if (!check("alpha-snapshot", context->CreateBitmap({16, 16}, nullptr, 0, &properties, snapshot.GetAddressOf()))) return false;
+    if (!check("alpha-snapshot", context->CreateBitmap({128, 64}, nullptr, 0, &properties, snapshot.GetAddressOf()))) return false;
     properties.bitmapOptions = static_cast<D2D1_BITMAP_OPTIONS>(D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW);
-    if (!check("alpha-readback", context->CreateBitmap({16, 16}, nullptr, 0, &properties, readback.GetAddressOf()))) return false;
+    if (!check("alpha-readback", context->CreateBitmap({128, 64}, nullptr, 0, &properties, readback.GetAddressOf()))) return false;
     context->SetTarget(target.Get());
     for (unsigned round = 0; round < 2; ++round)
     {
@@ -90,9 +90,9 @@ static bool observe_alpha(ID2D1Device *device)
                 !check("alpha-copy-snapshot", snapshot->CopyFromBitmap(nullptr, target.Get(), nullptr)) ||
                 !check("alpha-copy-readback", readback->CopyFromBitmap(nullptr, snapshot.Get(), nullptr)) ||
                 !check("alpha-map", readback->Map(D2D1_MAP_OPTIONS_READ, &mapped))) return false;
-        if (!mapped.bits || mapped.pitch < 64) { readback->Unmap(); return false; }
-        memcpy(&inside, mapped.bits + 4 * mapped.pitch + 4 * sizeof(DWORD), sizeof(inside));
-        memcpy(&outside, mapped.bits + 12 * mapped.pitch + 12 * sizeof(DWORD), sizeof(outside));
+        if (!mapped.bits || mapped.pitch < 512) { readback->Unmap(); return false; }
+        memcpy(&inside, mapped.bits + 13 * mapped.pitch + 13 * sizeof(DWORD), sizeof(inside));
+        memcpy(&outside, mapped.bits + 50 * mapped.pitch + 50 * sizeof(DWORD), sizeof(outside));
         if (!check("alpha-unmap", readback->Unmap())) return false;
         printf("d2d=alpha phase=%s pixel=%08lx outside=%08lx\n", round ? "half" : "opaque", inside, outside);
     }
@@ -154,10 +154,11 @@ static bool observe_layered_child(HWND parent)
             WS_CHILD | WS_DISABLED | WS_VISIBLE, 8, 8, size.cx, size.cy, parent, nullptr,
             GetModuleHandleW(nullptr), nullptr);
     if (!window) { printf("case=layered-child-window error=%lu\n", GetLastError()); goto done; }
-    for (unsigned round = 0; round < 5; ++round)
+    for (unsigned round = 0; round < 6; ++round)
     {
         const char *phase = round == 0 ? "layered-opaque" : round == 1 ? "layered-alpha" :
-                round == 2 ? "layered-bottom" : round == 3 ? "layered-layer-style" : "layered-layer-bottom";
+                round == 2 ? "layered-bottom" : round == 3 ? "layered-layer-style" :
+                round == 4 ? "layered-layer-bottom" : "layered-small";
         if (round == 3)
         {
             if (!SetWindowLongPtrW(window, GWL_EXSTYLE, GetWindowLongPtrW(window, GWL_EXSTYLE) |
@@ -174,7 +175,11 @@ static bool observe_layered_child(HWND parent)
             printf("case=layered-child-order error=%lu\n", GetLastError());
             goto done;
         }
-        for (unsigned i = 0; i < 32 * 32; ++i) pixels[i] = round == 1 ? 0x80000080 : 0xff00ff00;
+        for (unsigned i = 0; i < 32 * 32; ++i)
+        {
+            pixels[i] = round == 1 ? 0x80000080 : 0xff00ff00;
+            if (round == 5 && (i % 32 < 4 || i % 32 >= 24 || i / 32 < 4 || i / 32 >= 19)) pixels[i] = 0;
+        }
         if (!UpdateLayeredWindow(window, nullptr, nullptr, &size, dc, &source, 0, &blend, ULW_ALPHA))
         {
             printf("case=layered-child-update error=%lu\n", GetLastError());
@@ -201,7 +206,7 @@ done:
 }
 
 static bool record_scene(HWND window, bool control, BOOL topmost, const char *phase,
-                         COLORREF initial_background, COLORREF initial_foreground)
+                         COLORREF initial_background, COLORREF initial_foreground, bool small)
 {
     COLORREF background = desktop_pixel(window, 110, 50);
     COLORREF foreground = desktop_pixel(window, 16, 16);
@@ -210,13 +215,13 @@ static bool record_scene(HWND window, bool control, BOOL topmost, const char *ph
             "green" : foreground == RGB(0, 0, 255) ? "blue" : "changed";
     printf("case=scene-pixels class=%s topmost=%d phase=%s background=%06lx visual=%06lx\n",
             control ? "static" : "window", topmost, phase, background, foreground);
-    printf("scene=%s topmost=%d phase=%s background=%s visual=%s\n",
+    printf("scene=%s topmost=%d phase=%s background=%s visual=%s size=%ux%u\n",
             control ? "static" : "window", topmost, phase,
-            background == initial_background ? "preserved" : "changed", pixel);
+            background == initial_background ? "preserved" : "changed", pixel, small ? 20u : 32u, small ? 15u : 32u);
     return true;
 }
 
-static bool observe_desktop(BOOL topmost, bool control, bool diagnostic)
+static bool observe_desktop(BOOL topmost, bool control, bool diagnostic, bool small = false)
 {
     ComPtr<Core::ICompositorController> controller;
     ComPtr<IInspectable> instance;
@@ -259,7 +264,7 @@ static bool observe_desktop(BOOL topmost, bool control, bool diagnostic)
     initial_foreground = foreground;
     if (diagnostic)
     {
-        if (!record_scene(window, control, topmost, "base", initial_background, initial_foreground)) goto done;
+        if (!record_scene(window, control, topmost, "base", initial_background, initial_foreground, small)) goto done;
     }
     else
     {
@@ -273,7 +278,7 @@ static bool observe_desktop(BOOL topmost, bool control, bool diagnostic)
             !check("desktop-brush", color.As(&brush)) ||
             !check("desktop-sprite", compositor->CreateSpriteVisual(sprite.GetAddressOf())) ||
             !check("desktop-visual", sprite.As(&visual)) ||
-            !check("desktop-size", visual->put_Size({32.0f, 32.0f})) ||
+            !check("desktop-size", visual->put_Size({small ? 20.0f : 32.0f, small ? 15.0f : 32.0f})) ||
             !check("desktop-offset", visual->put_Offset({8.0f, 8.0f, 0.0f})) ||
             !check("desktop-set-brush", sprite->put_Brush(brush.Get())) ||
             !check("desktop-root", target->put_Root(visual.Get()))) goto done;
@@ -287,7 +292,7 @@ static bool observe_desktop(BOOL topmost, bool control, bool diagnostic)
         const char *phase = round == 2 ? "alpha" : round ? "blue" : "green";
         if (diagnostic)
         {
-            if (!record_scene(window, control, topmost, phase, initial_background, initial_foreground)) goto done;
+            if (!record_scene(window, control, topmost, phase, initial_background, initial_foreground, small)) goto done;
         }
         else printf("desktop=hybrid phase=%s background=%06lx visual=%06lx\n", phase, background, foreground);
         if (background == CLR_INVALID || foreground == CLR_INVALID) goto done;
@@ -297,7 +302,7 @@ static bool observe_desktop(BOOL topmost, bool control, bool diagnostic)
     pump(500);
     if (diagnostic)
     {
-        if (!record_scene(window, control, topmost, "detached", initial_background, initial_foreground)) goto done;
+        if (!record_scene(window, control, topmost, "detached", initial_background, initial_foreground, small)) goto done;
     }
     else printf("desktop=hybrid phase=detached background=%06lx visual=%06lx\n",
             desktop_pixel(window, 110, 50), desktop_pixel(window, 16, 16));
@@ -335,7 +340,7 @@ static int run(bool legacy)
         for (unsigned control = 0; control < 2; ++control)
             for (BOOL topmost = FALSE; topmost <= TRUE; ++topmost)
                 if (!observe_desktop(topmost, control != 0, true)) return 1;
-        return 0;
+        return observe_desktop(FALSE, false, true, true) ? 0 : 1;
     }
     hr = WindowsCreateString(class_name, ARRAYSIZE(class_name) - 1, &name);
     if (!check("class-name", hr)) return 1;
@@ -383,7 +388,7 @@ static int run(bool legacy)
     for (unsigned control = 0; control < 2; ++control)
         for (BOOL topmost = FALSE; topmost <= TRUE; ++topmost)
             if (!observe_desktop(topmost, control != 0, true)) return 1;
-    return 0;
+    return observe_desktop(FALSE, false, true, true) ? 0 : 1;
 }
 
 int main(int argc, char **argv)

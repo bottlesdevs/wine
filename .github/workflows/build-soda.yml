@@ -802,6 +802,7 @@ jobs:
               'desktop=hybrid phase=layered-bottom background=0000ff visual=00ff00',
               'desktop=hybrid phase=layered-layer-style background=0000ff visual=00ff00',
               'desktop=hybrid phase=layered-layer-bottom background=0000ff visual=00ff00',
+              'desktop=hybrid phase=layered-small background=0000ff visual=00ff00',
               'desktop=hybrid phase=green background=0000ff visual=00ff00',
               'desktop=hybrid phase=blue background=0000ff visual=ff0000',
               'desktop=hybrid phase=alpha background=0000ff visual=80007f',
@@ -828,7 +829,7 @@ jobs:
             }
             foreach ($variant in @('surface', 'legacy', 'mta')) {
               $sceneRows = @(Get-Content (Join-Path $work "composition-$variant$bits.log") | Where-Object { $_.StartsWith('scene=') })
-              if ($sceneRows.Count -ne 20) { throw "Incomplete $variant scene control: $($sceneRows.Count)" }
+              if ($sceneRows.Count -ne 25) { throw "Incomplete $variant scene control: $($sceneRows.Count)" }
             }
           }
           if ($failed) { exit 1 }
@@ -1073,7 +1074,7 @@ jobs:
                                   ('soda', work / f'composition-surface{bits}{suffix}.log')):
                   desktop[label] = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
                                     if line.startswith('desktop=hybrid ')]
-                  assert len(desktop[label]) == 10, (path, desktop[label])
+                  assert len(desktop[label]) == 11, (path, desktop[label])
               alpha = {}
               for label, path in (('windows', work / f'reference/composition-surface{bits}.log'),
                                   ('soda', work / f'composition-surface{bits}{suffix}.log')):
@@ -1087,7 +1088,7 @@ jobs:
                                       ('soda', work / f'composition-{variant}{bits}{suffix}.log')):
                       rows = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
                               if line.startswith('scene=')]
-                      assert len(rows) == 20, (path, rows)
+                      assert len(rows) == 25, (path, rows)
                       scenes[variant][label] = rows
               results[f'{bits}{suffix}'] = {'windows': native, 'soda': soda, 'desktop': desktop, 'alpha': alpha, 'scenes': scenes,
                   'differences': [{'windows': a, 'soda': b} for a, b in zip(native, soda) if a != b] +
