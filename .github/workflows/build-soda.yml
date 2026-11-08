@@ -59,6 +59,7 @@ on:
           - mlang-reference
           - composition-path-reference
           - composition-surface-reference
+          - composition-tracker
           - msi-reference
           - dbghelp-reference
           - typelib-reference
@@ -842,14 +843,18 @@ jobs:
 
   composition-surface-runtime:
     needs: composition-surface-reference
-    if: inputs.architecture == 'composition-surface-reference' && inputs.winrt_http_reference != true
+    if: ${{ !cancelled() && inputs.winrt_http_reference != true && (inputs.architecture == 'composition-tracker' || (inputs.architecture == 'composition-surface-reference' && needs.composition-surface-reference.result == 'success')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
       - name: prepare surface control
+        env:
+          CONTROL_MODE: ${{ inputs.architecture }}
+          PRETEST_RUN: ${{ inputs.surface_pretest_run }}
         run: |
+          if [[ "$CONTROL_MODE" == composition-tracker ]]; then [[ "$PRETEST_RUN" =~ ^[0-9]+$ ]]; fi
           work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-composition-surface"
           mkdir -p "$work/scratch" "$HOME/.cache/soda-runners/37"
           printf 'SURFACE_WORK=%s\nTMPDIR=%s/scratch\nTMP=%s/scratch\nTEMP=%s/scratch\n' \
@@ -868,6 +873,7 @@ jobs:
             libglx-mesa0:amd64 libglx-mesa0:i386
 
       - uses: actions/download-artifact@v8
+        if: inputs.architecture != 'composition-tracker'
         with:
           name: composition-surface-reference-${{ github.sha }}
           path: ${{ env.SURFACE_WORK }}/reference
@@ -989,6 +995,7 @@ jobs:
           PYTHON
 
       - name: compare Soda surface updates
+        if: inputs.architecture != 'composition-tracker'
         env:
           SOURCE_RUN: ${{ inputs.debugger_run_id || inputs.surface_pretest_run }}
         run: |
@@ -1557,7 +1564,7 @@ jobs:
           if-no-files-found: error
 
   patches:
-    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'mlang-reference' && inputs.architecture != 'composition-path-reference' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'typelib-reference' && inputs.architecture != 'fls-reference' && inputs.architecture != 'eagle-debugger'
+    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'mlang-reference' && inputs.architecture != 'composition-path-reference' && inputs.architecture != 'composition-tracker' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'typelib-reference' && inputs.architecture != 'fls-reference' && inputs.architecture != 'eagle-debugger'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
