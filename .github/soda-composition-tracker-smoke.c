@@ -167,6 +167,7 @@ int main(int argc,char **argv)
     BOOL simple=argc>2 && strstr(argv[2], "simple");
     BOOL short_key=argc>2 && strstr(argv[2], "short");
     BOOL green=argc>2 && strstr(argv[2], "green");
+    BOOL half=argc>2 && strstr(argv[2], "half");
     BOOL sdk=argc>2 && strstr(argv[2], "sdk");
     BOOL large_parent=argc>2 && strstr(argv[2], "large-parent");
     BOOL small_sprite=argc>2 && strstr(argv[2], "small-sprite");
@@ -239,7 +240,7 @@ int main(int argc,char **argv)
     }
     check("target",ICompositorDesktopInterop_CreateDesktopWindowTarget(desktop,window,FALSE,&desktop_target));
     check("target interface",IDesktopWindowTarget_QueryInterface(desktop_target,&IID_ICompositionTarget,(void **)&target));
-    check("color",ICompositor_CreateColorBrushWithColor(compositor,((struct Color){255,green ? 0 : 255,green ? 255 : 0,0}),&color));
+    check("color",ICompositor_CreateColorBrushWithColor(compositor,((struct Color){half ? 128 : 255,green ? 0 : 255,green ? 255 : 0,0}),&color));
     pixel_color=color;
     check("brush",ICompositionColorBrush_QueryInterface(color,&IID_ICompositionBrush,(void **)&brush));
     check("sprite",ICompositor_CreateSpriteVisual(compositor,&sprite));

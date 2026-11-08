@@ -1,6 +1,7 @@
 import argparse
 import ctypes as C
 import json
+import time
 
 
 class Rectangle(C.Structure):
@@ -19,6 +20,16 @@ x11.XQueryTree.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(C.c_ulong),
 x11.XFetchName.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(C.c_void_p)]
 x11.XFree.argtypes = [C.c_void_p]
 x11.XCloseDisplay.argtypes = [C.c_void_p]
+x11.XMoveWindow.argtypes = [C.c_void_p, C.c_ulong, C.c_int, C.c_int]
+x11.XReparentWindow.argtypes = [C.c_void_p, C.c_ulong, C.c_ulong, C.c_int, C.c_int]
+x11.XSync.argtypes = [C.c_void_p, C.c_int]
+x11.XTranslateCoordinates.argtypes = [C.c_void_p, C.c_ulong, C.c_ulong, C.c_int, C.c_int,
+                                      C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_ulong)]
+x11.XGetImage.argtypes = [C.c_void_p, C.c_ulong, C.c_int, C.c_int, C.c_uint, C.c_uint, C.c_ulong, C.c_int]
+x11.XGetImage.restype = C.c_void_p
+x11.XGetPixel.argtypes = [C.c_void_p, C.c_int, C.c_int]
+x11.XGetPixel.restype = C.c_ulong
+x11.XDestroyImage.argtypes = [C.c_void_p]
 x11.XGetGeometry.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(C.c_ulong),
                             C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_uint),
                             C.POINTER(C.c_uint), C.POINTER(C.c_uint), C.POINTER(C.c_uint)]
@@ -76,9 +87,28 @@ def describe(display, window, depth=0):
             'children': [describe(display, child, depth + 1) for child in children(display, window)] if depth < 4 else []}
 
 
+def translate(display, window, root, x, y):
+    dst_x, dst_y, child = C.c_int(), C.c_int(), C.c_ulong()
+    if not x11.XTranslateCoordinates(display, window, root, x, y,
+                                     C.byref(dst_x), C.byref(dst_y), C.byref(child)):
+        raise RuntimeError('XTranslateCoordinates failed')
+    return dst_x.value, dst_y.value
+
+
+def pixel(display, root, point):
+    image = x11.XGetImage(display, root, *point, 1, 1, C.c_ulong(-1).value, 2)
+    if not image:
+        raise RuntimeError('XGetImage failed')
+    value = x11.XGetPixel(image, 0, 0)
+    x11.XDestroyImage(image)
+    return hex(value)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('title')
+    parser.add_argument('--placement', choices=['move', 'reparent'])
+    parser.add_argument('--sample', nargs=2, type=int, default=[16, 16])
     args = parser.parse_args()
     display = x11.XOpenDisplay(None)
     if not display:
@@ -91,8 +121,27 @@ def main():
         window = find(display, root, args.title)
         if window is None:
             raise RuntimeError('fixture window not found')
-        print(json.dumps({'fixture': describe(display, window),
-                          'root_windows': [describe(display, child, 4) for child in children(display, root)]}, indent=2))
+        result = {'fixture': describe(display, window),
+                  'root_windows': [describe(display, child, 4) for child in children(display, root)]}
+        if args.placement:
+            layers = [w for w in result['root_windows'] if w['depth'] == 32 and
+                      w['geometry'][2:] == result['fixture']['geometry'][2:]]
+            if len(layers) != 1:
+                raise RuntimeError('alpha host is missing or ambiguous')
+            layer = int(layers[0]['window'], 16)
+            point = translate(display, window, root, *args.sample)
+            result['placement'] = {'mode': args.placement, 'window': hex(layer),
+                                   'sample': point, 'before_pixel': pixel(display, root, point)}
+            if args.placement == 'move':
+                origin = translate(display, window, root, 0, 0)
+                x11.XMoveWindow(display, layer, *origin)
+            else:
+                x11.XReparentWindow(display, layer, window, 0, 0)
+            x11.XSync(display, 0)
+            time.sleep(0.15)
+            result['placement']['after_pixel'] = pixel(display, root, point)
+            result['placement']['after_window'] = describe(display, layer, 4)
+        print(json.dumps(result, indent=2))
     finally:
         x11.XCloseDisplay(display)
 
