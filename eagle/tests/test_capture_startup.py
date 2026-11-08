@@ -124,6 +124,75 @@ class CaptureStartup(unittest.TestCase):
                 self.assertTrue(collector.stdout.closed)
                 self.assertEqual(self.control.fileno(), -1)
 
+    def test_export_frames_gain_exact_source_without_stale_displacements(self):
+        image = self.root / 'owned.dll'
+        image.write_bytes(b'owned image fixture')
+        identity = dict(sha256=hashlib.sha256(image.read_bytes()).hexdigest())
+        for symbol_type, line, resolved in [(1, None, True), (4, None, True),
+                                             (4, 12, False), (7, None, False)]:
+            with self.subTest(symbol_type=symbol_type, line=line):
+                frame = dict(image=str(image), rva='0x20', address='0x400020',
+                             symbol='nearest_export', symbol_type=symbol_type, displacement=100)
+                if line:
+                    frame.update(file='owned.c', line=line)
+                events = [dict(seq=1, kind='module_load', pid=123, tid=456, path=str(image), base='0x400000'),
+                          dict(seq=2, kind='snapshot', pid=123, tid=456, frames=[frame]),
+                          dict(seq=3, kind='finished', pid=0, tid=0)]
+                root = self.root / f'symbols-{symbol_type}-{line}'
+                with patch('session.cached_identity', return_value=identity), \
+                        patch('symbols.resolve', return_value=[dict(symbol='internal_function', file='owned.c', line=42)]) as resolve:
+                    self.capture(Collector(events), root, control_enabled=False)
+                recorded = json.loads((root / 'events.jsonl').read_text().splitlines()[1])['frames'][0]
+                self.assertEqual(resolve.call_count, int(resolved))
+                if resolved:
+                    self.assertEqual(recorded['symbol'], 'internal_function')
+                    self.assertEqual(recorded['line'], 42)
+                    self.assertNotIn('displacement', recorded)
+                else:
+                    self.assertEqual(recorded['symbol'], 'nearest_export')
+                    self.assertEqual(recorded['displacement'], 100)
+
+    def test_export_resolution_keeps_fallbacks_and_reuses_cached_results(self):
+        image = self.root / 'owned.dll'
+        image.write_bytes(b'owned image fixture')
+        identity = dict(sha256=hashlib.sha256(image.read_bytes()).hexdigest())
+        for index, answer in enumerate(([], [dict(symbol='without_source')],
+                                         [dict(symbol='nearest_export', file='owned.c', line=42)])):
+            with self.subTest(answer=answer):
+                frame = dict(image=str(image), rva='0x20', address='0x400020',
+                             symbol='nearest_export', symbol_type=4, displacement=100)
+                events = [dict(seq=1, kind='module_load', pid=123, tid=456, path=str(image), base='0x400000'),
+                          dict(seq=2, kind='snapshot', pid=123, tid=456, frames=[frame]),
+                          dict(seq=3, kind='snapshot', pid=123, tid=456, frames=[frame]),
+                          dict(seq=4, kind='finished', pid=0, tid=0)]
+                root = self.root / f'fallback-{index}'
+                with patch('session.cached_identity', return_value=identity), \
+                        patch('symbols.resolve', return_value=answer) as resolve:
+                    self.capture(Collector(events), root, control_enabled=False)
+                self.assertEqual(resolve.call_count, 1)
+                recorded = [json.loads(line)['frames'][0] for line in (root / 'events.jsonl').read_text().splitlines()[1:3]]
+                for value in recorded:
+                    self.assertEqual(value['symbol'], 'nearest_export')
+                    self.assertEqual(value['displacement'], 100)
+                    self.assertEqual(value.get('line'), 42 if index == 2 else None)
+
+    def test_export_resolution_rejects_a_changed_image(self):
+        image = self.root / 'owned.dll'
+        image.write_bytes(b'owned image fixture')
+        frame = dict(image=str(image), rva='0x20', address='0x400020',
+                     symbol='nearest_export', symbol_type=4, displacement=100)
+        events = [dict(seq=1, kind='module_load', pid=123, tid=456, path=str(image), base='0x400000'),
+                  dict(seq=2, kind='snapshot', pid=123, tid=456, frames=[frame]),
+                  dict(seq=3, kind='finished', pid=0, tid=0)]
+        root = self.root / 'changed-image'
+        with patch('session.cached_identity', side_effect=[dict(sha256='a' * 64), dict(sha256='b' * 64)]), \
+                patch('symbols.resolve') as resolve:
+            self.capture(Collector(events), root, control_enabled=False)
+        resolve.assert_not_called()
+        recorded = json.loads((root / 'events.jsonl').read_text().splitlines()[1])['frames'][0]
+        self.assertEqual(recorded['symbol'], 'nearest_export')
+        self.assertEqual(recorded['symbol_status'], 'image missing or mismatched')
+
     def test_control_is_serviced_between_buffered_events(self):
         root = self.root / 'buffered-control'
         events = [{'seq': 1, 'kind': 'thread_create', 'pid': 123, 'tid': 456},

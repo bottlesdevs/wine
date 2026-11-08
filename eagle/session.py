@@ -643,7 +643,8 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                                 if loaded['mismatch']:
                                     for name in ('symbol', 'source', 'file', 'line', 'displacement'):
                                         frame.pop(name, None)
-                            if frame.get("symbol") or not frame.get("rva"):
+                            if not frame.get("rva") or (frame.get("symbol") and
+                                    (frame.get('file') or frame.get('line') or frame.get('symbol_type') not in (1, 4))):
                                 continue
                             image = frame_image(event['pid'], frame)
                             if not image or not image.is_file():
@@ -658,9 +659,12 @@ def capture(wine, prefix, root, target=None, arguments=(), pid=None, interactive
                                 resolved = resolve(image, [frame["rva"]])
                                 if len(resolved_frames) < 8192:
                                     resolved_frames[key] = resolved
-                            if resolved and resolved[0]["symbol"]:
+                            if resolved and resolved[0]["symbol"] and (not frame.get('symbol') or
+                                    (resolved[0].get('file') and resolved[0].get('line'))):
+                                if frame.get('symbol') and frame['symbol'] != resolved[0]['symbol']:
+                                    frame.pop('displacement', None)
                                 frame.update(resolved[0])
-                            else:
+                            elif not frame.get('symbol'):
                                 frame["symbol_status"] = "symbols unavailable"
                         if event['kind'] == 'module_unload':
                             loaded_images = {key: value for key, value in loaded_images.items() if key[0] != event['pid'] or value['base'] != event['base']}
