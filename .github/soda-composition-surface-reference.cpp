@@ -94,7 +94,7 @@ static bool observe_layered_child(HWND parent)
     DWORD *pixels = nullptr;
     bool success = false;
 
-    if (!dc) return false;
+    if (!dc) { printf("case=layered-child-dc error=%lu\n", GetLastError()); return false; }
     info.bmiHeader.biSize = sizeof(info.bmiHeader);
     info.bmiHeader.biWidth = size.cx;
     info.bmiHeader.biHeight = -size.cy;
@@ -102,13 +102,14 @@ static bool observe_layered_child(HWND parent)
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
     bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, reinterpret_cast<void **>(&pixels), nullptr, 0);
-    if (!bitmap) goto done;
+    if (!bitmap) { printf("case=layered-child-bitmap error=%lu\n", GetLastError()); goto done; }
     previous = SelectObject(dc, bitmap);
-    if (!previous || previous == HGDI_ERROR) goto done;
+    if (!previous || previous == HGDI_ERROR) { printf("case=layered-child-select error=%lu\n", GetLastError()); goto done; }
     window = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE, L"STATIC", nullptr,
             WS_CHILD | WS_DISABLED | WS_VISIBLE, 8, 8, size.cx, size.cy, parent, nullptr,
             GetModuleHandleW(nullptr), nullptr);
-    if (!window || !ClientToScreen(parent, &origin)) goto done;
+    if (!window) { printf("case=layered-child-window error=%lu\n", GetLastError()); goto done; }
+    if (!ClientToScreen(parent, &origin)) { printf("case=layered-child-origin error=%lu\n", GetLastError()); goto done; }
     for (unsigned round = 0; round < 2; ++round)
     {
         for (unsigned i = 0; i < 32 * 32; ++i) pixels[i] = round ? 0x80000080 : 0xff00ff00;
