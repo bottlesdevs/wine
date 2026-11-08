@@ -60,6 +60,7 @@ on:
           - composition-path-reference
           - composition-surface-reference
           - composition-tracker
+          - composition-diagnostics
           - msi-reference
           - dbghelp-reference
           - typelib-reference
@@ -117,6 +118,60 @@ env:
 
 
 jobs:
+  composition-diagnostics:
+    if: inputs.architecture == 'composition-diagnostics' && inputs.winrt_http_reference != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: prepare surface diagnostics
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.debugger_run_id }}
+          REFERENCE_RUN: ${{ inputs.baseline_run_id }}
+        run: |
+          work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-surface-diagnostics"
+          mkdir -p "$work/scratch" "$work/home"
+          export TMPDIR="$work/scratch" TMP="$work/scratch" TEMP="$work/scratch"
+          printf 'SURFACE_WORK=%s\nTMPDIR=%s/scratch\nTMP=%s/scratch\nTEMP=%s/scratch\n' \
+            "$work" "$work" "$work" "$work" >> "$GITHUB_ENV"
+          python3 .github/soda-surface-diagnostics.py prepare "$work"
+          cp .github/soda-surface-diagnostics.py "$work/diagnostics.py"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth xcompmgr
+
+      - name: collect retained surface traces
+        run: |
+          image=ghcr.io/bottlesdevs/bottles@sha256:6b644b31b7d1f084b0d3e7b5d9972bbe630eb057607ea8383aad753d108def9e
+          docker pull --platform linux/amd64 "$image"
+          xvfb-run -a -s '-screen 0 1440x900x24' \
+            bash .github/soda-test-desktop.sh "$SURFACE_WORK/compositor.log" \
+            docker run --rm --platform linux/amd64 --network host \
+              --user "$(id -u):$(id -g)" \
+              --volume "$SURFACE_WORK:$SURFACE_WORK" \
+              --volume /etc/passwd:/etc/passwd:ro --volume /etc/group:/etc/group:ro \
+              --env "USER=$(id -un)" --env "LOGNAME=$(id -un)" \
+              --env "HOME=$SURFACE_WORK/home" \
+              --env "TMPDIR=$SURFACE_WORK/scratch" --env "TMP=$SURFACE_WORK/scratch" --env "TEMP=$SURFACE_WORK/scratch" \
+              --env DISPLAY --env XAUTHORITY --env LIBGL_ALWAYS_SOFTWARE=1 \
+              --entrypoint /usr/bin/python3 "$image" "$SURFACE_WORK/diagnostics.py" \
+              collect "$SURFACE_WORK" "$SURFACE_RUNNER"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.SURFACE_WORK != ''
+        with:
+          name: composition-diagnostics-${{ github.sha }}
+          path: |
+            ${{ env.SURFACE_WORK }}/*.json
+            ${{ env.SURFACE_WORK }}/*.log
+            ${{ env.SURFACE_WORK }}/*.stdout
+            ${{ env.SURFACE_WORK }}/*.stderr
+          retention-days: 7
+          if-no-files-found: warn
+
   eagle-debugger:
     if: inputs.architecture == 'eagle-debugger' && inputs.winrt_http_reference != true
     runs-on: ubuntu-24.04
@@ -1585,7 +1640,7 @@ jobs:
           if-no-files-found: error
 
   patches:
-    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'mlang-reference' && inputs.architecture != 'composition-path-reference' && inputs.architecture != 'composition-tracker' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'typelib-reference' && inputs.architecture != 'fls-reference' && inputs.architecture != 'eagle-debugger'
+    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'mlang-reference' && inputs.architecture != 'composition-path-reference' && inputs.architecture != 'composition-tracker' && inputs.architecture != 'composition-diagnostics' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'typelib-reference' && inputs.architecture != 'fls-reference' && inputs.architecture != 'eagle-debugger'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
