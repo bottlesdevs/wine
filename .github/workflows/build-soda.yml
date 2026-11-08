@@ -13,6 +13,10 @@ on:
         description: 'Existing x86_64 runner for debugger tests'
         required: false
         type: string
+      surface_pretest_run:
+        description: 'Inspect an unqualified compiled runner after a tracker gate failure'
+        required: false
+        type: string
       office_reproduction:
         description: 'Collect Office startup logs in a fresh Bottles installation'
         required: false
@@ -850,10 +854,87 @@ jobs:
           path: ${{ env.SURFACE_WORK }}/reference
 
       - uses: actions/cache@v5
-        if: inputs.debugger_run_id == ''
+        if: inputs.debugger_run_id == '' && inputs.surface_pretest_run == ''
         with:
           path: ~/.cache/soda-runners/37
           key: soda-mlang-runtime-476a2230f94c55501bf62171490faa38a5c8060cbe083ed7fe8c4efaff4448b2
+
+      - name: prepare pre-test surface runner
+        if: inputs.surface_pretest_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRETEST_RUN: ${{ inputs.surface_pretest_run }}
+          PACKAGE_RUN: ${{ inputs.debugger_run_id }}
+        run: |
+          [[ "$PRETEST_RUN" =~ ^[0-9]+$ ]]
+          test -z "$PACKAGE_RUN"
+          mkdir -p "$SURFACE_WORK/pretest-runner"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRETEST_RUN" > "$SURFACE_WORK/runtime-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRETEST_RUN/jobs?per_page=100" > "$SURFACE_WORK/runtime-jobs.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PRETEST_RUN/artifacts?per_page=100" > "$SURFACE_WORK/runtime-artifacts.json"
+          source="$(jq -er '.head_sha | select(test("^[0-9a-f]{40}$"))' "$SURFACE_WORK/runtime-run.json")"
+          git fetch --no-tags --depth=1 origin "$source"
+          python3 - <<'PYTHON'
+          import json, os, re, subprocess
+          from pathlib import Path
+          work = Path(os.environ['SURFACE_WORK'])
+          run = json.loads((work / 'runtime-run.json').read_text())
+          jobs = json.loads((work / 'runtime-jobs.json').read_text())['jobs']
+          assert run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+          assert run['head_branch'] == os.environ['GITHUB_REF_NAME']
+          assert run['path'] == '.github/workflows/build-soda.yml'
+          assert run['status'] == 'completed' and run['conclusion'] == 'failure'
+          assert next(job for job in jobs if job['name'] == 'patches')['conclusion'] == 'success'
+          steps = next(job for job in jobs if job['name'] == 'build')['steps']
+          assert next(step for step in steps if step['name'] == 'start build')['conclusion'] == 'success'
+          failed = [step['name'] for step in steps if step['conclusion'] == 'failure']
+          assert failed == ['verify Composition scalar expressions and tracker bounds'], failed
+          changed = subprocess.check_output(['git', 'diff', '--name-only', run['head_sha'], 'HEAD'], text=True).splitlines()
+          allowed = {'.github/workflows/build-soda.yml', '.github/soda-composition-surface-reference.cpp',
+                     '.github/soda-composition-surface-reference.manifest', '.github/soda-composition-tracker-smoke.c',
+                     '.github/soda-test-desktop.sh'}
+          assert set(changed) <= allowed, changed
+          artifacts = json.loads((work / 'runtime-artifacts.json').read_text())['artifacts']
+          artifact, = [item for item in artifacts if not item['expired'] and
+                       item['name'].startswith('pre-test-soda-') and item['name'].endswith('-x86_64') and
+                       '-' + run['head_sha'][:7] + '-' in item['name']]
+          assert isinstance(artifact['id'], int) and artifact['id'] > 0
+          assert re.fullmatch(r'sha256:[0-9a-f]{64}', artifact['digest'])
+          metadata = {'scope': 'unqualified compiled runner; diagnostics only, failed runtime gate remains open',
+                      'compiled_source': run['head_sha'], 'test_source': os.environ['GITHUB_SHA'],
+                      'source_run': run['id'], 'failed_steps': failed, 'changed_test_files': changed,
+                      'artifact_id': artifact['id'], 'artifact_sha256': artifact['digest'].split(':')[1]}
+          (work / 'runtime-pretest.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          print(json.dumps(metadata, indent=2))
+          PYTHON
+          artifact="$(jq -er '.artifact_id' "$SURFACE_WORK/runtime-pretest.json")"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > "$SURFACE_WORK/pretest.zip"
+          python3 - <<'PYTHON'
+          import hashlib, json, os, stat, zipfile
+          from pathlib import Path, PurePosixPath
+          work = Path(os.environ['SURFACE_WORK'])
+          metadata = json.loads((work / 'runtime-pretest.json').read_text())
+          with (work / 'pretest.zip').open('rb') as archive:
+              assert hashlib.file_digest(archive, 'sha256').hexdigest() == metadata['artifact_sha256']
+          with zipfile.ZipFile(work / 'pretest.zip') as archive:
+              assert all(not PurePosixPath(item.filename).is_absolute() and
+                         '..' not in PurePosixPath(item.filename).parts and
+                         not stat.S_ISLNK(item.external_attr >> 16) for item in archive.infolist())
+              archive.extractall(work / 'pretest-runner')
+          wine, = (work / 'pretest-runner').glob('**/bin/wine')
+          runner = wine.parent.parent
+          with wine.open('rb') as image:
+              header = image.read(20)
+          assert header[:6] == b'\x7fELF\x02\x01' and int.from_bytes(header[18:20], 'little') == 62
+          for path in (runner / 'bin').iterdir():
+              if path.is_file(): path.chmod(path.stat().st_mode | 0o111)
+          for bits in ('i386', 'x86_64'):
+              for name in ('wine', 'wine64', 'wine-preloader', 'wine64-preloader'):
+                  path = runner / 'lib/wine' / (bits + '-unix') / name
+                  if path.is_file(): path.chmod(path.stat().st_mode | 0o111)
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'SURFACE_RUNNER={runner}\n')
+          PYTHON
 
       - name: prepare candidate surface runner
         if: inputs.debugger_run_id != ''
@@ -890,7 +971,7 @@ jobs:
 
       - name: compare Soda surface updates
         env:
-          SOURCE_RUN: ${{ inputs.debugger_run_id }}
+          SOURCE_RUN: ${{ inputs.debugger_run_id || inputs.surface_pretest_run }}
         run: |
           python3 - <<'PYTHON'
           import hashlib, json, os, struct
