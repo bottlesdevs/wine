@@ -117,7 +117,8 @@ def collect(work, runner):
     expected = (work / 'reference/composition-surface64.log').read_text(encoding='utf-8-sig').splitlines()
     expected = [line for line in expected if line.startswith('desktop=hybrid ')]
     assert len(expected) == 21
-    for label, debug in (('plain', '-all'), ('traced', '-all,+timestamp,+win,+x11drv,+bitblt')):
+    for label, debug in (('plain', '-all'), ('traced', '-all,+timestamp,+win,+x11drv,+bitblt'),
+                         ('unmanaged', '-all,+timestamp,+win,+x11drv,+bitblt')):
         env = dict(os.environ, WINEPREFIX=str(work / ('prefix-' + label)), WINEARCH='win64', WINEDEBUG='-all',
                    WINEDLLOVERRIDES='dxgi,d3d11,d3d10core,windows.ui=b;mscoree,mshtml=;winemenubuilder.exe=d')
         try:
@@ -127,6 +128,12 @@ def collect(work, runner):
                 subprocess.run([str(runner / 'bin/wine'), 'reg', 'add', r'HKCU\Software\Wine\Direct3D',
                                 '/v', 'renderer', '/t', 'REG_SZ', '/d', 'gl', '/f'], env=env,
                                stdout=file, stderr=subprocess.STDOUT, check=True, timeout=30)
+                if label == 'unmanaged':
+                    subprocess.run([str(runner / 'bin/wine'), 'reg', 'add', r'HKCU\Software\Wine\X11 Driver',
+                                    '/v', 'Managed', '/t', 'REG_SZ', '/d', 'N', '/f'], env=env,
+                                   stdout=file, stderr=subprocess.STDOUT, check=True, timeout=30)
+                    subprocess.run([str(runner / 'bin/wineserver'), '-k'], env=env, check=False, timeout=30)
+                    subprocess.run([str(runner / 'bin/wineserver'), '-w'], env=env, check=True, timeout=30)
             env['WINEDEBUG'] = debug
             result = capture([str(runner / 'bin/wine'), str(work / 'reference/composition-surface64.exe')],
                              env, work / label)
