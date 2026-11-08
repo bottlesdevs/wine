@@ -74,7 +74,7 @@ static void stage(ICompositorController *controller,IVisual *visual,const char *
     for(i=0;i<2;++i)
     {
         ULONGLONG end=GetTickCount64()+200;
-        check("commit",ICompositorController_Commit(controller));
+        if(strcmp(name,"MOVED"))check("commit",ICompositorController_Commit(controller));
         do
         {
             while(PeekMessageW(&message,NULL,0,0,PM_REMOVE))DispatchMessageW(&message);
@@ -85,9 +85,10 @@ static void stage(ICompositorController *controller,IVisual *visual,const char *
     }
     if (verify_pixels)
     {
-        int left = !strcmp(name,"INITIAL") ? 50 : !strcmp(name,"RESIZED") ? 70 : 40;
+        int left = !strcmp(name,"INITIAL") ? 50 : !strcmp(name,"RESIZED") ? 70 : !strcmp(name,"MOVED") ? 210 : 40;
+        int y = !strcmp(name,"MOVED") ? 145 : 35;
         HDC screen = GetDC(NULL);
-        COLORREF inside = GetPixel(screen,left+5,35), before = GetPixel(screen,left-1,35), after = GetPixel(screen,left+20,35);
+        COLORREF inside = GetPixel(screen,left+5,y), before = GetPixel(screen,left-1,y), after = GetPixel(screen,left+20,y);
         ReleaseDC(NULL,screen);
         printf("TRACKER_GDI_PIXELS_%s=%08lx,%08lx,%08lx\n",name,(unsigned long)inside,(unsigned long)before,(unsigned long)after);
         if (inspect_pixels)
@@ -182,6 +183,7 @@ int main(int argc,char **argv)
     BOOL candidate=argc>1 && strcmp(argv[1], "inspect");
     inspect_pixels=argc>1 && !strcmp(argv[1], "inspect");
     verify_pixels=candidate || inspect_pixels;
+    if(candidate)custom=TRUE;
     pump_events=argc>2 && strstr(argv[2], "pump");
 
     check("initialize",RoInitialize(RO_INIT_MULTITHREADED));
@@ -284,6 +286,11 @@ int main(int argc,char **argv)
     stage(controller,visual,"POSITION");
     start(compositor,tracker_object,L"MinPosition.X",L"1/0",NULL,NULL);
     stage(controller,visual,"INVALID");
+    if(candidate)
+    {
+        if(!SetWindowPos(window,NULL,180,120,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE))return 9;
+        stage(controller,visual,"MOVED");
+    }
     check("closable",IInteractionTracker_QueryInterface(tracker,&IID_IClosable,(void **)&closable));
     check("close",IClosable_Close(closable));check("close again",IClosable_Close(closable));IClosable_Release(closable);
     ICompositionPropertySet_AddRef(layout);refs_after=ICompositionPropertySet_Release(layout);

@@ -1,0 +1,46 @@
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1543,6 +1543,16 @@
+                      32, PropModeReplace, (unsigned char *)&net_wm_bypass_compositor, 1 );
+ }
+ 
++/* Layered child windows have root X windows but parent-relative Win32 rectangles. */
++static RECT get_window_screen_rect( struct x11drv_win_data *data, RECT rect )
++{
++    HWND parent = NtUserGetAncestor( data->hwnd, GA_PARENT );
++
++    if (parent && parent != NtUserGetDesktopWindow())
++        NtUserMapWindowPoints( parent, 0, (POINT *)&rect, 2, NtUserGetWinMonitorDpi( parent, MDT_RAW_DPI ));
++    return rect;
++}
++
+ static void window_set_config( struct x11drv_win_data *data, RECT rect, BOOL above )
+ {
+     static const UINT fullscreen_mask = (1 << NET_WM_STATE_MAXIMIZED) | (1 << NET_WM_STATE_FULLSCREEN);
+@@ -2509,7 +2519,7 @@
+     if (data->is_offscreen) OffsetRect( &new_rect, window_rect.left - old_rects->window.left,
+                                         window_rect.top - old_rects->window.top );
+ 
+-    window_set_config( data, new_rect, above );
++    window_set_config( data, get_window_screen_rect( data, new_rect ), above );
+ }
+ 
+ 
+@@ -2799,6 +2809,7 @@
+     DWORD layered_flags;
+     HRGN win_rgn;
+     POINT pos;
++    RECT rect;
+ 
+     if ((win_rgn = NtGdiCreateRectRgn( 0, 0, 0, 0 )) &&
+         NtUserGetWindowRgnEx( data->hwnd, win_rgn, 0 ) == ERROR)
+@@ -2820,7 +2831,8 @@
+     if (!(cy = data->rects.visible.bottom - data->rects.visible.top)) cy = 1;
+     else if (cy > 65535) cy = 65535;
+ 
+-    pos = virtual_screen_to_root( data->rects.visible.left, data->rects.visible.top );
++    rect = get_window_screen_rect( data, data->rects.visible );
++    pos = virtual_screen_to_root( rect.left, rect.top );
+     data->whole_window = XCreateWindow( data->display, root_window, pos.x, pos.y,
+                                         cx, cy, 0, data->vis.depth, InputOutput,
+                                         data->vis.visual, mask, &attr );
