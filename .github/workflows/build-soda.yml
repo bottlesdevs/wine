@@ -1094,6 +1094,34 @@ jobs:
               assert all(not result['differences'] for result in results.values()), 'surface updates differ from Windows'
           PYTHON
 
+      - name: inspect original tracker scene
+        if: always() && env.SURFACE_RUNNER != ''
+        shell: bash
+        run: |
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix
+          test -f "$SURFACE_RUNNER/include/wine/windows/windows.ui.composition.h"
+          for bits in 64 32; do
+            if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
+            "$compiler" .github/soda-composition-tracker-smoke.c \
+              -I"$SURFACE_RUNNER/include/wine/windows" -D__WINESRC__ \
+              -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
+              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid \
+              -o "$SURFACE_WORK/tracker$bits.exe"
+          done
+          export WINEPREFIX="$SURFACE_WORK/tracker-prefix" WINEARCH=win64 WINEDEBUG=-all,+ui LIBGL_ALWAYS_SOFTWARE=1
+          export WINEDLLOVERRIDES="dxgi,d3d11,d3d10core,windows.ui=b;winewayland.drv=d;winemenubuilder.exe=d"
+          trap 'status=$?; set +e; "$SURFACE_RUNNER/bin/wineserver" -k; "$SURFACE_RUNNER/bin/wineserver" -w; exit "$status"' EXIT
+          xvfb-run -a bash .github/soda-test-desktop.sh "$SURFACE_WORK/tracker-compositor.log" sh -ec '
+            "$SURFACE_RUNNER/bin/wine" wineboot -u > "$SURFACE_WORK/tracker-setup.log" 2>&1
+            "$SURFACE_RUNNER/bin/wine" reg add "HKCU\Software\Wine\Direct3D" \
+              /v renderer /t REG_SZ /d gl /f > "$SURFACE_WORK/tracker-renderer.log" 2>&1
+            for bits in 64 32; do
+              timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/tracker$bits.exe" inspect \
+                > "$SURFACE_WORK/tracker$bits.log" 2> "$SURFACE_WORK/tracker$bits.stderr"
+              grep -q "TRACKER_DONE" "$SURFACE_WORK/tracker$bits.log"
+            done
+          '
+
       - uses: actions/upload-artifact@v7
         if: always() && env.SURFACE_WORK != ''
         with:

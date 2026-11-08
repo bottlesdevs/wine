@@ -64,7 +64,8 @@ static void start(ICompositor *compositor,ICompositionObject *target,const WCHAR
     check("start",ICompositionObject_StartAnimation(target,name,value));
     WindowsDeleteString(name);ICompositionAnimation_Release(value);
 }
-static BOOL verify_pixels;
+static BOOL verify_pixels, inspect_pixels;
+static HWND pixel_window;
 static void stage(ICompositorController *controller,const char *name)
 {
     MSG message;UINT i;
@@ -76,7 +77,19 @@ static void stage(ICompositorController *controller,const char *name)
         COLORREF inside = GetPixel(screen,left+5,35), before = GetPixel(screen,left-1,35), after = GetPixel(screen,left+20,35);
         ReleaseDC(NULL,screen);
         printf("TRACKER_GDI_PIXELS_%s=%08lx,%08lx,%08lx\n",name,(unsigned long)inside,(unsigned long)before,(unsigned long)after);
-        if (inside != RGB(255,0,0) || before != RGB(255,255,255) || after != RGB(255,255,255)) ExitProcess(7);
+        if (inspect_pixels)
+        {
+            RECT rect;
+            POINT point = {left - 10 + 5, 25};
+            GetWindowRect(pixel_window, &rect);
+            ClientToScreen(pixel_window, &point);
+            screen = GetDC(NULL);
+            inside = GetPixel(screen, point.x, point.y);
+            ReleaseDC(NULL, screen);
+            printf("TRACKER_WINDOW_%s=%ld,%ld,%ld,%ld client_pixel=%08lx\n", name,
+                    rect.left, rect.top, rect.right, rect.bottom, (unsigned long)inside);
+        }
+        else if (inside != RGB(255,0,0) || before != RGB(255,255,255) || after != RGB(255,255,255)) ExitProcess(7);
     }
     printf("TRACKER_%s_CAPTURE_READY\n",name);fflush(stdout);Sleep(1200);
 }
@@ -103,8 +116,9 @@ int main(int argc,char **argv)
     IInteractionTrackerStatics *factory;IInteractionTracker *tracker;ICompositionPropertySet *layout;
     IClosable *closable;HSTRING name,size;HWND window;INT32 request;struct Vector3 position;
     HRESULT result;ULONG refs_before,refs_after;HANDLE threads[2];struct stress_context stress;
-    BOOL candidate=argc>1;
-    verify_pixels=candidate;
+    BOOL candidate=argc>1 && strcmp(argv[1], "inspect");
+    inspect_pixels=argc>1 && !strcmp(argv[1], "inspect");
+    verify_pixels=candidate || inspect_pixels;
 
     check("initialize",RoInitialize(RO_INIT_MULTITHREADED));
     name=string(RuntimeClass_Windows_UI_Composition_Core_CompositorController);
@@ -126,6 +140,7 @@ int main(int argc,char **argv)
     printf("LAYOUT_REFS_ACTIVE=%lu\n",refs_before);
     check("desktop",ICompositor_QueryInterface(compositor,&IID_ICompositorDesktopInterop,(void **)&desktop));
     window=CreateWindowExW(0,L"STATIC",L"Dynamic tracker pixel test",WS_POPUP,10,10,160,100,NULL,NULL,GetModuleHandleW(NULL),NULL);if(!window)return 3;
+    pixel_window=window;
     ShowWindow(window,SW_SHOWNOACTIVATE);
     check("target",ICompositorDesktopInterop_CreateDesktopWindowTarget(desktop,window,FALSE,&desktop_target));
     check("target interface",IDesktopWindowTarget_QueryInterface(desktop_target,&IID_ICompositionTarget,(void **)&target));

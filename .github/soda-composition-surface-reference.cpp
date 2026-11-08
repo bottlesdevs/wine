@@ -313,7 +313,7 @@ done:
     return success;
 }
 
-static int run(bool legacy, bool mta)
+static int run(bool legacy)
 {
     ComPtr<ABI::Windows::System::IDispatcherQueueController> queue;
     ComPtr<IInspectable> instance;
@@ -329,7 +329,7 @@ static int run(bool legacy, bool mta)
     HSTRING name = nullptr;
     HRESULT hr;
 
-    if (!mta && !check("dispatcher-queue", CreateDispatcherQueueController(options, queue.GetAddressOf()))) return 1;
+    if (!check("dispatcher-queue", CreateDispatcherQueueController(options, queue.GetAddressOf()))) return 1;
     if (legacy)
     {
         for (unsigned control = 0; control < 2; ++control)
@@ -392,7 +392,7 @@ int main(int argc, char **argv)
     printf("case=architecture bits=%u\n", static_cast<unsigned>(sizeof(void *) * 8));
     bool mta = argc == 2 && !strcmp(argv[1], "mta");
     if (!check("initialize", RoInitialize(mta ? RO_INIT_MULTITHREADED : RO_INIT_SINGLETHREADED))) return 1;
-    int result = run(mta || (argc == 2 && !strcmp(argv[1], "legacy")), mta);
+    int result = run(mta || (argc == 2 && !strcmp(argv[1], "legacy")));
     RoUninitialize();
     return result;
 }
