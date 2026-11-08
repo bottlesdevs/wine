@@ -292,6 +292,19 @@ jobs:
               file.write(f'OFFICE_COMPOSE_COLLECTORS={str(compose_collectors).lower()}\n')
           PY
 
+      - name: prepare matching Office symbols
+        if: inputs.debugger_run_id != '' && inputs.office_reproduction == true
+        run: |
+          archive="$(find "$EAGLE_WORK/downloads" -maxdepth 1 -type f -name '*-x86_64-symbols.tar.xz' -print -quit)"
+          test -n "$archive"
+          runner_dir="$(dirname "$(dirname "$EAGLE_RUNTIME")")"
+          mkdir -p "$EAGLE_WORK/symbols"
+          tar -xJf "$archive" -C "$EAGLE_WORK/symbols"
+          bundle_dir="$EAGLE_WORK/symbols/$(basename "$runner_dir")"
+          python3 -S .github/soda-symbols.py "$runner_dir" "$bundle_dir" \
+            --tools "$runner_dir/lib/eagle/native" --verify > "$EAGLE_WORK/tests/runtime-symbols.json"
+          cp -a "$bundle_dir/." "$runner_dir/"
+
       - uses: actions/download-artifact@v8
         if: inputs.office_outlook_control == true
         with:
