@@ -3,6 +3,8 @@
 #include <windows.system.h>
 #include <dispatcherqueue.h>
 #include <windows.ui.composition.h>
+#include <windows.ui.composition.core.h>
+#include <windows.ui.composition.desktop.h>
 #include <windows.ui.composition.interop.h>
 #include <d3d11.h>
 #include <d2d1_1.h>
@@ -51,6 +53,111 @@ static bool observe(ICompositionDrawingSurfaceInterop *surface, const char *kind
         record(kind, api, round, "idle-end", surface->EndDraw());
     }
     return began;
+}
+
+static void pump(unsigned milliseconds)
+{
+    ULONGLONG end = GetTickCount64() + milliseconds;
+    MSG message;
+    do
+    {
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT);
+    } while (GetTickCount64() < end);
+}
+
+static COLORREF desktop_pixel(HWND window, int x, int y)
+{
+    POINT point = {x, y};
+    if (!ClientToScreen(window, &point)) return CLR_INVALID;
+    HDC dc = GetDC(nullptr);
+    if (!dc) return CLR_INVALID;
+    COLORREF value = GetPixel(dc, point.x, point.y);
+    ReleaseDC(nullptr, dc);
+    return value;
+}
+
+static bool observe_desktop()
+{
+    ComPtr<Core::ICompositorController> controller;
+    ComPtr<IInspectable> instance;
+    ComPtr<ICompositor> compositor;
+    ComPtr<Desktop::ICompositorDesktopInterop> desktop;
+    ComPtr<Desktop::IDesktopWindowTarget> desktop_target;
+    ComPtr<ICompositionTarget> target;
+    ComPtr<ICompositionColorBrush> color;
+    ComPtr<ICompositionBrush> brush;
+    ComPtr<ISpriteVisual> sprite;
+    ComPtr<IVisual> visual;
+    const WCHAR class_name[] = L"Windows.UI.Composition.Core.CompositorController";
+    HSTRING name = nullptr;
+    WNDCLASSW cls = {};
+    HWND window = nullptr;
+    bool success = false;
+    COLORREF background, foreground;
+
+    if (!check("desktop-class-name", WindowsCreateString(class_name, ARRAYSIZE(class_name) - 1, &name))) return false;
+    HRESULT hr = RoActivateInstance(name, instance.GetAddressOf());
+    WindowsDeleteString(name);
+    if (!check("desktop-controller", hr) || !check("desktop-controller-interface", instance.As(&controller)) ||
+            !check("desktop-compositor", controller->get_Compositor(compositor.GetAddressOf())) ||
+            !check("desktop-interop", compositor.As(&desktop))) return false;
+    cls.hInstance = GetModuleHandleW(nullptr);
+    cls.lpfnWndProc = DefWindowProcW;
+    cls.lpszClassName = L"SodaCompositionBackground";
+    cls.hbrBackground = CreateSolidBrush(RGB(255, 0, 0));
+    if (!cls.hbrBackground) return false;
+    if (!RegisterClassW(&cls)) goto done;
+    window = CreateWindowExW(WS_EX_TOPMOST, cls.lpszClassName, L"Composition background control", WS_POPUP,
+            20, 20, 128, 64, nullptr, nullptr, cls.hInstance, nullptr);
+    if (!window) goto done;
+    ShowWindow(window, SW_SHOWNOACTIVATE);
+    UpdateWindow(window);
+    pump(200);
+    background = desktop_pixel(window, 110, 50);
+    foreground = desktop_pixel(window, 16, 16);
+    printf("desktop=hybrid phase=base background=%06lx visual=%06lx\n", background, foreground);
+    if (background != RGB(255, 0, 0) || foreground != background) goto done;
+    if (!check("desktop-target", desktop->CreateDesktopWindowTarget(window, TRUE, desktop_target.GetAddressOf())) ||
+            !check("desktop-target-interface", desktop_target.As(&target)) ||
+            !check("desktop-color", compositor->CreateColorBrushWithColor({255, 0, 255, 0}, color.GetAddressOf())) ||
+            !check("desktop-brush", color.As(&brush)) ||
+            !check("desktop-sprite", compositor->CreateSpriteVisual(sprite.GetAddressOf())) ||
+            !check("desktop-visual", sprite.As(&visual)) ||
+            !check("desktop-size", visual->put_Size({32.0f, 32.0f})) ||
+            !check("desktop-offset", visual->put_Offset({8.0f, 8.0f, 0.0f})) ||
+            !check("desktop-set-brush", sprite->put_Brush(brush.Get())) ||
+            !check("desktop-root", target->put_Root(visual.Get()))) goto done;
+    for (unsigned round = 0; round < 2; ++round)
+    {
+        if (round && !check("desktop-recolor", color->put_Color({255, 0, 0, 255}))) goto done;
+        if (!check("desktop-commit", controller->Commit())) goto done;
+        pump(500);
+        background = desktop_pixel(window, 110, 50);
+        foreground = desktop_pixel(window, 16, 16);
+        printf("desktop=hybrid phase=%s background=%06lx visual=%06lx\n",
+                round ? "blue" : "green", background, foreground);
+        if (background == CLR_INVALID || foreground == CLR_INVALID) goto done;
+    }
+    if (!check("desktop-detach", target->put_Root(nullptr)) ||
+            !check("desktop-detach-commit", controller->Commit())) goto done;
+    pump(500);
+    printf("desktop=hybrid phase=detached background=%06lx visual=%06lx\n",
+            desktop_pixel(window, 110, 50), desktop_pixel(window, 16, 16));
+    success = true;
+
+done:
+    if (target) target->put_Root(nullptr);
+    target.Reset();
+    desktop_target.Reset();
+    if (window) DestroyWindow(window);
+    UnregisterClassW(cls.lpszClassName, cls.hInstance);
+    DeleteObject(cls.hbrBackground);
+    return success;
 }
 
 static int run()
@@ -111,7 +218,7 @@ static int run()
             if (!surface_api && !began) return 1;
         }
     }
-    return 0;
+    return observe_desktop() ? 0 : 1;
 }
 
 int main()
