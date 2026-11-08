@@ -810,6 +810,23 @@ jobs:
             )) {
               if ($lines -notcontains $expected) { throw "Desktop pixel control missing: $expected" }
             }
+            $legacyExe = Join-Path $work "composition-legacy$bits.exe"
+            $legacyObj = Join-Path $work "composition-legacy$bits.obj"
+            @(
+              '@echo off',
+              "call `"$vcvars`" $target",
+              'if errorlevel 1 exit /b %errorlevel%',
+              "cl /nologo /W4 /WX /O2 /MT /EHsc /std:c++17 /TP `"$source`" /Fe:`"$legacyExe`" /Fo:`"$legacyObj`" /link runtimeobject.lib ole32.lib uuid.lib d2d1.lib d3d11.lib CoreMessaging.lib user32.lib gdi32.lib /MANIFEST:EMBED",
+              'exit /b %errorlevel%'
+            ) | Set-Content -Encoding ascii $script
+            & cmd.exe /d /c $script
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $legacyExe legacy | Tee-Object -FilePath (Join-Path $work "composition-legacy$bits.log")
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            foreach ($variant in @('surface', 'legacy')) {
+              $sceneRows = @(Get-Content (Join-Path $work "composition-$variant$bits.log") | Where-Object { $_.StartsWith('scene=') })
+              if ($sceneRows.Count -ne 20) { throw "Incomplete $variant scene control: $($sceneRows.Count)" }
+            }
           }
           if ($failed) { exit 1 }
 
@@ -986,10 +1003,11 @@ jobs:
           assert source['manifest_sha256'] in (hashlib.sha256(manifest).hexdigest(),
               hashlib.sha256(manifest.replace(b'\n', b'\r\n')).hexdigest())
           for bits, machine in ((32, 0x14c), (64, 0x8664)):
-              data = (work / 'reference' / f'composition-surface{bits}.exe').read_bytes()
-              offset, = struct.unpack_from('<I', data, 0x3c)
-              assert data[offset:offset+4] == b'PE\0\0'
-              assert struct.unpack_from('<H', data, offset+4)[0] == machine
+              for variant in ('surface', 'legacy'):
+                  data = (work / 'reference' / f'composition-{variant}{bits}.exe').read_bytes()
+                  offset, = struct.unpack_from('<I', data, 0x3c)
+                  assert data[offset:offset+4] == b'PE\0\0'
+                  assert struct.unpack_from('<H', data, offset+4)[0] == machine
           PYTHON
           if test -z "$SOURCE_RUN"; then
             archive="$HOME/.cache/soda-runners/37/soda-11.0-37-experimental-x86_64.tar.xz"
@@ -1011,6 +1029,8 @@ jobs:
             for bits in 64 32; do
               timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/reference/composition-surface$bits.exe" \
                 > "$SURFACE_WORK/composition-surface$bits.log" 2> "$SURFACE_WORK/composition-surface$bits.stderr"
+              timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/reference/composition-legacy$bits.exe" legacy \
+                > "$SURFACE_WORK/composition-legacy$bits.log" 2> "$SURFACE_WORK/composition-legacy$bits.stderr"
             done
           '
           python3 - <<'PYTHON'
@@ -1038,10 +1058,21 @@ jobs:
                   alpha[label] = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
                                   if line.startswith('d2d=alpha ')]
                   assert len(alpha[label]) == 2, (path, alpha[label])
-              results[str(bits)] = {'windows': native, 'soda': soda, 'desktop': desktop, 'alpha': alpha,
+              scenes = {}
+              for variant in ('surface', 'legacy'):
+                  scenes[variant] = {}
+                  for label, path in (('windows', work / f'reference/composition-{variant}{bits}.log'),
+                                      ('soda', work / f'composition-{variant}{bits}.log')):
+                      rows = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
+                              if line.startswith('scene=')]
+                      assert len(rows) == 20, (path, rows)
+                      scenes[variant][label] = rows
+              results[str(bits)] = {'windows': native, 'soda': soda, 'desktop': desktop, 'alpha': alpha, 'scenes': scenes,
                   'differences': [{'windows': a, 'soda': b} for a, b in zip(native, soda) if a != b] +
                       [{'windows': a, 'soda': b} for a, b in zip(desktop['windows'], desktop['soda']) if a != b] +
-                      [{'windows': a, 'soda': b} for a, b in zip(alpha['windows'], alpha['soda']) if a != b]}
+                      [{'windows': a, 'soda': b} for a, b in zip(alpha['windows'], alpha['soda']) if a != b] +
+                      [{'variant': variant, 'windows': a, 'soda': b} for variant, rows in scenes.items()
+                       for a, b in zip(rows['windows'], rows['soda']) if a != b]}
           (work / 'comparison.json').write_text(json.dumps(results, indent=2) + '\n')
           print(json.dumps(results, indent=2))
           if os.environ['SOURCE_RUN']:

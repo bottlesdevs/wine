@@ -200,7 +200,23 @@ done:
     return success;
 }
 
-static bool observe_desktop()
+static bool record_scene(HWND window, bool control, BOOL topmost, const char *phase,
+                         COLORREF initial_background, COLORREF initial_foreground)
+{
+    COLORREF background = desktop_pixel(window, 110, 50);
+    COLORREF foreground = desktop_pixel(window, 16, 16);
+    if (background == CLR_INVALID || foreground == CLR_INVALID) return false;
+    const char *pixel = foreground == initial_foreground ? "base" : foreground == RGB(0, 255, 0) ?
+            "green" : foreground == RGB(0, 0, 255) ? "blue" : "changed";
+    printf("case=scene-pixels class=%s topmost=%d phase=%s background=%06lx visual=%06lx\n",
+            control ? "static" : "window", topmost, phase, background, foreground);
+    printf("scene=%s topmost=%d phase=%s background=%s visual=%s\n",
+            control ? "static" : "window", topmost, phase,
+            background == initial_background ? "preserved" : "changed", pixel);
+    return true;
+}
+
+static bool observe_desktop(BOOL topmost, bool control, bool diagnostic)
 {
     ComPtr<Core::ICompositorController> controller;
     ComPtr<IInspectable> instance;
@@ -217,7 +233,7 @@ static bool observe_desktop()
     WNDCLASSW cls = {};
     HWND window = nullptr;
     bool success = false;
-    COLORREF background, foreground;
+    COLORREF background, foreground, initial_background, initial_foreground;
 
     if (!check("desktop-class-name", WindowsCreateString(class_name, ARRAYSIZE(class_name) - 1, &name))) return false;
     HRESULT hr = RoActivateInstance(name, instance.GetAddressOf());
@@ -231,7 +247,7 @@ static bool observe_desktop()
     cls.hbrBackground = CreateSolidBrush(RGB(255, 0, 0));
     if (!cls.hbrBackground) return false;
     if (!RegisterClassW(&cls)) goto done;
-    window = CreateWindowExW(WS_EX_TOPMOST, cls.lpszClassName, L"Composition background control", WS_POPUP,
+    window = CreateWindowExW(diagnostic ? 0 : WS_EX_TOPMOST, control ? L"STATIC" : cls.lpszClassName, L"Composition background control", WS_POPUP,
             20, 20, 128, 64, nullptr, nullptr, cls.hInstance, nullptr);
     if (!window) goto done;
     ShowWindow(window, SW_SHOWNOACTIVATE);
@@ -239,10 +255,19 @@ static bool observe_desktop()
     pump(200);
     background = desktop_pixel(window, 110, 50);
     foreground = desktop_pixel(window, 16, 16);
-    printf("desktop=hybrid phase=base background=%06lx visual=%06lx\n", background, foreground);
-    if (background != RGB(255, 0, 0) || foreground != background) goto done;
-    if (!observe_layered_child(window)) goto done;
-    if (!check("desktop-target", desktop->CreateDesktopWindowTarget(window, TRUE, desktop_target.GetAddressOf())) ||
+    initial_background = background;
+    initial_foreground = foreground;
+    if (diagnostic)
+    {
+        if (!record_scene(window, control, topmost, "base", initial_background, initial_foreground)) goto done;
+    }
+    else
+    {
+        printf("desktop=hybrid phase=base background=%06lx visual=%06lx\n", background, foreground);
+        if (background != RGB(255, 0, 0) || foreground != background) goto done;
+        if (!observe_layered_child(window)) goto done;
+    }
+    if (!check("desktop-target", desktop->CreateDesktopWindowTarget(window, topmost, desktop_target.GetAddressOf())) ||
             !check("desktop-target-interface", desktop_target.As(&target)) ||
             !check("desktop-color", compositor->CreateColorBrushWithColor({255, 0, 255, 0}, color.GetAddressOf())) ||
             !check("desktop-brush", color.As(&brush)) ||
@@ -259,14 +284,22 @@ static bool observe_desktop()
         pump(500);
         background = desktop_pixel(window, 110, 50);
         foreground = desktop_pixel(window, 16, 16);
-        printf("desktop=hybrid phase=%s background=%06lx visual=%06lx\n",
-                round == 2 ? "alpha" : round ? "blue" : "green", background, foreground);
+        const char *phase = round == 2 ? "alpha" : round ? "blue" : "green";
+        if (diagnostic)
+        {
+            if (!record_scene(window, control, topmost, phase, initial_background, initial_foreground)) goto done;
+        }
+        else printf("desktop=hybrid phase=%s background=%06lx visual=%06lx\n", phase, background, foreground);
         if (background == CLR_INVALID || foreground == CLR_INVALID) goto done;
     }
     if (!check("desktop-detach", target->put_Root(nullptr)) ||
             !check("desktop-detach-commit", controller->Commit())) goto done;
     pump(500);
-    printf("desktop=hybrid phase=detached background=%06lx visual=%06lx\n",
+    if (diagnostic)
+    {
+        if (!record_scene(window, control, topmost, "detached", initial_background, initial_foreground)) goto done;
+    }
+    else printf("desktop=hybrid phase=detached background=%06lx visual=%06lx\n",
             desktop_pixel(window, 110, 50), desktop_pixel(window, 16, 16));
     success = true;
 
@@ -280,7 +313,7 @@ done:
     return success;
 }
 
-static int run()
+static int run(bool legacy)
 {
     ComPtr<ABI::Windows::System::IDispatcherQueueController> queue;
     ComPtr<IInspectable> instance;
@@ -297,6 +330,13 @@ static int run()
     HRESULT hr;
 
     check("dispatcher-queue", CreateDispatcherQueueController(options, queue.GetAddressOf()));
+    if (legacy)
+    {
+        for (unsigned control = 0; control < 2; ++control)
+            for (BOOL topmost = FALSE; topmost <= TRUE; ++topmost)
+                if (!observe_desktop(topmost, control != 0, true)) return 1;
+        return 0;
+    }
     hr = WindowsCreateString(class_name, ARRAYSIZE(class_name) - 1, &name);
     if (!check("class-name", hr)) return 1;
     hr = RoActivateInstance(name, instance.GetAddressOf());
@@ -339,15 +379,19 @@ static int run()
             if (!surface_api && !began) return 1;
         }
     }
-    return observe_desktop() ? 0 : 1;
+    if (!observe_desktop(TRUE, false, false)) return 1;
+    for (unsigned control = 0; control < 2; ++control)
+        for (BOOL topmost = FALSE; topmost <= TRUE; ++topmost)
+            if (!observe_desktop(topmost, control != 0, true)) return 1;
+    return 0;
 }
 
-int main()
+int main(int argc, char **argv)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
     printf("case=architecture bits=%u\n", static_cast<unsigned>(sizeof(void *) * 8));
     if (!check("initialize", RoInitialize(RO_INIT_SINGLETHREADED))) return 1;
-    int result = run();
+    int result = run(argc == 2 && !strcmp(argv[1], "legacy"));
     RoUninitialize();
     return result;
 }
