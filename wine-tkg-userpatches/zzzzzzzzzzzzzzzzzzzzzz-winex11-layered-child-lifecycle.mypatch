@@ -250,13 +250,14 @@
      if (was_fullscreen) NtUserClipCursor( NULL );
  }
  
-@@ -4103,6 +4292,9 @@
+@@ -4103,6 +4292,10 @@
              sync_window_region( data, (HRGN)1 );
              release_win_data( data );
          }
 +        return 0;
 +    case WM_X11DRV_SYNC_LAYERED_CHILD:
-+        sync_layered_child( hwnd, wp );
++        if (lp) sync_layered_children( hwnd, wp );
++        else sync_layered_child( hwnd, wp );
          return 0;
      case WM_X11DRV_DELETE_TAB:
          taskbar_delete_tab( hwnd );
@@ -310,3 +311,14 @@
  extern BOOL prepare_window_surface_flush( HWND hwnd, Window window, XImage *image, const RECT *dirty );
  extern void reveal_window_after_surface_flush( HWND hwnd, Window window );
  extern BOOL window_is_reparenting( HWND hwnd );
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -670,6 +670,8 @@
+     else
+         XSetInputFocus( data->display, data->whole_window, RevertToParent, timestamp );
+ 
++    /* Focus raises the parent after its children have been positioned. */
++    NtUserPostMessage( data->hwnd, WM_X11DRV_SYNC_LAYERED_CHILD, FALSE, TRUE );
+ }
+ 
+ /**********************************************************************
