@@ -826,7 +826,7 @@ jobs:
             "$work" "$work" "$work" "$work" >> "$GITHUB_ENV"
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb xauth \
+          sudo apt-get install -y --no-install-recommends xvfb xauth xcompmgr \
             libc6:i386 libgcc-s1:i386 libunwind8:i386 \
             libfreetype6:amd64 libfreetype6:i386 libfontconfig1:amd64 libfontconfig1:i386 \
             libx11-6:amd64 libx11-6:i386 libxext6:amd64 libxext6:i386 \
@@ -918,6 +918,12 @@ jobs:
           export WINEDLLOVERRIDES='mscoree=d;winemenubuilder.exe=d'
           trap 'status=$?; set +e; "$SURFACE_RUNNER/bin/wineserver" -k; "$SURFACE_RUNNER/bin/wineserver" -w; exit "$status"' EXIT
           xvfb-run -a sh -ec '
+            xcompmgr -n > "$SURFACE_WORK/compositor.log" 2>&1 &
+            compositor_pid=$!
+            trap "kill $compositor_pid; wait $compositor_pid || true" EXIT
+            sleep 1
+            kill -0 "$compositor_pid"
+            dpkg-query -W xcompmgr > "$SURFACE_WORK/compositor-version.log"
             "$SURFACE_RUNNER/bin/wine" wineboot -u > "$SURFACE_WORK/setup.log" 2>&1
             for bits in 64 32; do
               timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/reference/composition-surface$bits.exe" \
