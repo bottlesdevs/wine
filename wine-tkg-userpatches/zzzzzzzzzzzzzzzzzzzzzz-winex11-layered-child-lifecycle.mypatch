@@ -196,7 +196,7 @@
          }
 +        return 0;
 +    case WM_X11DRV_SYNC_LAYERED_CHILD:
-+        sync_layered_child( hwnd, wparam );
++        sync_layered_child( hwnd, wp );
          return 0;
      case WM_X11DRV_DELETE_TAB:
          taskbar_delete_tab( hwnd );
