@@ -1208,6 +1208,81 @@ jobs:
             done
           '
 
+      - name: inspect original tracker command sequence
+        if: always() && env.SURFACE_RUNNER != '' && inputs.architecture == 'composition-tracker'
+        timeout-minutes: 10
+        shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          export WINEPREFIX="$SURFACE_WORK/sequence-prefix"
+          xcompmgr -n > "$SURFACE_WORK/sequence-compositor.log" 2>&1 &
+          compositor_pid=$!
+          trap 'status=$?; printf "%s\n" "$status" > "$SURFACE_WORK/sequence-exit-status.log"; set +e; "$SURFACE_RUNNER/bin/wineserver" -k; "$SURFACE_RUNNER/bin/wineserver" -w; kill "$compositor_pid"; wait "$compositor_pid"; exit "$status"' EXIT
+          sleep 1
+          kill -0 "$compositor_pid"
+          export LIBGL_ALWAYS_SOFTWARE=1
+          for bits in 64 32; do
+            if [[ "$bits" == 64 ]]; then compiler=x86_64-w64-mingw32-gcc; else compiler=i686-w64-mingw32-gcc; fi
+            "$compiler" ".github/soda-composition-inertia-smoke.c" \
+              -I"$SURFACE_RUNNER/include/wine/windows" -D__WINESRC__ \
+              -O2 -Wall -Wextra -Werror -lole32 -lruntimeobject \
+              -o "$SURFACE_WORK/soda-composition-inertia$bits.exe"
+            "$compiler" ".github/soda-composition-tracker-smoke.c" \
+              -I"$SURFACE_RUNNER/include/wine/windows" -D__WINESRC__ \
+              -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
+              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid \
+              -o "$SURFACE_WORK/soda-composition-tracker$bits.exe"
+            "$compiler" ".github/soda-composition-binding-smoke.c" \
+              -I"$SURFACE_RUNNER/include/wine/windows" -D__WINESRC__ \
+              -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
+              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid \
+              -o "$SURFACE_WORK/soda-composition-binding$bits.exe"
+            "$compiler" ".github/soda-composition-owner-smoke.c" \
+              -I"$SURFACE_RUNNER/include/wine/windows" -D__WINESRC__ \
+              -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
+              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid \
+              -o "$SURFACE_WORK/soda-composition-owner$bits.exe"
+            "$compiler" ".github/soda-composition-clamping-smoke.c" \
+              -I"$SURFACE_RUNNER/include/wine/windows" -D__WINESRC__ \
+              -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
+              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid \
+              -o "$SURFACE_WORK/soda-composition-clamping$bits.exe"
+            "$compiler" ".github/soda-composition-overloads-smoke.c" \
+              -I"$SURFACE_RUNNER/include/wine/windows" -D__WINESRC__ \
+              -O2 -Wall -Wextra -Wno-unused-parameter -Werror \
+              -lole32 -lruntimeobject -luser32 -lgdi32 -luuid \
+              -o "$SURFACE_WORK/soda-composition-overloads$bits.exe"
+          done
+          exec 2> "$SURFACE_WORK/sequence.stderr"
+          export WINEDEBUG=-all
+          export WINEARCH=win64
+          export WINEDLLOVERRIDES="dxgi,d3d11,d3d10core,windows.ui=b;winewayland.drv=d;winemenubuilder.exe=d"
+          "$SURFACE_RUNNER/bin/wineboot" -u
+          "$SURFACE_RUNNER/bin/wine" reg add 'HKCU\Software\Wine\Direct3D' \
+            /v renderer /t REG_SZ /d gl /f
+          for bits in 64 32; do
+            for apartment in sta mta; do
+              "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/soda-composition-inertia$bits.exe" "$apartment" \
+                | tr -d '\r' | tee "$SURFACE_WORK/soda-composition-inertia$bits-$apartment.log"
+              grep -E '^INERTIA_OBJECT_CHECKS:[1-9][0-9]* failures:0$' "$SURFACE_WORK/soda-composition-inertia$bits-$apartment.log"
+            done
+            "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/soda-composition-tracker$bits.exe" candidate \
+              | tr -d '\r' | tee "$SURFACE_WORK/soda-composition-tracker$bits.log"
+            grep -E '^TRACKER_DONE$' "$SURFACE_WORK/soda-composition-tracker$bits.log"
+            "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/soda-composition-binding$bits.exe" \
+              | tr -d '\r' | tee "$SURFACE_WORK/soda-composition-binding$bits.log"
+            grep -E '^BINDING_DONE$' "$SURFACE_WORK/soda-composition-binding$bits.log"
+            "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/soda-composition-owner$bits.exe" \
+              | tr -d '\r' | tee "$SURFACE_WORK/soda-composition-owner$bits.log"
+            grep -E '^OWNER_EVENTS_DONE$' "$SURFACE_WORK/soda-composition-owner$bits.log"
+            "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/soda-composition-clamping$bits.exe" \
+              | tr -d '\r' | tee "$SURFACE_WORK/soda-composition-clamping$bits.log"
+            grep -E '^CLAMP_FAILURES=0$' "$SURFACE_WORK/soda-composition-clamping$bits.log"
+            "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/soda-composition-overloads$bits.exe" \
+              | tr -d '\r' | tee "$SURFACE_WORK/soda-composition-overloads$bits.log"
+            grep -E '^OVERLOAD_FAILURES=0$' "$SURFACE_WORK/soda-composition-overloads$bits.log"
+          done
+          "$SURFACE_RUNNER/bin/wineserver" -w
+
       - uses: actions/upload-artifact@v7
         if: always() && env.SURFACE_WORK != ''
         with:
@@ -3186,6 +3261,7 @@ jobs:
             /home/runner/work/wine-tkg-git/wine-tkg-git/src/*-build/config.log
             /tmp/soda-pgo/evidence
             /tmp/soda-*.log
+            ${{ runner.temp }}/soda-*.log
             /tmp/soda-openxr/*.log
           if-no-files-found: ignore
 
@@ -3236,6 +3312,13 @@ jobs:
         with:
           name: eagle-test-logs-${{ github.sha }}
           path: |
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/d2d32/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/d2d64/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/loader32/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/loader64/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/n32/*.log
+            /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/n64/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/32/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/64/*.log
             /home/runner/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}/tests/p32/*.log
@@ -4624,7 +4707,7 @@ jobs:
         if: always()
         run: |
           work="$RECOVERY_WORK"
-          for log in "$work"/eagle/tests/{32,64,p32,p64,c32,c64,s32,s64,i32,i64,j32,j64,k32,k64,l32,l64,d,t,e}/*.log "$work"/eagle/tests/{j32,j64,k32,k64,l32,l64}/*/*.log; do
+          for log in "$work"/eagle/tests/*.log "$work"/eagle/tests/{32,64,p32,p64,d2d32,d2d64,loader32,loader64,n32,n64,c32,c64,s32,s64,i32,i64,j32,j64,k32,k64,l32,l64,d,t,e}/*.log "$work"/eagle/tests/{j32,j64,k32,k64,l32,l64}/*/*.log; do
             test -f "$log" || continue
             relative=${log#"$work/eagle/tests/"}
             cp "$log" "$work/logs/${relative//\//-}"
