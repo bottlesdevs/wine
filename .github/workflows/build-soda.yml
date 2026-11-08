@@ -13,6 +13,10 @@ on:
         description: 'Existing x86_64 runner for debugger tests'
         required: false
         type: string
+      office_report_run_id:
+        description: 'Resolve Wine frames in saved Office reports without launching Office'
+        required: false
+        type: string
       surface_pretest_run:
         description: 'Inspect an unqualified compiled runner after a tracker gate failure'
         required: false
@@ -293,7 +297,7 @@ jobs:
           PY
 
       - name: prepare matching Office symbols
-        if: inputs.debugger_run_id != '' && inputs.office_reproduction == true
+        if: inputs.debugger_run_id != '' && (inputs.office_reproduction == true || inputs.office_report_run_id != '')
         run: |
           archive="$(find "$EAGLE_WORK/downloads" -maxdepth 1 -type f -name '*-x86_64-symbols.tar.xz' -print -quit)"
           test -n "$archive"
@@ -454,6 +458,71 @@ jobs:
               results.append({'bits': bits, 'matched': before == after, 'windows': before, 'wine': after})
           (root / 'tests/fls-comparison.log').write_text(json.dumps(results, indent=2) + '\n')
           assert all(item['matched'] for item in results), 'FLS callback results differ from Windows'
+          PY
+
+      - name: resolve saved Office Wine frames
+        if: inputs.office_report_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT_RUN: ${{ inputs.office_report_run_id }}
+          RUNTIME_RUN: ${{ inputs.debugger_run_id }}
+          OFFICE_REPRODUCTION: ${{ inputs.office_reproduction }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, io, json, os, stat, subprocess, zipfile
+          from pathlib import Path
+          work = Path(os.environ['EAGLE_WORK'])
+          report_run, runtime_run = os.environ['REPORT_RUN'], os.environ['RUNTIME_RUN']
+          assert report_run.isdecimal() and runtime_run.isdecimal()
+          assert os.environ['OFFICE_REPRODUCTION'] != 'true', 'saved reports do not launch Office'
+          repo = os.environ['GITHUB_REPOSITORY']
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/{path}']))
+          run = api(f'actions/runs/{report_run}')
+          assert run['head_repository']['full_name'] == repo and run['path'] == '.github/workflows/build-soda.yml'
+          assert run['status'] == 'completed' and run['conclusion'] == 'success'
+          artifacts = api(f'actions/runs/{report_run}/artifacts')['artifacts']
+          artifact, = [item for item in artifacts if not item['expired'] and item['name'] == 'eagle-debugger-' + run['head_sha']]
+          assert artifact['size_in_bytes'] < 20 * 1024 * 1024
+          data = subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/artifacts/{artifact["id"]}/zip'])
+          assert 'sha256:' + hashlib.sha256(data).hexdigest() == artifact['digest']
+          saved = work / 'saved-office-reports'
+          saved.mkdir()
+          with zipfile.ZipFile(io.BytesIO(data)) as archive:
+              assert sum(item.file_size for item in archive.infolist()) < 100 * 1024 * 1024
+              for item in archive.infolist():
+                  path = Path(item.filename)
+                  assert not path.is_absolute() and '..' not in path.parts and not stat.S_ISLNK(item.external_attr >> 16)
+              archive.extractall(saved)
+          previous = json.loads((saved / 'tests/runtime-run.json').read_text())
+          assert previous['id'] == int(runtime_run)
+          assert previous['head_sha'] == json.loads((work / 'tests/runtime-run.json').read_text())['head_sha']
+          runner = Path(os.environ['EAGLE_RUNTIME']).parent.parent
+          files = json.loads((runner / 'share/soda/files.json').read_text())
+          images = []
+          for name in ('kernelbase', 'crypt32', 'winhttp'):
+              relative = f'lib/wine/x86_64-windows/{name}.dll'
+              image = runner / relative
+              record = files[relative]
+              assert record['kind'] == 'pe' and not image.is_symlink()
+              assert image.resolve().is_relative_to(runner.resolve())
+              assert hashlib.sha256(image.read_bytes()).hexdigest() == record['sha256']
+              images.append(dict(sha256=record['sha256'], image=str(image), inlines=False))
+          selection = work / 'reviewed-wine-images.json'
+          selection.write_text(json.dumps(images))
+          output = work / 'office-results'
+          output.mkdir()
+          reports = sorted((saved / 'office-results').glob('profile-*.log'))
+          assert reports
+          results = []
+          for report in reports:
+              destination = output / report.name
+              subprocess.run([str(runner / 'bin/eagle'), 'export', str(report), str(destination),
+                              '--symbol-images', str(selection)], stdout=subprocess.DEVNULL, check=True, timeout=30)
+              value = json.loads(destination.read_text())
+              results.append(dict(report=report.name, **value['offline_symbolization']))
+          (output / 'wine-symbols.json').write_text(json.dumps(dict(report_run=int(report_run),
+              runtime_run=int(runtime_run), artifact=artifact, reports=results), indent=2) + '\n')
           PY
 
       - name: collect Office startup in a fresh bottle
