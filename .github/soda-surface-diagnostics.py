@@ -1,3 +1,4 @@
+import ctypes as C
 import hashlib
 import json
 import os
@@ -112,6 +113,42 @@ def capture(command, env, destination, limit=64 * 1024 * 1024, timeout=120):
             'stderr_saved': saved, 'stderr_discarded': total - saved}
 
 
+def stack(destination):
+    x11 = C.CDLL('libX11.so.6')
+    x11.XOpenDisplay.argtypes = [C.c_char_p]
+    x11.XOpenDisplay.restype = C.c_void_p
+    x11.XDefaultRootWindow.argtypes = [C.c_void_p]
+    x11.XDefaultRootWindow.restype = C.c_ulong
+    x11.XQueryTree.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(C.c_ulong),
+                              C.POINTER(C.c_ulong), C.POINTER(C.POINTER(C.c_ulong)), C.POINTER(C.c_uint)]
+    x11.XFree.argtypes = [C.c_void_p]
+    x11.XCloseDisplay.argtypes = [C.c_void_p]
+    display = x11.XOpenDisplay(None)
+    if not display:
+        raise RuntimeError('XOpenDisplay failed')
+    try:
+        root = x11.XDefaultRootWindow(display)
+        previous = None
+        deadline = time.monotonic() + 130
+        with destination.open('w', buffering=1) as file:
+            while time.monotonic() < deadline:
+                returned_root, parent, count = C.c_ulong(), C.c_ulong(), C.c_uint()
+                items = C.POINTER(C.c_ulong)()
+                if not x11.XQueryTree(display, root, C.byref(returned_root), C.byref(parent),
+                                      C.byref(items), C.byref(count)):
+                    raise RuntimeError('XQueryTree failed')
+                windows = list(items[:count.value]) if count.value else []
+                if items:
+                    x11.XFree(items)
+                if windows != previous:
+                    file.write(json.dumps({'time': time.time(), 'monotonic': time.monotonic(),
+                                           'bottom_to_top': [hex(window) for window in windows]}) + '\n')
+                    previous = windows
+                time.sleep(0.05)
+    finally:
+        x11.XCloseDisplay(display)
+
+
 def collect(work, runner):
     results = []
     expected = (work / 'reference/composition-surface64.log').read_text(encoding='utf-8-sig').splitlines()
@@ -135,8 +172,16 @@ def collect(work, runner):
                     subprocess.run([str(runner / 'bin/wineserver'), '-k'], env=env, check=False, timeout=30)
                     subprocess.run([str(runner / 'bin/wineserver'), '-w'], env=env, check=True, timeout=30)
             env['WINEDEBUG'] = debug
-            result = capture([str(runner / 'bin/wine'), str(work / 'reference/composition-surface64.exe')],
-                             env, work / label)
+            monitor = subprocess.Popen([sys.executable, __file__, 'stack', str(work / (label + '-stack.jsonl'))],
+                                       env=env)
+            try:
+                result = capture([str(runner / 'bin/wine'), str(work / 'reference/composition-surface64.exe')],
+                                 env, work / label)
+                assert monitor.poll() is None, 'X11 stack monitor exited early'
+            finally:
+                if monitor.poll() is None:
+                    monitor.terminate()
+                monitor.wait(timeout=10)
             result.update(label=label, wine_debug=debug)
             lines = (work / (label + '.stdout')).read_text(errors='replace').splitlines()
             actual = [line for line in lines if line.startswith('desktop=hybrid ')]
@@ -155,6 +200,8 @@ def collect(work, runner):
 if __name__ == '__main__':
     if sys.argv[1] == 'prepare':
         prepare(Path(sys.argv[2]))
+    elif sys.argv[1] == 'stack':
+        stack(Path(sys.argv[2]))
     elif sys.argv[1] == 'collect':
         collect(Path(sys.argv[2]), Path(sys.argv[3]))
     else:

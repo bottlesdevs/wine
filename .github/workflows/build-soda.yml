@@ -167,6 +167,7 @@ jobs:
           path: |
             ${{ env.SURFACE_WORK }}/*.json
             ${{ env.SURFACE_WORK }}/*.log
+            ${{ env.SURFACE_WORK }}/*-stack.jsonl
             ${{ env.SURFACE_WORK }}/*.stdout
             ${{ env.SURFACE_WORK }}/*.stderr
           retention-days: 7
