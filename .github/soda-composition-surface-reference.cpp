@@ -10,6 +10,7 @@
 #include <d2d1_1.h>
 #include <wrl.h>
 #include <stdio.h>
+#include <string.h>
 
 using namespace ABI::Windows::UI::Composition;
 using namespace Microsoft::WRL;
@@ -53,6 +54,50 @@ static bool observe(ICompositionDrawingSurfaceInterop *surface, const char *kind
         record(kind, api, round, "idle-end", surface->EndDraw());
     }
     return began;
+}
+
+static bool observe_alpha(ID2D1Device *device)
+{
+    ComPtr<ID2D1DeviceContext> context;
+    ComPtr<ID2D1Bitmap1> target, snapshot, readback;
+    ComPtr<ID2D1SolidColorBrush> brush;
+    D2D1_BITMAP_PROPERTIES1 properties = {};
+    const D2D1_RECT_F rect = {0.0f, 0.0f, 8.0f, 8.0f};
+    const D2D1_COLOR_F transparent = {};
+
+    if (!check("alpha-context", device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+            context.GetAddressOf()))) return false;
+    properties.pixelFormat = {DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED};
+    properties.dpiX = properties.dpiY = 96.0f;
+    properties.bitmapOptions = static_cast<D2D1_BITMAP_OPTIONS>(D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW);
+    if (!check("alpha-target", context->CreateBitmap({16, 16}, nullptr, 0, &properties, target.GetAddressOf()))) return false;
+    properties.bitmapOptions = D2D1_BITMAP_OPTIONS_NONE;
+    if (!check("alpha-snapshot", context->CreateBitmap({16, 16}, nullptr, 0, &properties, snapshot.GetAddressOf()))) return false;
+    properties.bitmapOptions = static_cast<D2D1_BITMAP_OPTIONS>(D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW);
+    if (!check("alpha-readback", context->CreateBitmap({16, 16}, nullptr, 0, &properties, readback.GetAddressOf()))) return false;
+    context->SetTarget(target.Get());
+    for (unsigned round = 0; round < 2; ++round)
+    {
+        const D2D1_COLOR_F color = round ? D2D1_COLOR_F{0.0f, 0.0f, 1.0f, 0.5f} : D2D1_COLOR_F{0.0f, 1.0f, 0.0f, 1.0f};
+        D2D1_MAPPED_RECT mapped = {};
+        DWORD inside = 0, outside = 0;
+        brush.Reset();
+        if (!check("alpha-brush", context->CreateSolidColorBrush(&color, nullptr, brush.GetAddressOf()))) return false;
+        context->BeginDraw();
+        context->Clear(&transparent);
+        context->FillRectangle(&rect, brush.Get());
+        if (!check("alpha-end", context->EndDraw(nullptr, nullptr)) ||
+                !check("alpha-copy-snapshot", snapshot->CopyFromBitmap(nullptr, target.Get(), nullptr)) ||
+                !check("alpha-copy-readback", readback->CopyFromBitmap(nullptr, snapshot.Get(), nullptr)) ||
+                !check("alpha-map", readback->Map(D2D1_MAP_OPTIONS_READ, &mapped))) return false;
+        if (!mapped.bits || mapped.pitch < 64) { readback->Unmap(); return false; }
+        memcpy(&inside, mapped.bits + 4 * mapped.pitch + 4 * sizeof(DWORD), sizeof(inside));
+        memcpy(&outside, mapped.bits + 12 * mapped.pitch + 12 * sizeof(DWORD), sizeof(outside));
+        if (!check("alpha-unmap", readback->Unmap())) return false;
+        printf("d2d=alpha phase=%s pixel=%08lx outside=%08lx\n", round ? "half" : "opaque", inside, outside);
+    }
+    context->SetTarget(nullptr);
+    return true;
 }
 
 static void pump(unsigned milliseconds)
@@ -109,9 +154,27 @@ static bool observe_layered_child(HWND parent)
             WS_CHILD | WS_DISABLED | WS_VISIBLE, 8, 8, size.cx, size.cy, parent, nullptr,
             GetModuleHandleW(nullptr), nullptr);
     if (!window) { printf("case=layered-child-window error=%lu\n", GetLastError()); goto done; }
-    for (unsigned round = 0; round < 2; ++round)
+    for (unsigned round = 0; round < 5; ++round)
     {
-        for (unsigned i = 0; i < 32 * 32; ++i) pixels[i] = round ? 0x80000080 : 0xff00ff00;
+        const char *phase = round == 0 ? "layered-opaque" : round == 1 ? "layered-alpha" :
+                round == 2 ? "layered-bottom" : round == 3 ? "layered-layer-style" : "layered-layer-bottom";
+        if (round == 3)
+        {
+            if (!SetWindowLongPtrW(window, GWL_EXSTYLE, GetWindowLongPtrW(window, GWL_EXSTYLE) |
+                    WS_EX_TRANSPARENT | WS_EX_NOPARENTNOTIFY) ||
+                    !SetWindowLongPtrW(window, GWL_STYLE, GetWindowLongPtrW(window, GWL_STYLE) | WS_CLIPSIBLINGS))
+            {
+                printf("case=layered-child-style error=%lu\n", GetLastError());
+                goto done;
+            }
+        }
+        if (round >= 2 && !SetWindowPos(window, round == 3 ? HWND_TOP : HWND_BOTTOM,
+                0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED))
+        {
+            printf("case=layered-child-order error=%lu\n", GetLastError());
+            goto done;
+        }
+        for (unsigned i = 0; i < 32 * 32; ++i) pixels[i] = round == 1 ? 0x80000080 : 0xff00ff00;
         if (!UpdateLayeredWindow(window, nullptr, nullptr, &size, dc, &source, 0, &blend, ULW_ALPHA))
         {
             printf("case=layered-child-update error=%lu\n", GetLastError());
@@ -123,7 +186,7 @@ static bool observe_layered_child(HWND parent)
         printf("case=layered-child-bounds round=%u rect=%ld,%ld,%ld,%ld\n",
                 round, rect.left, rect.top, rect.right, rect.bottom);
         printf("desktop=hybrid phase=%s background=%06lx visual=%06lx\n",
-                round ? "layered-alpha" : "layered-opaque", desktop_pixel(parent, 110, 50),
+                phase, desktop_pixel(parent, 110, 50),
                 desktop_pixel(parent, 16, 16));
     }
     success = true;
@@ -247,6 +310,7 @@ static int run()
     if (!check("d2d-device", D2D1CreateDevice(dxgi.Get(), nullptr, d2d.GetAddressOf()))) return 1;
     if (!check("graphics-device", interop->CreateGraphicsDevice(d2d.Get(), graphics.GetAddressOf()))) return 1;
     if (!check("graphics-device2", graphics.As(&graphics2))) return 1;
+    if (!observe_alpha(d2d.Get())) return 1;
     for (unsigned tiled = 0; tiled < 2; ++tiled)
     {
         for (unsigned surface_api = 0; surface_api < 2; ++surface_api)

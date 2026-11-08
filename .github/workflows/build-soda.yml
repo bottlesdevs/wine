@@ -794,10 +794,15 @@ jobs:
               'desktop=hybrid phase=base background=0000ff visual=0000ff',
               'desktop=hybrid phase=layered-opaque background=0000ff visual=00ff00',
               'desktop=hybrid phase=layered-alpha background=0000ff visual=80007f',
+              'desktop=hybrid phase=layered-bottom background=0000ff visual=00ff00',
+              'desktop=hybrid phase=layered-layer-style background=0000ff visual=00ff00',
+              'desktop=hybrid phase=layered-layer-bottom background=0000ff visual=00ff00',
               'desktop=hybrid phase=green background=0000ff visual=00ff00',
               'desktop=hybrid phase=blue background=0000ff visual=ff0000',
               'desktop=hybrid phase=alpha background=0000ff visual=80007f',
-              'desktop=hybrid phase=detached background=0000ff visual=0000ff'
+              'desktop=hybrid phase=detached background=0000ff visual=0000ff',
+              'd2d=alpha phase=opaque pixel=ff00ff00 outside=00000000',
+              'd2d=alpha phase=half pixel=80000080 outside=00000000'
             )) {
               if ($lines -notcontains $expected) { throw "Desktop pixel control missing: $expected" }
             }
@@ -945,10 +950,17 @@ jobs:
                                   ('soda', work / f'composition-surface{bits}.log')):
                   desktop[label] = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
                                     if line.startswith('desktop=hybrid ')]
-                  assert len(desktop[label]) == 7, (path, desktop[label])
-              results[str(bits)] = {'windows': native, 'soda': soda, 'desktop': desktop,
+                  assert len(desktop[label]) == 10, (path, desktop[label])
+              alpha = {}
+              for label, path in (('windows', work / f'reference/composition-surface{bits}.log'),
+                                  ('soda', work / f'composition-surface{bits}.log')):
+                  alpha[label] = [line for line in path.read_text(encoding='utf-8-sig').splitlines()
+                                  if line.startswith('d2d=alpha ')]
+                  assert len(alpha[label]) == 2, (path, alpha[label])
+              results[str(bits)] = {'windows': native, 'soda': soda, 'desktop': desktop, 'alpha': alpha,
                   'differences': [{'windows': a, 'soda': b} for a, b in zip(native, soda) if a != b] +
-                      [{'windows': a, 'soda': b} for a, b in zip(desktop['windows'], desktop['soda']) if a != b]}
+                      [{'windows': a, 'soda': b} for a, b in zip(desktop['windows'], desktop['soda']) if a != b] +
+                      [{'windows': a, 'soda': b} for a, b in zip(alpha['windows'], alpha['soda']) if a != b]}
           (work / 'comparison.json').write_text(json.dumps(results, indent=2) + '\n')
           print(json.dumps(results, indent=2))
           if os.environ['SOURCE_RUN']:
