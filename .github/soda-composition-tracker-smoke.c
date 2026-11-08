@@ -158,7 +158,7 @@ int main(int argc,char **argv)
     ICompositionObject *object,*tracker_object=NULL,*layout_object=NULL;
     IInteractionTrackerStatics *factory;IInteractionTracker *tracker=NULL;ICompositionPropertySet *layout=NULL;
     IClosable *closable;HSTRING name,size=NULL;HWND window;INT32 request;struct Vector3 position;
-    HRESULT result;ULONG refs_before,refs_after;HANDLE threads[2];struct stress_context stress;
+    HRESULT result;ULONG refs_before=0,refs_after;HANDLE threads[2];struct stress_context stress;
     PDISPATCHERQUEUECONTROLLER queue=NULL;
     DispatcherQueueOptions options={sizeof(options),DQTYPE_THREAD_CURRENT,DQTAT_COM_NONE};
     BOOL flat=argc>2 && strstr(argv[2], "flat");
