@@ -132,7 +132,7 @@ static bool observe_layered_child(HWND parent)
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
     POINT source = {};
     SIZE size = {32, 32};
-    HWND window = nullptr;
+    HWND window = nullptr, backdrop = nullptr;
     HBITMAP bitmap = nullptr;
     HGDIOBJ previous = nullptr;
     HDC dc = CreateCompatibleDC(nullptr);
@@ -150,6 +150,11 @@ static bool observe_layered_child(HWND parent)
     if (!bitmap) { printf("case=layered-child-bitmap error=%lu\n", GetLastError()); goto done; }
     previous = SelectObject(dc, bitmap);
     if (!previous || previous == HGDI_ERROR) { printf("case=layered-child-select error=%lu\n", GetLastError()); goto done; }
+    backdrop = CreateWindowExW(0, L"STATIC", nullptr, WS_POPUP | SS_WHITERECT,
+            0, 0, 320, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!backdrop) { printf("case=layered-child-backdrop error=%lu\n", GetLastError()); goto done; }
+    ShowWindow(backdrop, SW_SHOWNOACTIVATE);
+    UpdateWindow(backdrop);
     window = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE, L"STATIC", nullptr,
             WS_CHILD | WS_DISABLED | WS_VISIBLE, 8, 8, size.cx, size.cy, parent, nullptr,
             GetModuleHandleW(nullptr), nullptr);
@@ -207,10 +212,34 @@ static bool observe_layered_child(HWND parent)
                 round ? "layered-restored" : "layered-moved", desktop_pixel(parent, 110, 50),
                 desktop_pixel(parent, 16, 16));
     }
+    for (unsigned round = 0; round < 2; ++round)
+    {
+        ShowWindow(parent, round ? SW_SHOWNOACTIVATE : SW_HIDE);
+        if (round) UpdateWindow(parent);
+        pump(200);
+        printf("desktop=hybrid phase=%s background=%06lx visual=%06lx\n",
+                round ? "layered-shown" : "layered-hidden", desktop_pixel(parent, 110, 50),
+                desktop_pixel(parent, 16, 16));
+    }
+    for (unsigned round = 0; round < 2; ++round)
+    {
+        if (!SetWindowPos(parent, nullptr, 0, 0, round ? 128 : 20, round ? 64 : 20,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE))
+        {
+            printf("case=layered-child-parent-size error=%lu\n", GetLastError());
+            goto done;
+        }
+        UpdateWindow(parent);
+        pump(200);
+        printf("desktop=hybrid phase=%s background=%06lx visual=%06lx\n",
+                round ? "layered-unclipped" : "layered-clipped", desktop_pixel(parent, 110, 50),
+                desktop_pixel(parent, 24, 16));
+    }
     success = true;
 
 done:
     if (window) DestroyWindow(window);
+    if (backdrop) DestroyWindow(backdrop);
     if (previous && previous != HGDI_ERROR) SelectObject(dc, previous);
     if (bitmap) DeleteObject(bitmap);
     DeleteDC(dc);
