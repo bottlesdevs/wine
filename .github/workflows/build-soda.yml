@@ -1208,6 +1208,43 @@ jobs:
             done
           '
 
+      - name: inspect unmanaged surface restore
+        if: always() && env.SURFACE_RUNNER != '' && inputs.architecture == 'composition-surface-reference' && inputs.surface_pretest_run != ''
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          export WINEPREFIX="$SURFACE_WORK/unmanaged-prefix" WINEARCH=win64 WINEDEBUG=-all LIBGL_ALWAYS_SOFTWARE=1
+          export WINEDLLOVERRIDES="dxgi,d3d11,d3d10core,windows.ui=b;winewayland.drv=d;mscoree=d;winemenubuilder.exe=d"
+          trap 'status=$?; set +e; "$SURFACE_RUNNER/bin/wineserver" -k; "$SURFACE_RUNNER/bin/wineserver" -w; exit "$status"' EXIT
+          xvfb-run -a bash .github/soda-test-desktop.sh "$SURFACE_WORK/unmanaged-compositor.log" sh -ec '
+            "$SURFACE_RUNNER/bin/wineboot" -u > "$SURFACE_WORK/unmanaged-setup.log" 2>&1
+            "$SURFACE_RUNNER/bin/wine" reg add "HKCU\Software\Wine\X11 Driver" \
+              /v Managed /t REG_SZ /d N /f > "$SURFACE_WORK/unmanaged-setting.log" 2>&1
+            "$SURFACE_RUNNER/bin/wine" reg add "HKCU\Software\Wine\Direct3D" \
+              /v renderer /t REG_SZ /d gl /f > "$SURFACE_WORK/unmanaged-renderer.log" 2>&1
+            for bits in 64 32; do
+              timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/reference/composition-surface$bits.exe" \
+                > "$SURFACE_WORK/unmanaged-surface$bits.log" 2> "$SURFACE_WORK/unmanaged-surface$bits.stderr"
+            done
+          '
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          work = Path(os.environ['SURFACE_WORK'])
+          result = {'scope': 'Unmanaged restore diagnostics only; managed comparison and Office qualification remain separate', 'groups': {}}
+          for bits in (64, 32):
+              def rows(path):
+                  records = [line for line in path.read_text(encoding='utf-8-sig').splitlines() if line.startswith('desktop=hybrid ')]
+                  assert len(records) == 21, (path, len(records))
+                  return records
+              native = rows(work / f'reference/composition-surface{bits}.log')
+              soda = rows(work / f'unmanaged-surface{bits}.log')
+              result['groups'][str(bits)] = {'windows': native, 'soda': soda,
+                  'differences': [{'windows': a, 'soda': b} for a, b in zip(native, soda) if a != b]}
+          (work / 'runtime-unmanaged.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result, indent=2))
+          PYTHON
+
       - name: inspect original tracker command sequence
         if: always() && env.SURFACE_RUNNER != '' && inputs.architecture == 'composition-tracker'
         timeout-minutes: 10
