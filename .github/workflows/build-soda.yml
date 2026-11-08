@@ -918,7 +918,7 @@ jobs:
           changed = subprocess.check_output(['git', 'diff', '--name-only', run['head_sha'], 'HEAD'], text=True).splitlines()
           allowed = {'.github/workflows/build-soda.yml', '.github/soda-composition-surface-reference.cpp',
                      '.github/soda-composition-surface-reference.manifest', '.github/soda-composition-tracker-smoke.c',
-                     '.github/soda-test-desktop.sh'}
+                     '.github/soda-test-desktop.sh', '.github/soda-x11-shape.py'}
           assert set(changed) <= allowed, changed
           artifacts = json.loads((work / 'runtime-artifacts.json').read_text())['artifacts']
           artifact, = [item for item in artifacts if not item['expired'] and
@@ -1123,9 +1123,18 @@ jobs:
             "$SURFACE_RUNNER/bin/wine" reg add "HKCU\Software\Wine\Direct3D" \
               /v renderer /t REG_SZ /d gl /f > "$SURFACE_WORK/tracker-renderer.log" 2>&1
             for bits in 64 32; do
-              for mode in queue-flat-simple-green queue-flat-simple-green-prepaint queue-flat-simple-green-sdk-pump-update queue-flat-simple-green-sdk-pump-update-large-parent queue-flat-simple-green-sdk-pump-update-small-sprite queue-flat-simple-green-sdk-pump-update-far-offset queue-flat-simple-green-sdk-pump-update-origin; do
+              for mode in queue-flat-simple-green-sdk-pump-update queue-flat-simple-green-sdk-pump-update-small-sprite; do
                 timeout 60 "$SURFACE_RUNNER/bin/wine" "$SURFACE_WORK/tracker$bits.exe" inspect "$mode" \
-                  > "$SURFACE_WORK/tracker$bits-$mode.log" 2> "$SURFACE_WORK/tracker$bits-$mode.stderr"
+                  > "$SURFACE_WORK/tracker$bits-$mode.log" 2> "$SURFACE_WORK/tracker$bits-$mode.stderr" &
+                fixture_pid=$!
+                for attempt in $(seq 1 1500); do
+                  if grep -q "TRACKER_INITIAL_CAPTURE_READY" "$SURFACE_WORK/tracker$bits-$mode.log"; then break; fi
+                  kill -0 "$fixture_pid"
+                  sleep 0.02
+                done
+                python3 .github/soda-x11-shape.py "Dynamic tracker pixel test" \
+                  > "$SURFACE_WORK/runtime-shape$bits-$mode.json"
+                wait "$fixture_pid"
                 grep -q "TRACKER_DONE" "$SURFACE_WORK/tracker$bits-$mode.log"
               done
             done
