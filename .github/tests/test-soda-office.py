@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import struct
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -151,6 +152,75 @@ class OfficeComposition(unittest.TestCase):
         with self.assertRaises(AssertionError):
             compose.compose(self.runner, self.binaries, {'revision': 'c' * 40})
         self.assertFalse(list(self.root.glob('*-office-*')))
+
+
+class WaitContext(unittest.TestCase):
+    def collect(self, events):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'events.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in events))
+            return diagnostics.wait_context(root, {'terminal_exceptions': [{'pid': 1, 'tid': 2, 'time_ms': 5000}]})
+
+    def event(self, **values):
+        event = {'kind': 'provider', 'pid': 1, 'tid': 2, 'seq': 7, 'time_ms': 4999,
+                 'data': {'provider': 8, 'event': 'WaitEnd', 'value': 258, 'timeout_ms': 0,
+                          'object': '0000000000000040', 'Account': 'private@example.invalid'},
+                 'path': '/private/document'}
+        event.update(values)
+        return event
+
+    def test_fault_thread_window_and_numeric_privacy(self):
+        result = self.collect([self.event(), self.event(tid=3), self.event(time_ms=5001), self.event(time_ms=2999)])
+        rows = result['threads'][0]['events']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['object'], 64)
+        self.assertEqual(rows[0]['value'], 258)
+        self.assertNotIn('private', json.dumps(result))
+
+    def test_limits_are_reported_and_recent_events_retained(self):
+        with patch.object(diagnostics, 'WAIT_EVENT_LIMIT', 2):
+            result = self.collect([self.event(seq=i) for i in range(5)])['threads'][0]
+        self.assertEqual(result['events_omitted'], 3)
+        self.assertEqual([row['seq'] for row in result['events']], [3, 4])
+
+    def test_byte_limit_and_malformed_records_are_explicit(self):
+        with patch.object(diagnostics, 'WAIT_BYTE_LIMIT', 4):
+            result = self.collect([self.event()])
+        self.assertTrue(result['bytes_truncated'])
+        self.assertEqual(result['threads'][0]['events'], [])
+        result = self.collect([None, 'private-record', self.event(pid=True)])
+        self.assertEqual(result['malformed_rows'], 2)
+        self.assertEqual(result['threads'][0]['events'], [])
+
+    def test_command_writes_numeric_fault_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'events.jsonl').write_text(json.dumps(self.event()) + '\n')
+            report = root / 'report.json'
+            report.write_text(json.dumps({'terminal_exceptions': [{'pid': 1, 'tid': 2, 'time_ms': 5000}]}))
+            destination = root / 'context.json'
+            subprocess.run(['python3', '-B', str(ROOT / 'soda-office-diagnostics.py'), 'wait-context',
+                            str(root), str(destination), str(report)], check=True, capture_output=True, timeout=10)
+            result = json.loads(destination.read_text())
+            self.assertEqual(result['threads'][0]['events'][0]['value'], 258)
+            self.assertNotIn('private', destination.read_text())
+
+    def test_wait_begin_before_window_is_retained_until_end(self):
+        begin = self.event(time_ms=1000, data={'provider': 8, 'event': 'WaitBegin', 'object': '40'})
+        result = self.collect([begin])['threads'][0]
+        self.assertEqual(result['events'], [])
+        self.assertEqual(result['last_unmatched_wait_begin_observed']['time_ms'], 1000)
+        result = self.collect([begin, self.event(time_ms=2000)])['threads'][0]
+        self.assertIsNone(result['last_unmatched_wait_begin_observed'])
+
+    def test_no_fault_and_unexpected_fields_do_not_export_data(self):
+        result = self.collect([self.event(data={'provider': 32, 'event': 'WaitEnd', 'name': 'private-name'}),
+                               self.event(data={'provider': 8, 'event': 'private-event'})])
+        self.assertEqual(result['threads'][0]['events'], [])
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'events.jsonl').write_text('')
+            self.assertEqual(diagnostics.wait_context(directory, {})['threads'], [])
+
 
 
 if __name__ == '__main__':

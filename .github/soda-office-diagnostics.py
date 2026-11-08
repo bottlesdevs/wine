@@ -100,5 +100,77 @@ def collect(prefix, since=0):
     return result
 
 
+WAIT_BYTE_LIMIT = 16 * 1024 * 1024
+WAIT_EVENT_LIMIT = 2048
+
+
+def wait_context(session, report):
+    faults = {}
+    for event in report.get('terminal_exceptions', []):
+        values = tuple(event.get(key) for key in ('pid', 'tid', 'time_ms'))
+        if all(type(value) is int and 0 <= value < 2**64 for value in values):
+            key = values[:2]
+            faults[key] = min(faults.get(key, values[2]), values[2])
+    assert len(faults) <= 16, 'Too many fault threads for bounded context'
+    rows = {key: deque(maxlen=WAIT_EVENT_LIMIT) for key in faults}
+    counts = dict.fromkeys(faults, 0)
+    unmatched = dict.fromkeys(faults)
+    malformed = 0
+    with (Path(session) / 'events.jsonl').open('rb') as file:
+        raw = file.read(WAIT_BYTE_LIMIT + 1)
+    truncated = len(raw) > WAIT_BYTE_LIMIT
+    lines = raw[:WAIT_BYTE_LIMIT].splitlines()
+    if truncated:
+        lines = lines[:-1]
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeError):
+            malformed += 1
+            continue
+        if not isinstance(event, dict):
+            malformed += 1
+            continue
+        values = tuple(event.get(key) for key in ('pid', 'tid', 'time_ms', 'seq'))
+        if not all(type(value) is int and 0 <= value < 2**64 for value in values):
+            continue
+        key, stamp = values[:2], values[2]
+        if key not in faults or stamp > faults[key]:
+            continue
+        data = event.get('data')
+        if event.get('kind') != 'provider' or not isinstance(data, dict) or data.get('provider') != 8:
+            continue
+        name = data.get('event')
+        if name not in ('WaitBegin', 'WaitEnd', 'MutexCreate', 'MutexRelease', 'HandleClose', 'ObserverBudgetExceeded'):
+            continue
+        row = dict(zip(('pid', 'tid', 'time_ms', 'seq'), values), event=name)
+        for field in ('value', 'timeout_ms', 'limit'):
+            value = data.get(field)
+            if type(value) is int and 0 <= value < 2**64:
+                row[field] = value
+        value = data.get('object')
+        if isinstance(value, str) and re.fullmatch(r'(?:0x)?[0-9a-fA-F]{1,16}', value):
+            row['object'] = int(value, 16)
+        if name == 'WaitBegin':
+            unmatched[key] = row
+        elif name == 'WaitEnd':
+            unmatched[key] = None
+        if stamp < faults[key] - 2000:
+            continue
+        counts[key] += 1
+        rows[key].append(row)
+    return {'schema': 1, 'scope': 'Numeric wait events on terminal fault threads in the preceding 2000ms; no raw session fields',
+            'bytes_truncated': truncated, 'malformed_rows': malformed,
+            'threads': [{'pid': key[0], 'tid': key[1], 'fault_time_ms': faults[key],
+                         'events_omitted': counts[key] - len(rows[key]), 'events': list(rows[key]),
+                         'last_unmatched_wait_begin_observed': unmatched[key]}
+                        for key in faults]}
+
+
 if __name__ == '__main__':
-    Path(sys.argv[2]).write_text(json.dumps(collect(Path(sys.argv[1]), float(sys.argv[3])), indent=2) + '\n')
+    if sys.argv[1] == 'wait-context':
+        report = json.loads(Path(sys.argv[4]).read_text())
+        result = wait_context(Path(sys.argv[2]), report)
+        Path(sys.argv[3]).write_text(json.dumps(result, indent=2) + '\n')
+    else:
+        Path(sys.argv[2]).write_text(json.dumps(collect(Path(sys.argv[1]), float(sys.argv[3])), indent=2) + '\n')

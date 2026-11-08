@@ -172,6 +172,11 @@ def profile_controls():
                 exported = json.loads(destination.read_text())
                 assert exported['manifest']['completed'], label + ': incomplete capture'
                 row['capture'] = destination.name
+                wait_log = label + '-wait-context.json'
+                subprocess.run([sys.executable, str(work / 'office-diagnostics.py'), 'wait-context',
+                                str(captured if profile == 'trace' else bundle), str(output / wait_log),
+                                str(destination)], check=True, timeout=20)
+                row['wait_context'] = wait_log
             office_log = label + '-office-metadata.json'
             subprocess.run([sys.executable, str(work / 'office-diagnostics.py'), str(prefix),
                             str(output / office_log), str(row['started'])], check=True, timeout=20)
