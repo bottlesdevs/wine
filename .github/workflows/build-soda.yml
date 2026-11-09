@@ -872,8 +872,8 @@ jobs:
           test "$(git -C "$work/source" rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
           mkdir "$work/build"
           for patch in "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch; do
-            git -C "$work/source" apply --include='dlls/windows.ui/*' \
-              --include='include/windows.graphics*' --include='include/windows.ui.composition*' "$patch"
+            git -C "$work/source" apply --exclude='include/msvcrt/*' \
+              --include='dlls/windows.ui/*' --include='include/*' "$patch"
           done > "$work/build/patches.log" 2>&1
           (
             cd "$work/source"
