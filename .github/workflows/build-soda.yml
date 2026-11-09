@@ -875,7 +875,12 @@ jobs:
             git -C "$work/source" apply --include='dlls/windows.ui/*' \
               --include='include/windows.graphics*' --include='include/windows.ui.composition*' "$patch"
           done > "$work/build/patches.log" 2>&1
-          python3 "$work/source/dlls/winevulkan/make_vulkan" > "$work/build/generated.log" 2>&1
+          (
+            cd "$work/source"
+            ./tools/make_requests
+            ./tools/make_specfiles
+            ./dlls/winevulkan/make_vulkan
+          ) > "$work/build/generated.log" 2>&1
           (cd "$work/source" && autoreconf -f) > "$work/build/autoreconf.log" 2>&1
           cd "$work/build"
           CC='ccache gcc' "$work/source/configure" --enable-win64 --disable-tests --without-x --without-freetype > configure.log 2>&1
