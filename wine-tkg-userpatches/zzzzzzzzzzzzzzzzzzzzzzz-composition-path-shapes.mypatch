@@ -2427,7 +2427,7 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
      }
  
      [
-@@ -1103,6 +1277,71 @@
+@@ -1103,6 +1277,80 @@
      }
  
      [
@@ -2437,6 +2437,9 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
 +    runtimeclass ShapeVisual : Windows.UI.Composition.ContainerVisual
 +    {
 +        [default] interface Windows.UI.Composition.IShapeVisual;
++        interface Windows.UI.Composition.IContainerVisual;
++        interface Windows.UI.Composition.IVisual;
++        interface Windows.UI.Composition.ICompositionObject;
 +    }
 +
 +    [
@@ -2455,6 +2458,7 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
 +    runtimeclass CompositionShape : Windows.UI.Composition.CompositionObject
 +    {
 +        [default] interface Windows.UI.Composition.ICompositionShape;
++        interface Windows.UI.Composition.ICompositionObject;
 +    }
 +
 +    [
@@ -2464,6 +2468,8 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
 +    runtimeclass CompositionSpriteShape : Windows.UI.Composition.CompositionShape
 +    {
 +        [default] interface Windows.UI.Composition.ICompositionSpriteShape;
++        interface Windows.UI.Composition.ICompositionShape;
++        interface Windows.UI.Composition.ICompositionObject;
 +    }
 +
 +    [
@@ -2473,6 +2479,7 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
 +    runtimeclass CompositionGeometry : Windows.UI.Composition.CompositionObject
 +    {
 +        [default] interface Windows.UI.Composition.ICompositionGeometry;
++        interface Windows.UI.Composition.ICompositionObject;
 +    }
 +
 +    [
@@ -2482,6 +2489,8 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
 +    runtimeclass CompositionPathGeometry : Windows.UI.Composition.CompositionGeometry
 +    {
 +        [default] interface Windows.UI.Composition.ICompositionPathGeometry;
++        interface Windows.UI.Composition.ICompositionGeometry;
++        interface Windows.UI.Composition.ICompositionObject;
 +    }
 +
 +    [
