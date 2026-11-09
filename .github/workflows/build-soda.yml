@@ -2672,10 +2672,10 @@ jobs:
                   return [line for line in path.read_text(encoding='utf-8-sig').splitlines() if line.startswith('case=')]
               reference = records(native / f'composition-path{bits}.log')
               actual = records(results / f'composition-path{bits}.log')
-              assert len(reference) == 59, (bits, len(reference))
-              assert len([row for row in reference if row.startswith('case=path-render ')]) == 4
+              assert len(reference) == 60, (bits, len(reference))
+              assert len([row for row in reference if row.startswith('case=path-render ')]) == 5
               assert actual == reference, (bits, [(a, b) for a, b in zip(actual, reference) if a != b], len(actual))
-              comparisons[str(bits)] = {'rows': len(actual), 'pixel_scenes': 4, 'matches_windows': True}
+              comparisons[str(bits)] = {'rows': len(actual), 'pixel_scenes': 5, 'matches_windows': True}
           (results / 'comparison.json').write_text(json.dumps(comparisons, indent=2) + '\n')
           PYTHON
 

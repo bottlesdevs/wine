@@ -112,6 +112,7 @@ static bool render_shapes(ICompositionPath *path)
     ComPtr<IVisual> visual;
     ComPtr<ICompositionColorBrush> fill, stroke;
     ComPtr<ICompositionBrush> fill_brush, stroke_brush;
+    ComPtr<ABI::Windows::Foundation::Collections::IVector<float>> dashes;
     ComPtr<ABI::Windows::Foundation::Collections::IVector<CompositionShape *>> shapes;
     HWND window = nullptr;
     HSTRING name = nullptr;
@@ -146,21 +147,25 @@ static bool render_shapes(ICompositionPath *path)
             FAILED(shape->put_Offset({8.0f, 8.0f})) ||
             FAILED(visual->put_Size({128.0f, 96.0f})) ||
             FAILED(shapes->Append(shape.Get())) || FAILED(target->put_Root(visual.Get()))) goto done;
-    for (unsigned round = 0; round < 4; ++round)
+    for (unsigned round = 0; round < 5; ++round)
     {
         if (round == 1 && (FAILED(sprite->put_StrokeBrush(stroke_brush.Get())) ||
                 FAILED(sprite->put_StrokeThickness(4.0f)))) goto done;
         if (round == 2 && FAILED(shape->put_Offset({40.0f, 8.0f}))) goto done;
-        if (round == 3 && FAILED(shapes->Clear())) goto done;
+        if (round == 3 && (FAILED(shape->put_Offset({8.0f, 8.0f})) ||
+                FAILED(sprite->get_StrokeDashArray(dashes.GetAddressOf())) ||
+                FAILED(dashes->Append(2.0f)) || FAILED(dashes->Append(2.0f)))) goto done;
+        if (round == 4 && FAILED(shapes->Clear())) goto done;
         if (FAILED(controller->Commit())) goto done;
         pump(400);
         COLORREF inside = pixel(window, round == 2 ? 48 : 16, 16);
         COLORREF edge = pixel(window, round == 2 ? 40 : 8, 16);
         COLORREF background = pixel(window, 100, 70);
-        printf("case=path-render round=%u inside=%06lx edge=%06lx background=%06lx\n",
-                round, inside, edge, background);
-        if (inside == CLR_INVALID || edge == CLR_INVALID || background == CLR_INVALID) goto done;
-        if (inside != (round == 3 ? RGB(255, 255, 255) : RGB(0, 255, 0))) goto done;
+        COLORREF top = pixel(window, round == 2 ? 47 : 15, 9);
+        printf("case=path-render round=%u inside=%06lx edge=%06lx background=%06lx top=%06lx\n",
+                round, inside, edge, background, top);
+        if (inside == CLR_INVALID || edge == CLR_INVALID || background == CLR_INVALID || top == CLR_INVALID) goto done;
+        if (inside != (round == 4 ? RGB(255, 255, 255) : RGB(0, 255, 0))) goto done;
         if ((round == 1 || round == 2) && edge != RGB(255, 0, 0)) goto done;
         if (background != RGB(255, 255, 255)) goto done;
     }

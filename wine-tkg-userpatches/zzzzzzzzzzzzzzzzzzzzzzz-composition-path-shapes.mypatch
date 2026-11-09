@@ -1,13 +1,14 @@
 diff --git a/dlls/windows.ui/Makefile.in b/dlls/windows.ui/Makefile.in
 --- a/dlls/windows.ui/Makefile.in
 +++ b/dlls/windows.ui/Makefile.in
-@@ -5,6 +5,9 @@
+@@ -5,6 +5,10 @@
  	accessibilitysettings.c \
  	classes.idl \
  	composition.c \
 +	composition_path.c \
 +	composition_shapes.c \
 +	composition_shape_collection.c \
++	composition_dash_collection.c \
  	effect.c \
  	effect_graph.c \
  	inputpane.c \
@@ -225,7 +226,7 @@ diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
  }
  
  static HRESULT WINAPI compositor5_RequestCommitAsync( struct compositor5_iface *iface,
-@@ -11599,6 +11708,129 @@
+@@ -11599,6 +11708,147 @@
          return draw_effect_brush( context, effect_from_ICompositionBrush( brush ), bounds, opacity, depth );
      else return E_NOTIMPL;
      return S_OK;
@@ -256,6 +257,9 @@ diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
 +    ICompositionSpriteShape *sprite;
 +    ICompositionGeometry *composition_geometry = NULL;
 +    ICompositionBrush *fill = NULL, *stroke = NULL;
++    IVector_float *dash_array = NULL;
++    FLOAT *dashes = NULL;
++    UINT32 dash_count = 0, copied;
 +    ID2D1Geometry *geometry = NULL;
 +    ID2D1PathGeometry *outline = NULL;
 +    ID2D1GeometrySink *sink = NULL;
@@ -329,8 +333,21 @@ diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
 +        ICompositionSpriteShape_get_StrokeLineJoin( sprite, &join );
 +        properties.lineJoin = (D2D1_LINE_JOIN)join;
 +        ICompositionSpriteShape_get_StrokeMiterLimit( sprite, &properties.miterLimit );
-+        properties.dashStyle = D2D1_DASH_STYLE_SOLID;
-+        hr = ID2D1Factory_CreateStrokeStyle( factory, &properties, NULL, 0, &style );
++        ICompositionSpriteShape_get_StrokeDashOffset( sprite, &properties.dashOffset );
++        hr = ICompositionSpriteShape_get_StrokeDashArray( sprite, &dash_array );
++        if (SUCCEEDED(hr)) hr = IVector_float_get_Size( dash_array, &dash_count );
++        if (SUCCEEDED(hr) && dash_count)
++        {
++            if ((SIZE_T)dash_count > ~(SIZE_T)0 / sizeof(*dashes) ||
++                !(dashes = malloc( (SIZE_T)dash_count * sizeof(*dashes) ))) hr = E_OUTOFMEMORY;
++            else
++            {
++                hr = IVector_float_GetMany( dash_array, 0, dash_count, dashes, &copied );
++                if (SUCCEEDED(hr)) dash_count = copied;
++            }
++        }
++        properties.dashStyle = dash_count ? D2D1_DASH_STYLE_CUSTOM : D2D1_DASH_STYLE_SOLID;
++        if (SUCCEEDED(hr)) hr = ID2D1Factory_CreateStrokeStyle( factory, &properties, dashes, dash_count, &style );
 +        if (SUCCEEDED(hr)) hr = ID2D1Factory_CreatePathGeometry( factory, &outline );
 +        if (SUCCEEDED(hr)) hr = ID2D1PathGeometry_Open( outline, &sink );
 +        if (SUCCEEDED(hr))
@@ -342,6 +359,8 @@ diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
 +        }
 +        if (SUCCEEDED(hr)) hr = draw_shape_brush( context, (ID2D1Geometry *)outline, stroke, opacity );
 +    }
++    free( dashes );
++    if (dash_array) IVector_float_Release( dash_array );
 +    if (sink) ID2D1GeometrySink_Release( sink );
 +    if (outline) ID2D1PathGeometry_Release( outline );
 +    if (style) ID2D1StrokeStyle_Release( style );
@@ -355,7 +374,7 @@ diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
  }
  
  static HRESULT draw_composition_visual( ID2D1DeviceContext *context, IVisual *visual,
-@@ -11675,6 +11907,29 @@
+@@ -11675,6 +11925,29 @@
      }
      if (SUCCEEDED(hr) && impl->brush && bounds.right > bounds.left && bounds.bottom > bounds.top)
          hr = draw_composition_brush( context, impl->brush, &bounds, opacity, 0 );
@@ -385,6 +404,560 @@ diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
      for (i = 0; SUCCEEDED(hr) && i < children->count; ++i)
          hr = draw_composition_visual( context, children->items[i], 0.0f, 0.0f, width, height,
                  opacity, depth + 1 );
+diff --git a/dlls/windows.ui/composition_dash_collection.c b/dlls/windows.ui/composition_dash_collection.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/windows.ui/composition_dash_collection.c
+@@ -0,0 +1,549 @@
++/* WinRT Windows.UI.Composition stroke dash collection
++ *
++ * Copyright (C) 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdint.h>
++#include "private.h"
++
++struct dash_collection
++{
++    IVector_float IVector_float_iface;
++    IVectorView_float IVectorView_float_iface;
++    IIterable_float IIterable_float_iface;
++    LONG ref;
++    UINT32 count, capacity;
++    FLOAT *items;
++    CRITICAL_SECTION lock;
++};
++
++static inline struct dash_collection *impl_from_IVector_float( IVector_float *iface )
++{
++    return CONTAINING_RECORD( iface, struct dash_collection, IVector_float_iface );
++}
++
++static HRESULT WINAPI dash_collection_QueryInterface( IVector_float *iface, REFIID iid, void **out )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IVector_float )) *out = iface;
++    else if (IsEqualGUID( iid, &IID_IVectorView_float )) *out = &impl->IVectorView_float_iface;
++    else if (IsEqualGUID( iid, &IID_IIterable_float )) *out = &impl->IIterable_float_iface;
++    else return E_NOINTERFACE;
++    IUnknown_AddRef( (IUnknown *)*out );
++    return S_OK;
++}
++
++static ULONG WINAPI dash_collection_AddRef( IVector_float *iface )
++{
++    return InterlockedIncrement( &impl_from_IVector_float(iface)->ref );
++}
++
++static ULONG WINAPI dash_collection_Release( IVector_float *iface )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        free( impl->items );
++        DeleteCriticalSection( &impl->lock );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI dash_collection_GetIids( IVector_float *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    if (!(*iids = CoTaskMemAlloc( 3 * sizeof(**iids) ))) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_IVector_float;
++    (*iids)[1] = IID_IVectorView_float;
++    (*iids)[2] = IID_IIterable_float;
++    *count = 3;
++    return S_OK;
++}
++
++static HRESULT WINAPI dash_collection_GetRuntimeClassName( IVector_float *iface, HSTRING *name )
++{
++    if (!name) return E_POINTER;
++    *name = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI dash_collection_GetTrustLevel( IVector_float *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI dash_collection_GetAt( IVector_float *iface, UINT32 index, FLOAT *value )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++    HRESULT hr = E_BOUNDS;
++
++    if (!value) return E_POINTER;
++    *value = 0;
++    EnterCriticalSection( &impl->lock );
++    if (index < impl->count)
++    {
++        *value = impl->items[index];
++        hr = S_OK;
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI dash_collection_get_Size( IVector_float *iface, UINT32 *value )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++
++    if (!value) return E_POINTER;
++    EnterCriticalSection( &impl->lock );
++    *value = impl->count;
++    LeaveCriticalSection( &impl->lock );
++    return S_OK;
++}
++
++static HRESULT WINAPI dash_collection_GetView( IVector_float *iface, IVectorView_float **value )
++{
++    return dash_collection_QueryInterface( iface, &IID_IVectorView_float, (void **)value );
++}
++
++static HRESULT WINAPI dash_collection_IndexOf( IVector_float *iface, FLOAT value,
++        UINT32 *index, boolean *found )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++    UINT32 i;
++
++    if (!index || !found) return E_POINTER;
++    *index = 0;
++    *found = FALSE;
++    EnterCriticalSection( &impl->lock );
++    for (i = 0; i < impl->count; ++i)
++        if (impl->items[i] == value)
++        {
++            *index = i;
++            *found = TRUE;
++            break;
++        }
++    LeaveCriticalSection( &impl->lock );
++    return S_OK;
++}
++
++static HRESULT WINAPI dash_collection_SetAt( IVector_float *iface, UINT32 index, FLOAT value )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++    HRESULT hr = E_BOUNDS;
++
++    EnterCriticalSection( &impl->lock );
++    if (index < impl->count)
++    {
++        impl->items[index] = value;
++        hr = S_OK;
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI dash_collection_InsertAt( IVector_float *iface, UINT32 index, FLOAT value )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++    FLOAT *items;
++    UINT32 capacity;
++    HRESULT hr = S_OK;
++
++    EnterCriticalSection( &impl->lock );
++    if (index > impl->count) hr = E_BOUNDS;
++    else if (impl->count == UINT32_MAX) hr = E_OUTOFMEMORY;
++    else
++    {
++        if (impl->count == impl->capacity)
++        {
++            capacity = impl->capacity <= UINT32_MAX / 2 ? max( 8, impl->capacity * 2 ) : UINT32_MAX;
++            if ((SIZE_T)capacity > ~(SIZE_T)0 / sizeof(*items) ||
++                !(items = realloc( impl->items, (SIZE_T)capacity * sizeof(*items) ))) hr = E_OUTOFMEMORY;
++            else
++            {
++                impl->items = items;
++                impl->capacity = capacity;
++            }
++        }
++        if (SUCCEEDED(hr))
++        {
++            memmove( impl->items + index + 1, impl->items + index, (impl->count - index) * sizeof(*impl->items) );
++            impl->items[index] = value;
++            ++impl->count;
++        }
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI dash_collection_RemoveAt( IVector_float *iface, UINT32 index )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++    HRESULT hr = E_BOUNDS;
++
++    EnterCriticalSection( &impl->lock );
++    if (index < impl->count)
++    {
++        --impl->count;
++        memmove( impl->items + index, impl->items + index + 1, (impl->count - index) * sizeof(*impl->items) );
++        hr = S_OK;
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI dash_collection_Append( IVector_float *iface, FLOAT value )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++    HRESULT hr;
++
++    EnterCriticalSection( &impl->lock );
++    hr = dash_collection_InsertAt( iface, impl->count, value );
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI dash_collection_RemoveAtEnd( IVector_float *iface )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++    HRESULT hr;
++
++    EnterCriticalSection( &impl->lock );
++    hr = impl->count ? dash_collection_RemoveAt( iface, impl->count - 1 ) : E_BOUNDS;
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI dash_collection_Clear( IVector_float *iface )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++    FLOAT *items;
++
++    EnterCriticalSection( &impl->lock );
++    items = impl->items;
++    impl->items = NULL;
++    impl->count = impl->capacity = 0;
++    LeaveCriticalSection( &impl->lock );
++    free( items );
++    return S_OK;
++}
++
++static HRESULT WINAPI dash_collection_GetMany( IVector_float *iface, UINT32 start, UINT32 capacity,
++        FLOAT *items, UINT32 *count )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++    UINT32 i;
++    HRESULT hr = S_OK;
++
++    if (!count || (capacity && !items)) return E_POINTER;
++    *count = 0;
++    EnterCriticalSection( &impl->lock );
++    if (start > impl->count) hr = E_BOUNDS;
++    else
++    {
++        *count = min( capacity, impl->count - start );
++        for (i = 0; i < *count; ++i)
++        {
++            items[i] = impl->items[start + i];
++        }
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI dash_collection_ReplaceAll( IVector_float *iface, UINT32 count, FLOAT *values )
++{
++    struct dash_collection *impl = impl_from_IVector_float( iface );
++    FLOAT *items = NULL, *old;
++
++    if (count && !values) return E_POINTER;
++    if ((SIZE_T)count > ~(SIZE_T)0 / sizeof(*items)) return E_OUTOFMEMORY;
++    if (count)
++    {
++        if (!(items = malloc( (SIZE_T)count * sizeof(*items) ))) return E_OUTOFMEMORY;
++        memcpy( items, values, (SIZE_T)count * sizeof(*items) );
++    }
++    EnterCriticalSection( &impl->lock );
++    old = impl->items;
++    impl->items = items;
++    impl->count = impl->capacity = count;
++    LeaveCriticalSection( &impl->lock );
++    free( old );
++    return S_OK;
++}
++
++DEFINE_IINSPECTABLE( dash_view, IVectorView_float, struct dash_collection, IVector_float_iface )
++
++static HRESULT WINAPI dash_view_GetAt( IVectorView_float *iface, UINT32 index, FLOAT *value )
++{
++    return dash_collection_GetAt( &impl_from_IVectorView_float(iface)->IVector_float_iface, index, value );
++}
++
++static HRESULT WINAPI dash_view_get_Size( IVectorView_float *iface, UINT32 *value )
++{
++    return dash_collection_get_Size( &impl_from_IVectorView_float(iface)->IVector_float_iface, value );
++}
++
++static HRESULT WINAPI dash_view_IndexOf( IVectorView_float *iface, FLOAT value, UINT32 *index, boolean *found )
++{
++    return dash_collection_IndexOf( &impl_from_IVectorView_float(iface)->IVector_float_iface, value, index, found );
++}
++
++static HRESULT WINAPI dash_view_GetMany( IVectorView_float *iface, UINT32 start, UINT32 capacity, FLOAT *items, UINT32 *count )
++{
++    return dash_collection_GetMany( &impl_from_IVectorView_float(iface)->IVector_float_iface, start, capacity, items, count );
++}
++
++static const IVectorView_floatVtbl dash_view_vtbl =
++{
++    dash_view_QueryInterface,
++    dash_view_AddRef,
++    dash_view_Release,
++    dash_view_GetIids,
++    dash_view_GetRuntimeClassName,
++    dash_view_GetTrustLevel,
++    dash_view_GetAt,
++    dash_view_get_Size,
++    dash_view_IndexOf,
++    dash_view_GetMany,
++};
++
++struct dash_iterator
++{
++    IIterator_float IIterator_float_iface;
++    struct dash_collection *collection;
++    UINT32 index;
++    boolean has_current;
++    LONG ref;
++};
++
++static inline struct dash_iterator *impl_from_IIterator_float( IIterator_float *iface )
++{
++    return CONTAINING_RECORD( iface, struct dash_iterator, IIterator_float_iface );
++}
++
++static HRESULT WINAPI dash_iterator_QueryInterface( IIterator_float *iface, REFIID iid, void **out )
++{
++    if (!out) return E_POINTER;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IIterator_float ))
++    {
++        *out = iface;
++        IIterator_float_AddRef( iface );
++        return S_OK;
++    }
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI dash_iterator_AddRef( IIterator_float *iface )
++{
++    return InterlockedIncrement( &impl_from_IIterator_float( iface )->ref );
++}
++
++static ULONG WINAPI dash_iterator_Release( IIterator_float *iface )
++{
++    struct dash_iterator *impl = impl_from_IIterator_float( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        IVector_float_Release( &impl->collection->IVector_float_iface );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI dash_iterator_GetIids( IIterator_float *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    if (!(*iids = CoTaskMemAlloc( sizeof(**iids) ))) return E_OUTOFMEMORY;
++    **iids = IID_IIterator_float;
++    *count = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI dash_iterator_GetRuntimeClassName( IIterator_float *iface, HSTRING *name )
++{
++    if (!name) return E_POINTER;
++    *name = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI dash_iterator_GetTrustLevel( IIterator_float *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI dash_iterator_get_Current( IIterator_float *iface, FLOAT *value )
++{
++    struct dash_iterator *impl = impl_from_IIterator_float( iface );
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = 0;
++    EnterCriticalSection( &impl->collection->lock );
++    if (impl->index >= impl->collection->count) hr = E_INVALIDARG;
++    else hr = dash_collection_GetAt( &impl->collection->IVector_float_iface, impl->index, value );
++    LeaveCriticalSection( &impl->collection->lock );
++    return hr;
++}
++
++static HRESULT WINAPI dash_iterator_get_HasCurrent( IIterator_float *iface, boolean *value )
++{
++    struct dash_iterator *impl = impl_from_IIterator_float( iface );
++    HRESULT hr = S_OK;
++
++    if (!value) return E_POINTER;
++    *value = FALSE;
++    EnterCriticalSection( &impl->collection->lock );
++    *value = impl->has_current;
++    LeaveCriticalSection( &impl->collection->lock );
++    return hr;
++}
++
++static HRESULT WINAPI dash_iterator_MoveNext( IIterator_float *iface, boolean *value )
++{
++    struct dash_iterator *impl = impl_from_IIterator_float( iface );
++    HRESULT hr = S_OK;
++
++    if (!value) return E_POINTER;
++    *value = FALSE;
++    EnterCriticalSection( &impl->collection->lock );
++    if (impl->has_current && impl->index < UINT32_MAX) ++impl->index;
++    impl->has_current = impl->index < impl->collection->count;
++    *value = impl->has_current;
++    LeaveCriticalSection( &impl->collection->lock );
++    return hr;
++}
++
++static HRESULT WINAPI dash_iterator_GetMany( IIterator_float *iface, UINT32 capacity,
++        FLOAT *items, UINT32 *count )
++{
++    struct dash_iterator *impl = impl_from_IIterator_float( iface );
++    HRESULT hr;
++
++    if (!count || (capacity && !items)) return E_POINTER;
++    *count = 0;
++    EnterCriticalSection( &impl->collection->lock );
++    hr = S_OK;
++    if (impl->index < impl->collection->count)
++        hr = dash_collection_GetMany( &impl->collection->IVector_float_iface,
++                impl->index, capacity, items, count );
++    if (SUCCEEDED(hr)) impl->index += *count;
++    impl->has_current = impl->index < impl->collection->count;
++    LeaveCriticalSection( &impl->collection->lock );
++    return hr;
++}
++
++static const IIterator_floatVtbl dash_iterator_vtbl =
++{
++    dash_iterator_QueryInterface,
++    dash_iterator_AddRef,
++    dash_iterator_Release,
++    dash_iterator_GetIids,
++    dash_iterator_GetRuntimeClassName,
++    dash_iterator_GetTrustLevel,
++    dash_iterator_get_Current,
++    dash_iterator_get_HasCurrent,
++    dash_iterator_MoveNext,
++    dash_iterator_GetMany,
++};
++
++DEFINE_IINSPECTABLE_( dash_collection_iterable, IIterable_float, struct dash_collection,
++                      impl_from_IIterable_float, IIterable_float_iface,
++                      &impl->IVector_float_iface )
++
++static HRESULT WINAPI dash_collection_iterable_First( IIterable_float *iface,
++        IIterator_float **value )
++{
++    struct dash_collection *collection = impl_from_IIterable_float( iface );
++    struct dash_iterator *iterator;
++
++    if (!value) return E_POINTER;
++    *value = 0;
++    if (!(iterator = calloc( 1, sizeof(*iterator) ))) return E_OUTOFMEMORY;
++    iterator->IIterator_float_iface.lpVtbl = &dash_iterator_vtbl;
++    iterator->collection = collection;
++    EnterCriticalSection( &collection->lock );
++    iterator->has_current = collection->count != 0;
++    LeaveCriticalSection( &collection->lock );
++    iterator->ref = 1;
++    IVector_float_AddRef( &collection->IVector_float_iface );
++    *value = &iterator->IIterator_float_iface;
++    return S_OK;
++}
++
++static const IIterable_floatVtbl dash_collection_iterable_vtbl =
++{
++    dash_collection_iterable_QueryInterface,
++    dash_collection_iterable_AddRef,
++    dash_collection_iterable_Release,
++    dash_collection_iterable_GetIids,
++    dash_collection_iterable_GetRuntimeClassName,
++    dash_collection_iterable_GetTrustLevel,
++    dash_collection_iterable_First,
++};
++
++static const IVector_floatVtbl dash_collection_vtbl =
++{
++    dash_collection_QueryInterface,
++    dash_collection_AddRef,
++    dash_collection_Release,
++    dash_collection_GetIids,
++    dash_collection_GetRuntimeClassName,
++    dash_collection_GetTrustLevel,
++    dash_collection_GetAt,
++    dash_collection_get_Size,
++    dash_collection_GetView,
++    dash_collection_IndexOf,
++    dash_collection_SetAt,
++    dash_collection_InsertAt,
++    dash_collection_RemoveAt,
++    dash_collection_Append,
++    dash_collection_RemoveAtEnd,
++    dash_collection_Clear,
++    dash_collection_GetMany,
++    dash_collection_ReplaceAll,
++};
++
++HRESULT composition_dash_collection_create( IVector_float **result )
++{
++    struct dash_collection *impl;
++
++    if (!result) return E_POINTER;
++    *result = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->IVector_float_iface.lpVtbl = &dash_collection_vtbl;
++    impl->IVectorView_float_iface.lpVtbl = &dash_view_vtbl;
++    impl->IIterable_float_iface.lpVtbl = &dash_collection_iterable_vtbl;
++    impl->ref = 1;
++    InitializeCriticalSection( &impl->lock );
++    *result = &impl->IVector_float_iface;
++    return S_OK;
++}
 diff --git a/dlls/windows.ui/composition_path.c b/dlls/windows.ui/composition_path.c
 new file mode 100644
 --- /dev/null
@@ -1238,7 +1811,7 @@ new file mode 100644
 +            ICompositionShape_AddRef( value );
 +            impl->items[index] = value;
 +            ++impl->count;
-+            }
++        }
 +    }
 +    LeaveCriticalSection( &impl->lock );
 +    return hr;
@@ -1613,7 +2186,7 @@ diff --git a/dlls/windows.ui/composition_shapes.c b/dlls/windows.ui/composition_
 new file mode 100644
 --- /dev/null
 +++ b/dlls/windows.ui/composition_shapes.c
-@@ -0,0 +1,568 @@
+@@ -0,0 +1,576 @@
 +/* Windows.UI.Composition vector shapes
 + *
 + * Copyright (C) 2026 Mirko Brombin
@@ -1658,7 +2231,7 @@ new file mode 100644
 +    ICompositionGeometry *geometry;
 +    boolean non_scaling;
 +    ICompositionBrush *stroke;
-+    __FIVector_1_float *dashes;
++    IVector_float *dashes;
 +    enum CompositionStrokeCap dash_cap;
 +    FLOAT dash_offset;
 +    enum CompositionStrokeCap end_cap;
@@ -1700,6 +2273,7 @@ new file mode 100644
 +
 +    if (!ref)
 +    {
++        IVector_float_Release( impl->dashes );
 +        if (impl->fill) ICompositionBrush_Release( impl->fill );
 +        if (impl->stroke) ICompositionBrush_Release( impl->stroke );
 +        if (impl->geometry) ICompositionGeometry_Release( impl->geometry );
@@ -1994,11 +2568,12 @@ new file mode 100644
 +    return S_OK;
 +}
 +
-+static HRESULT WINAPI sprite_shape_get_StrokeDashArray( ICompositionSpriteShape *iface, __FIVector_1_float **value )
++static HRESULT WINAPI sprite_shape_get_StrokeDashArray( ICompositionSpriteShape *iface, IVector_float **value )
 +{
 +    if (!value) return E_POINTER;
-+    *value = NULL;
-+    return E_NOTIMPL;
++    *value = impl_from_ICompositionSpriteShape(iface)->dashes;
++    IVector_float_AddRef( *value );
++    return S_OK;
 +}
 +
 +static HRESULT WINAPI sprite_shape_get_StrokeDashCap( ICompositionSpriteShape *iface, enum CompositionStrokeCap *value )
@@ -2167,6 +2742,12 @@ new file mode 100644
 +        free( impl );
 +        return hr;
 +    }
++    if (FAILED(hr = composition_dash_collection_create( &impl->dashes )))
++    {
++        ICompositionPropertySet_Release( impl->properties );
++        free( impl );
++        return hr;
++    }
 +    impl->ICompositionSpriteShape_iface.lpVtbl = &sprite_shape_vtbl;
 +    impl->ICompositionShape_iface.lpVtbl = &shape_vtbl;
 +    impl->ICompositionObject_iface.lpVtbl = &shape_object_vtbl;
@@ -2206,7 +2787,7 @@ diff --git a/dlls/windows.ui/private.h b/dlls/windows.ui/private.h
  extern IActivationFactory *effect_source_parameter_factory;
  extern IActivationFactory *compositor_controller_factory;
  extern IActivationFactory *composition_conditional_value_factory;
-@@ -67,6 +68,15 @@
+@@ -67,6 +68,16 @@
  extern IActivationFactory *interaction_tracker_factory;
  extern IActivationFactory *visual_interaction_source_factory;
  
@@ -2214,6 +2795,7 @@ diff --git a/dlls/windows.ui/private.h b/dlls/windows.ui/private.h
 +struct ID2D1Geometry;
 +HRESULT composition_path_geometry_get_geometry( ICompositionGeometry *geometry,
 +        struct ID2D1Factory *factory, struct ID2D1Geometry **result );
++HRESULT composition_dash_collection_create( IVector_float **result );
 +HRESULT composition_shape_collection_create( IVector_CompositionShape **result );
 +HRESULT composition_sprite_shape_create( ICompositor *compositor, ICompositionGeometry *geometry,
 +        ICompositionSpriteShape **result );
@@ -2254,7 +2836,7 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
      runtimeclass CompositionEffectSourceParameter;
      runtimeclass CompositionGraphicsDevice;
      runtimeclass CompositionVirtualDrawingSurface;
-@@ -160,6 +175,11 @@
+@@ -160,6 +175,14 @@
      runtimeclass VisualCollection;
  
      declare {
@@ -2262,11 +2844,14 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
 +        interface Windows.Foundation.Collections.IVectorView<Windows.UI.Composition.CompositionShape *>;
 +        interface Windows.Foundation.Collections.IIterable<Windows.UI.Composition.CompositionShape *>;
 +        interface Windows.Foundation.Collections.IIterator<Windows.UI.Composition.CompositionShape *>;
-+        interface Windows.Foundation.Collections.IVector<FLOAT>;
++        interface Windows.Foundation.Collections.IVector<float>;
++        interface Windows.Foundation.Collections.IVectorView<float>;
++        interface Windows.Foundation.Collections.IIterable<float>;
++        interface Windows.Foundation.Collections.IIterator<float>;
          interface Windows.Foundation.AsyncOperationCompletedHandler<Windows.UI.Composition.ICompositionSurface *>;
          interface Windows.Foundation.IAsyncOperation<Windows.UI.Composition.ICompositionSurface *>;
          interface Windows.Foundation.Collections.IIterable<Windows.UI.Composition.CompositionAnimation *>;
-@@ -496,6 +516,160 @@
+@@ -496,6 +519,160 @@
          HRESULT CreateBrush([out, retval] Windows.UI.Composition.CompositionEffectBrush **result);
          [propget] HRESULT ExtendedError([out, retval] HRESULT *value);
          [propget] HRESULT LoadStatus([out, retval] Windows.UI.Composition.CompositionEffectFactoryLoadStatus *value);
@@ -2360,7 +2945,7 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
 +        [propput] HRESULT IsStrokeNonScaling([in] boolean value);
 +        [propget] HRESULT StrokeBrush([out, retval] Windows.UI.Composition.CompositionBrush * *value);
 +        [propput] HRESULT StrokeBrush([in] Windows.UI.Composition.CompositionBrush * value);
-+        [propget] HRESULT StrokeDashArray([out, retval] Windows.Foundation.Collections.IVector<FLOAT> * *value);
++        [propget] HRESULT StrokeDashArray([out, retval] Windows.Foundation.Collections.IVector<float> * *value);
 +        [propget] HRESULT StrokeDashCap([out, retval] Windows.UI.Composition.CompositionStrokeCap *value);
 +        [propput] HRESULT StrokeDashCap([in] Windows.UI.Composition.CompositionStrokeCap value);
 +        [propget] HRESULT StrokeDashOffset([out, retval] FLOAT *value);
@@ -2427,7 +3012,7 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
      }
  
      [
-@@ -1103,6 +1277,80 @@
+@@ -1103,6 +1280,80 @@
      }
  
      [
