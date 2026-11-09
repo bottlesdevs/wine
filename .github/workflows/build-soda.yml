@@ -884,9 +884,13 @@ jobs:
           (cd "$work/source" && autoreconf -f) > "$work/build/autoreconf.log" 2>&1
           cd "$work/build"
           CC='ccache gcc' "$work/source/configure" --enable-win64 --disable-tests --without-x --without-freetype > configure.log 2>&1
-          make -j2 dlls/windows.ui/x86_64-windows/windows.ui.dll > compile.log 2>&1
+          make -k -j2 dlls/windows.ui/x86_64-windows/windows.ui.dll > compile.log 2>&1
           test -f dlls/windows.ui/x86_64-windows/windows.ui.dll
           ccache --show-stats > ccache.log
+
+      - name: record Composition compiler cache
+        if: always() && env.COMPOSITION_COMPILE_DIR != ''
+        run: ccache --show-stats > "$COMPOSITION_COMPILE_DIR/build/ccache.log"
 
       - uses: actions/cache/save@v6
         if: always()
@@ -901,6 +905,7 @@ jobs:
           path: |
             ${{ env.COMPOSITION_COMPILE_DIR }}/build/*.log
             ${{ env.COMPOSITION_COMPILE_DIR }}/build/config.status
+            ${{ env.COMPOSITION_COMPILE_DIR }}/build/include/windows.ui.composition.h
           retention-days: 7
           if-no-files-found: error
 
