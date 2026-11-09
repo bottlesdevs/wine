@@ -152,9 +152,18 @@ static bool render_shapes(ICompositionPath *path)
         if (round == 1 && (FAILED(sprite->put_StrokeBrush(stroke_brush.Get())) ||
                 FAILED(sprite->put_StrokeThickness(4.0f)))) goto done;
         if (round == 2 && FAILED(shape->put_Offset({40.0f, 8.0f}))) goto done;
-        if (round == 3 && (FAILED(shape->put_Offset({8.0f, 8.0f})) ||
-                FAILED(sprite->get_StrokeDashArray(dashes.GetAddressOf())) ||
-                FAILED(dashes->Append(2.0f)) || FAILED(dashes->Append(2.0f)))) goto done;
+        if (round == 3)
+        {
+            sprite.Reset();
+            shape.Reset();
+            if (FAILED(compositor5->CreateSpriteShapeWithGeometry(geometry.Get(), sprite.GetAddressOf())) ||
+                    FAILED(sprite.As(&shape)) || FAILED(sprite->get_StrokeDashArray(dashes.GetAddressOf())) ||
+                    FAILED(dashes->Append(2.0f)) || FAILED(dashes->Append(2.0f)) ||
+                    FAILED(sprite->put_FillBrush(fill_brush.Get())) ||
+                    FAILED(sprite->put_StrokeBrush(stroke_brush.Get())) ||
+                    FAILED(sprite->put_StrokeThickness(4.0f)) || FAILED(shape->put_Offset({8.0f, 8.0f})) ||
+                    FAILED(shapes->Clear()) || FAILED(shapes->Append(shape.Get()))) goto done;
+        }
         if (round == 4 && FAILED(shapes->Clear())) goto done;
         if (FAILED(controller->Commit())) goto done;
         pump(400);
@@ -163,13 +172,21 @@ static bool render_shapes(ICompositionPath *path)
         COLORREF background = pixel(window, 100, 70);
         COLORREF top = pixel(window, round == 2 ? 47 : 15, 9);
         char pattern[30] = {};
+        UINT32 dash_count = 0;
+        if (dashes)
+        {
+            FLOAT first = -1, second = -1;
+            if (FAILED(dashes->get_Size(&dash_count)) || dash_count != 2 ||
+                    FAILED(dashes->GetAt(0, &first)) || FAILED(dashes->GetAt(1, &second)) ||
+                    first != 2.0f || second != 2.0f) goto done;
+        }
         for (unsigned i = 0; i < 29; ++i)
         {
             COLORREF value = pixel(window, static_cast<int>((round == 2 ? 41 : 9) + i), 9);
             pattern[i] = value == RGB(255, 0, 0) ? 'R' : value == RGB(255, 255, 255) ? 'W' : '?';
         }
-        printf("case=path-render round=%u inside=%06lx edge=%06lx background=%06lx top=%06lx pattern=%s\n",
-                round, inside, edge, background, top, pattern);
+        printf("case=path-render round=%u inside=%06lx edge=%06lx background=%06lx top=%06lx pattern=%s dashes=%u\n",
+                round, inside, edge, background, top, pattern, dash_count);
         if (round == 3 && (!strchr(pattern, 'R') || !strchr(pattern, 'W'))) goto done;
         if (inside == CLR_INVALID || edge == CLR_INVALID || background == CLR_INVALID || top == CLR_INVALID) goto done;
         if (inside != (round == 4 ? RGB(255, 255, 255) : RGB(0, 255, 0))) goto done;
