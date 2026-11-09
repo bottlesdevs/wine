@@ -905,7 +905,7 @@ jobs:
           if-no-files-found: error
 
   composition-path-reference:
-    if: inputs.architecture == 'composition-path-reference' && inputs.winrt_http_reference != true
+    if: inputs.winrt_http_reference != true && (inputs.architecture == 'composition-path-reference' || inputs.architecture == 'x86_64' || github.event_name == 'push')
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -926,6 +926,10 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or !$visualStudio) { throw 'Visual C++ tools not found' }
           $vcvars = Join-Path $visualStudio 'VC/Auxiliary/Build/vcvarsall.bat'
           $source = Join-Path $env:GITHUB_WORKSPACE '.github/soda-composition-path.cpp'
+          @{
+            revision = $env:GITHUB_SHA
+            source_sha256 = (Get-FileHash -Algorithm SHA256 $source).Hash.ToLowerInvariant()
+          } | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $work 'source.json')
           $failed = $false
           foreach ($bits in @(64, 32)) {
             $target = if ($bits -eq 64) { 'amd64' } else { 'x86' }
@@ -1936,7 +1940,7 @@ jobs:
           grep -F '@ stdcall -syscall NtUserCalculatePopupWindowPosition(ptr ptr long ptr ptr)' /tmp/valve-wine/dlls/win32u/win32u.spec
 
   build:
-    needs: patches
+    needs: [patches, composition-path-reference]
     if: inputs.winrt_http_reference != true && (github.event_name == 'push' || inputs.architecture == 'x86_64')
     runs-on: ubuntu-24.04
     env:
@@ -2613,6 +2617,75 @@ jobs:
           "$runner_dir/bin/wine" "$work/service-timeout.exe" run-pass \
             | tr -d '\r' | tee "$work/runtime.log"
           grep -Fx 'SERVICE_START_RESULT failures=0' "$work/runtime.log"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: composition-path-reference-${{ github.sha }}
+          path: ~/artifacts/Soda-${{ github.run_id }}-${{ github.run_attempt }}-composition-path-native
+
+      - name: verify Composition path geometry and pixels
+        timeout-minutes: 5
+        working-directory: /home/runner/work/wine-tkg-git/wine-tkg-git/
+        run: |
+          runner_dir="$(find non-makepkg-builds -mindepth 1 -maxdepth 1 -type d -name 'wine-tkg-*' -print -quit)"
+          test -n "$runner_dir"
+          work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-composition-path"
+          mkdir -p "$work"
+          echo "COMPOSITION_PATH_WORK=$work" >> "$GITHUB_ENV"
+          export TMPDIR="$work" TMP="$work" TEMP="$work"
+          export PATH_RUNNER="$PWD/$runner_dir"
+          export PATH_NATIVE="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-composition-path-native"
+          export WINEPREFIX="$work/prefix" WINEARCH=win64 WINEDEBUG=-all LIBGL_ALWAYS_SOFTWARE=1
+          export WINEDLLOVERRIDES='dxgi,d3d11,d3d10core,windows.ui=b;winewayland.drv=d;mscoree=d;winemenubuilder.exe=d'
+          export PATH_RESULTS="$work"
+          python3 - <<'PYTHON'
+          import hashlib, json, os, struct
+          from pathlib import Path
+          native = Path(os.environ['PATH_NATIVE'])
+          source = json.loads((native / 'source.json').read_text(encoding='utf-8-sig'))
+          expected = Path(os.environ['GITHUB_WORKSPACE'], '.github/soda-composition-path.cpp').read_bytes()
+          assert source['revision'] == os.environ['GITHUB_SHA']
+          assert source['source_sha256'] in (hashlib.sha256(expected).hexdigest(),
+              hashlib.sha256(expected.replace(b'\n', b'\r\n')).hexdigest())
+          for bits, machine in ((32, 0x14c), (64, 0x8664)):
+              data = (native / f'composition-path{bits}.exe').read_bytes()
+              offset, = struct.unpack_from('<I', data, 0x3c)
+              assert data[offset:offset+4] == b'PE\0\0'
+              assert struct.unpack_from('<H', data, offset+4)[0] == machine
+          PYTHON
+          trap '"$PATH_RUNNER/bin/wineserver" -k; "$PATH_RUNNER/bin/wineserver" -w' EXIT
+          xvfb-run -a bash "$GITHUB_WORKSPACE/.github/soda-test-desktop.sh" "$work/compositor.log" sh -ec '
+            "$PATH_RUNNER/bin/wine" wineboot -u > "$PATH_RESULTS/wineboot.log" 2>&1
+            for bits in 64 32; do
+              timeout 60 "$PATH_RUNNER/bin/wine" "$PATH_NATIVE/composition-path$bits.exe" \
+                > "$PATH_RESULTS/composition-path$bits.log" 2> "$PATH_RESULTS/composition-path$bits.stderr"
+            done
+          '
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          native = Path(os.environ['PATH_NATIVE'])
+          results = Path(os.environ['PATH_RESULTS'])
+          comparisons = {}
+          for bits in (32, 64):
+              def records(path):
+                  return [line for line in path.read_text(encoding='utf-8-sig').splitlines() if line.startswith('case=')]
+              reference = records(native / f'composition-path{bits}.log')
+              actual = records(results / f'composition-path{bits}.log')
+              assert len(reference) == 59, (bits, len(reference))
+              assert len([row for row in reference if row.startswith('case=path-render ')]) == 4
+              assert actual == reference, (bits, [(a, b) for a, b in zip(actual, reference) if a != b], len(actual))
+              comparisons[str(bits)] = {'rows': len(actual), 'pixel_scenes': 4, 'matches_windows': True}
+          (results / 'comparison.json').write_text(json.dumps(comparisons, indent=2) + '\n')
+          PYTHON
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.COMPOSITION_PATH_WORK != ''
+        with:
+          name: composition-path-runtime-${{ github.sha }}
+          path: ${{ env.COMPOSITION_PATH_WORK }}
+          retention-days: 7
+          if-no-files-found: error
 
       - name: verify Composition brush lifetime
         shell: xvfb-run -a bash --noprofile --norc -e -o pipefail {0}
