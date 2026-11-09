@@ -880,6 +880,11 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             & $exe | Tee-Object -FilePath (Join-Path $work "composition-path$bits.log")
             if ($LASTEXITCODE -ne 0) { $failed = $true }
+            $child = Start-Process -FilePath $exe -ArgumentList 'clear-path' -NoNewWindow -PassThru `
+              -RedirectStandardOutput (Join-Path $work "composition-path$bits-clear.log")
+            if (!$child.WaitForExit(15000)) { $child.Kill(); throw 'clear-path control timed out' }
+            $child.Refresh()
+            "exit=$($child.ExitCode)" | Set-Content (Join-Path $work "composition-path$bits-clear-exit.txt")
           }
           if ($failed) { exit 1 }
 

@@ -6,6 +6,7 @@
 #include <d2d1.h>
 #include <wrl.h>
 #include <stdio.h>
+#include <string.h>
 
 using namespace ABI::Windows::Graphics;
 using namespace ABI::Windows::UI::Composition;
@@ -52,7 +53,7 @@ static void query(IUnknown *object, const char *name, REFIID iid)
     printf("case=%s hr=%#lx object=%d\n", name, hr, result != nullptr);
 }
 
-static bool shapes(ICompositionPath *path)
+static bool shapes(ICompositionPath *path, bool clear_path)
 {
     ComPtr<ABI::Windows::System::IDispatcherQueueController> queue;
     ComPtr<IInspectable> instance;
@@ -96,8 +97,11 @@ static bool shapes(ICompositionPath *path)
     printf("case=get-path hr=%#lx same=%d\n", hr, returned_path.Get() == path);
     if (FAILED(hr)) return false;
     returned_path.Reset();
-    hr = geometry->put_Path(nullptr);
-    printf("case=clear-path hr=%#lx\n", hr);
+    if (clear_path)
+    {
+        hr = geometry->put_Path(nullptr);
+        printf("case=clear-path hr=%#lx\n", hr);
+    }
     geometry.Reset();
 
     hr = compositor->CreatePathGeometryWithPath(path, geometry.GetAddressOf());
@@ -124,7 +128,7 @@ static bool shapes(ICompositionPath *path)
     return SUCCEEDED(hr) && visual != nullptr;
 }
 
-int main()
+int main(int argc, char **argv)
 {
     const WCHAR class_name[] = L"Windows.UI.Composition.CompositionPath";
     ComPtr<ICompositionPathFactory> factory;
@@ -135,8 +139,10 @@ int main()
     HSTRING name = nullptr, runtime_name = nullptr;
     HRESULT hr;
     bool created;
+    bool clear_path = argc > 1 && !strcmp(argv[1], "clear-path");
 
     setvbuf(stdout, nullptr, _IONBF, 0);
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     hr = RoInitialize(RO_INIT_MULTITHREADED);
     printf("case=initialize hr=%#lx\n", hr);
     if (FAILED(hr)) return 1;
@@ -203,7 +209,7 @@ int main()
             else printf("case=other-factory-create hr=%#lx\n", hr);
         }
     }
-    if (created && !shapes(path.Get())) created = false;
+    if (created && !shapes(path.Get(), clear_path)) created = false;
     source.Reset();
     printf("case=source-released destroyed=%ld\n", destroyed);
     path.Reset();
