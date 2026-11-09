@@ -884,7 +884,7 @@ jobs:
           (cd "$work/source" && autoreconf -f) > "$work/build/autoreconf.log" 2>&1
           cd "$work/build"
           CC='ccache gcc' "$work/source/configure" --enable-win64 --disable-tests --without-x --without-freetype > configure.log 2>&1
-          make -j2 dlls/windows.ui > compile.log 2>&1
+          make -j2 dlls/windows.ui/x86_64-windows/windows.ui.dll > compile.log 2>&1
           test -f dlls/windows.ui/x86_64-windows/windows.ui.dll
           ccache --show-stats > ccache.log
 
