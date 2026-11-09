@@ -389,7 +389,7 @@ diff --git a/dlls/windows.ui/composition_path.c b/dlls/windows.ui/composition_pa
 new file mode 100644
 --- /dev/null
 +++ b/dlls/windows.ui/composition_path.c
-@@ -0,0 +1,635 @@
+@@ -0,0 +1,638 @@
 +/* Windows.UI.Composition geometry paths
 + *
 + * Copyright (C) 2026 Mirko Brombin
@@ -718,9 +718,12 @@ new file mode 100644
 +        ID2D1Geometry_Release( geometry );
 +        return E_OUTOFMEMORY;
 +    }
-+    ID2D1Geometry_GetFactory( geometry, &factory );
-+    hr = geometry_clone( geometry, factory, &impl->geometry );
-+    ID2D1Factory_Release( factory );
++    hr = D2D1CreateFactory( D2D1_FACTORY_TYPE_MULTI_THREADED, &IID_ID2D1Factory, NULL, (void **)&factory );
++    if (SUCCEEDED(hr))
++    {
++        hr = geometry_clone( geometry, factory, &impl->geometry );
++        ID2D1Factory_Release( factory );
++    }
 +    ID2D1Geometry_Release( geometry );
 +    if (FAILED(hr))
 +    {

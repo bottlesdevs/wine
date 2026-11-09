@@ -867,7 +867,7 @@ jobs:
           export TMPDIR="$work" TMP="$work" TEMP="$work"
           echo "COMPOSITION_COMPILE_DIR=$work" >> "$GITHUB_ENV"
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ccache flex bison gcc-mingw-w64-x86-64
+          sudo apt-get install -y --no-install-recommends autoconf ccache flex bison gcc-mingw-w64-x86-64
           git clone --filter=blob:none --depth=1 --branch "$VALVE_WINE_TAG" https://github.com/ValveSoftware/wine.git "$work/source"
           test "$(git -C "$work/source" rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
           mkdir "$work/build"
@@ -875,6 +875,7 @@ jobs:
             git -C "$work/source" apply --include='dlls/windows.ui/*' \
               --include='include/windows.graphics*' --include='include/windows.ui.composition*' "$patch"
           done > "$work/build/patches.log" 2>&1
+          (cd "$work/source" && autoreconf -f) > "$work/build/autoreconf.log" 2>&1
           cd "$work/build"
           CC='ccache gcc' "$work/source/configure" --enable-win64 --disable-tests --without-x > configure.log 2>&1
           make -j2 dlls/windows.ui > compile.log 2>&1

@@ -184,6 +184,11 @@ static bool shapes(ICompositionPath *path, bool clear_path)
     if (FAILED(hr)) return false;
     hr = iterator->get_HasCurrent(&current);
     printf("case=shape-changed-iterator hr=%#lx value=%d\n", hr, current);
+    ComPtr<ICompositionShape> retained_shape;
+    hr = iterator->get_Current(retained_shape.GetAddressOf());
+    printf("case=shape-changed-current hr=%#lx same=%d\n", hr, retained_shape.Get() == shape.Get());
+    hr = iterator->MoveNext(&current);
+    printf("case=shape-changed-next hr=%#lx value=%d\n", hr, current);
     return true;
 }
 
