@@ -162,8 +162,15 @@ static bool render_shapes(ICompositionPath *path)
         COLORREF edge = pixel(window, round == 2 ? 40 : 8, 16);
         COLORREF background = pixel(window, 100, 70);
         COLORREF top = pixel(window, round == 2 ? 47 : 15, 9);
-        printf("case=path-render round=%u inside=%06lx edge=%06lx background=%06lx top=%06lx\n",
-                round, inside, edge, background, top);
+        char pattern[30] = {};
+        for (unsigned i = 0; i < 29; ++i)
+        {
+            COLORREF value = pixel(window, static_cast<int>((round == 2 ? 41 : 9) + i), 9);
+            pattern[i] = value == RGB(255, 0, 0) ? 'R' : value == RGB(255, 255, 255) ? 'W' : '?';
+        }
+        printf("case=path-render round=%u inside=%06lx edge=%06lx background=%06lx top=%06lx pattern=%s\n",
+                round, inside, edge, background, top, pattern);
+        if (round == 3 && (!strchr(pattern, 'R') || !strchr(pattern, 'W'))) goto done;
         if (inside == CLR_INVALID || edge == CLR_INVALID || background == CLR_INVALID || top == CLR_INVALID) goto done;
         if (inside != (round == 4 ? RGB(255, 255, 255) : RGB(0, 255, 0))) goto done;
         if ((round == 1 || round == 2) && edge != RGB(255, 0, 0)) goto done;
