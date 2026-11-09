@@ -1032,7 +1032,7 @@ diff --git a/dlls/windows.ui/composition_shape_collection.c b/dlls/windows.ui/co
 new file mode 100644
 --- /dev/null
 +++ b/dlls/windows.ui/composition_shape_collection.c
-@@ -0,0 +1,585 @@
+@@ -0,0 +1,576 @@
 +/* WinRT Windows.UI.Composition shape collection
 + *
 + * Copyright (C) 2026 Mirko Brombin
@@ -1061,7 +1061,7 @@ new file mode 100644
 +    IVectorView_CompositionShape IVectorView_CompositionShape_iface;
 +    IIterable_CompositionShape IIterable_CompositionShape_iface;
 +    LONG ref;
-+    UINT32 count, capacity, version;
++    UINT32 count, capacity;
 +    ICompositionShape **items;
 +    CRITICAL_SECTION lock;
 +};
@@ -1201,7 +1201,6 @@ new file mode 100644
 +        ICompositionShape_AddRef( value );
 +        old = impl->items[index];
 +        impl->items[index] = value;
-+        ++impl->version;
 +        hr = S_OK;
 +    }
 +    LeaveCriticalSection( &impl->lock );
@@ -1239,8 +1238,7 @@ new file mode 100644
 +            ICompositionShape_AddRef( value );
 +            impl->items[index] = value;
 +            ++impl->count;
-+            ++impl->version;
-+        }
++            }
 +    }
 +    LeaveCriticalSection( &impl->lock );
 +    return hr;
@@ -1258,7 +1256,6 @@ new file mode 100644
 +        old = impl->items[index];
 +        --impl->count;
 +        memmove( impl->items + index, impl->items + index + 1, (impl->count - index) * sizeof(*impl->items) );
-+        ++impl->version;
 +        hr = S_OK;
 +    }
 +    LeaveCriticalSection( &impl->lock );
@@ -1299,7 +1296,6 @@ new file mode 100644
 +    count = impl->count;
 +    impl->items = NULL;
 +    impl->count = impl->capacity = 0;
-+    ++impl->version;
 +    LeaveCriticalSection( &impl->lock );
 +    for (i = 0; i < count; ++i) ICompositionShape_Release( items[i] );
 +    free( items );
@@ -1355,7 +1351,6 @@ new file mode 100644
 +    old_count = impl->count;
 +    impl->items = items;
 +    impl->count = impl->capacity = count;
-+    ++impl->version;
 +    LeaveCriticalSection( &impl->lock );
 +    for (i = 0; i < old_count; ++i) ICompositionShape_Release( old[i] );
 +    free( old );
@@ -1402,7 +1397,8 @@ new file mode 100644
 +{
 +    IIterator_CompositionShape IIterator_CompositionShape_iface;
 +    struct shape_collection *collection;
-+    UINT32 index, version;
++    UINT32 index;
++    boolean has_current;
 +    LONG ref;
 +};
 +
@@ -1474,7 +1470,7 @@ new file mode 100644
 +    if (!value) return E_POINTER;
 +    *value = NULL;
 +    EnterCriticalSection( &impl->collection->lock );
-+    if (impl->version != impl->collection->version) hr = E_CHANGED_STATE;
++    if (impl->index >= impl->collection->count) hr = E_INVALIDARG;
 +    else hr = shape_collection_GetAt( &impl->collection->IVector_CompositionShape_iface, impl->index, value );
 +    LeaveCriticalSection( &impl->collection->lock );
 +    return hr;
@@ -1488,8 +1484,7 @@ new file mode 100644
 +    if (!value) return E_POINTER;
 +    *value = FALSE;
 +    EnterCriticalSection( &impl->collection->lock );
-+    if (impl->version != impl->collection->version) hr = E_CHANGED_STATE;
-+    else *value = impl->index < impl->collection->count;
++    *value = impl->has_current;
 +    LeaveCriticalSection( &impl->collection->lock );
 +    return hr;
 +}
@@ -1502,12 +1497,9 @@ new file mode 100644
 +    if (!value) return E_POINTER;
 +    *value = FALSE;
 +    EnterCriticalSection( &impl->collection->lock );
-+    if (impl->version != impl->collection->version) hr = E_CHANGED_STATE;
-+    else
-+    {
-+        if (impl->index < impl->collection->count) ++impl->index;
-+        *value = impl->index < impl->collection->count;
-+    }
++    if (impl->has_current && impl->index < UINT32_MAX) ++impl->index;
++    impl->has_current = impl->index < impl->collection->count;
++    *value = impl->has_current;
 +    LeaveCriticalSection( &impl->collection->lock );
 +    return hr;
 +}
@@ -1521,13 +1513,12 @@ new file mode 100644
 +    if (!count || (capacity && !items)) return E_POINTER;
 +    *count = 0;
 +    EnterCriticalSection( &impl->collection->lock );
-+    if (impl->version != impl->collection->version) hr = E_CHANGED_STATE;
-+    else
-+    {
++    hr = S_OK;
++    if (impl->index < impl->collection->count)
 +        hr = shape_collection_GetMany( &impl->collection->IVector_CompositionShape_iface,
 +                impl->index, capacity, items, count );
-+        if (SUCCEEDED(hr)) impl->index += *count;
-+    }
++    if (SUCCEEDED(hr)) impl->index += *count;
++    impl->has_current = impl->index < impl->collection->count;
 +    LeaveCriticalSection( &impl->collection->lock );
 +    return hr;
 +}
@@ -1562,7 +1553,7 @@ new file mode 100644
 +    iterator->IIterator_CompositionShape_iface.lpVtbl = &shape_iterator_vtbl;
 +    iterator->collection = collection;
 +    EnterCriticalSection( &collection->lock );
-+    iterator->version = collection->version;
++    iterator->has_current = collection->count != 0;
 +    LeaveCriticalSection( &collection->lock );
 +    iterator->ref = 1;
 +    IVector_CompositionShape_AddRef( &collection->IVector_CompositionShape_iface );

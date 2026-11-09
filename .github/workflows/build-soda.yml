@@ -877,7 +877,7 @@ jobs:
           done > "$work/build/patches.log" 2>&1
           (cd "$work/source" && autoreconf -f) > "$work/build/autoreconf.log" 2>&1
           cd "$work/build"
-          CC='ccache gcc' "$work/source/configure" --enable-win64 --disable-tests --without-x > configure.log 2>&1
+          CC='ccache gcc' "$work/source/configure" --enable-win64 --disable-tests --without-x --without-freetype > configure.log 2>&1
           make -j2 dlls/windows.ui > compile.log 2>&1
           test -f dlls/windows.ui/x86_64-windows/windows.ui.dll
           ccache --show-stats > ccache.log
@@ -930,7 +930,7 @@ jobs:
               '@echo off',
               "call `"$vcvars`" $target",
               'if errorlevel 1 exit /b %errorlevel%',
-              "cl /nologo /W4 /WX /O2 /MT /EHsc /std:c++17 /TP `"$source`" /Fe:`"$exe`" /Fo:`"$obj`" /link runtimeobject.lib ole32.lib uuid.lib d2d1.lib CoreMessaging.lib",
+              "cl /nologo /W4 /WX /O2 /MT /EHsc /std:c++17 /TP `"$source`" /Fe:`"$exe`" /Fo:`"$obj`" /link runtimeobject.lib ole32.lib uuid.lib d2d1.lib CoreMessaging.lib user32.lib gdi32.lib",
               'exit /b %errorlevel%'
             ) | Set-Content -Encoding ascii $script
             & cmd.exe /d /c $script

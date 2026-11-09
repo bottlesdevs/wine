@@ -1,6 +1,9 @@
 #include <windows.h>
 #include <roapi.h>
 #include <windows.ui.composition.h>
+#include <windows.ui.composition.core.h>
+#include <windows.ui.composition.desktop.h>
+#include <windows.ui.composition.interop.h>
 #include <windows.graphics.interop.h>
 #include <DispatcherQueue.h>
 #include <d2d1.h>
@@ -62,6 +65,114 @@ static bool geometry_bounds(ID2D1Geometry *geometry, ID2D1Factory *factory, cons
     printf("case=%s hr=%#lx bounds=%g,%g,%g,%g factory=%d\n", name, hr,
             bounds.left, bounds.top, bounds.right, bounds.bottom, owner.Get() == factory);
     return SUCCEEDED(hr) && bounds.left == 1 && bounds.top == 2 && bounds.right == 30 && bounds.bottom == 40;
+}
+
+static void pump(DWORD milliseconds)
+{
+    ULONGLONG end = GetTickCount64() + milliseconds;
+    MSG message;
+
+    do
+    {
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT);
+    } while (GetTickCount64() < end);
+}
+
+static COLORREF pixel(HWND window, int x, int y)
+{
+    POINT point = {x, y};
+    if (!ClientToScreen(window, &point)) return CLR_INVALID;
+    HDC dc = GetDC(nullptr);
+    if (!dc) return CLR_INVALID;
+    COLORREF value = GetPixel(dc, point.x, point.y);
+    ReleaseDC(nullptr, dc);
+    return value;
+}
+
+static bool render_shapes(ICompositionPath *path)
+{
+    const WCHAR class_name[] = L"Windows.UI.Composition.Core.CompositorController";
+    ComPtr<IInspectable> instance;
+    ComPtr<Core::ICompositorController> controller;
+    ComPtr<ICompositor> compositor;
+    ComPtr<ICompositor5> compositor5;
+    ComPtr<Desktop::ICompositorDesktopInterop> desktop;
+    ComPtr<Desktop::IDesktopWindowTarget> desktop_target;
+    ComPtr<ICompositionTarget> target;
+    ComPtr<ICompositionPathGeometry> path_geometry;
+    ComPtr<ICompositionGeometry> geometry;
+    ComPtr<ICompositionSpriteShape> sprite;
+    ComPtr<ICompositionShape> shape;
+    ComPtr<IShapeVisual> shape_visual;
+    ComPtr<IVisual> visual;
+    ComPtr<ICompositionColorBrush> fill, stroke;
+    ComPtr<ICompositionBrush> fill_brush, stroke_brush;
+    ComPtr<ABI::Windows::Foundation::Collections::IVector<CompositionShape *>> shapes;
+    HWND window = nullptr;
+    HSTRING name = nullptr;
+    bool success = false;
+    HRESULT hr = WindowsCreateString(class_name, ARRAYSIZE(class_name) - 1, &name);
+
+    if (FAILED(hr)) return false;
+    hr = RoActivateInstance(name, instance.GetAddressOf());
+    WindowsDeleteString(name);
+    if (FAILED(hr) || FAILED(instance.As(&controller)) ||
+            FAILED(controller->get_Compositor(compositor.GetAddressOf())) ||
+            FAILED(compositor.As(&compositor5)) || FAILED(compositor.As(&desktop))) return false;
+    window = CreateWindowExW(WS_EX_TOPMOST, L"STATIC", L"Composition path control", WS_POPUP | SS_WHITERECT,
+            20, 20, 128, 96, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!window) return false;
+    ShowWindow(window, SW_SHOWNOACTIVATE);
+    UpdateWindow(window);
+    pump(100);
+    if (FAILED(desktop->CreateDesktopWindowTarget(window, TRUE, desktop_target.GetAddressOf())) ||
+            FAILED(desktop_target.As(&target)) ||
+            FAILED(compositor5->CreatePathGeometryWithPath(path, path_geometry.GetAddressOf())) ||
+            FAILED(path_geometry.As(&geometry)) ||
+            FAILED(compositor5->CreateSpriteShapeWithGeometry(geometry.Get(), sprite.GetAddressOf())) ||
+            FAILED(sprite.As(&shape)) ||
+            FAILED(compositor5->CreateShapeVisual(shape_visual.GetAddressOf())) ||
+            FAILED(shape_visual.As(&visual)) ||
+            FAILED(shape_visual->get_Shapes(shapes.GetAddressOf())) ||
+            FAILED(compositor->CreateColorBrushWithColor({255, 0, 255, 0}, fill.GetAddressOf())) ||
+            FAILED(compositor->CreateColorBrushWithColor({255, 255, 0, 0}, stroke.GetAddressOf())) ||
+            FAILED(fill.As(&fill_brush)) || FAILED(stroke.As(&stroke_brush)) ||
+            FAILED(sprite->put_FillBrush(fill_brush.Get())) ||
+            FAILED(shape->put_Offset({8.0f, 8.0f})) ||
+            FAILED(visual->put_Size({128.0f, 96.0f})) ||
+            FAILED(shapes->Append(shape.Get())) || FAILED(target->put_Root(visual.Get()))) goto done;
+    for (unsigned round = 0; round < 4; ++round)
+    {
+        if (round == 1 && (FAILED(sprite->put_StrokeBrush(stroke_brush.Get())) ||
+                FAILED(sprite->put_StrokeThickness(4.0f)))) goto done;
+        if (round == 2 && FAILED(shape->put_Offset({40.0f, 8.0f}))) goto done;
+        if (round == 3 && FAILED(shapes->Clear())) goto done;
+        if (FAILED(controller->Commit())) goto done;
+        pump(400);
+        COLORREF inside = pixel(window, round == 2 ? 48 : 16, 16);
+        COLORREF edge = pixel(window, round == 2 ? 40 : 8, 16);
+        COLORREF background = pixel(window, 100, 70);
+        printf("case=path-render round=%u inside=%06lx edge=%06lx background=%06lx\n",
+                round, inside, edge, background);
+        if (inside == CLR_INVALID || edge == CLR_INVALID || background == CLR_INVALID) goto done;
+        if (inside != (round == 3 ? RGB(255, 255, 255) : RGB(0, 255, 0))) goto done;
+        if ((round == 1 || round == 2) && edge != RGB(255, 0, 0)) goto done;
+        if (background != RGB(255, 255, 255)) goto done;
+    }
+    success = true;
+
+done:
+    if (target) target->put_Root(nullptr);
+    if (controller) controller->Commit();
+    target.Reset();
+    desktop_target.Reset();
+    DestroyWindow(window);
+    return success;
 }
 
 static bool shapes(ICompositionPath *path, bool clear_path)
@@ -189,7 +300,7 @@ static bool shapes(ICompositionPath *path, bool clear_path)
     printf("case=shape-changed-current hr=%#lx same=%d\n", hr, retained_shape.Get() == shape.Get());
     hr = iterator->MoveNext(&current);
     printf("case=shape-changed-next hr=%#lx value=%d\n", hr, current);
-    return true;
+    return clear_path || render_shapes(path);
 }
 
 int main(int argc, char **argv)
