@@ -1,0 +1,2507 @@
+diff --git a/dlls/windows.ui/Makefile.in b/dlls/windows.ui/Makefile.in
+--- a/dlls/windows.ui/Makefile.in
++++ b/dlls/windows.ui/Makefile.in
+@@ -5,6 +5,9 @@
+ 	accessibilitysettings.c \
+ 	classes.idl \
+ 	composition.c \
++	composition_path.c \
++	composition_shapes.c \
++	composition_shape_collection.c \
+ 	effect.c \
+ 	effect_graph.c \
+ 	inputpane.c \
+diff --git a/dlls/windows.ui/classes.idl b/dlls/windows.ui/classes.idl
+--- a/dlls/windows.ui/classes.idl
++++ b/dlls/windows.ui/classes.idl
+@@ -47,6 +47,7 @@
+ 
+ namespace Windows.UI.Composition {
+     runtimeclass Compositor;
++    runtimeclass CompositionPath;
+     runtimeclass CompositionEffectSourceParameter;
+ }
+ 
+diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
+--- a/dlls/windows.ui/composition.c
++++ b/dlls/windows.ui/composition.c
+@@ -1582,6 +1582,10 @@
+ struct sprite_visual
+ {
+     ISpriteVisual ISpriteVisual_iface;
++    IShapeVisual IShapeVisual_iface;
++    IVector_CompositionShape *shapes;
++    ICompositionViewBox *view_box;
++    BOOL is_shape;
+     struct redirect_visual_iface redirect_iface;
+     IVisual *source;
+     BOOL is_redirect;
+@@ -1660,11 +1664,16 @@
+     if (!out) return E_POINTER;
+     if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
+         IsEqualGUID( iid, &IID_IAgileObject ))
+-        *out = impl_from_ISpriteVisual(iface)->is_redirect ?
++        *out = impl_from_ISpriteVisual(iface)->is_shape ?
++                (void *)&impl_from_ISpriteVisual(iface)->IShapeVisual_iface :
++                impl_from_ISpriteVisual(iface)->is_redirect ?
+                 (void *)&impl_from_ISpriteVisual(iface)->redirect_iface : (void *)iface;
+     else if (IsEqualGUID(iid, &redirect_visual_iid) && impl_from_ISpriteVisual(iface)->is_redirect)
+         *out = &impl_from_ISpriteVisual(iface)->redirect_iface;
+-    else if (IsEqualGUID(iid, &IID_ISpriteVisual) && !impl_from_ISpriteVisual(iface)->is_redirect)
++    else if (IsEqualGUID(iid, &IID_IShapeVisual) && impl_from_ISpriteVisual(iface)->is_shape)
++        *out = &impl_from_ISpriteVisual(iface)->IShapeVisual_iface;
++    else if (IsEqualGUID(iid, &IID_ISpriteVisual) && !impl_from_ISpriteVisual(iface)->is_redirect &&
++            !impl_from_ISpriteVisual(iface)->is_shape)
+         *out = iface;
+     else if (IsEqualGUID(iid,&composition_object2_iid))
+         *out = &impl_from_ISpriteVisual(iface)->object2_iface;
+@@ -1731,6 +1740,8 @@
+         WindowsDeleteString(impl->comment);
+         if (impl->implicit_animations) IInspectable_Release(impl->implicit_animations);
+         if (impl->source) IVisual_Release(impl->source);
++        if (impl->shapes) IVector_CompositionShape_Release( impl->shapes );
++        if (impl->view_box) ICompositionViewBox_Release( impl->view_box );
+         if (impl->children) IVisualCollection_Release( impl->children );
+         if (impl->properties) ICompositionPropertySet_Release( impl->properties );
+         if (impl->compositor) ICompositor_Release( impl->compositor );
+@@ -1746,7 +1757,8 @@
+ 
+     if (!count || !iids) return E_POINTER;
+     if (!(values = CoTaskMemAlloc( 6 * sizeof(*values) ))) return E_OUTOFMEMORY;
+-    values[0] = impl_from_ISpriteVisual(iface)->is_redirect ? redirect_visual_iid : IID_ISpriteVisual;
++    values[0] = impl_from_ISpriteVisual(iface)->is_shape ? IID_IShapeVisual :
++            impl_from_ISpriteVisual(iface)->is_redirect ? redirect_visual_iid : IID_ISpriteVisual;
+     values[1] = IID_IVisual;
+     values[2] = IID_IContainerVisual;
+     values[3] = IID_IVisual2;
+@@ -1760,6 +1772,9 @@
+ static HRESULT WINAPI sprite_visual_GetRuntimeClassName( ISpriteVisual *iface, HSTRING *name )
+ {
+     if (!name) return E_POINTER;
++    if (impl_from_ISpriteVisual(iface)->is_shape)
++        return WindowsCreateString( RuntimeClass_Windows_UI_Composition_ShapeVisual,
++                ARRAY_SIZE(RuntimeClass_Windows_UI_Composition_ShapeVisual) - 1, name );
+     if (impl_from_ISpriteVisual(iface)->is_redirect)
+         return WindowsCreateString(L"Windows.UI.Composition.RedirectVisual", 37, name);
+     return WindowsCreateString( RuntimeClass_Windows_UI_Composition_SpriteVisual,
+@@ -7547,6 +7562,47 @@
+     visual_object2_StopAnimationGroup,
+ };
+ 
++DEFINE_IINSPECTABLE( shape_visual, IShapeVisual, struct sprite_visual, ISpriteVisual_iface )
++
++static HRESULT WINAPI shape_visual_get_Shapes( IShapeVisual *iface, IVector_CompositionShape **value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IShapeVisual(iface)->shapes;
++    IVector_CompositionShape_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_visual_get_ViewBox( IShapeVisual *iface, ICompositionViewBox **value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_IShapeVisual(iface)->view_box;
++    if (*value) ICompositionViewBox_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_visual_put_ViewBox( IShapeVisual *iface, ICompositionViewBox *value )
++{
++    struct sprite_visual *impl = impl_from_IShapeVisual( iface );
++
++    if (value) ICompositionViewBox_AddRef( value );
++    if (impl->view_box) ICompositionViewBox_Release( impl->view_box );
++    impl->view_box = value;
++    return S_OK;
++}
++
++static const IShapeVisualVtbl shape_visual_vtbl =
++{
++    shape_visual_QueryInterface,
++    shape_visual_AddRef,
++    shape_visual_Release,
++    shape_visual_GetIids,
++    shape_visual_GetRuntimeClassName,
++    shape_visual_GetTrustLevel,
++    shape_visual_get_Shapes,
++    shape_visual_get_ViewBox,
++    shape_visual_put_ViewBox,
++};
++
+ static HRESULT WINAPI compositor_CreateSpriteVisual( ICompositor *iface, ISpriteVisual **result )
+ {
+     struct sprite_visual *impl;
+@@ -10455,32 +10511,85 @@
+ DEFINE_COMPOSITOR5_CREATE_METHOD(CreateContainerShape)
+ DEFINE_COMPOSITOR5_CREATE_METHOD(CreateEllipseGeometry)
+ DEFINE_COMPOSITOR5_CREATE_METHOD(CreateLineGeometry)
+-DEFINE_COMPOSITOR5_CREATE_METHOD(CreatePathGeometry)
+ DEFINE_COMPOSITOR5_CREATE_METHOD(CreatePathKeyFrameAnimation)
+ DEFINE_COMPOSITOR5_CREATE_METHOD(CreateRectangleGeometry)
+ DEFINE_COMPOSITOR5_CREATE_METHOD(CreateRoundedRectangleGeometry)
+-DEFINE_COMPOSITOR5_CREATE_METHOD(CreateShapeVisual)
+-DEFINE_COMPOSITOR5_CREATE_METHOD(CreateSpriteShape)
+ DEFINE_COMPOSITOR5_CREATE_METHOD(CreateViewBox)
+ 
+ #undef DEFINE_COMPOSITOR5_CREATE_METHOD
++
++static HRESULT WINAPI compositor5_CreatePathGeometry( struct compositor5_iface *iface,
++        IInspectable **result )
++{
++    struct compositor *impl = impl_from_compositor5( iface );
++
++    return composition_path_geometry_create( &impl->ICompositor_iface, NULL,
++            (ICompositionPathGeometry **)result );
++}
+ 
+ static HRESULT WINAPI compositor5_CreatePathGeometryWithPath( struct compositor5_iface *iface,
+         IInspectable *path, IInspectable **result )
+ {
+-    FIXME( "iface %p, path %p, result %p stub!\n", iface, path, result );
++    struct compositor *impl = impl_from_compositor5( iface );
++    ICompositionPath *value;
++    HRESULT hr;
++
+     if (!result) return E_POINTER;
+     *result = NULL;
+-    return E_NOTIMPL;
++    if (!path) return E_INVALIDARG;
++    if (FAILED(hr = IInspectable_QueryInterface( path, &IID_ICompositionPath, (void **)&value ))) return hr;
++    hr = composition_path_geometry_create( &impl->ICompositor_iface, value,
++            (ICompositionPathGeometry **)result );
++    ICompositionPath_Release( value );
++    return hr;
++}
++
++static HRESULT WINAPI compositor5_CreateShapeVisual( struct compositor5_iface *iface,
++        IInspectable **result )
++{
++    struct compositor *compositor = impl_from_compositor5( iface );
++    struct sprite_visual *impl;
++    ISpriteVisual *visual;
++    HRESULT hr;
++
++    if (!result) return E_POINTER;
++    *result = NULL;
++    if (FAILED(hr = compositor_CreateSpriteVisual( &compositor->ICompositor_iface, &visual ))) return hr;
++    impl = impl_from_ISpriteVisual( visual );
++    if (SUCCEEDED(hr = composition_shape_collection_create( &impl->shapes )))
++    {
++        impl->IShapeVisual_iface.lpVtbl = &shape_visual_vtbl;
++        impl->is_shape = TRUE;
++        hr = ISpriteVisual_QueryInterface( visual, &IID_IShapeVisual, (void **)result );
++    }
++    ISpriteVisual_Release( visual );
++    return hr;
++}
++
++static HRESULT WINAPI compositor5_CreateSpriteShape( struct compositor5_iface *iface,
++        IInspectable **result )
++{
++    struct compositor *impl = impl_from_compositor5( iface );
++
++    return composition_sprite_shape_create( &impl->ICompositor_iface, NULL,
++            (ICompositionSpriteShape **)result );
+ }
+ 
+ static HRESULT WINAPI compositor5_CreateSpriteShapeWithGeometry( struct compositor5_iface *iface,
+         IInspectable *geometry, IInspectable **result )
+ {
+-    FIXME( "iface %p, geometry %p, result %p stub!\n", iface, geometry, result );
++    struct compositor *impl = impl_from_compositor5( iface );
++    ICompositionGeometry *value;
++    HRESULT hr;
++
+     if (!result) return E_POINTER;
+     *result = NULL;
+-    return E_NOTIMPL;
++    if (!geometry) return E_INVALIDARG;
++    if (FAILED(hr = IInspectable_QueryInterface( geometry, &IID_ICompositionGeometry, (void **)&value ))) return hr;
++    hr = composition_sprite_shape_create( &impl->ICompositor_iface, value,
++            (ICompositionSpriteShape **)result );
++    ICompositionGeometry_Release( value );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI compositor5_RequestCommitAsync( struct compositor5_iface *iface,
+@@ -11599,6 +11708,129 @@
+         return draw_effect_brush( context, effect_from_ICompositionBrush( brush ), bounds, opacity, depth );
+     else return E_NOTIMPL;
+     return S_OK;
++}
++
++static HRESULT draw_shape_brush( ID2D1DeviceContext *context, ID2D1Geometry *geometry,
++        ICompositionBrush *brush, FLOAT opacity )
++{
++    D2D1_LAYER_PARAMETERS1 layer = {0};
++    D2D1_RECT_F bounds;
++    HRESULT hr;
++
++    if (!brush) return S_OK;
++    if (FAILED(hr = ID2D1Geometry_GetBounds( geometry, NULL, &bounds ))) return hr;
++    layer.contentBounds = bounds;
++    layer.geometricMask = geometry;
++    layer.maskAntialiasMode = D2D1_ANTIALIAS_MODE_PER_PRIMITIVE;
++    layer.maskTransform = (D2D1_MATRIX_3X2_F){1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
++    layer.opacity = 1.0f;
++    ID2D1DeviceContext_PushLayer( context, &layer, NULL );
++    hr = draw_composition_brush( context, brush, &bounds, opacity, 0 );
++    ID2D1DeviceContext_PopLayer( context );
++    return hr;
++}
++
++static HRESULT draw_composition_shape( ID2D1DeviceContext *context, ICompositionShape *shape, FLOAT opacity )
++{
++    ICompositionSpriteShape *sprite;
++    ICompositionGeometry *composition_geometry = NULL;
++    ICompositionBrush *fill = NULL, *stroke = NULL;
++    ID2D1Geometry *geometry = NULL;
++    ID2D1PathGeometry *outline = NULL;
++    ID2D1GeometrySink *sink = NULL;
++    ID2D1StrokeStyle *style = NULL;
++    ID2D1Factory *factory;
++    struct Vector2 offset, center, scale;
++    struct Matrix3x2 matrix;
++    D2D1_MATRIX_3X2_F parent, local, transform;
++    D2D1_STROKE_STYLE_PROPERTIES properties = {0};
++    enum CompositionStrokeCap cap;
++    enum CompositionStrokeLineJoin join;
++    FLOAT rotation, cosine, sine, thickness;
++    HRESULT close_hr;
++    HRESULT hr;
++
++    if (FAILED(hr = ICompositionShape_QueryInterface( shape, &IID_ICompositionSpriteShape, (void **)&sprite )))
++        return hr;
++    hr = ICompositionSpriteShape_get_Geometry( sprite, &composition_geometry );
++    if (FAILED(hr) || !composition_geometry)
++    {
++        ICompositionSpriteShape_Release( sprite );
++        return hr;
++    }
++    ID2D1DeviceContext_GetFactory( context, &factory );
++    hr = composition_path_geometry_get_geometry( composition_geometry, factory, &geometry );
++    ICompositionGeometry_Release( composition_geometry );
++    if (FAILED(hr) || !geometry)
++    {
++        ID2D1Factory_Release( factory );
++        ICompositionSpriteShape_Release( sprite );
++        return hr;
++    }
++    ICompositionShape_get_Offset( shape, &offset );
++    ICompositionShape_get_CenterPoint( shape, &center );
++    ICompositionShape_get_Scale( shape, &scale );
++    ICompositionShape_get_RotationAngle( shape, &rotation );
++    ICompositionShape_get_TransformMatrix( shape, &matrix );
++    cosine = cosf( rotation );
++    sine = sinf( rotation );
++    local = (D2D1_MATRIX_3X2_F){scale.X * cosine, scale.X * sine,
++            -scale.Y * sine, scale.Y * cosine, 0.0f, 0.0f};
++    local._31 = offset.X + center.X - center.X * local._11 - center.Y * local._21;
++    local._32 = offset.Y + center.Y - center.X * local._12 - center.Y * local._22;
++    transform = (D2D1_MATRIX_3X2_F){local._11 * matrix.M11 + local._12 * matrix.M21,
++            local._11 * matrix.M12 + local._12 * matrix.M22,
++            local._21 * matrix.M11 + local._22 * matrix.M21,
++            local._21 * matrix.M12 + local._22 * matrix.M22,
++            local._31 * matrix.M11 + local._32 * matrix.M21 + matrix.M31,
++            local._31 * matrix.M12 + local._32 * matrix.M22 + matrix.M32};
++    ID2D1DeviceContext_GetTransform( context, &parent );
++    local = transform;
++    transform = (D2D1_MATRIX_3X2_F){local._11 * parent._11 + local._12 * parent._21,
++            local._11 * parent._12 + local._12 * parent._22,
++            local._21 * parent._11 + local._22 * parent._21,
++            local._21 * parent._12 + local._22 * parent._22,
++            local._31 * parent._11 + local._32 * parent._21 + parent._31,
++            local._31 * parent._12 + local._32 * parent._22 + parent._32};
++    ID2D1DeviceContext_SetTransform( context, &transform );
++    hr = ICompositionSpriteShape_get_FillBrush( sprite, &fill );
++    if (SUCCEEDED(hr)) hr = draw_shape_brush( context, geometry, fill, opacity );
++    if (SUCCEEDED(hr)) hr = ICompositionSpriteShape_get_StrokeBrush( sprite, &stroke );
++    if (SUCCEEDED(hr)) hr = ICompositionSpriteShape_get_StrokeThickness( sprite, &thickness );
++    if (SUCCEEDED(hr) && stroke && thickness > 0.0f)
++    {
++        ICompositionSpriteShape_get_StrokeStartCap( sprite, &cap );
++        properties.startCap = (D2D1_CAP_STYLE)cap;
++        ICompositionSpriteShape_get_StrokeEndCap( sprite, &cap );
++        properties.endCap = (D2D1_CAP_STYLE)cap;
++        ICompositionSpriteShape_get_StrokeDashCap( sprite, &cap );
++        properties.dashCap = (D2D1_CAP_STYLE)cap;
++        ICompositionSpriteShape_get_StrokeLineJoin( sprite, &join );
++        properties.lineJoin = (D2D1_LINE_JOIN)join;
++        ICompositionSpriteShape_get_StrokeMiterLimit( sprite, &properties.miterLimit );
++        properties.dashStyle = D2D1_DASH_STYLE_SOLID;
++        hr = ID2D1Factory_CreateStrokeStyle( factory, &properties, NULL, 0, &style );
++        if (SUCCEEDED(hr)) hr = ID2D1Factory_CreatePathGeometry( factory, &outline );
++        if (SUCCEEDED(hr)) hr = ID2D1PathGeometry_Open( outline, &sink );
++        if (SUCCEEDED(hr))
++        {
++            hr = ID2D1Geometry_Widen( geometry, thickness, style, NULL,
++                    D2D1_DEFAULT_FLATTENING_TOLERANCE, (ID2D1SimplifiedGeometrySink *)sink );
++            close_hr = ID2D1GeometrySink_Close( sink );
++            if (SUCCEEDED(hr)) hr = close_hr;
++        }
++        if (SUCCEEDED(hr)) hr = draw_shape_brush( context, (ID2D1Geometry *)outline, stroke, opacity );
++    }
++    if (sink) ID2D1GeometrySink_Release( sink );
++    if (outline) ID2D1PathGeometry_Release( outline );
++    if (style) ID2D1StrokeStyle_Release( style );
++    if (fill) ICompositionBrush_Release( fill );
++    if (stroke) ICompositionBrush_Release( stroke );
++    ID2D1DeviceContext_SetTransform( context, &parent );
++    ID2D1Factory_Release( factory );
++    ID2D1Geometry_Release( geometry );
++    ICompositionSpriteShape_Release( sprite );
++    return hr;
+ }
+ 
+ static HRESULT draw_composition_visual( ID2D1DeviceContext *context, IVisual *visual,
+@@ -11675,6 +11907,29 @@
+     }
+     if (SUCCEEDED(hr) && impl->brush && bounds.right > bounds.left && bounds.bottom > bounds.top)
+         hr = draw_composition_brush( context, impl->brush, &bounds, opacity, 0 );
++    if (SUCCEEDED(hr) && impl->shapes)
++    {
++        ICompositionShape **shapes;
++        UINT32 count, copied, index;
++
++        hr = IVector_CompositionShape_get_Size( impl->shapes, &count );
++        if (SUCCEEDED(hr) && count)
++        {
++            if ((SIZE_T)count > ~(SIZE_T)0 / sizeof(*shapes) ||
++                !(shapes = malloc( (SIZE_T)count * sizeof(*shapes) ))) hr = E_OUTOFMEMORY;
++            else
++            {
++                hr = IVector_CompositionShape_GetMany( impl->shapes, 0, count, shapes, &copied );
++                if (SUCCEEDED(hr))
++                    for (index = 0; index < copied; ++index)
++                    {
++                        if (SUCCEEDED(hr)) hr = draw_composition_shape( context, shapes[index], opacity );
++                        ICompositionShape_Release( shapes[index] );
++                    }
++                free( shapes );
++            }
++        }
++    }
+     for (i = 0; SUCCEEDED(hr) && i < children->count; ++i)
+         hr = draw_composition_visual( context, children->items[i], 0.0f, 0.0f, width, height,
+                 opacity, depth + 1 );
+diff --git a/dlls/windows.ui/composition_path.c b/dlls/windows.ui/composition_path.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/windows.ui/composition_path.c
+@@ -0,0 +1,635 @@
++/* Windows.UI.Composition geometry paths
++ *
++ * Copyright (C) 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "private.h"
++#include "d2d1.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(ui);
++
++static const GUID iid_geometry_interop =
++    {0x0657af73,0x53fd,0x47cf,{0x84,0xff,0xc8,0x49,0x2d,0x2a,0x80,0xa3}};
++
++struct geometry_interop_iface;
++struct geometry_interop_vtbl
++{
++    HRESULT (WINAPI *QueryInterface)( struct geometry_interop_iface *, REFIID, void ** );
++    ULONG (WINAPI *AddRef)( struct geometry_interop_iface * );
++    ULONG (WINAPI *Release)( struct geometry_interop_iface * );
++    HRESULT (WINAPI *GetGeometry)( struct geometry_interop_iface *, ID2D1Geometry ** );
++    HRESULT (WINAPI *TryGetGeometryUsingFactory)( struct geometry_interop_iface *, ID2D1Factory *, ID2D1Geometry ** );
++};
++
++struct geometry_interop_iface
++{
++    const struct geometry_interop_vtbl *lpVtbl;
++};
++
++struct composition_path
++{
++    ICompositionPath ICompositionPath_iface;
++    IGeometrySource2D IGeometrySource2D_iface;
++    struct geometry_interop_iface interop_iface;
++    LONG ref;
++    ID2D1Geometry *geometry;
++};
++
++static inline struct composition_path *impl_from_ICompositionPath( ICompositionPath *iface )
++{
++    return CONTAINING_RECORD( iface, struct composition_path, ICompositionPath_iface );
++}
++
++static HRESULT geometry_clone( ID2D1Geometry *geometry, ID2D1Factory *factory, ID2D1Geometry **result )
++{
++    ID2D1PathGeometry *path;
++    ID2D1GeometrySink *sink;
++    HRESULT hr, close_hr;
++
++    *result = NULL;
++    if (FAILED(hr = ID2D1Factory_CreatePathGeometry( factory, &path ))) return hr;
++    if (SUCCEEDED(hr = ID2D1PathGeometry_Open( path, &sink )))
++    {
++        hr = ID2D1Geometry_Simplify( geometry, D2D1_GEOMETRY_SIMPLIFICATION_OPTION_CUBICS_AND_LINES,
++                NULL, D2D1_DEFAULT_FLATTENING_TOLERANCE, (ID2D1SimplifiedGeometrySink *)sink );
++        close_hr = ID2D1GeometrySink_Close( sink );
++        ID2D1GeometrySink_Release( sink );
++        if (SUCCEEDED(hr)) hr = close_hr;
++    }
++    if (FAILED(hr)) ID2D1PathGeometry_Release( path );
++    else *result = (ID2D1Geometry *)path;
++    return hr;
++}
++
++static HRESULT WINAPI path_QueryInterface( ICompositionPath *iface, REFIID iid, void **out )
++{
++    struct composition_path *impl = impl_from_ICompositionPath( iface );
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_ICompositionPath )) *out = iface;
++    else if (IsEqualGUID( iid, &IID_IGeometrySource2D )) *out = &impl->IGeometrySource2D_iface;
++    else if (IsEqualGUID( iid, &iid_geometry_interop )) *out = &impl->interop_iface;
++    else return E_NOINTERFACE;
++    IUnknown_AddRef( (IUnknown *)*out );
++    return S_OK;
++}
++
++static ULONG WINAPI path_AddRef( ICompositionPath *iface )
++{
++    return InterlockedIncrement( &impl_from_ICompositionPath( iface )->ref );
++}
++
++static ULONG WINAPI path_Release( ICompositionPath *iface )
++{
++    struct composition_path *impl = impl_from_ICompositionPath( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        ID2D1Geometry_Release( impl->geometry );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI path_GetIids( ICompositionPath *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = CoTaskMemAlloc( 2 * sizeof(**iids) );
++    if (!*iids) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_ICompositionPath;
++    (*iids)[1] = IID_IGeometrySource2D;
++    *count = 2;
++    return S_OK;
++}
++
++static HRESULT path_class_name( HSTRING *name )
++{
++    const WCHAR *class_name = RuntimeClass_Windows_UI_Composition_CompositionPath;
++
++    if (!name) return E_POINTER;
++    return WindowsCreateString( class_name, wcslen(class_name), name );
++}
++
++static HRESULT WINAPI path_GetRuntimeClassName( ICompositionPath *iface, HSTRING *name )
++{
++    return path_class_name( name );
++}
++
++static HRESULT WINAPI path_GetTrustLevel( ICompositionPath *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static const ICompositionPathVtbl path_vtbl =
++{
++    path_QueryInterface,
++    path_AddRef,
++    path_Release,
++    path_GetIids,
++    path_GetRuntimeClassName,
++    path_GetTrustLevel,
++};
++
++DEFINE_IINSPECTABLE( path_source, IGeometrySource2D, struct composition_path, ICompositionPath_iface )
++
++static const IGeometrySource2DVtbl path_source_vtbl =
++{
++    path_source_QueryInterface,
++    path_source_AddRef,
++    path_source_Release,
++    path_source_GetIids,
++    path_source_GetRuntimeClassName,
++    path_source_GetTrustLevel,
++};
++
++static inline struct composition_path *impl_from_path_interop( struct geometry_interop_iface *iface )
++{
++    return CONTAINING_RECORD( iface, struct composition_path, interop_iface );
++}
++
++static HRESULT WINAPI path_interop_QueryInterface( struct geometry_interop_iface *iface, REFIID iid, void **out )
++{
++    return path_QueryInterface( &impl_from_path_interop(iface)->ICompositionPath_iface, iid, out );
++}
++
++static ULONG WINAPI path_interop_AddRef( struct geometry_interop_iface *iface )
++{
++    return path_AddRef( &impl_from_path_interop(iface)->ICompositionPath_iface );
++}
++
++static ULONG WINAPI path_interop_Release( struct geometry_interop_iface *iface )
++{
++    return path_Release( &impl_from_path_interop(iface)->ICompositionPath_iface );
++}
++
++static HRESULT WINAPI path_interop_GetGeometry( struct geometry_interop_iface *iface, ID2D1Geometry **result )
++{
++    struct composition_path *impl = impl_from_path_interop( iface );
++
++    if (!result) return E_POINTER;
++    *result = impl->geometry;
++    ID2D1Geometry_AddRef( *result );
++    return S_OK;
++}
++
++static HRESULT WINAPI path_interop_TryGetGeometryUsingFactory( struct geometry_interop_iface *iface,
++        ID2D1Factory *factory, ID2D1Geometry **result )
++{
++    struct composition_path *impl = impl_from_path_interop( iface );
++    ID2D1Factory *owner;
++    HRESULT hr;
++
++    if (!result) return E_POINTER;
++    *result = NULL;
++    if (!factory) return E_INVALIDARG;
++    ID2D1Geometry_GetFactory( impl->geometry, &owner );
++    if (owner == factory) hr = path_interop_GetGeometry( iface, result );
++    else hr = geometry_clone( impl->geometry, factory, result );
++    ID2D1Factory_Release( owner );
++    return hr;
++}
++
++static const struct geometry_interop_vtbl path_interop_vtbl =
++{
++    path_interop_QueryInterface,
++    path_interop_AddRef,
++    path_interop_Release,
++    path_interop_GetGeometry,
++    path_interop_TryGetGeometryUsingFactory,
++};
++
++struct path_factory
++{
++    IActivationFactory IActivationFactory_iface;
++    ICompositionPathFactory ICompositionPathFactory_iface;
++    LONG ref;
++};
++
++static inline struct path_factory *impl_from_IActivationFactory( IActivationFactory *iface )
++{
++    return CONTAINING_RECORD( iface, struct path_factory, IActivationFactory_iface );
++}
++
++static HRESULT WINAPI path_factory_QueryInterface( IActivationFactory *iface, REFIID iid, void **out )
++{
++    struct path_factory *impl = impl_from_IActivationFactory( iface );
++
++    TRACE( "iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out );
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IActivationFactory ))
++        *out = iface;
++    else if (IsEqualGUID( iid, &IID_ICompositionPathFactory ))
++        *out = &impl->ICompositionPathFactory_iface;
++    else return E_NOINTERFACE;
++
++    IUnknown_AddRef( (IUnknown *)*out );
++    return S_OK;
++}
++
++static ULONG WINAPI path_factory_AddRef( IActivationFactory *iface )
++{
++    return InterlockedIncrement( &impl_from_IActivationFactory( iface )->ref );
++}
++
++static ULONG WINAPI path_factory_Release( IActivationFactory *iface )
++{
++    return InterlockedDecrement( &impl_from_IActivationFactory( iface )->ref );
++}
++
++static HRESULT WINAPI path_factory_GetIids( IActivationFactory *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = CoTaskMemAlloc( sizeof(**iids) );
++    if (!*iids) return E_OUTOFMEMORY;
++    **iids = IID_ICompositionPathFactory;
++    *count = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI path_factory_GetRuntimeClassName( IActivationFactory *iface, HSTRING *name )
++{
++    return path_class_name( name );
++}
++
++static HRESULT WINAPI path_factory_GetTrustLevel( IActivationFactory *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI path_factory_ActivateInstance( IActivationFactory *iface, IInspectable **instance )
++{
++    if (!instance) return E_POINTER;
++    *instance = NULL;
++    return E_NOTIMPL;
++}
++
++static const IActivationFactoryVtbl path_factory_vtbl =
++{
++    path_factory_QueryInterface,
++    path_factory_AddRef,
++    path_factory_Release,
++    path_factory_GetIids,
++    path_factory_GetRuntimeClassName,
++    path_factory_GetTrustLevel,
++    path_factory_ActivateInstance,
++};
++
++DEFINE_IINSPECTABLE( path_constructor, ICompositionPathFactory, struct path_factory,
++                    IActivationFactory_iface )
++
++static HRESULT WINAPI path_constructor_Create( ICompositionPathFactory *iface,
++        IGeometrySource2D *source, ICompositionPath **result )
++{
++    struct geometry_interop_iface *interop;
++    struct composition_path *impl;
++    ID2D1Geometry *geometry = NULL;
++    ID2D1Factory *factory;
++    HRESULT hr;
++
++    if (!result) return E_POINTER;
++    *result = NULL;
++    if (!source) return E_INVALIDARG;
++    hr = IGeometrySource2D_QueryInterface( source, &iid_geometry_interop, (void **)&interop );
++    if (FAILED(hr)) return E_INVALIDARG;
++    hr = interop->lpVtbl->GetGeometry( interop, &geometry );
++    interop->lpVtbl->Release( interop );
++    if (FAILED(hr)) return hr;
++    if (!geometry) return E_INVALIDARG;
++    if (!(impl = calloc( 1, sizeof(*impl) )))
++    {
++        ID2D1Geometry_Release( geometry );
++        return E_OUTOFMEMORY;
++    }
++    ID2D1Geometry_GetFactory( geometry, &factory );
++    hr = geometry_clone( geometry, factory, &impl->geometry );
++    ID2D1Factory_Release( factory );
++    ID2D1Geometry_Release( geometry );
++    if (FAILED(hr))
++    {
++        free( impl );
++        return hr;
++    }
++    impl->ICompositionPath_iface.lpVtbl = &path_vtbl;
++    impl->IGeometrySource2D_iface.lpVtbl = &path_source_vtbl;
++    impl->interop_iface.lpVtbl = &path_interop_vtbl;
++    impl->ref = 1;
++    *result = &impl->ICompositionPath_iface;
++    return S_OK;
++}
++
++static const ICompositionPathFactoryVtbl path_constructor_vtbl =
++{
++    path_constructor_QueryInterface,
++    path_constructor_AddRef,
++    path_constructor_Release,
++    path_constructor_GetIids,
++    path_constructor_GetRuntimeClassName,
++    path_constructor_GetTrustLevel,
++    path_constructor_Create,
++};
++
++static struct path_factory path_factory_impl =
++{
++    {&path_factory_vtbl},
++    {&path_constructor_vtbl},
++    1,
++};
++
++IActivationFactory *composition_path_factory = &path_factory_impl.IActivationFactory_iface;
++
++struct path_geometry
++{
++    ICompositionPathGeometry ICompositionPathGeometry_iface;
++    ICompositionGeometry ICompositionGeometry_iface;
++    ICompositionObject ICompositionObject_iface;
++    LONG ref;
++    ICompositor *compositor;
++    ICompositionPropertySet *properties;
++    ICompositionPath *path;
++    FLOAT trim_end, trim_offset, trim_start;
++};
++
++static inline struct path_geometry *impl_from_ICompositionPathGeometry( ICompositionPathGeometry *iface )
++{
++    return CONTAINING_RECORD( iface, struct path_geometry, ICompositionPathGeometry_iface );
++}
++
++static HRESULT WINAPI path_geometry_QueryInterface( ICompositionPathGeometry *iface, REFIID iid, void **out )
++{
++    struct path_geometry *impl = impl_from_ICompositionPathGeometry( iface );
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_ICompositionPathGeometry )) *out = iface;
++    else if (IsEqualGUID( iid, &IID_ICompositionGeometry )) *out = &impl->ICompositionGeometry_iface;
++    else if (IsEqualGUID( iid, &IID_ICompositionObject )) *out = &impl->ICompositionObject_iface;
++    else return E_NOINTERFACE;
++    IUnknown_AddRef( (IUnknown *)*out );
++    return S_OK;
++}
++
++static ULONG WINAPI path_geometry_AddRef( ICompositionPathGeometry *iface )
++{
++    return InterlockedIncrement( &impl_from_ICompositionPathGeometry(iface)->ref );
++}
++
++static ULONG WINAPI path_geometry_Release( ICompositionPathGeometry *iface )
++{
++    struct path_geometry *impl = impl_from_ICompositionPathGeometry( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        if (impl->path) ICompositionPath_Release( impl->path );
++        ICompositionPropertySet_Release( impl->properties );
++        ICompositor_Release( impl->compositor );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI path_geometry_GetIids( ICompositionPathGeometry *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = CoTaskMemAlloc( 3 * sizeof(**iids) );
++    if (!*iids) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_ICompositionPathGeometry;
++    (*iids)[1] = IID_ICompositionGeometry;
++    (*iids)[2] = IID_ICompositionObject;
++    *count = 3;
++    return S_OK;
++}
++
++static HRESULT WINAPI path_geometry_GetRuntimeClassName( ICompositionPathGeometry *iface, HSTRING *name )
++{
++    const WCHAR *class_name = RuntimeClass_Windows_UI_Composition_CompositionPathGeometry;
++
++    if (!name) return E_POINTER;
++    return WindowsCreateString( class_name, wcslen(class_name), name );
++}
++
++static HRESULT WINAPI path_geometry_GetTrustLevel( ICompositionPathGeometry *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI path_geometry_get_Path( ICompositionPathGeometry *iface, ICompositionPath **value )
++{
++    struct path_geometry *impl = impl_from_ICompositionPathGeometry( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->path;
++    if (*value) ICompositionPath_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI path_geometry_put_Path( ICompositionPathGeometry *iface, ICompositionPath *value )
++{
++    struct path_geometry *impl = impl_from_ICompositionPathGeometry( iface );
++
++    if (!value) return E_INVALIDARG;
++    ICompositionPath_AddRef( value );
++    if (impl->path) ICompositionPath_Release( impl->path );
++    impl->path = value;
++    return S_OK;
++}
++
++static const ICompositionPathGeometryVtbl path_geometry_vtbl =
++{
++    path_geometry_QueryInterface,
++    path_geometry_AddRef,
++    path_geometry_Release,
++    path_geometry_GetIids,
++    path_geometry_GetRuntimeClassName,
++    path_geometry_GetTrustLevel,
++    path_geometry_get_Path,
++    path_geometry_put_Path,
++};
++
++DEFINE_IINSPECTABLE( geometry, ICompositionGeometry, struct path_geometry, ICompositionPathGeometry_iface )
++DEFINE_IINSPECTABLE( geometry_object, ICompositionObject, struct path_geometry, ICompositionPathGeometry_iface )
++
++static HRESULT WINAPI geometry_get_TrimEnd( ICompositionGeometry *iface, FLOAT *value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_ICompositionGeometry(iface)->trim_end;
++    return S_OK;
++}
++
++static HRESULT WINAPI geometry_put_TrimEnd( ICompositionGeometry *iface, FLOAT value )
++{
++    impl_from_ICompositionGeometry(iface)->trim_end = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI geometry_get_TrimOffset( ICompositionGeometry *iface, FLOAT *value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_ICompositionGeometry(iface)->trim_offset;
++    return S_OK;
++}
++
++static HRESULT WINAPI geometry_put_TrimOffset( ICompositionGeometry *iface, FLOAT value )
++{
++    impl_from_ICompositionGeometry(iface)->trim_offset = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI geometry_get_TrimStart( ICompositionGeometry *iface, FLOAT *value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_ICompositionGeometry(iface)->trim_start;
++    return S_OK;
++}
++
++static HRESULT WINAPI geometry_put_TrimStart( ICompositionGeometry *iface, FLOAT value )
++{
++    impl_from_ICompositionGeometry(iface)->trim_start = value;
++    return S_OK;
++}
++
++static const ICompositionGeometryVtbl geometry_vtbl =
++{
++    geometry_QueryInterface,
++    geometry_AddRef,
++    geometry_Release,
++    geometry_GetIids,
++    geometry_GetRuntimeClassName,
++    geometry_GetTrustLevel,
++    geometry_get_TrimEnd,
++    geometry_put_TrimEnd,
++    geometry_get_TrimOffset,
++    geometry_put_TrimOffset,
++    geometry_get_TrimStart,
++    geometry_put_TrimStart,
++};
++
++static HRESULT WINAPI geometry_object_get_Compositor( ICompositionObject *iface, ICompositor **value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_ICompositionObject(iface)->compositor;
++    ICompositor_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI geometry_object_get_Dispatcher( ICompositionObject *iface,
++        ICoreDispatcher **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI geometry_object_get_Properties( ICompositionObject *iface, ICompositionPropertySet **value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_ICompositionObject(iface)->properties;
++    ICompositionPropertySet_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI geometry_object_StartAnimation( ICompositionObject *iface, HSTRING name,
++        ICompositionAnimation *animation )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI geometry_object_StopAnimation( ICompositionObject *iface, HSTRING name )
++{
++    return E_NOTIMPL;
++}
++
++static const ICompositionObjectVtbl geometry_object_vtbl =
++{
++    geometry_object_QueryInterface,
++    geometry_object_AddRef,
++    geometry_object_Release,
++    geometry_object_GetIids,
++    geometry_object_GetRuntimeClassName,
++    geometry_object_GetTrustLevel,
++    geometry_object_get_Compositor,
++    geometry_object_get_Dispatcher,
++    geometry_object_get_Properties,
++    geometry_object_StartAnimation,
++    geometry_object_StopAnimation,
++};
++
++HRESULT composition_path_geometry_create( ICompositor *compositor, ICompositionPath *path,
++        ICompositionPathGeometry **result )
++{
++    struct path_geometry *impl;
++    HRESULT hr;
++
++    if (!result) return E_POINTER;
++    *result = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    if (FAILED(hr = composition_property_set_create( compositor, &impl->properties )))
++    {
++        free( impl );
++        return hr;
++    }
++    impl->ICompositionPathGeometry_iface.lpVtbl = &path_geometry_vtbl;
++    impl->ICompositionGeometry_iface.lpVtbl = &geometry_vtbl;
++    impl->ICompositionObject_iface.lpVtbl = &geometry_object_vtbl;
++    impl->ref = 1;
++    impl->trim_end = 1.0f;
++    impl->compositor = compositor;
++    ICompositor_AddRef( compositor );
++    impl->path = path;
++    if (path) ICompositionPath_AddRef( path );
++    *result = &impl->ICompositionPathGeometry_iface;
++    return S_OK;
++}
++
++HRESULT composition_path_geometry_get_geometry( ICompositionGeometry *geometry,
++        ID2D1Factory *factory, ID2D1Geometry **result )
++{
++    ICompositionPathGeometry *path_geometry;
++    struct geometry_interop_iface *interop;
++    ICompositionPath *path = NULL;
++    HRESULT hr;
++
++    if (!result) return E_POINTER;
++    *result = NULL;
++    hr = ICompositionGeometry_QueryInterface( geometry, &IID_ICompositionPathGeometry, (void **)&path_geometry );
++    if (FAILED(hr)) return hr;
++    hr = ICompositionPathGeometry_get_Path( path_geometry, &path );
++    ICompositionPathGeometry_Release( path_geometry );
++    if (FAILED(hr) || !path) return hr;
++    hr = ICompositionPath_QueryInterface( path, &iid_geometry_interop, (void **)&interop );
++    ICompositionPath_Release( path );
++    if (FAILED(hr)) return hr;
++    hr = interop->lpVtbl->TryGetGeometryUsingFactory( interop, factory, result );
++    interop->lpVtbl->Release( interop );
++    return hr;
++}
+diff --git a/dlls/windows.ui/composition_shape_collection.c b/dlls/windows.ui/composition_shape_collection.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/windows.ui/composition_shape_collection.c
+@@ -0,0 +1,585 @@
++/* WinRT Windows.UI.Composition shape collection
++ *
++ * Copyright (C) 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdint.h>
++#include "private.h"
++
++struct shape_collection
++{
++    IVector_CompositionShape IVector_CompositionShape_iface;
++    IVectorView_CompositionShape IVectorView_CompositionShape_iface;
++    IIterable_CompositionShape IIterable_CompositionShape_iface;
++    LONG ref;
++    UINT32 count, capacity, version;
++    ICompositionShape **items;
++    CRITICAL_SECTION lock;
++};
++
++static inline struct shape_collection *impl_from_IVector_CompositionShape( IVector_CompositionShape *iface )
++{
++    return CONTAINING_RECORD( iface, struct shape_collection, IVector_CompositionShape_iface );
++}
++
++static HRESULT WINAPI shape_collection_QueryInterface( IVector_CompositionShape *iface, REFIID iid, void **out )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IVector_CompositionShape )) *out = iface;
++    else if (IsEqualGUID( iid, &IID_IVectorView_CompositionShape )) *out = &impl->IVectorView_CompositionShape_iface;
++    else if (IsEqualGUID( iid, &IID_IIterable_CompositionShape )) *out = &impl->IIterable_CompositionShape_iface;
++    else return E_NOINTERFACE;
++    IUnknown_AddRef( (IUnknown *)*out );
++    return S_OK;
++}
++
++static ULONG WINAPI shape_collection_AddRef( IVector_CompositionShape *iface )
++{
++    return InterlockedIncrement( &impl_from_IVector_CompositionShape(iface)->ref );
++}
++
++static ULONG WINAPI shape_collection_Release( IVector_CompositionShape *iface )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++    UINT32 i;
++
++    if (!ref)
++    {
++        for (i = 0; i < impl->count; ++i) ICompositionShape_Release( impl->items[i] );
++        free( impl->items );
++        DeleteCriticalSection( &impl->lock );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI shape_collection_GetIids( IVector_CompositionShape *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    if (!(*iids = CoTaskMemAlloc( 3 * sizeof(**iids) ))) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_IVector_CompositionShape;
++    (*iids)[1] = IID_IVectorView_CompositionShape;
++    (*iids)[2] = IID_IIterable_CompositionShape;
++    *count = 3;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_collection_GetRuntimeClassName( IVector_CompositionShape *iface, HSTRING *name )
++{
++    if (!name) return E_POINTER;
++    *name = NULL;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_collection_GetTrustLevel( IVector_CompositionShape *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_collection_GetAt( IVector_CompositionShape *iface, UINT32 index, ICompositionShape **value )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++    HRESULT hr = E_BOUNDS;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->lock );
++    if (index < impl->count)
++    {
++        *value = impl->items[index];
++        ICompositionShape_AddRef( *value );
++        hr = S_OK;
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI shape_collection_get_Size( IVector_CompositionShape *iface, UINT32 *value )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++
++    if (!value) return E_POINTER;
++    EnterCriticalSection( &impl->lock );
++    *value = impl->count;
++    LeaveCriticalSection( &impl->lock );
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_collection_GetView( IVector_CompositionShape *iface, IVectorView_CompositionShape **value )
++{
++    return shape_collection_QueryInterface( iface, &IID_IVectorView_CompositionShape, (void **)value );
++}
++
++static HRESULT WINAPI shape_collection_IndexOf( IVector_CompositionShape *iface, ICompositionShape *value,
++        UINT32 *index, boolean *found )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++    UINT32 i;
++
++    if (!index || !found) return E_POINTER;
++    *index = 0;
++    *found = FALSE;
++    EnterCriticalSection( &impl->lock );
++    for (i = 0; i < impl->count; ++i)
++        if (impl->items[i] == value)
++        {
++            *index = i;
++            *found = TRUE;
++            break;
++        }
++    LeaveCriticalSection( &impl->lock );
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_collection_SetAt( IVector_CompositionShape *iface, UINT32 index, ICompositionShape *value )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++    ICompositionShape *old = NULL;
++    HRESULT hr = E_BOUNDS;
++
++    if (!value) return E_INVALIDARG;
++    EnterCriticalSection( &impl->lock );
++    if (index < impl->count)
++    {
++        ICompositionShape_AddRef( value );
++        old = impl->items[index];
++        impl->items[index] = value;
++        ++impl->version;
++        hr = S_OK;
++    }
++    LeaveCriticalSection( &impl->lock );
++    if (old) ICompositionShape_Release( old );
++    return hr;
++}
++
++static HRESULT WINAPI shape_collection_InsertAt( IVector_CompositionShape *iface, UINT32 index, ICompositionShape *value )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++    ICompositionShape **items;
++    UINT32 capacity;
++    HRESULT hr = S_OK;
++
++    if (!value) return E_INVALIDARG;
++    EnterCriticalSection( &impl->lock );
++    if (index > impl->count) hr = E_BOUNDS;
++    else if (impl->count == UINT32_MAX) hr = E_OUTOFMEMORY;
++    else
++    {
++        if (impl->count == impl->capacity)
++        {
++            capacity = impl->capacity <= UINT32_MAX / 2 ? max( 8, impl->capacity * 2 ) : UINT32_MAX;
++            if ((SIZE_T)capacity > ~(SIZE_T)0 / sizeof(*items) ||
++                !(items = realloc( impl->items, (SIZE_T)capacity * sizeof(*items) ))) hr = E_OUTOFMEMORY;
++            else
++            {
++                impl->items = items;
++                impl->capacity = capacity;
++            }
++        }
++        if (SUCCEEDED(hr))
++        {
++            memmove( impl->items + index + 1, impl->items + index, (impl->count - index) * sizeof(*impl->items) );
++            ICompositionShape_AddRef( value );
++            impl->items[index] = value;
++            ++impl->count;
++            ++impl->version;
++        }
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI shape_collection_RemoveAt( IVector_CompositionShape *iface, UINT32 index )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++    ICompositionShape *old = NULL;
++    HRESULT hr = E_BOUNDS;
++
++    EnterCriticalSection( &impl->lock );
++    if (index < impl->count)
++    {
++        old = impl->items[index];
++        --impl->count;
++        memmove( impl->items + index, impl->items + index + 1, (impl->count - index) * sizeof(*impl->items) );
++        ++impl->version;
++        hr = S_OK;
++    }
++    LeaveCriticalSection( &impl->lock );
++    if (old) ICompositionShape_Release( old );
++    return hr;
++}
++
++static HRESULT WINAPI shape_collection_Append( IVector_CompositionShape *iface, ICompositionShape *value )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++    HRESULT hr;
++
++    EnterCriticalSection( &impl->lock );
++    hr = shape_collection_InsertAt( iface, impl->count, value );
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI shape_collection_RemoveAtEnd( IVector_CompositionShape *iface )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++    HRESULT hr;
++
++    EnterCriticalSection( &impl->lock );
++    hr = impl->count ? shape_collection_RemoveAt( iface, impl->count - 1 ) : E_BOUNDS;
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI shape_collection_Clear( IVector_CompositionShape *iface )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++    ICompositionShape **items;
++    UINT32 count, i;
++
++    EnterCriticalSection( &impl->lock );
++    items = impl->items;
++    count = impl->count;
++    impl->items = NULL;
++    impl->count = impl->capacity = 0;
++    ++impl->version;
++    LeaveCriticalSection( &impl->lock );
++    for (i = 0; i < count; ++i) ICompositionShape_Release( items[i] );
++    free( items );
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_collection_GetMany( IVector_CompositionShape *iface, UINT32 start, UINT32 capacity,
++        ICompositionShape **items, UINT32 *count )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++    UINT32 i;
++    HRESULT hr = S_OK;
++
++    if (!count || (capacity && !items)) return E_POINTER;
++    *count = 0;
++    EnterCriticalSection( &impl->lock );
++    if (start > impl->count) hr = E_BOUNDS;
++    else
++    {
++        *count = min( capacity, impl->count - start );
++        for (i = 0; i < *count; ++i)
++        {
++            items[i] = impl->items[start + i];
++            ICompositionShape_AddRef( items[i] );
++        }
++    }
++    LeaveCriticalSection( &impl->lock );
++    return hr;
++}
++
++static HRESULT WINAPI shape_collection_ReplaceAll( IVector_CompositionShape *iface, UINT32 count, ICompositionShape **values )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++    ICompositionShape **items = NULL, **old;
++    UINT32 i, old_count;
++
++    if (count && !values) return E_POINTER;
++    if ((SIZE_T)count > ~(SIZE_T)0 / sizeof(*items)) return E_OUTOFMEMORY;
++    if (count && !(items = malloc( (SIZE_T)count * sizeof(*items) ))) return E_OUTOFMEMORY;
++    for (i = 0; i < count; ++i)
++    {
++        if (!values[i])
++        {
++            while (i) ICompositionShape_Release( items[--i] );
++            free( items );
++            return E_INVALIDARG;
++        }
++        items[i] = values[i];
++        ICompositionShape_AddRef( items[i] );
++    }
++    EnterCriticalSection( &impl->lock );
++    old = impl->items;
++    old_count = impl->count;
++    impl->items = items;
++    impl->count = impl->capacity = count;
++    ++impl->version;
++    LeaveCriticalSection( &impl->lock );
++    for (i = 0; i < old_count; ++i) ICompositionShape_Release( old[i] );
++    free( old );
++    return S_OK;
++}
++
++DEFINE_IINSPECTABLE( shape_view, IVectorView_CompositionShape, struct shape_collection, IVector_CompositionShape_iface )
++
++static HRESULT WINAPI shape_view_GetAt( IVectorView_CompositionShape *iface, UINT32 index, ICompositionShape **value )
++{
++    return shape_collection_GetAt( &impl_from_IVectorView_CompositionShape(iface)->IVector_CompositionShape_iface, index, value );
++}
++
++static HRESULT WINAPI shape_view_get_Size( IVectorView_CompositionShape *iface, UINT32 *value )
++{
++    return shape_collection_get_Size( &impl_from_IVectorView_CompositionShape(iface)->IVector_CompositionShape_iface, value );
++}
++
++static HRESULT WINAPI shape_view_IndexOf( IVectorView_CompositionShape *iface, ICompositionShape *value, UINT32 *index, boolean *found )
++{
++    return shape_collection_IndexOf( &impl_from_IVectorView_CompositionShape(iface)->IVector_CompositionShape_iface, value, index, found );
++}
++
++static HRESULT WINAPI shape_view_GetMany( IVectorView_CompositionShape *iface, UINT32 start, UINT32 capacity, ICompositionShape **items, UINT32 *count )
++{
++    return shape_collection_GetMany( &impl_from_IVectorView_CompositionShape(iface)->IVector_CompositionShape_iface, start, capacity, items, count );
++}
++
++static const IVectorView_CompositionShapeVtbl shape_view_vtbl =
++{
++    shape_view_QueryInterface,
++    shape_view_AddRef,
++    shape_view_Release,
++    shape_view_GetIids,
++    shape_view_GetRuntimeClassName,
++    shape_view_GetTrustLevel,
++    shape_view_GetAt,
++    shape_view_get_Size,
++    shape_view_IndexOf,
++    shape_view_GetMany,
++};
++
++struct shape_iterator
++{
++    IIterator_CompositionShape IIterator_CompositionShape_iface;
++    struct shape_collection *collection;
++    UINT32 index, version;
++    LONG ref;
++};
++
++static inline struct shape_iterator *impl_from_IIterator_CompositionShape( IIterator_CompositionShape *iface )
++{
++    return CONTAINING_RECORD( iface, struct shape_iterator, IIterator_CompositionShape_iface );
++}
++
++static HRESULT WINAPI shape_iterator_QueryInterface( IIterator_CompositionShape *iface, REFIID iid, void **out )
++{
++    if (!out) return E_POINTER;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IIterator_CompositionShape ))
++    {
++        *out = iface;
++        IIterator_CompositionShape_AddRef( iface );
++        return S_OK;
++    }
++    *out = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI shape_iterator_AddRef( IIterator_CompositionShape *iface )
++{
++    return InterlockedIncrement( &impl_from_IIterator_CompositionShape( iface )->ref );
++}
++
++static ULONG WINAPI shape_iterator_Release( IIterator_CompositionShape *iface )
++{
++    struct shape_iterator *impl = impl_from_IIterator_CompositionShape( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        IVector_CompositionShape_Release( &impl->collection->IVector_CompositionShape_iface );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI shape_iterator_GetIids( IIterator_CompositionShape *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    if (!(*iids = CoTaskMemAlloc( sizeof(**iids) ))) return E_OUTOFMEMORY;
++    **iids = IID_IIterator_CompositionShape;
++    *count = 1;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_iterator_GetRuntimeClassName( IIterator_CompositionShape *iface, HSTRING *name )
++{
++    if (!name) return E_POINTER;
++    return WindowsCreateString( RuntimeClass_Windows_UI_Composition_CompositionShape,
++                                ARRAY_SIZE(RuntimeClass_Windows_UI_Composition_CompositionShape) - 1, name );
++}
++
++static HRESULT WINAPI shape_iterator_GetTrustLevel( IIterator_CompositionShape *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_iterator_get_Current( IIterator_CompositionShape *iface, ICompositionShape **value )
++{
++    struct shape_iterator *impl = impl_from_IIterator_CompositionShape( iface );
++    HRESULT hr;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    EnterCriticalSection( &impl->collection->lock );
++    if (impl->version != impl->collection->version) hr = E_CHANGED_STATE;
++    else hr = shape_collection_GetAt( &impl->collection->IVector_CompositionShape_iface, impl->index, value );
++    LeaveCriticalSection( &impl->collection->lock );
++    return hr;
++}
++
++static HRESULT WINAPI shape_iterator_get_HasCurrent( IIterator_CompositionShape *iface, boolean *value )
++{
++    struct shape_iterator *impl = impl_from_IIterator_CompositionShape( iface );
++    HRESULT hr = S_OK;
++
++    if (!value) return E_POINTER;
++    *value = FALSE;
++    EnterCriticalSection( &impl->collection->lock );
++    if (impl->version != impl->collection->version) hr = E_CHANGED_STATE;
++    else *value = impl->index < impl->collection->count;
++    LeaveCriticalSection( &impl->collection->lock );
++    return hr;
++}
++
++static HRESULT WINAPI shape_iterator_MoveNext( IIterator_CompositionShape *iface, boolean *value )
++{
++    struct shape_iterator *impl = impl_from_IIterator_CompositionShape( iface );
++    HRESULT hr = S_OK;
++
++    if (!value) return E_POINTER;
++    *value = FALSE;
++    EnterCriticalSection( &impl->collection->lock );
++    if (impl->version != impl->collection->version) hr = E_CHANGED_STATE;
++    else
++    {
++        if (impl->index < impl->collection->count) ++impl->index;
++        *value = impl->index < impl->collection->count;
++    }
++    LeaveCriticalSection( &impl->collection->lock );
++    return hr;
++}
++
++static HRESULT WINAPI shape_iterator_GetMany( IIterator_CompositionShape *iface, UINT32 capacity,
++        ICompositionShape **items, UINT32 *count )
++{
++    struct shape_iterator *impl = impl_from_IIterator_CompositionShape( iface );
++    HRESULT hr;
++
++    if (!count || (capacity && !items)) return E_POINTER;
++    *count = 0;
++    EnterCriticalSection( &impl->collection->lock );
++    if (impl->version != impl->collection->version) hr = E_CHANGED_STATE;
++    else
++    {
++        hr = shape_collection_GetMany( &impl->collection->IVector_CompositionShape_iface,
++                impl->index, capacity, items, count );
++        if (SUCCEEDED(hr)) impl->index += *count;
++    }
++    LeaveCriticalSection( &impl->collection->lock );
++    return hr;
++}
++
++static const IIterator_CompositionShapeVtbl shape_iterator_vtbl =
++{
++    shape_iterator_QueryInterface,
++    shape_iterator_AddRef,
++    shape_iterator_Release,
++    shape_iterator_GetIids,
++    shape_iterator_GetRuntimeClassName,
++    shape_iterator_GetTrustLevel,
++    shape_iterator_get_Current,
++    shape_iterator_get_HasCurrent,
++    shape_iterator_MoveNext,
++    shape_iterator_GetMany,
++};
++
++DEFINE_IINSPECTABLE_( shape_collection_iterable, IIterable_CompositionShape, struct shape_collection,
++                      impl_from_IIterable_CompositionShape, IIterable_CompositionShape_iface,
++                      &impl->IVector_CompositionShape_iface )
++
++static HRESULT WINAPI shape_collection_iterable_First( IIterable_CompositionShape *iface,
++        IIterator_CompositionShape **value )
++{
++    struct shape_collection *collection = impl_from_IIterable_CompositionShape( iface );
++    struct shape_iterator *iterator;
++
++    if (!value) return E_POINTER;
++    *value = NULL;
++    if (!(iterator = calloc( 1, sizeof(*iterator) ))) return E_OUTOFMEMORY;
++    iterator->IIterator_CompositionShape_iface.lpVtbl = &shape_iterator_vtbl;
++    iterator->collection = collection;
++    EnterCriticalSection( &collection->lock );
++    iterator->version = collection->version;
++    LeaveCriticalSection( &collection->lock );
++    iterator->ref = 1;
++    IVector_CompositionShape_AddRef( &collection->IVector_CompositionShape_iface );
++    *value = &iterator->IIterator_CompositionShape_iface;
++    return S_OK;
++}
++
++static const IIterable_CompositionShapeVtbl shape_collection_iterable_vtbl =
++{
++    shape_collection_iterable_QueryInterface,
++    shape_collection_iterable_AddRef,
++    shape_collection_iterable_Release,
++    shape_collection_iterable_GetIids,
++    shape_collection_iterable_GetRuntimeClassName,
++    shape_collection_iterable_GetTrustLevel,
++    shape_collection_iterable_First,
++};
++
++static const IVector_CompositionShapeVtbl shape_collection_vtbl =
++{
++    shape_collection_QueryInterface,
++    shape_collection_AddRef,
++    shape_collection_Release,
++    shape_collection_GetIids,
++    shape_collection_GetRuntimeClassName,
++    shape_collection_GetTrustLevel,
++    shape_collection_GetAt,
++    shape_collection_get_Size,
++    shape_collection_GetView,
++    shape_collection_IndexOf,
++    shape_collection_SetAt,
++    shape_collection_InsertAt,
++    shape_collection_RemoveAt,
++    shape_collection_Append,
++    shape_collection_RemoveAtEnd,
++    shape_collection_Clear,
++    shape_collection_GetMany,
++    shape_collection_ReplaceAll,
++};
++
++HRESULT composition_shape_collection_create( IVector_CompositionShape **result )
++{
++    struct shape_collection *impl;
++
++    if (!result) return E_POINTER;
++    *result = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    impl->IVector_CompositionShape_iface.lpVtbl = &shape_collection_vtbl;
++    impl->IVectorView_CompositionShape_iface.lpVtbl = &shape_view_vtbl;
++    impl->IIterable_CompositionShape_iface.lpVtbl = &shape_collection_iterable_vtbl;
++    impl->ref = 1;
++    InitializeCriticalSection( &impl->lock );
++    *result = &impl->IVector_CompositionShape_iface;
++    return S_OK;
++}
+diff --git a/dlls/windows.ui/composition_shapes.c b/dlls/windows.ui/composition_shapes.c
+new file mode 100644
+--- /dev/null
++++ b/dlls/windows.ui/composition_shapes.c
+@@ -0,0 +1,568 @@
++/* Windows.UI.Composition vector shapes
++ *
++ * Copyright (C) 2026 Mirko Brombin
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <math.h>
++#include "private.h"
++#include "d2d1_1.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(ui);
++
++struct sprite_shape
++{
++    ICompositionSpriteShape ICompositionSpriteShape_iface;
++    ICompositionShape ICompositionShape_iface;
++    ICompositionObject ICompositionObject_iface;
++    LONG ref;
++    ICompositor *compositor;
++    ICompositionPropertySet *properties;
++    struct Vector2 center;
++    struct Vector2 offset;
++    FLOAT rotation;
++    FLOAT rotation_degrees;
++    struct Vector2 scale;
++    struct Matrix3x2 transform;
++    ICompositionBrush *fill;
++    ICompositionGeometry *geometry;
++    boolean non_scaling;
++    ICompositionBrush *stroke;
++    __FIVector_1_float *dashes;
++    enum CompositionStrokeCap dash_cap;
++    FLOAT dash_offset;
++    enum CompositionStrokeCap end_cap;
++    enum CompositionStrokeLineJoin join;
++    FLOAT miter_limit;
++    enum CompositionStrokeCap start_cap;
++    FLOAT thickness;
++};
++
++static inline struct sprite_shape *impl_from_ICompositionSpriteShape( ICompositionSpriteShape *iface )
++{
++    return CONTAINING_RECORD( iface, struct sprite_shape, ICompositionSpriteShape_iface );
++}
++
++static HRESULT WINAPI sprite_shape_QueryInterface( ICompositionSpriteShape *iface, REFIID iid, void **out )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (!out) return E_POINTER;
++    *out = NULL;
++    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
++        IsEqualGUID( iid, &IID_ICompositionSpriteShape )) *out = iface;
++    else if (IsEqualGUID( iid, &IID_ICompositionShape )) *out = &impl->ICompositionShape_iface;
++    else if (IsEqualGUID( iid, &IID_ICompositionObject )) *out = &impl->ICompositionObject_iface;
++    else return E_NOINTERFACE;
++    IUnknown_AddRef( (IUnknown *)*out );
++    return S_OK;
++}
++
++static ULONG WINAPI sprite_shape_AddRef( ICompositionSpriteShape *iface )
++{
++    return InterlockedIncrement( &impl_from_ICompositionSpriteShape(iface)->ref );
++}
++
++static ULONG WINAPI sprite_shape_Release( ICompositionSpriteShape *iface )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++    ULONG ref = InterlockedDecrement( &impl->ref );
++
++    if (!ref)
++    {
++        if (impl->fill) ICompositionBrush_Release( impl->fill );
++        if (impl->stroke) ICompositionBrush_Release( impl->stroke );
++        if (impl->geometry) ICompositionGeometry_Release( impl->geometry );
++        ICompositionPropertySet_Release( impl->properties );
++        ICompositor_Release( impl->compositor );
++        free( impl );
++    }
++    return ref;
++}
++
++static HRESULT WINAPI sprite_shape_GetIids( ICompositionSpriteShape *iface, ULONG *count, IID **iids )
++{
++    if (!count || !iids) return E_POINTER;
++    *count = 0;
++    *iids = CoTaskMemAlloc( 3 * sizeof(**iids) );
++    if (!*iids) return E_OUTOFMEMORY;
++    (*iids)[0] = IID_ICompositionSpriteShape;
++    (*iids)[1] = IID_ICompositionShape;
++    (*iids)[2] = IID_ICompositionObject;
++    *count = 3;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_GetRuntimeClassName( ICompositionSpriteShape *iface, HSTRING *name )
++{
++    const WCHAR *class_name = RuntimeClass_Windows_UI_Composition_CompositionSpriteShape;
++
++    if (!name) return E_POINTER;
++    return WindowsCreateString( class_name, wcslen(class_name), name );
++}
++
++static HRESULT WINAPI sprite_shape_GetTrustLevel( ICompositionSpriteShape *iface, TrustLevel *level )
++{
++    if (!level) return E_POINTER;
++    *level = BaseTrust;
++    return S_OK;
++}
++
++DEFINE_IINSPECTABLE( shape, ICompositionShape, struct sprite_shape, ICompositionSpriteShape_iface )
++DEFINE_IINSPECTABLE( shape_object, ICompositionObject, struct sprite_shape, ICompositionSpriteShape_iface )
++
++static HRESULT WINAPI shape_object_get_Compositor( ICompositionObject *iface, ICompositor **value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_ICompositionObject(iface)->compositor;
++    ICompositor_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_object_get_Dispatcher( ICompositionObject *iface,
++        ICoreDispatcher **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI shape_object_get_Properties( ICompositionObject *iface, ICompositionPropertySet **value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_ICompositionObject(iface)->properties;
++    ICompositionPropertySet_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_object_StartAnimation( ICompositionObject *iface, HSTRING name,
++        ICompositionAnimation *animation )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI shape_object_StopAnimation( ICompositionObject *iface, HSTRING name )
++{
++    return E_NOTIMPL;
++}
++
++static const ICompositionObjectVtbl shape_object_vtbl =
++{
++    shape_object_QueryInterface,
++    shape_object_AddRef,
++    shape_object_Release,
++    shape_object_GetIids,
++    shape_object_GetRuntimeClassName,
++    shape_object_GetTrustLevel,
++    shape_object_get_Compositor,
++    shape_object_get_Dispatcher,
++    shape_object_get_Properties,
++    shape_object_StartAnimation,
++    shape_object_StopAnimation,
++};
++
++static HRESULT WINAPI shape_get_CenterPoint( ICompositionShape *iface, struct Vector2 *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->center;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_put_CenterPoint( ICompositionShape *iface, struct Vector2 value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
++
++    impl->center = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_get_Offset( ICompositionShape *iface, struct Vector2 *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->offset;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_put_Offset( ICompositionShape *iface, struct Vector2 value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
++
++    impl->offset = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_get_RotationAngle( ICompositionShape *iface, FLOAT *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->rotation;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_put_RotationAngle( ICompositionShape *iface, FLOAT value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
++
++    impl->rotation = value;
++    impl->rotation_degrees = value * (180.0f / 3.14159265358979323846f);
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_get_RotationAngleInDegrees( ICompositionShape *iface, FLOAT *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->rotation_degrees;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_put_RotationAngleInDegrees( ICompositionShape *iface, FLOAT value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
++
++    impl->rotation_degrees = value;
++    impl->rotation = value * (3.14159265358979323846f / 180.0f);
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_get_Scale( ICompositionShape *iface, struct Vector2 *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->scale;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_put_Scale( ICompositionShape *iface, struct Vector2 value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
++
++    impl->scale = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_get_TransformMatrix( ICompositionShape *iface, struct Matrix3x2 *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->transform;
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_put_TransformMatrix( ICompositionShape *iface, struct Matrix3x2 value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
++
++    impl->transform = value;
++    return S_OK;
++}
++
++static const ICompositionShapeVtbl shape_vtbl =
++{
++    shape_QueryInterface,
++    shape_AddRef,
++    shape_Release,
++    shape_GetIids,
++    shape_GetRuntimeClassName,
++    shape_GetTrustLevel,
++    shape_get_CenterPoint,
++    shape_put_CenterPoint,
++    shape_get_Offset,
++    shape_put_Offset,
++    shape_get_RotationAngle,
++    shape_put_RotationAngle,
++    shape_get_RotationAngleInDegrees,
++    shape_put_RotationAngleInDegrees,
++    shape_get_Scale,
++    shape_put_Scale,
++    shape_get_TransformMatrix,
++    shape_put_TransformMatrix,
++};
++
++static HRESULT WINAPI sprite_shape_get_FillBrush( ICompositionSpriteShape *iface, ICompositionBrush * *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->fill;
++    if (*value) ICompositionBrush_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_put_FillBrush( ICompositionSpriteShape *iface, ICompositionBrush * value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (value) ICompositionBrush_AddRef( value );
++    if (impl->fill) ICompositionBrush_Release( impl->fill );
++    impl->fill = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_get_Geometry( ICompositionSpriteShape *iface, ICompositionGeometry * *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->geometry;
++    if (*value) ICompositionGeometry_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_put_Geometry( ICompositionSpriteShape *iface, ICompositionGeometry * value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (value) ICompositionGeometry_AddRef( value );
++    if (impl->geometry) ICompositionGeometry_Release( impl->geometry );
++    impl->geometry = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_get_IsStrokeNonScaling( ICompositionSpriteShape *iface, boolean *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->non_scaling;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_put_IsStrokeNonScaling( ICompositionSpriteShape *iface, boolean value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    impl->non_scaling = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_get_StrokeBrush( ICompositionSpriteShape *iface, ICompositionBrush * *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->stroke;
++    if (*value) ICompositionBrush_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_put_StrokeBrush( ICompositionSpriteShape *iface, ICompositionBrush * value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (value) ICompositionBrush_AddRef( value );
++    if (impl->stroke) ICompositionBrush_Release( impl->stroke );
++    impl->stroke = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_get_StrokeDashArray( ICompositionSpriteShape *iface, __FIVector_1_float **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI sprite_shape_get_StrokeDashCap( ICompositionSpriteShape *iface, enum CompositionStrokeCap *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->dash_cap;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_put_StrokeDashCap( ICompositionSpriteShape *iface, enum CompositionStrokeCap value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    impl->dash_cap = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_get_StrokeDashOffset( ICompositionSpriteShape *iface, FLOAT *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->dash_offset;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_put_StrokeDashOffset( ICompositionSpriteShape *iface, FLOAT value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    impl->dash_offset = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_get_StrokeEndCap( ICompositionSpriteShape *iface, enum CompositionStrokeCap *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->end_cap;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_put_StrokeEndCap( ICompositionSpriteShape *iface, enum CompositionStrokeCap value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    impl->end_cap = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_get_StrokeLineJoin( ICompositionSpriteShape *iface, enum CompositionStrokeLineJoin *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->join;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_put_StrokeLineJoin( ICompositionSpriteShape *iface, enum CompositionStrokeLineJoin value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    impl->join = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_get_StrokeMiterLimit( ICompositionSpriteShape *iface, FLOAT *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->miter_limit;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_put_StrokeMiterLimit( ICompositionSpriteShape *iface, FLOAT value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    impl->miter_limit = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_get_StrokeStartCap( ICompositionSpriteShape *iface, enum CompositionStrokeCap *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->start_cap;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_put_StrokeStartCap( ICompositionSpriteShape *iface, enum CompositionStrokeCap value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    impl->start_cap = value;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_get_StrokeThickness( ICompositionSpriteShape *iface, FLOAT *value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    if (!value) return E_POINTER;
++    *value = impl->thickness;
++    return S_OK;
++}
++
++static HRESULT WINAPI sprite_shape_put_StrokeThickness( ICompositionSpriteShape *iface, FLOAT value )
++{
++    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
++
++    impl->thickness = value;
++    return S_OK;
++}
++
++static const ICompositionSpriteShapeVtbl sprite_shape_vtbl =
++{
++    sprite_shape_QueryInterface,
++    sprite_shape_AddRef,
++    sprite_shape_Release,
++    sprite_shape_GetIids,
++    sprite_shape_GetRuntimeClassName,
++    sprite_shape_GetTrustLevel,
++    sprite_shape_get_FillBrush,
++    sprite_shape_put_FillBrush,
++    sprite_shape_get_Geometry,
++    sprite_shape_put_Geometry,
++    sprite_shape_get_IsStrokeNonScaling,
++    sprite_shape_put_IsStrokeNonScaling,
++    sprite_shape_get_StrokeBrush,
++    sprite_shape_put_StrokeBrush,
++    sprite_shape_get_StrokeDashArray,
++    sprite_shape_get_StrokeDashCap,
++    sprite_shape_put_StrokeDashCap,
++    sprite_shape_get_StrokeDashOffset,
++    sprite_shape_put_StrokeDashOffset,
++    sprite_shape_get_StrokeEndCap,
++    sprite_shape_put_StrokeEndCap,
++    sprite_shape_get_StrokeLineJoin,
++    sprite_shape_put_StrokeLineJoin,
++    sprite_shape_get_StrokeMiterLimit,
++    sprite_shape_put_StrokeMiterLimit,
++    sprite_shape_get_StrokeStartCap,
++    sprite_shape_put_StrokeStartCap,
++    sprite_shape_get_StrokeThickness,
++    sprite_shape_put_StrokeThickness,
++};
++
++HRESULT composition_sprite_shape_create( ICompositor *compositor, ICompositionGeometry *geometry,
++        ICompositionSpriteShape **result )
++{
++    struct sprite_shape *impl;
++    HRESULT hr;
++
++    if (!result) return E_POINTER;
++    *result = NULL;
++    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    if (FAILED(hr = composition_property_set_create( compositor, &impl->properties )))
++    {
++        free( impl );
++        return hr;
++    }
++    impl->ICompositionSpriteShape_iface.lpVtbl = &sprite_shape_vtbl;
++    impl->ICompositionShape_iface.lpVtbl = &shape_vtbl;
++    impl->ICompositionObject_iface.lpVtbl = &shape_object_vtbl;
++    impl->ref = 1;
++    impl->scale.X = impl->scale.Y = 1.0f;
++    impl->transform.M11 = impl->transform.M22 = 1.0f;
++    impl->thickness = 1.0f;
++    impl->miter_limit = 1.0f;
++    impl->compositor = compositor;
++    ICompositor_AddRef( compositor );
++    impl->geometry = geometry;
++    if (geometry) ICompositionGeometry_AddRef( geometry );
++    *result = &impl->ICompositionSpriteShape_iface;
++    return S_OK;
++}
+diff --git a/dlls/windows.ui/main.c b/dlls/windows.ui/main.c
+--- a/dlls/windows.ui/main.c
++++ b/dlls/windows.ui/main.c
+@@ -53,6 +53,9 @@
+     if (!wcscmp( buffer, RuntimeClass_Windows_UI_Composition_Compositor ))
+         IActivationFactory_QueryInterface( compositor_factory, &IID_IActivationFactory, (void **)factory );
+ 
++    if (!wcscmp( buffer, RuntimeClass_Windows_UI_Composition_CompositionPath ))
++        IActivationFactory_QueryInterface( composition_path_factory, &IID_IActivationFactory, (void **)factory );
++
+     if (!wcscmp( buffer, RuntimeClass_Windows_UI_Composition_CompositionEffectSourceParameter ))
+         IActivationFactory_QueryInterface( effect_source_parameter_factory, &IID_IActivationFactory, (void **)factory );
+ 
+diff --git a/dlls/windows.ui/private.h b/dlls/windows.ui/private.h
+--- a/dlls/windows.ui/private.h
++++ b/dlls/windows.ui/private.h
+@@ -60,6 +60,7 @@
+ extern IActivationFactory *uiviewsettings_factory;
+ extern IActivationFactory *inputpane_factory;
+ extern IActivationFactory *compositor_factory;
++extern IActivationFactory *composition_path_factory;
+ extern IActivationFactory *effect_source_parameter_factory;
+ extern IActivationFactory *compositor_controller_factory;
+ extern IActivationFactory *composition_conditional_value_factory;
+@@ -67,6 +68,15 @@
+ extern IActivationFactory *interaction_tracker_factory;
+ extern IActivationFactory *visual_interaction_source_factory;
+ 
++struct ID2D1Factory;
++struct ID2D1Geometry;
++HRESULT composition_path_geometry_get_geometry( ICompositionGeometry *geometry,
++        struct ID2D1Factory *factory, struct ID2D1Geometry **result );
++HRESULT composition_shape_collection_create( IVector_CompositionShape **result );
++HRESULT composition_sprite_shape_create( ICompositor *compositor, ICompositionGeometry *geometry,
++        ICompositionSpriteShape **result );
++HRESULT composition_path_geometry_create( ICompositor *compositor, ICompositionPath *path,
++        ICompositionPathGeometry **result );
+ HRESULT composition_property_set_create( ICompositor *compositor, ICompositionPropertySet **result );
+ HRESULT expression_animation_clone( IExpressionAnimation *animation, IExpressionAnimation **result );
+ HRESULT expression_animation_evaluate_scalar( IExpressionAnimation *animation, ICompositionObject *target, FLOAT *value );
+diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition.idl
+--- a/include/windows.ui.composition.idl
++++ b/include/windows.ui.composition.idl
+@@ -53,6 +53,14 @@
+     interface ICompositionAnimationBase;
+     interface ICompositionAnimationFactory;
+     interface ICompositionBatchCompletedEventArgs;
++    interface IShapeVisual;
++    interface ICompositionViewBox;
++    interface ICompositionShape;
++    interface ICompositionSpriteShape;
++    interface ICompositionGeometry;
++    interface ICompositionPathGeometry;
++    interface ICompositionPath;
++    interface ICompositionPathFactory;
+     interface ICompositionBrush;
+     interface ICompositionBrushFactory;
+     interface ICompositionClip;
+@@ -134,6 +142,13 @@
+     runtimeclass CompositionEasingFunction;
+     runtimeclass CompositionEffectBrush;
+     runtimeclass CompositionEffectFactory;
++    runtimeclass ShapeVisual;
++    runtimeclass CompositionViewBox;
++    runtimeclass CompositionShape;
++    runtimeclass CompositionSpriteShape;
++    runtimeclass CompositionGeometry;
++    runtimeclass CompositionPathGeometry;
++    runtimeclass CompositionPath;
+     runtimeclass CompositionEffectSourceParameter;
+     runtimeclass CompositionGraphicsDevice;
+     runtimeclass CompositionVirtualDrawingSurface;
+@@ -160,6 +175,11 @@
+     runtimeclass VisualCollection;
+ 
+     declare {
++        interface Windows.Foundation.Collections.IVector<Windows.UI.Composition.CompositionShape *>;
++        interface Windows.Foundation.Collections.IVectorView<Windows.UI.Composition.CompositionShape *>;
++        interface Windows.Foundation.Collections.IIterable<Windows.UI.Composition.CompositionShape *>;
++        interface Windows.Foundation.Collections.IIterator<Windows.UI.Composition.CompositionShape *>;
++        interface Windows.Foundation.Collections.IVector<FLOAT>;
+         interface Windows.Foundation.AsyncOperationCompletedHandler<Windows.UI.Composition.ICompositionSurface *>;
+         interface Windows.Foundation.IAsyncOperation<Windows.UI.Composition.ICompositionSurface *>;
+         interface Windows.Foundation.Collections.IIterable<Windows.UI.Composition.CompositionAnimation *>;
+@@ -496,6 +516,160 @@
+         HRESULT CreateBrush([out, retval] Windows.UI.Composition.CompositionEffectBrush **result);
+         [propget] HRESULT ExtendedError([out, retval] HRESULT *value);
+         [propget] HRESULT LoadStatus([out, retval] Windows.UI.Composition.CompositionEffectFactoryLoadStatus *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        exclusiveto(Windows.UI.Composition.ShapeVisual),
++        uuid(f2bd13c3-ba7e-4b0f-9126-ffb7536b8176)
++    ]
++    interface IShapeVisual : IInspectable
++        requires Windows.UI.Composition.IContainerVisual
++    {
++        [propget] HRESULT Shapes([out, retval] Windows.Foundation.Collections.IVector<Windows.UI.Composition.CompositionShape *> **value);
++        [propget] HRESULT ViewBox([out, retval] Windows.UI.Composition.CompositionViewBox **value);
++        [propput] HRESULT ViewBox([in] Windows.UI.Composition.CompositionViewBox *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        exclusiveto(Windows.UI.Composition.CompositionViewBox),
++        uuid(b440bf07-068f-4537-84c6-4ecbe019e1f4)
++    ]
++    interface ICompositionViewBox : IInspectable
++    {
++        [propget] HRESULT HorizontalAlignmentRatio([out, retval] FLOAT *value);
++        [propput] HRESULT HorizontalAlignmentRatio([in] FLOAT value);
++        [propget] HRESULT Offset([out, retval] Windows.Foundation.Numerics.Vector2 *value);
++        [propput] HRESULT Offset([in] Windows.Foundation.Numerics.Vector2 value);
++        [propget] HRESULT Size([out, retval] Windows.Foundation.Numerics.Vector2 *value);
++        [propput] HRESULT Size([in] Windows.Foundation.Numerics.Vector2 value);
++        [propget] HRESULT Stretch([out, retval] Windows.UI.Composition.CompositionStretch *value);
++        [propput] HRESULT Stretch([in] Windows.UI.Composition.CompositionStretch value);
++        [propget] HRESULT VerticalAlignmentRatio([out, retval] FLOAT *value);
++        [propput] HRESULT VerticalAlignmentRatio([in] FLOAT value);
++    }
++
++    [contract(Windows.Foundation.UniversalApiContract, 6.0)]
++    typedef enum CompositionStrokeCap
++    {
++        Flat = 0,
++        Square = 1,
++        Round = 2,
++        Triangle = 3
++    } CompositionStrokeCap;
++
++    [contract(Windows.Foundation.UniversalApiContract, 6.0)]
++    typedef enum CompositionStrokeLineJoin
++    {
++        Miter = 0,
++        Bevel = 1,
++        Round = 2,
++        MiterOrBevel = 3
++    } CompositionStrokeLineJoin;
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        exclusiveto(Windows.UI.Composition.CompositionShape),
++        uuid(b47ce2f7-9a88-42c4-9e87-2e500ca8688c)
++    ]
++    interface ICompositionShape : IInspectable
++        requires Windows.UI.Composition.ICompositionObject
++    {
++        [propget] HRESULT CenterPoint([out, retval] Windows.Foundation.Numerics.Vector2 *value);
++        [propput] HRESULT CenterPoint([in] Windows.Foundation.Numerics.Vector2 value);
++        [propget] HRESULT Offset([out, retval] Windows.Foundation.Numerics.Vector2 *value);
++        [propput] HRESULT Offset([in] Windows.Foundation.Numerics.Vector2 value);
++        [propget] HRESULT RotationAngle([out, retval] FLOAT *value);
++        [propput] HRESULT RotationAngle([in] FLOAT value);
++        [propget] HRESULT RotationAngleInDegrees([out, retval] FLOAT *value);
++        [propput] HRESULT RotationAngleInDegrees([in] FLOAT value);
++        [propget] HRESULT Scale([out, retval] Windows.Foundation.Numerics.Vector2 *value);
++        [propput] HRESULT Scale([in] Windows.Foundation.Numerics.Vector2 value);
++        [propget] HRESULT TransformMatrix([out, retval] Windows.Foundation.Numerics.Matrix3x2 *value);
++        [propput] HRESULT TransformMatrix([in] Windows.Foundation.Numerics.Matrix3x2 value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        exclusiveto(Windows.UI.Composition.CompositionSpriteShape),
++        uuid(401b61bb-0007-4363-b1f3-6bcc003fb83e)
++    ]
++    interface ICompositionSpriteShape : IInspectable
++        requires Windows.UI.Composition.ICompositionShape
++    {
++        [propget] HRESULT FillBrush([out, retval] Windows.UI.Composition.CompositionBrush * *value);
++        [propput] HRESULT FillBrush([in] Windows.UI.Composition.CompositionBrush * value);
++        [propget] HRESULT Geometry([out, retval] Windows.UI.Composition.CompositionGeometry * *value);
++        [propput] HRESULT Geometry([in] Windows.UI.Composition.CompositionGeometry * value);
++        [propget] HRESULT IsStrokeNonScaling([out, retval] boolean *value);
++        [propput] HRESULT IsStrokeNonScaling([in] boolean value);
++        [propget] HRESULT StrokeBrush([out, retval] Windows.UI.Composition.CompositionBrush * *value);
++        [propput] HRESULT StrokeBrush([in] Windows.UI.Composition.CompositionBrush * value);
++        [propget] HRESULT StrokeDashArray([out, retval] Windows.Foundation.Collections.IVector<FLOAT> * *value);
++        [propget] HRESULT StrokeDashCap([out, retval] Windows.UI.Composition.CompositionStrokeCap *value);
++        [propput] HRESULT StrokeDashCap([in] Windows.UI.Composition.CompositionStrokeCap value);
++        [propget] HRESULT StrokeDashOffset([out, retval] FLOAT *value);
++        [propput] HRESULT StrokeDashOffset([in] FLOAT value);
++        [propget] HRESULT StrokeEndCap([out, retval] Windows.UI.Composition.CompositionStrokeCap *value);
++        [propput] HRESULT StrokeEndCap([in] Windows.UI.Composition.CompositionStrokeCap value);
++        [propget] HRESULT StrokeLineJoin([out, retval] Windows.UI.Composition.CompositionStrokeLineJoin *value);
++        [propput] HRESULT StrokeLineJoin([in] Windows.UI.Composition.CompositionStrokeLineJoin value);
++        [propget] HRESULT StrokeMiterLimit([out, retval] FLOAT *value);
++        [propput] HRESULT StrokeMiterLimit([in] FLOAT value);
++        [propget] HRESULT StrokeStartCap([out, retval] Windows.UI.Composition.CompositionStrokeCap *value);
++        [propput] HRESULT StrokeStartCap([in] Windows.UI.Composition.CompositionStrokeCap value);
++        [propget] HRESULT StrokeThickness([out, retval] FLOAT *value);
++        [propput] HRESULT StrokeThickness([in] FLOAT value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        exclusiveto(Windows.UI.Composition.CompositionGeometry),
++        uuid(e985217c-6a17-4207-abd8-5fd3dd612a9d)
++    ]
++    interface ICompositionGeometry : IInspectable
++        requires Windows.UI.Composition.ICompositionObject
++    {
++        [propget] HRESULT TrimEnd([out, retval] FLOAT *value);
++        [propput] HRESULT TrimEnd([in] FLOAT value);
++        [propget] HRESULT TrimOffset([out, retval] FLOAT *value);
++        [propput] HRESULT TrimOffset([in] FLOAT value);
++        [propget] HRESULT TrimStart([out, retval] FLOAT *value);
++        [propput] HRESULT TrimStart([in] FLOAT value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        exclusiveto(Windows.UI.Composition.CompositionPathGeometry),
++        uuid(0b6a417e-2c77-4c23-af5e-6304c147bb61)
++    ]
++    interface ICompositionPathGeometry : IInspectable
++        requires Windows.UI.Composition.ICompositionGeometry
++    {
++        [propget] HRESULT Path([out, retval] Windows.UI.Composition.CompositionPath **value);
++        [propput] HRESULT Path([in] Windows.UI.Composition.CompositionPath *value);
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        exclusiveto(Windows.UI.Composition.CompositionPath),
++        uuid(66da1d5f-2e10-4f22-8a06-0a8151919e60)
++    ]
++    interface ICompositionPath : IInspectable
++        requires Windows.Graphics.IGeometrySource2D
++    {
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        exclusiveto(Windows.UI.Composition.CompositionPath),
++        uuid(9c1e8c6a-0f33-4751-9437-eb3fb9d3ab07)
++    ]
++    interface ICompositionPathFactory : IInspectable
++    {
++        HRESULT Create([in] Windows.Graphics.IGeometrySource2D *source,
++                [out, retval] Windows.UI.Composition.CompositionPath **value);
+     }
+ 
+     [
+@@ -1103,6 +1277,71 @@
+     }
+ 
+     [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        threading(both)
++    ]
++    runtimeclass ShapeVisual : Windows.UI.Composition.ContainerVisual
++    {
++        [default] interface Windows.UI.Composition.IShapeVisual;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        threading(both)
++    ]
++    runtimeclass CompositionViewBox : Windows.UI.Composition.CompositionObject
++    {
++        [default] interface Windows.UI.Composition.ICompositionViewBox;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        threading(both)
++    ]
++    runtimeclass CompositionShape : Windows.UI.Composition.CompositionObject
++    {
++        [default] interface Windows.UI.Composition.ICompositionShape;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        threading(both)
++    ]
++    runtimeclass CompositionSpriteShape : Windows.UI.Composition.CompositionShape
++    {
++        [default] interface Windows.UI.Composition.ICompositionSpriteShape;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        threading(both)
++    ]
++    runtimeclass CompositionGeometry : Windows.UI.Composition.CompositionObject
++    {
++        [default] interface Windows.UI.Composition.ICompositionGeometry;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        threading(both)
++    ]
++    runtimeclass CompositionPathGeometry : Windows.UI.Composition.CompositionGeometry
++    {
++        [default] interface Windows.UI.Composition.ICompositionPathGeometry;
++    }
++
++    [
++        activatable(Windows.UI.Composition.ICompositionPathFactory, Windows.Foundation.UniversalApiContract, 6.0),
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        threading(both)
++    ]
++    runtimeclass CompositionPath
++    {
++        [default] interface Windows.UI.Composition.ICompositionPath;
++        interface Windows.Graphics.IGeometrySource2D;
++    }
++
++    [
+         activatable(Windows.UI.Composition.ICompositionEffectSourceParameterFactory, Windows.Foundation.UniversalApiContract, 2.0),
+         contract(Windows.Foundation.UniversalApiContract, 2.0),
+         marshaling_behavior(agile),

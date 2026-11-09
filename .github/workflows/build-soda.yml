@@ -62,6 +62,7 @@ on:
           - crypt32-reference
           - mlang-reference
           - composition-path-reference
+          - composition-compile
           - composition-surface-reference
           - composition-tracker
           - composition-diagnostics
@@ -838,6 +839,60 @@ jobs:
         with:
           name: crypt32-reference-${{ github.sha }}
           path: ${{ env.CRYPT32_REFERENCE_DIR }}
+          retention-days: 7
+          if-no-files-found: error
+
+  composition-compile:
+    if: inputs.architecture == 'composition-compile' && inputs.winrt_http_reference != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CCACHE_DIR: /home/runner/.cache/soda-composition-ccache
+      CCACHE_MAXSIZE: 512M
+      CCACHE_COMPILERCHECK: content
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/cache/restore@v6
+        id: composition-cache
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: soda-composition-ccache-v1-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: soda-composition-ccache-v1-${{ runner.os }}-
+
+      - name: compile Composition interfaces and implementation
+        run: |
+          work="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-composition-compile"
+          mkdir -p "$work"
+          export TMPDIR="$work" TMP="$work" TEMP="$work"
+          echo "COMPOSITION_COMPILE_DIR=$work" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ccache flex bison gcc-mingw-w64-x86-64
+          git clone --filter=blob:none --depth=1 --branch "$VALVE_WINE_TAG" https://github.com/ValveSoftware/wine.git "$work/source"
+          test "$(git -C "$work/source" rev-parse HEAD)" = "$VALVE_WINE_COMMIT"
+          for patch in "$GITHUB_WORKSPACE"/wine-tkg-userpatches/*.mypatch; do
+            git -C "$work/source" apply --include='dlls/windows.ui/*' --include='include/*' "$patch"
+          done
+          mkdir "$work/build"
+          cd "$work/build"
+          CC='ccache gcc' "$work/source/configure" --enable-win64 --disable-tests --without-x > configure.log 2>&1
+          make -j2 dlls/windows.ui > compile.log 2>&1
+          test -f dlls/windows.ui/x86_64-windows/windows.ui.dll
+          ccache --show-stats > ccache.log
+
+      - uses: actions/cache/save@v6
+        if: always()
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.composition-cache.outputs.cache-primary-key }}
+
+      - uses: actions/upload-artifact@v7
+        if: always() && env.COMPOSITION_COMPILE_DIR != ''
+        with:
+          name: composition-compile-${{ github.sha }}
+          path: |
+            ${{ env.COMPOSITION_COMPILE_DIR }}/build/*.log
+            ${{ env.COMPOSITION_COMPILE_DIR }}/build/config.status
           retention-days: 7
           if-no-files-found: error
 
@@ -1841,7 +1896,7 @@ jobs:
           if-no-files-found: error
 
   patches:
-    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'mlang-reference' && inputs.architecture != 'composition-path-reference' && inputs.architecture != 'composition-tracker' && inputs.architecture != 'composition-diagnostics' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'typelib-reference' && inputs.architecture != 'fls-reference' && inputs.architecture != 'eagle-debugger'
+    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'mlang-reference' && inputs.architecture != 'composition-path-reference' && inputs.architecture != 'composition-compile' && inputs.architecture != 'composition-tracker' && inputs.architecture != 'composition-diagnostics' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'typelib-reference' && inputs.architecture != 'fls-reference' && inputs.architecture != 'eagle-debugger'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
