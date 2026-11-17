@@ -27,12 +27,15 @@ __declspec(noinline) void eagle_null_parent(void)
     eagle_null_call();
 }
 
-static BOOL handle_null;
+static BOOL handle_null, handle_write;
 
 static LONG CALLBACK eagle_null_handler(EXCEPTION_POINTERS *exception)
 {
     if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
-        !exception->ExceptionRecord->ExceptionAddress)
+        (!exception->ExceptionRecord->ExceptionAddress ||
+         (handle_write && exception->ExceptionRecord->NumberParameters >= 2 &&
+          exception->ExceptionRecord->ExceptionInformation[0] == 1 &&
+          !exception->ExceptionRecord->ExceptionInformation[1])))
     {
         if (handle_null) ExitProcess(0);
 #ifdef _WIN64
@@ -143,6 +146,13 @@ int main(int argc, char **argv)
         ULONG_PTR third = (ULONG_PTR)0x8877665544332211ULL;
         ULONG_PTR fourth = (ULONG_PTR)0x123456789abcdef0ULL;
         return eagle_register_arguments(0x11, 0x22, third, fourth) == (0x11 ^ 0x22 ^ third ^ fourth) ? 0 : 26;
+    }
+    if (argc > 1 && !strcmp(argv[1], "nullwrite-handled"))
+    {
+        handle_null = handle_write = TRUE;
+        if (!AddVectoredExceptionHandler(1, eagle_null_handler)) return 23;
+        eagle_crash();
+        return 1;
     }
     if (argc > 1 && (!strcmp(argv[1], "nullcall") || !strcmp(argv[1], "nullcall-handler") ||
         !strcmp(argv[1], "nullcall-handled")))

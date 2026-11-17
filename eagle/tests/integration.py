@@ -133,6 +133,24 @@ class Integration(unittest.TestCase):
             self.assertFalse(any(item["kind"] == "dump" for item in events))
             self.assertEqual(next(item for item in events if item["kind"] == "process_exit")["code"], 0)
 
+    def test_handled_null_write_retains_first_chance_stack(self):
+        for bits in (64, 32):
+            process, root = self.launch(f"null-write-handled-{bits}", f"target{bits}.exe", "nullwrite-handled")
+            self.assertEqual(process.wait(timeout=40), 0)
+            manifest, events = read_bundle(root)
+            self.assertTrue(manifest["completed"])
+            faults = [item for item in events if item["kind"] == "exception" and item["code"] == "0xc0000005"]
+            self.assertEqual([item["first_chance"] for item in faults], [True])
+            self.assertEqual(faults[0]["access"], "write")
+            self.assertEqual(faults[0]["fault_address"], "0x0")
+            stack = next(item for item in events if item["kind"] == "snapshot")
+            self.assertEqual(stack["tid"], faults[0]["tid"])
+            self.assertGreater(stack["seq"], faults[0]["seq"])
+            self.assertEqual(stack["frames"][0]["symbol"], "eagle_crash")
+            self.assertEqual(stack["registers"]["ip"], faults[0]["frame"]["address"])
+            self.assertFalse(any(item["kind"] == "dump" for item in events))
+            self.assertEqual(next(item for item in events if item["kind"] == "process_exit")["code"], 0)
+
     def test_wine_debug_channel_lookup_with_and_without_loader_tracing(self):
         for bits in (32, 64):
             for profile in ('crash', 'loader'):
