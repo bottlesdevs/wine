@@ -1,0 +1,12 @@
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -499,7 +499,8 @@
+     /* Get the managed state with win_data unlocked, as is_window_managed
+      * may need to query win_data information about other HWNDs and thus
+      * acquire the lock itself internally. */
+-    if (!(managed = is_window_managed(hwnd, swp_flags, fullscreen)) && surface) toplevel = owner_hint;
++    managed = is_window_managed(hwnd, swp_flags, fullscreen);
++    if (!managed && surface && toplevel == hwnd) toplevel = owner_hint;
+ 
+     if (!(data = wayland_win_data_get(hwnd))) return;
+     toplevel_data = toplevel && toplevel != hwnd ? wayland_win_data_get_nolock(toplevel) : NULL;

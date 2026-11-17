@@ -1935,6 +1935,10 @@ jobs:
             git -C /tmp/valve-wine apply --check "$patch"
             git -C /tmp/valve-wine apply "$patch"
           done
+          parent_test="$HOME/artifacts/Soda-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-wayland-parent"
+          mkdir -p "$parent_test"
+          TMPDIR="$parent_test" TMP="$parent_test" TEMP="$parent_test" \
+            python3 .github/tests/test-wayland-parent.py /tmp/valve-wine/dlls/winewayland.drv/window.c "$parent_test"
           grep -F '@ stdcall SLLoadApplicationPolicies(ptr ptr long ptr)' /tmp/valve-wine/dlls/sppc/sppc.spec
           grep -F 'HRESULT WINAPI SLLoadApplicationPolicies' /tmp/valve-wine/dlls/sppc/sppc.c
           for symbol in SL_I_OOB_GRACE_PERIOD SL_E_APPLICATION_POLICIES_MISSING SL_E_AUTHN_CHALLENGE_NOT_SET SL_E_AUTHN_CANT_VERIFY; do
