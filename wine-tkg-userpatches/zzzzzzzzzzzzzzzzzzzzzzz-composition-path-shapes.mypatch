@@ -1066,7 +1066,7 @@ diff --git a/dlls/windows.ui/composition_path.c b/dlls/windows.ui/composition_pa
 new file mode 100644
 --- /dev/null
 +++ b/dlls/windows.ui/composition_path.c
-@@ -0,0 +1,642 @@
+@@ -0,0 +1,648 @@
 +/* Windows.UI.Composition geometry paths
 + *
 + * Copyright (C) 2026 Mirko Brombin
@@ -1561,7 +1561,9 @@ new file mode 100644
 +
 +static HRESULT WINAPI geometry_put_TrimEnd( ICompositionGeometry *iface, FLOAT value )
 +{
-+    impl_from_ICompositionGeometry(iface)->trim_end = value;
++    struct path_geometry *impl = impl_from_ICompositionGeometry( iface );
++
++    impl->trim_end = value;
 +    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
@@ -1575,7 +1577,9 @@ new file mode 100644
 +
 +static HRESULT WINAPI geometry_put_TrimOffset( ICompositionGeometry *iface, FLOAT value )
 +{
-+    impl_from_ICompositionGeometry(iface)->trim_offset = value;
++    struct path_geometry *impl = impl_from_ICompositionGeometry( iface );
++
++    impl->trim_offset = value;
 +    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
@@ -1589,7 +1593,9 @@ new file mode 100644
 +
 +static HRESULT WINAPI geometry_put_TrimStart( ICompositionGeometry *iface, FLOAT value )
 +{
-+    impl_from_ICompositionGeometry(iface)->trim_start = value;
++    struct path_geometry *impl = impl_from_ICompositionGeometry( iface );
++
++    impl->trim_start = value;
 +    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
