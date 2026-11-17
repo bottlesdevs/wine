@@ -182,7 +182,11 @@ static bool render_shapes(ICompositionPath *path)
                     FAILED(shapes->Clear()) || FAILED(shapes->Append(shape.Get()))) goto done;
         }
         if (round == 4 && FAILED(shapes->Clear())) goto done;
-        if (FAILED(controller->Commit())) goto done;
+        if (FAILED(hr = controller->Commit()))
+        {
+            fprintf(stderr, "path render round %u: Commit failed %#lx\n", round, hr);
+            goto done;
+        }
         pump(400);
         COLORREF inside = pixel(window, round == 2 ? 48 : 16, 16);
         COLORREF edge = pixel(window, round == 2 ? 40 : 8, 16);

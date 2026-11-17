@@ -226,7 +226,7 @@ diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
  }
  
  static HRESULT WINAPI compositor5_RequestCommitAsync( struct compositor5_iface *iface,
-@@ -11599,6 +11708,150 @@
+@@ -11599,6 +11708,170 @@
          return draw_effect_brush( context, effect_from_ICompositionBrush( brush ), bounds, opacity, depth );
      else return E_NOTIMPL;
      return S_OK;
@@ -351,16 +351,36 @@ diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
 +        properties.dashOffset /= thickness;
 +        properties.dashStyle = dash_count ? D2D1_DASH_STYLE_CUSTOM : D2D1_DASH_STYLE_SOLID;
 +        if (SUCCEEDED(hr)) hr = ID2D1Factory_CreateStrokeStyle( factory, &properties, dashes, dash_count, &style );
-+        if (SUCCEEDED(hr)) hr = ID2D1Factory_CreatePathGeometry( factory, &outline );
-+        if (SUCCEEDED(hr)) hr = ID2D1PathGeometry_Open( outline, &sink );
-+        if (SUCCEEDED(hr))
++        if (SUCCEEDED(hr) && stroke->lpVtbl == &composition_brush_vtbl)
 +        {
-+            hr = ID2D1Geometry_Widen( geometry, thickness, style, NULL,
-+                    D2D1_DEFAULT_FLATTENING_TOLERANCE, (ID2D1SimplifiedGeometrySink *)sink );
-+            close_hr = ID2D1GeometrySink_Close( sink );
-+            if (SUCCEEDED(hr)) hr = close_hr;
++            struct color_brush *brush = color_brush_from_ICompositionBrush( stroke );
++            ID2D1SolidColorBrush *solid = NULL;
++            struct Color value = {0};
++            D2D1_COLOR_F color;
++
++            hr = color_brush_get_Color( &brush->ICompositionColorBrush_iface, &value );
++            color = (D2D1_COLOR_F){value.R / 255.0f, value.G / 255.0f,
++                    value.B / 255.0f, opacity * value.A / 255.0f};
++            if (SUCCEEDED(hr)) hr = ID2D1DeviceContext_CreateSolidColorBrush( context, &color, NULL, &solid );
++            if (SUCCEEDED(hr))
++            {
++                ID2D1DeviceContext_DrawGeometry( context, geometry, (ID2D1Brush *)solid, thickness, style );
++                ID2D1SolidColorBrush_Release( solid );
++            }
 +        }
-+        if (SUCCEEDED(hr)) hr = draw_shape_brush( context, (ID2D1Geometry *)outline, stroke, opacity );
++        else if (SUCCEEDED(hr))
++        {
++            hr = ID2D1Factory_CreatePathGeometry( factory, &outline );
++            if (SUCCEEDED(hr)) hr = ID2D1PathGeometry_Open( outline, &sink );
++            if (SUCCEEDED(hr))
++            {
++                hr = ID2D1Geometry_Widen( geometry, thickness, style, NULL,
++                        D2D1_DEFAULT_FLATTENING_TOLERANCE, (ID2D1SimplifiedGeometrySink *)sink );
++                close_hr = ID2D1GeometrySink_Close( sink );
++                if (SUCCEEDED(hr)) hr = close_hr;
++            }
++            if (SUCCEEDED(hr)) hr = draw_shape_brush( context, (ID2D1Geometry *)outline, stroke, opacity );
++        }
 +    }
 +    free( dashes );
 +    if (dash_array) IVector_FLOAT_Release( dash_array );
@@ -377,7 +397,7 @@ diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
  }
  
  static HRESULT draw_composition_visual( ID2D1DeviceContext *context, IVisual *visual,
-@@ -11675,6 +11928,29 @@
+@@ -11675,6 +11948,29 @@
      }
      if (SUCCEEDED(hr) && impl->brush && bounds.right > bounds.left && bounds.bottom > bounds.top)
          hr = draw_composition_brush( context, impl->brush, &bounds, opacity, 0 );
@@ -407,7 +427,7 @@ diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
      for (i = 0; SUCCEEDED(hr) && i < children->count; ++i)
          hr = draw_composition_visual( context, children->items[i], 0.0f, 0.0f, width, height,
                  opacity, depth + 1 );
-@@ -13443,6 +13719,11 @@
+@@ -13443,6 +13739,11 @@
      ICompositorController_Release( &controller->ICompositorController_iface );
  }
  
