@@ -66,6 +66,7 @@ on:
           - composition-surface-reference
           - composition-tracker
           - composition-diagnostics
+          - composition-path-diagnostics
           - msi-reference
           - dbghelp-reference
           - typelib-reference
@@ -124,7 +125,7 @@ env:
 
 jobs:
   composition-diagnostics:
-    if: inputs.architecture == 'composition-diagnostics' && inputs.winrt_http_reference != true
+    if: (inputs.architecture == 'composition-diagnostics' || inputs.architecture == 'composition-path-diagnostics') && inputs.winrt_http_reference != true
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -143,7 +144,14 @@ jobs:
           export TMPDIR="$work/scratch" TMP="$work/scratch" TEMP="$work/scratch"
           printf 'SURFACE_WORK=%s\nTMPDIR=%s/scratch\nTMP=%s/scratch\nTEMP=%s/scratch\n' \
             "$work" "$work" "$work" "$work" >> "$GITHUB_ENV"
-          python3 .github/soda-surface-diagnostics.py prepare "$work"
+          prepare=prepare
+          collect=collect
+          if [[ "${{ inputs.architecture }}" == composition-path-diagnostics ]]; then
+            prepare=prepare-path
+            collect=collect-path
+          fi
+          echo "SURFACE_COLLECT_MODE=$collect" >> "$GITHUB_ENV"
+          python3 .github/soda-surface-diagnostics.py "$prepare" "$work"
           cp .github/soda-surface-diagnostics.py "$work/diagnostics.py"
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends xvfb xauth xcompmgr
@@ -163,7 +171,7 @@ jobs:
               --env "TMPDIR=$SURFACE_WORK/scratch" --env "TMP=$SURFACE_WORK/scratch" --env "TEMP=$SURFACE_WORK/scratch" \
               --env DISPLAY --env XAUTHORITY --env LIBGL_ALWAYS_SOFTWARE=1 \
               --entrypoint /usr/bin/python3 "$image" "$SURFACE_WORK/diagnostics.py" \
-              collect "$SURFACE_WORK" "$SURFACE_RUNNER"
+              "$SURFACE_COLLECT_MODE" "$SURFACE_WORK" "$SURFACE_RUNNER"
 
       - uses: actions/upload-artifact@v7
         if: always() && env.SURFACE_WORK != ''
@@ -1913,7 +1921,7 @@ jobs:
           if-no-files-found: error
 
   patches:
-    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'mlang-reference' && inputs.architecture != 'composition-path-reference' && inputs.architecture != 'composition-compile' && inputs.architecture != 'composition-tracker' && inputs.architecture != 'composition-diagnostics' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'typelib-reference' && inputs.architecture != 'fls-reference' && inputs.architecture != 'eagle-debugger'
+    if: inputs.recovery_run == '' && inputs.winrt_http_reference != true && inputs.architecture != 'd2d-reference' && inputs.architecture != 'registry-reference' && inputs.architecture != 'crypt32-reference' && inputs.architecture != 'mlang-reference' && inputs.architecture != 'composition-path-reference' && inputs.architecture != 'composition-compile' && inputs.architecture != 'composition-tracker' && inputs.architecture != 'composition-diagnostics' && inputs.architecture != 'composition-path-diagnostics' && inputs.architecture != 'msi-reference' && inputs.architecture != 'dbghelp-reference' && inputs.architecture != 'typelib-reference' && inputs.architecture != 'fls-reference' && inputs.architecture != 'eagle-debugger'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -2692,7 +2700,11 @@ jobs:
         if: always() && env.COMPOSITION_PATH_WORK != ''
         with:
           name: composition-path-runtime-${{ github.sha }}
-          path: ${{ env.COMPOSITION_PATH_WORK }}
+          path: |
+            ${{ env.COMPOSITION_PATH_WORK }}/*.log
+            ${{ env.COMPOSITION_PATH_WORK }}/*.stderr
+            ${{ env.COMPOSITION_PATH_WORK }}/*.json
+            ${{ env.COMPOSITION_PATH_WORK }}/*.png
           retention-days: 7
           if-no-files-found: error
 

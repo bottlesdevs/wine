@@ -78,6 +78,79 @@ def prepare(work):
         file.write('SURFACE_RUNNER=' + str(runner) + '\n')
 
 
+def prepare_path(work):
+    source_id, reference_id = os.environ['SOURCE_RUN'], os.environ['REFERENCE_RUN']
+    assert re.fullmatch(r'[0-9]+', source_id) and re.fullmatch(r'[0-9]+', reference_id)
+    source, reference = api('actions/runs/' + source_id), api('actions/runs/' + reference_id)
+    for run in (source, reference):
+        assert run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+        assert run['head_branch'] == os.environ['GITHUB_REF_NAME']
+        assert run['path'] == '.github/workflows/build-soda.yml' and run['status'] == 'completed'
+    assert source['conclusion'] == 'failure' and reference['conclusion'] == 'success'
+    jobs = api('actions/runs/' + source_id + '/jobs?per_page=100')['jobs']
+    assert next(job for job in jobs if job['name'] == 'patches')['conclusion'] == 'success'
+    steps = next(job for job in jobs if job['name'] == 'build')['steps']
+    assert next(step for step in steps if step['name'] == 'start build')['conclusion'] == 'success'
+    assert next(step for step in steps if step['name'] == 'verify Composition path geometry and pixels')['conclusion'] == 'failure'
+    subprocess.run(['git', 'merge-base', '--is-ancestor', source['head_sha'], 'HEAD'], check=True)
+    assert not subprocess.check_output(['git', 'diff', '--name-only', source['head_sha'], 'HEAD',
+                                        '--', 'wine-tkg-userpatches'], text=True).strip()
+    provenance = {'scope': 'Unqualified compiled runner; failed path gate remains open',
+                  'compiled_source': source['head_sha'], 'diagnostic_source': os.environ['GITHUB_SHA'],
+                  'source_run': source['id'], 'reference_run': reference['id']}
+    provenance['runner_artifact'] = download(source, 'pre-test-soda-', work / 'runner')
+    provenance['reference_artifact'] = download(reference, 'composition-path-reference-', work / 'reference')
+    wine, = (work / 'runner').glob('**/bin/wine')
+    runner = wine.parent.parent
+    metadata = json.loads((runner / 'share/soda/build.json').read_text())
+    assert metadata['source_identities']['recipe']['revision'] == source['head_sha']
+    sources_path = runner / 'share/soda/sources.json'
+    assert hashlib.sha256(sources_path.read_bytes()).hexdigest() == metadata['sources_sha256']
+    sources = json.loads(sources_path.read_text())
+    assert sources['patches'] == {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                                 for path in Path('wine-tkg-userpatches').glob('*.mypatch')}
+    reference_source = json.loads((work / 'reference/source.json').read_text(encoding='utf-8-sig'))
+    expected = Path('.github/soda-composition-path.cpp').read_bytes()
+    assert reference_source['revision'] == reference['head_sha']
+    assert reference_source['source_sha256'] in (hashlib.sha256(expected).hexdigest(),
+                                               hashlib.sha256(expected.replace(b'\n', b'\r\n')).hexdigest())
+    for path in (runner / 'bin').iterdir():
+        if path.is_file(): path.chmod(path.stat().st_mode | 0o111)
+    for bits in ('i386', 'x86_64'):
+        for name in ('wine', 'wine64', 'wine-preloader', 'wine64-preloader'):
+            path = runner / 'lib/wine' / (bits + '-unix') / name
+            if path.is_file(): path.chmod(path.stat().st_mode | 0o111)
+    (work / 'provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
+    with open(os.environ['GITHUB_ENV'], 'a') as file:
+        file.write('SURFACE_RUNNER=' + str(runner) + '\n')
+
+
+def collect_path(work, runner):
+    results = []
+    env = dict(os.environ, WINEPREFIX=str(work / 'prefix'), WINEARCH='win64', WINEDEBUG='-all',
+               WINEDLLOVERRIDES='dxgi,d3d11,d3d10core,windows.ui=b;winewayland.drv=d;mscoree=d;winemenubuilder.exe=d')
+    try:
+        setup = capture([str(runner / 'bin/wine'), 'wineboot', '-u'], env, work / 'wineboot')
+        assert setup['exit'] == 0 and not setup['timed_out'], setup
+        for bits in (64, 32):
+            result = capture([str(runner / 'bin/wine'), str(work / f'reference/composition-path{bits}.exe')],
+                             env, work / f'path{bits}')
+            def rows(path):
+                return [line for line in path.read_text(encoding='utf-8-sig').splitlines() if line.startswith('case=')]
+            expected = rows(work / f'reference/composition-path{bits}.log')
+            actual = rows(work / f'path{bits}.stdout')
+            result.update(bits=bits, expected_rows=len(expected), actual_rows=len(actual),
+                          differences=[{'windows': a, 'soda': b} for a, b in zip(expected, actual) if a != b])
+            results.append(result)
+            (work / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+        assert all(item['exit'] == 0 and not item['timed_out'] and
+                   item['expected_rows'] == item['actual_rows'] == 62 and not item['differences']
+                   for item in results), results
+    finally:
+        subprocess.run([str(runner / 'bin/wineserver'), '-k'], env=env, timeout=15)
+        subprocess.run([str(runner / 'bin/wineserver'), '-w'], env=env, timeout=15)
+
+
 def capture(command, env, destination, limit=64 * 1024 * 1024, timeout=120):
     total = saved = 0
     deadline = time.monotonic() + timeout
@@ -200,9 +273,13 @@ def collect(work, runner):
 if __name__ == '__main__':
     if sys.argv[1] == 'prepare':
         prepare(Path(sys.argv[2]))
+    elif sys.argv[1] == 'prepare-path':
+        prepare_path(Path(sys.argv[2]))
     elif sys.argv[1] == 'stack':
         stack(Path(sys.argv[2]))
     elif sys.argv[1] == 'collect':
         collect(Path(sys.argv[2]), Path(sys.argv[3]))
+    elif sys.argv[1] == 'collect-path':
+        collect_path(Path(sys.argv[2]), Path(sys.argv[3]))
     else:
         raise ValueError('Unknown surface diagnostic command')
