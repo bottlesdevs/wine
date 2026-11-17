@@ -56,6 +56,23 @@ static void query(IUnknown *object, const char *name, REFIID iid)
     printf("case=%s hr=%#lx object=%d\n", name, hr, result != nullptr);
 }
 
+static bool collection_owner(IUnknown *collection, IUnknown *compositor, const char *name)
+{
+    ComPtr<ICompositionObject> object;
+    ComPtr<ICompositor> owner;
+    ComPtr<IUnknown> expected, actual;
+    ComPtr<ICompositionPropertySet> properties;
+    HRESULT hr = collection->QueryInterface(IID_PPV_ARGS(object.GetAddressOf()));
+
+    if (SUCCEEDED(hr)) hr = object->get_Compositor(owner.GetAddressOf());
+    if (SUCCEEDED(hr)) hr = compositor->QueryInterface(IID_PPV_ARGS(expected.GetAddressOf()));
+    if (SUCCEEDED(hr)) hr = owner.As(&actual);
+    if (SUCCEEDED(hr)) hr = object->get_Properties(properties.GetAddressOf());
+    printf("case=%s hr=%#lx same=%d properties=%d\n", name, hr,
+            expected && expected.Get() == actual.Get(), properties != nullptr);
+    return SUCCEEDED(hr) && expected && expected.Get() == actual.Get() && properties;
+}
+
 static bool geometry_bounds(ID2D1Geometry *geometry, ID2D1Factory *factory, const char *name)
 {
     ComPtr<ID2D1Factory> owner;
@@ -281,6 +298,9 @@ static bool shapes(ICompositionPath *path, bool clear_path)
     brush.Reset();
     hr = sprite->get_StrokeBrush(brush.GetAddressOf());
     printf("case=sprite-stroke hr=%#lx object=%d\n", hr, brush != nullptr);
+    ComPtr<ABI::Windows::Foundation::Collections::IVector<float>> dashes;
+    hr = sprite->get_StrokeDashArray(dashes.GetAddressOf());
+    if (FAILED(hr) || !dashes || !collection_owner(dashes.Get(), compositor.Get(), "dash-collection-owner")) return false;
     hr = sprite->get_StrokeThickness(&thickness);
     printf("case=sprite-thickness hr=%#lx value=%g\n", hr, thickness);
     hr = sprite->get_StrokeMiterLimit(&miter);
@@ -303,6 +323,7 @@ static bool shapes(ICompositionPath *path, bool clear_path)
     hr = visual->get_Shapes(shapes.GetAddressOf());
     printf("case=shape-collection hr=%#lx object=%d\n", hr, shapes != nullptr);
     if (FAILED(hr) || !shapes) return false;
+    if (!collection_owner(shapes.Get(), compositor.Get(), "shape-collection-owner")) return false;
     hr = shapes->get_Size(&size);
     printf("case=shape-count hr=%#lx value=%u\n", hr, size);
     hr = shapes->Append(shape.Get());

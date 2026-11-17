@@ -187,7 +187,7 @@ diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
 +    *result = NULL;
 +    if (FAILED(hr = compositor_CreateSpriteVisual( &compositor->ICompositor_iface, &visual ))) return hr;
 +    impl = impl_from_ISpriteVisual( visual );
-+    if (SUCCEEDED(hr = composition_shape_collection_create( &impl->shapes )))
++    if (SUCCEEDED(hr = composition_shape_collection_create( &compositor->ICompositor_iface, &impl->shapes )))
 +    {
 +        impl->IShapeVisual_iface.lpVtbl = &shape_visual_vtbl;
 +        impl->is_shape = TRUE;
@@ -407,11 +407,23 @@ diff --git a/dlls/windows.ui/composition.c b/dlls/windows.ui/composition.c
      for (i = 0; SUCCEEDED(hr) && i < children->count; ++i)
          hr = draw_composition_visual( context, children->items[i], 0.0f, 0.0f, width, height,
                  opacity, depth + 1 );
+@@ -13443,6 +13719,11 @@
+     ICompositorController_Release( &controller->ICompositorController_iface );
+ }
+ 
++void composition_object_changed( ICompositor *compositor )
++{
++    compositor_notify_commit_needed( impl_from_ICompositor( compositor ) );
++}
++
+ static const ICompositorControllerVtbl compositor_controller_vtbl =
+ {
+     compositor_controller_QueryInterface,
 diff --git a/dlls/windows.ui/composition_dash_collection.c b/dlls/windows.ui/composition_dash_collection.c
 new file mode 100644
 --- /dev/null
 +++ b/dlls/windows.ui/composition_dash_collection.c
-@@ -0,0 +1,549 @@
+@@ -0,0 +1,638 @@
 +/* WinRT Windows.UI.Composition stroke dash collection
 + *
 + * Copyright (C) 2026 Mirko Brombin
@@ -437,6 +449,9 @@ new file mode 100644
 +struct dash_collection
 +{
 +    IVector_FLOAT IVector_FLOAT_iface;
++    ICompositionObject ICompositionObject_iface;
++    ICompositor *compositor;
++    ICompositionPropertySet *properties;
 +    IVectorView_FLOAT IVectorView_FLOAT_iface;
 +    IIterable_FLOAT IIterable_FLOAT_iface;
 +    LONG ref;
@@ -457,7 +472,8 @@ new file mode 100644
 +    if (!out) return E_POINTER;
 +    *out = NULL;
 +    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
-+        IsEqualGUID( iid, &IID_IVector_FLOAT )) *out = iface;
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IVector_FLOAT )) *out = iface;
++    else if (IsEqualGUID( iid, &IID_ICompositionObject )) *out = &impl->ICompositionObject_iface;
 +    else if (IsEqualGUID( iid, &IID_IVectorView_FLOAT )) *out = &impl->IVectorView_FLOAT_iface;
 +    else if (IsEqualGUID( iid, &IID_IIterable_FLOAT )) *out = &impl->IIterable_FLOAT_iface;
 +    else return E_NOINTERFACE;
@@ -477,6 +493,8 @@ new file mode 100644
 +
 +    if (!ref)
 +    {
++        ICompositionPropertySet_Release( impl->properties );
++        ICompositor_Release( impl->compositor );
 +        free( impl->items );
 +        DeleteCriticalSection( &impl->lock );
 +        free( impl );
@@ -488,19 +506,21 @@ new file mode 100644
 +{
 +    if (!count || !iids) return E_POINTER;
 +    *count = 0;
-+    if (!(*iids = CoTaskMemAlloc( 3 * sizeof(**iids) ))) return E_OUTOFMEMORY;
++    if (!(*iids = CoTaskMemAlloc( 4 * sizeof(**iids) ))) return E_OUTOFMEMORY;
 +    (*iids)[0] = IID_IVector_FLOAT;
 +    (*iids)[1] = IID_IVectorView_FLOAT;
 +    (*iids)[2] = IID_IIterable_FLOAT;
-+    *count = 3;
++    (*iids)[3] = IID_ICompositionObject;
++    *count = 4;
 +    return S_OK;
 +}
 +
 +static HRESULT WINAPI dash_collection_GetRuntimeClassName( IVector_FLOAT *iface, HSTRING *name )
 +{
++    const WCHAR *class_name = L"Windows.UI.Composition.CompositionStrokeDashArray";
++
 +    if (!name) return E_POINTER;
-+    *name = NULL;
-+    return S_OK;
++    return WindowsCreateString( class_name, wcslen(class_name), name );
 +}
 +
 +static HRESULT WINAPI dash_collection_GetTrustLevel( IVector_FLOAT *iface, TrustLevel *level )
@@ -576,17 +596,16 @@ new file mode 100644
 +        hr = S_OK;
 +    }
 +    LeaveCriticalSection( &impl->lock );
++    if (SUCCEEDED(hr)) composition_object_changed( impl->compositor );
 +    return hr;
 +}
 +
-+static HRESULT WINAPI dash_collection_InsertAt( IVector_FLOAT *iface, UINT32 index, FLOAT value )
++static HRESULT dash_collection_insert_locked( struct dash_collection *impl, UINT32 index, FLOAT value )
 +{
-+    struct dash_collection *impl = impl_from_IVector_FLOAT( iface );
 +    FLOAT *items;
 +    UINT32 capacity;
 +    HRESULT hr = S_OK;
 +
-+    EnterCriticalSection( &impl->lock );
 +    if (index > impl->count) hr = E_BOUNDS;
 +    else if (impl->count == UINT32_MAX) hr = E_OUTOFMEMORY;
 +    else
@@ -609,7 +628,18 @@ new file mode 100644
 +            ++impl->count;
 +        }
 +    }
++    return hr;
++}
++
++static HRESULT WINAPI dash_collection_InsertAt( IVector_FLOAT *iface, UINT32 index, FLOAT value )
++{
++    struct dash_collection *impl = impl_from_IVector_FLOAT( iface );
++    HRESULT hr;
++
++    EnterCriticalSection( &impl->lock );
++    hr = dash_collection_insert_locked( impl, index, value );
 +    LeaveCriticalSection( &impl->lock );
++    if (SUCCEEDED(hr)) composition_object_changed( impl->compositor );
 +    return hr;
 +}
 +
@@ -626,6 +656,7 @@ new file mode 100644
 +        hr = S_OK;
 +    }
 +    LeaveCriticalSection( &impl->lock );
++    if (SUCCEEDED(hr)) composition_object_changed( impl->compositor );
 +    return hr;
 +}
 +
@@ -635,19 +666,25 @@ new file mode 100644
 +    HRESULT hr;
 +
 +    EnterCriticalSection( &impl->lock );
-+    hr = dash_collection_InsertAt( iface, impl->count, value );
++    hr = dash_collection_insert_locked( impl, impl->count, value );
 +    LeaveCriticalSection( &impl->lock );
++    if (SUCCEEDED(hr)) composition_object_changed( impl->compositor );
 +    return hr;
 +}
 +
 +static HRESULT WINAPI dash_collection_RemoveAtEnd( IVector_FLOAT *iface )
 +{
 +    struct dash_collection *impl = impl_from_IVector_FLOAT( iface );
-+    HRESULT hr;
++    HRESULT hr = E_BOUNDS;
 +
 +    EnterCriticalSection( &impl->lock );
-+    hr = impl->count ? dash_collection_RemoveAt( iface, impl->count - 1 ) : E_BOUNDS;
++    if (impl->count)
++    {
++        --impl->count;
++        hr = S_OK;
++    }
 +    LeaveCriticalSection( &impl->lock );
++    if (SUCCEEDED(hr)) composition_object_changed( impl->compositor );
 +    return hr;
 +}
 +
@@ -662,6 +699,7 @@ new file mode 100644
 +    impl->count = impl->capacity = 0;
 +    LeaveCriticalSection( &impl->lock );
 +    free( items );
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -706,6 +744,7 @@ new file mode 100644
 +    impl->count = impl->capacity = count;
 +    LeaveCriticalSection( &impl->lock );
 +    free( old );
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -924,6 +963,58 @@ new file mode 100644
 +    dash_collection_iterable_First,
 +};
 +
++DEFINE_IINSPECTABLE( dash_collection_object, ICompositionObject, struct dash_collection, IVector_FLOAT_iface )
++
++static HRESULT WINAPI dash_collection_object_get_Compositor( ICompositionObject *iface, ICompositor **value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_ICompositionObject(iface)->compositor;
++    ICompositor_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI dash_collection_object_get_Dispatcher( ICompositionObject *iface,
++        ICoreDispatcher **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI dash_collection_object_get_Properties( ICompositionObject *iface, ICompositionPropertySet **value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_ICompositionObject(iface)->properties;
++    ICompositionPropertySet_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI dash_collection_object_StartAnimation( ICompositionObject *iface, HSTRING name,
++        ICompositionAnimation *animation )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI dash_collection_object_StopAnimation( ICompositionObject *iface, HSTRING name )
++{
++    return E_NOTIMPL;
++}
++
++static const ICompositionObjectVtbl dash_collection_object_vtbl =
++{
++    dash_collection_object_QueryInterface,
++    dash_collection_object_AddRef,
++    dash_collection_object_Release,
++    dash_collection_object_GetIids,
++    dash_collection_object_GetRuntimeClassName,
++    dash_collection_object_GetTrustLevel,
++    dash_collection_object_get_Compositor,
++    dash_collection_object_get_Dispatcher,
++    dash_collection_object_get_Properties,
++    dash_collection_object_StartAnimation,
++    dash_collection_object_StopAnimation,
++};
++
 +static const IVector_FLOATVtbl dash_collection_vtbl =
 +{
 +    dash_collection_QueryInterface,
@@ -946,14 +1037,24 @@ new file mode 100644
 +    dash_collection_ReplaceAll,
 +};
 +
-+HRESULT composition_dash_collection_create( IVector_FLOAT **result )
++HRESULT composition_dash_collection_create( ICompositor *compositor, IVector_FLOAT **result )
 +{
 +    struct dash_collection *impl;
++    HRESULT hr;
 +
 +    if (!result) return E_POINTER;
 +    *result = NULL;
++    if (!compositor) return E_INVALIDARG;
 +    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    if (FAILED(hr = composition_property_set_create( compositor, &impl->properties )))
++    {
++        free( impl );
++        return hr;
++    }
++    impl->compositor = compositor;
++    ICompositor_AddRef( compositor );
 +    impl->IVector_FLOAT_iface.lpVtbl = &dash_collection_vtbl;
++    impl->ICompositionObject_iface.lpVtbl = &dash_collection_object_vtbl;
 +    impl->IVectorView_FLOAT_iface.lpVtbl = &dash_view_vtbl;
 +    impl->IIterable_FLOAT_iface.lpVtbl = &dash_collection_iterable_vtbl;
 +    impl->ref = 1;
@@ -965,7 +1066,7 @@ diff --git a/dlls/windows.ui/composition_path.c b/dlls/windows.ui/composition_pa
 new file mode 100644
 --- /dev/null
 +++ b/dlls/windows.ui/composition_path.c
-@@ -0,0 +1,638 @@
+@@ -0,0 +1,642 @@
 +/* Windows.UI.Composition geometry paths
 + *
 + * Copyright (C) 2026 Mirko Brombin
@@ -1432,6 +1533,7 @@ new file mode 100644
 +    ICompositionPath_AddRef( value );
 +    if (impl->path) ICompositionPath_Release( impl->path );
 +    impl->path = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -1460,6 +1562,7 @@ new file mode 100644
 +static HRESULT WINAPI geometry_put_TrimEnd( ICompositionGeometry *iface, FLOAT value )
 +{
 +    impl_from_ICompositionGeometry(iface)->trim_end = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -1473,6 +1576,7 @@ new file mode 100644
 +static HRESULT WINAPI geometry_put_TrimOffset( ICompositionGeometry *iface, FLOAT value )
 +{
 +    impl_from_ICompositionGeometry(iface)->trim_offset = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -1486,6 +1590,7 @@ new file mode 100644
 +static HRESULT WINAPI geometry_put_TrimStart( ICompositionGeometry *iface, FLOAT value )
 +{
 +    impl_from_ICompositionGeometry(iface)->trim_start = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -1608,7 +1713,7 @@ diff --git a/dlls/windows.ui/composition_shape_collection.c b/dlls/windows.ui/co
 new file mode 100644
 --- /dev/null
 +++ b/dlls/windows.ui/composition_shape_collection.c
-@@ -0,0 +1,576 @@
+@@ -0,0 +1,668 @@
 +/* WinRT Windows.UI.Composition shape collection
 + *
 + * Copyright (C) 2026 Mirko Brombin
@@ -1634,6 +1739,9 @@ new file mode 100644
 +struct shape_collection
 +{
 +    IVector_CompositionShape IVector_CompositionShape_iface;
++    ICompositionObject ICompositionObject_iface;
++    ICompositor *compositor;
++    ICompositionPropertySet *properties;
 +    IVectorView_CompositionShape IVectorView_CompositionShape_iface;
 +    IIterable_CompositionShape IIterable_CompositionShape_iface;
 +    LONG ref;
@@ -1654,7 +1762,8 @@ new file mode 100644
 +    if (!out) return E_POINTER;
 +    *out = NULL;
 +    if (IsEqualGUID( iid, &IID_IUnknown ) || IsEqualGUID( iid, &IID_IInspectable ) ||
-+        IsEqualGUID( iid, &IID_IVector_CompositionShape )) *out = iface;
++        IsEqualGUID( iid, &IID_IAgileObject ) || IsEqualGUID( iid, &IID_IVector_CompositionShape )) *out = iface;
++    else if (IsEqualGUID( iid, &IID_ICompositionObject )) *out = &impl->ICompositionObject_iface;
 +    else if (IsEqualGUID( iid, &IID_IVectorView_CompositionShape )) *out = &impl->IVectorView_CompositionShape_iface;
 +    else if (IsEqualGUID( iid, &IID_IIterable_CompositionShape )) *out = &impl->IIterable_CompositionShape_iface;
 +    else return E_NOINTERFACE;
@@ -1676,6 +1785,8 @@ new file mode 100644
 +    if (!ref)
 +    {
 +        for (i = 0; i < impl->count; ++i) ICompositionShape_Release( impl->items[i] );
++        ICompositionPropertySet_Release( impl->properties );
++        ICompositor_Release( impl->compositor );
 +        free( impl->items );
 +        DeleteCriticalSection( &impl->lock );
 +        free( impl );
@@ -1687,19 +1798,21 @@ new file mode 100644
 +{
 +    if (!count || !iids) return E_POINTER;
 +    *count = 0;
-+    if (!(*iids = CoTaskMemAlloc( 3 * sizeof(**iids) ))) return E_OUTOFMEMORY;
++    if (!(*iids = CoTaskMemAlloc( 4 * sizeof(**iids) ))) return E_OUTOFMEMORY;
 +    (*iids)[0] = IID_IVector_CompositionShape;
 +    (*iids)[1] = IID_IVectorView_CompositionShape;
 +    (*iids)[2] = IID_IIterable_CompositionShape;
-+    *count = 3;
++    (*iids)[3] = IID_ICompositionObject;
++    *count = 4;
 +    return S_OK;
 +}
 +
 +static HRESULT WINAPI shape_collection_GetRuntimeClassName( IVector_CompositionShape *iface, HSTRING *name )
 +{
++    const WCHAR *class_name = L"Windows.UI.Composition.CompositionShapeCollection";
++
 +    if (!name) return E_POINTER;
-+    *name = NULL;
-+    return S_OK;
++    return WindowsCreateString( class_name, wcslen(class_name), name );
 +}
 +
 +static HRESULT WINAPI shape_collection_GetTrustLevel( IVector_CompositionShape *iface, TrustLevel *level )
@@ -1781,18 +1894,17 @@ new file mode 100644
 +    }
 +    LeaveCriticalSection( &impl->lock );
 +    if (old) ICompositionShape_Release( old );
++    if (SUCCEEDED(hr)) composition_object_changed( impl->compositor );
 +    return hr;
 +}
 +
-+static HRESULT WINAPI shape_collection_InsertAt( IVector_CompositionShape *iface, UINT32 index, ICompositionShape *value )
++static HRESULT shape_collection_insert_locked( struct shape_collection *impl, UINT32 index, ICompositionShape *value )
 +{
-+    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
 +    ICompositionShape **items;
 +    UINT32 capacity;
 +    HRESULT hr = S_OK;
 +
 +    if (!value) return E_INVALIDARG;
-+    EnterCriticalSection( &impl->lock );
 +    if (index > impl->count) hr = E_BOUNDS;
 +    else if (impl->count == UINT32_MAX) hr = E_OUTOFMEMORY;
 +    else
@@ -1816,7 +1928,18 @@ new file mode 100644
 +            ++impl->count;
 +        }
 +    }
++    return hr;
++}
++
++static HRESULT WINAPI shape_collection_InsertAt( IVector_CompositionShape *iface, UINT32 index, ICompositionShape *value )
++{
++    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
++    HRESULT hr;
++
++    EnterCriticalSection( &impl->lock );
++    hr = shape_collection_insert_locked( impl, index, value );
 +    LeaveCriticalSection( &impl->lock );
++    if (SUCCEEDED(hr)) composition_object_changed( impl->compositor );
 +    return hr;
 +}
 +
@@ -1836,6 +1959,7 @@ new file mode 100644
 +    }
 +    LeaveCriticalSection( &impl->lock );
 +    if (old) ICompositionShape_Release( old );
++    if (SUCCEEDED(hr)) composition_object_changed( impl->compositor );
 +    return hr;
 +}
 +
@@ -1845,19 +1969,28 @@ new file mode 100644
 +    HRESULT hr;
 +
 +    EnterCriticalSection( &impl->lock );
-+    hr = shape_collection_InsertAt( iface, impl->count, value );
++    hr = shape_collection_insert_locked( impl, impl->count, value );
 +    LeaveCriticalSection( &impl->lock );
++    if (SUCCEEDED(hr)) composition_object_changed( impl->compositor );
 +    return hr;
 +}
 +
 +static HRESULT WINAPI shape_collection_RemoveAtEnd( IVector_CompositionShape *iface )
 +{
 +    struct shape_collection *impl = impl_from_IVector_CompositionShape( iface );
-+    HRESULT hr;
++    ICompositionShape *old = NULL;
++    HRESULT hr = E_BOUNDS;
 +
 +    EnterCriticalSection( &impl->lock );
-+    hr = impl->count ? shape_collection_RemoveAt( iface, impl->count - 1 ) : E_BOUNDS;
++    if (impl->count)
++    {
++        old = impl->items[impl->count - 1];
++        --impl->count;
++        hr = S_OK;
++    }
 +    LeaveCriticalSection( &impl->lock );
++    if (old) ICompositionShape_Release( old );
++    if (SUCCEEDED(hr)) composition_object_changed( impl->compositor );
 +    return hr;
 +}
 +
@@ -1875,6 +2008,7 @@ new file mode 100644
 +    LeaveCriticalSection( &impl->lock );
 +    for (i = 0; i < count; ++i) ICompositionShape_Release( items[i] );
 +    free( items );
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -1930,6 +2064,7 @@ new file mode 100644
 +    LeaveCriticalSection( &impl->lock );
 +    for (i = 0; i < old_count; ++i) ICompositionShape_Release( old[i] );
 +    free( old );
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2148,6 +2283,58 @@ new file mode 100644
 +    shape_collection_iterable_First,
 +};
 +
++DEFINE_IINSPECTABLE( shape_collection_object, ICompositionObject, struct shape_collection, IVector_CompositionShape_iface )
++
++static HRESULT WINAPI shape_collection_object_get_Compositor( ICompositionObject *iface, ICompositor **value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_ICompositionObject(iface)->compositor;
++    ICompositor_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_collection_object_get_Dispatcher( ICompositionObject *iface,
++        ICoreDispatcher **value )
++{
++    if (!value) return E_POINTER;
++    *value = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI shape_collection_object_get_Properties( ICompositionObject *iface, ICompositionPropertySet **value )
++{
++    if (!value) return E_POINTER;
++    *value = impl_from_ICompositionObject(iface)->properties;
++    ICompositionPropertySet_AddRef( *value );
++    return S_OK;
++}
++
++static HRESULT WINAPI shape_collection_object_StartAnimation( ICompositionObject *iface, HSTRING name,
++        ICompositionAnimation *animation )
++{
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI shape_collection_object_StopAnimation( ICompositionObject *iface, HSTRING name )
++{
++    return E_NOTIMPL;
++}
++
++static const ICompositionObjectVtbl shape_collection_object_vtbl =
++{
++    shape_collection_object_QueryInterface,
++    shape_collection_object_AddRef,
++    shape_collection_object_Release,
++    shape_collection_object_GetIids,
++    shape_collection_object_GetRuntimeClassName,
++    shape_collection_object_GetTrustLevel,
++    shape_collection_object_get_Compositor,
++    shape_collection_object_get_Dispatcher,
++    shape_collection_object_get_Properties,
++    shape_collection_object_StartAnimation,
++    shape_collection_object_StopAnimation,
++};
++
 +static const IVector_CompositionShapeVtbl shape_collection_vtbl =
 +{
 +    shape_collection_QueryInterface,
@@ -2170,14 +2357,24 @@ new file mode 100644
 +    shape_collection_ReplaceAll,
 +};
 +
-+HRESULT composition_shape_collection_create( IVector_CompositionShape **result )
++HRESULT composition_shape_collection_create( ICompositor *compositor, IVector_CompositionShape **result )
 +{
 +    struct shape_collection *impl;
++    HRESULT hr;
 +
 +    if (!result) return E_POINTER;
 +    *result = NULL;
++    if (!compositor) return E_INVALIDARG;
 +    if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
++    if (FAILED(hr = composition_property_set_create( compositor, &impl->properties )))
++    {
++        free( impl );
++        return hr;
++    }
++    impl->compositor = compositor;
++    ICompositor_AddRef( compositor );
 +    impl->IVector_CompositionShape_iface.lpVtbl = &shape_collection_vtbl;
++    impl->ICompositionObject_iface.lpVtbl = &shape_collection_object_vtbl;
 +    impl->IVectorView_CompositionShape_iface.lpVtbl = &shape_view_vtbl;
 +    impl->IIterable_CompositionShape_iface.lpVtbl = &shape_collection_iterable_vtbl;
 +    impl->ref = 1;
@@ -2189,7 +2386,7 @@ diff --git a/dlls/windows.ui/composition_shapes.c b/dlls/windows.ui/composition_
 new file mode 100644
 --- /dev/null
 +++ b/dlls/windows.ui/composition_shapes.c
-@@ -0,0 +1,573 @@
+@@ -0,0 +1,590 @@
 +/* Windows.UI.Composition vector shapes
 + *
 + * Copyright (C) 2026 Mirko Brombin
@@ -2379,6 +2576,7 @@ new file mode 100644
 +    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
 +
 +    impl->center = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2396,6 +2594,7 @@ new file mode 100644
 +    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
 +
 +    impl->offset = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2414,6 +2613,7 @@ new file mode 100644
 +
 +    impl->rotation = value;
 +    impl->rotation_degrees = value * (180.0f / 3.14159265358979323846f);
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2432,6 +2632,7 @@ new file mode 100644
 +
 +    impl->rotation_degrees = value;
 +    impl->rotation = value * (3.14159265358979323846f / 180.0f);
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2449,6 +2650,7 @@ new file mode 100644
 +    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
 +
 +    impl->scale = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2466,6 +2668,7 @@ new file mode 100644
 +    struct sprite_shape *impl = impl_from_ICompositionShape( iface );
 +
 +    impl->transform = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2508,6 +2711,7 @@ new file mode 100644
 +    if (value) ICompositionBrush_AddRef( value );
 +    if (impl->fill) ICompositionBrush_Release( impl->fill );
 +    impl->fill = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2528,6 +2732,7 @@ new file mode 100644
 +    if (value) ICompositionGeometry_AddRef( value );
 +    if (impl->geometry) ICompositionGeometry_Release( impl->geometry );
 +    impl->geometry = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2545,6 +2750,7 @@ new file mode 100644
 +    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
 +
 +    impl->non_scaling = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2565,6 +2771,7 @@ new file mode 100644
 +    if (value) ICompositionBrush_AddRef( value );
 +    if (impl->stroke) ICompositionBrush_Release( impl->stroke );
 +    impl->stroke = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2590,6 +2797,7 @@ new file mode 100644
 +    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
 +
 +    impl->dash_cap = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2607,6 +2815,7 @@ new file mode 100644
 +    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
 +
 +    impl->dash_offset = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2624,6 +2833,7 @@ new file mode 100644
 +    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
 +
 +    impl->end_cap = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2641,6 +2851,7 @@ new file mode 100644
 +    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
 +
 +    impl->join = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2658,6 +2869,7 @@ new file mode 100644
 +    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
 +
 +    impl->miter_limit = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2675,6 +2887,7 @@ new file mode 100644
 +    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
 +
 +    impl->start_cap = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2692,6 +2905,7 @@ new file mode 100644
 +    struct sprite_shape *impl = impl_from_ICompositionSpriteShape( iface );
 +
 +    impl->thickness = value;
++    composition_object_changed( impl->compositor );
 +    return S_OK;
 +}
 +
@@ -2742,7 +2956,7 @@ new file mode 100644
 +        free( impl );
 +        return hr;
 +    }
-+    if (FAILED(hr = composition_dash_collection_create( &impl->dashes )))
++    if (FAILED(hr = composition_dash_collection_create( compositor, &impl->dashes )))
 +    {
 +        ICompositionPropertySet_Release( impl->properties );
 +        free( impl );
@@ -2787,16 +3001,18 @@ diff --git a/dlls/windows.ui/private.h b/dlls/windows.ui/private.h
  extern IActivationFactory *effect_source_parameter_factory;
  extern IActivationFactory *compositor_controller_factory;
  extern IActivationFactory *composition_conditional_value_factory;
-@@ -67,6 +68,16 @@
+@@ -67,6 +68,18 @@
  extern IActivationFactory *interaction_tracker_factory;
  extern IActivationFactory *visual_interaction_source_factory;
  
++void composition_object_changed( ICompositor *compositor );
++
 +struct ID2D1Factory;
 +struct ID2D1Geometry;
 +HRESULT composition_path_geometry_get_geometry( ICompositionGeometry *geometry,
 +        struct ID2D1Factory *factory, struct ID2D1Geometry **result );
-+HRESULT composition_dash_collection_create( IVector_FLOAT **result );
-+HRESULT composition_shape_collection_create( IVector_CompositionShape **result );
++HRESULT composition_dash_collection_create( ICompositor *compositor, IVector_FLOAT **result );
++HRESULT composition_shape_collection_create( ICompositor *compositor, IVector_CompositionShape **result );
 +HRESULT composition_sprite_shape_create( ICompositor *compositor, ICompositionGeometry *geometry,
 +        ICompositionSpriteShape **result );
 +HRESULT composition_path_geometry_create( ICompositor *compositor, ICompositionPath *path,
@@ -2831,12 +3047,14 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
      interface ICompositionBrush;
      interface ICompositionBrushFactory;
      interface ICompositionClip;
-@@ -134,6 +144,13 @@
+@@ -134,6 +144,15 @@
      runtimeclass CompositionEasingFunction;
      runtimeclass CompositionEffectBrush;
      runtimeclass CompositionEffectFactory;
 +    runtimeclass ShapeVisual;
 +    runtimeclass CompositionViewBox;
++    runtimeclass CompositionShapeCollection;
++    runtimeclass CompositionStrokeDashArray;
 +    runtimeclass CompositionShape;
 +    runtimeclass CompositionSpriteShape;
 +    runtimeclass CompositionGeometry;
@@ -2845,7 +3063,7 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
      runtimeclass CompositionEffectSourceParameter;
      runtimeclass CompositionGraphicsDevice;
      runtimeclass CompositionVirtualDrawingSurface;
-@@ -160,6 +177,14 @@
+@@ -160,6 +179,14 @@
      runtimeclass VisualCollection;
  
      declare {
@@ -2860,7 +3078,7 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
          interface Windows.Foundation.AsyncOperationCompletedHandler<Windows.UI.Composition.ICompositionSurface *>;
          interface Windows.Foundation.IAsyncOperation<Windows.UI.Composition.ICompositionSurface *>;
          interface Windows.Foundation.Collections.IIterable<Windows.UI.Composition.CompositionAnimation *>;
-@@ -496,6 +521,160 @@
+@@ -496,6 +523,160 @@
          HRESULT CreateBrush([out, retval] Windows.UI.Composition.CompositionEffectBrush **result);
          [propget] HRESULT ExtendedError([out, retval] HRESULT *value);
          [propget] HRESULT LoadStatus([out, retval] Windows.UI.Composition.CompositionEffectFactoryLoadStatus *value);
@@ -2874,7 +3092,7 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
 +    interface IShapeVisual : IInspectable
 +        requires Windows.UI.Composition.IContainerVisual
 +    {
-+        [propget] HRESULT Shapes([out, retval] Windows.Foundation.Collections.IVector<Windows.UI.Composition.CompositionShape *> **value);
++        [propget] HRESULT Shapes([out, retval] Windows.UI.Composition.CompositionShapeCollection **value);
 +        [propget] HRESULT ViewBox([out, retval] Windows.UI.Composition.CompositionViewBox **value);
 +        [propput] HRESULT ViewBox([in] Windows.UI.Composition.CompositionViewBox *value);
 +    }
@@ -2954,7 +3172,7 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
 +        [propput] HRESULT IsStrokeNonScaling([in] boolean value);
 +        [propget] HRESULT StrokeBrush([out, retval] Windows.UI.Composition.CompositionBrush * *value);
 +        [propput] HRESULT StrokeBrush([in] Windows.UI.Composition.CompositionBrush * value);
-+        [propget] HRESULT StrokeDashArray([out, retval] Windows.Foundation.Collections.IVector<FLOAT> * *value);
++        [propget] HRESULT StrokeDashArray([out, retval] Windows.UI.Composition.CompositionStrokeDashArray **value);
 +        [propget] HRESULT StrokeDashCap([out, retval] Windows.UI.Composition.CompositionStrokeCap *value);
 +        [propput] HRESULT StrokeDashCap([in] Windows.UI.Composition.CompositionStrokeCap value);
 +        [propget] HRESULT StrokeDashOffset([out, retval] FLOAT *value);
@@ -3021,10 +3239,34 @@ diff --git a/include/windows.ui.composition.idl b/include/windows.ui.composition
      }
  
      [
-@@ -1103,6 +1282,80 @@
+@@ -1103,6 +1284,104 @@
      }
  
      [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass CompositionShapeCollection : Windows.UI.Composition.CompositionObject
++    {
++        [default] interface Windows.Foundation.Collections.IVector<Windows.UI.Composition.CompositionShape *>;
++        interface Windows.Foundation.Collections.IIterable<Windows.UI.Composition.CompositionShape *>;
++        interface Windows.UI.Composition.ICompositionObject;
++    }
++
++    [
++        contract(Windows.Foundation.UniversalApiContract, 6.0),
++        marshaling_behavior(agile),
++        threading(both)
++    ]
++    runtimeclass CompositionStrokeDashArray : Windows.UI.Composition.CompositionObject
++    {
++        [default] interface Windows.Foundation.Collections.IVector<FLOAT>;
++        interface Windows.Foundation.Collections.IIterable<FLOAT>;
++        interface Windows.UI.Composition.ICompositionObject;
++    }
++
++    [
 +        contract(Windows.Foundation.UniversalApiContract, 6.0),
 +        threading(both)
 +    ]
