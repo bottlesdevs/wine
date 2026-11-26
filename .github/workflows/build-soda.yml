@@ -94,7 +94,7 @@ permissions:
 env:
   WINE_VERSION: '11.0'
   LLVM_TOOLS_VERSION: '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80'
-  REVISION: '38-experimental'
+  REVISION: '39-experimental'
   RELEASE_CODENAME: 'Windows Escape'
   WINE_TKG_COMMIT: '04ddf86c96817d2f8bb45aefc04c9ad3871ca740'
   VALVE_WINE_TAG: 'experimental-wine-bleeding-edge-11.0-428201-20260904-pdf1645-w0509a0-dd7ac25-v35bdee'
@@ -112,15 +112,14 @@ env:
 
     This is a Wine TKG build based on Valve's Wine (experimental bleeding edge) source code.
 
-    Soda 11.0-38 Experimental, codenamed Windows Escape, fixes Composition drawing and layered child windows, and improves Eagle session reports. It remains a prerelease and does not replace the current stable Soda build.
+    Soda 11.0-39 Experimental, codenamed Windows Escape, adds Composition shape rendering, fixes Wayland child surface parenting and improves Eagle crash reports. It remains a prerelease.
 
-    - Fixed drawing state tracking for DXGI Composition surfaces.
-    - Preserved Win32 backgrounds underneath transparent Composition layers.
-    - Fixed layered child window placement, visibility and clipping after parent changes.
-    - Fixed layered child windows being covered when their parent is activated.
-    - Kept child-process provider events in bounded Eagle reports.
-    - Saved diagnostic stdout in private Eagle session logs.
-    - Sent wait tracing directly through ntdll.
+    - Added CompositionPath geometry, shape fills and solid and dashed strokes.
+    - Kept Wayland child surfaces attached to their parent when the owner hint is missing.
+    - Captured the faulting thread's stack on null writes before application exception handlers run.
+    - Improved Wine source and symbol resolution in Eagle reports, and removed window listings from saved reports.
+
+    Office 365 testers can report their results in [issue #500](https://github.com/bottlesdevs/programs/issues/500).
 
 
 jobs:
