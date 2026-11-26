@@ -2033,9 +2033,12 @@ jobs:
         timeout-minutes: 20
         working-directory: /home/runner/work/
         run: |
-          if test -f /etc/apt/apt-mirrors.txt; then
-            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
-          fi
+          for sources in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt; do
+            test -f "$sources" || continue
+            sudo sed -i -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' "$sources"
+          done
           mkdir -p /home/runner/.config/frogminer/
           sudo apt purge -y ubuntu-advantage-tools python3-update-manager
           sudo dpkg --add-architecture i386 && sudo apt update
