@@ -1,3 +1,4 @@
+import ctypes
 import datetime
 import gettext
 import hashlib
@@ -24,6 +25,7 @@ prefix = None
 launcher_comparison = os.environ.get('OFFICE_LAUNCHER_COMPARISON') == 'true'
 outlook_control = os.environ.get('OFFICE_OUTLOOK_CONTROL') == 'true'
 ui_control = os.environ.get('OFFICE_UI_CONTROL') == 'true'
+powerpoint_control = os.environ.get('OFFICE_POWERPOINT_CONTROL') == 'true'
 
 
 def record(stage, **fields):
@@ -65,8 +67,38 @@ def restore_prefix():
     assert hives == {name: hashlib.sha256((prefix / name).read_bytes()).hexdigest() for name in hives}
 
 
+def resize_powerpoint():
+    tree = subprocess.check_output(['xwininfo', '-root', '-tree'], text=True, timeout=10)
+    windows = re.findall(r'^ +(?P<id>0x[0-9a-f]+) +"[^"]*PowerPoint[^"]*":', tree, re.M)
+    if len(windows) != 1:
+        return {'performed': False, 'matching_windows': len(windows)}
+    window, = windows
+    before = subprocess.check_output(['xwininfo', '-id', window], text=True, timeout=10)
+    width = int(re.search(r'Width: (\d+)', before)[1])
+    height = int(re.search(r'Height: (\d+)', before)[1])
+    x11 = ctypes.CDLL('libX11.so.6')
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XResizeWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_uint, ctypes.c_uint]
+    x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    display = x11.XOpenDisplay(None)
+    assert display, 'could not open the private X11 display'
+    try:
+        x11.XResizeWindow(display, int(window, 16), width + 80, height + 60)
+        x11.XSync(display, 0)
+    finally:
+        x11.XCloseDisplay(display)
+    time.sleep(5)
+    after = subprocess.run(['xwininfo', '-id', window], text=True, timeout=10,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return {'performed': True, 'window': window, 'requested': [width + 80, height + 60],
+            'before': before, 'after': after.stdout, 'after_exit': after.returncode}
+
+
 def profile_controls():
-    executable, = [item for item in manifest['Executables'] if item['file'] == 'WINWORD.EXE']
+    filename = 'POWERPNT.EXE' if powerpoint_control else 'WINWORD.EXE'
+    executable, = [item for item in manifest['Executables'] if item['file'] == filename]
     target = prefix / 'drive_c' / executable['path']
     assert target.resolve(strict=True).is_relative_to(prefix / 'drive_c')
     eagle = str(runner / 'bin/eagle')
@@ -75,7 +107,9 @@ def profile_controls():
     diagnostics.mkdir()
     checked('disable-tracing', manager.update_config(config, 'eagle_tracing', False, 'Parameters'))
     cases = [(profile, False) for profile in ('plain', 'plain-no-logs', 'crash', 'loader', 'com', 'wait', 'trace')]
-    if ui_control:
+    if powerpoint_control:
+        cases = [('plain', False), ('trace', False)]
+    elif ui_control:
         cases = [('plain-ui', False)]
     elif launcher_comparison:
         launcher, = [path for path in target.parent.parent.rglob('*') if path.name.lower() == 'appvlp.exe']
@@ -89,7 +123,7 @@ def profile_controls():
         for profile, wrapped in (cases if attempt % 2 else reversed(cases)):
             restore_prefix()
             launched = launcher if wrapped else target
-            application_args = [r'C:\office-reproduction.rtf']
+            application_args = ['/B'] if powerpoint_control else [r'C:\office-reproduction.rtf']
             if wrapped:
                 application_args.insert(0, 'C:\\' + target.relative_to(prefix / 'drive_c').as_posix().replace('/', '\\'))
             executor = WineExecutor(config=config, exec_path=str(launched), environment={}, program_winebridge=False)
@@ -112,7 +146,7 @@ def profile_controls():
                 arguments = [eagle, 'run', '--wine', str(runner / 'bin/wine'), '--prefix', str(prefix),
                              '--session', str(bundle), '--timeout', '60', '--profile', profile,
                              str(launched), *application_args]
-            row = {'profile': profile, 'attempt': attempt, 'route': 'office launcher' if wrapped else 'direct target', 'winebridge': False,
+            row = {'executable': filename, 'profile': profile, 'attempt': attempt, 'route': 'office launcher' if wrapped else 'direct target', 'winebridge': False,
                    'wine_debug': command.env.get('WINEDEBUG') if profile in ('plain', 'plain-no-logs', 'plain-ui') else '-all',
                    'prefix_restored': True, 'observation_seconds': 20, 'started': time.time()}
             reports.append(row)
@@ -122,6 +156,11 @@ def profile_controls():
                 process = subprocess.Popen(arguments, env=command.env, cwd=target.parent,
                                            stdout=file if profile == 'plain-ui' else subprocess.DEVNULL, stderr=file)
                 time.sleep(20)
+                if powerpoint_control:
+                    row['finished_before_resize'] = process.poll() is not None
+                    row['resize'] = (resize_powerpoint() if process.poll() is None
+                                     else {'performed': False, 'process_exited': True})
+                    record('powerpoint-resize', profile_controls=reports)
                 row['launcher_finished_before_stop'] = process.poll() is not None
                 subprocess.run(['import', '-window', 'root', str(output / (label + '.png'))], check=True, timeout=15)
                 with (output / (label + '-windows.log')).open('w') as windows:
@@ -374,7 +413,7 @@ try:
                 ('WINWORD.EXE', False, 'rtf'), ('WINWORD.EXE', True, 'rtf'),
                 ('WINWORD.EXE', False, 'docx'), ('WINWORD.EXE', True, 'docx'),
                 ('EXCEL.EXE', False, False), ('EXCEL.EXE', True, False))
-    if launcher_comparison or outlook_control or ui_control:
+    if launcher_comparison or outlook_control or ui_control or powerpoint_control:
         launches = ()
     for executable, tracing, opening in launches:
         restore_prefix()
