@@ -564,7 +564,7 @@ jobs:
               --env "XDG_CACHE_HOME=$EAGLE_WORK/office-home/cache" \
               --env "XDG_RUNTIME_DIR=$EAGLE_WORK/office-runtime" \
               --env OFFICE_LAUNCHER_COMPARISON --env OFFICE_OUTLOOK_CONTROL --env OFFICE_UI_CONTROL \
-              --env PERSONAL_DEPENDENCIES=https://raw.githubusercontent.com/bottlesdevs/dependencies/8c72988d1106c0bf788f1d5803844ee7758cee19/ \
+              --env PERSONAL_DEPENDENCIES=https://raw.githubusercontent.com/bottlesdevs/dependencies/ff1811fc3df01127199a9939fa799fdaa2595adf/ \
               --env PERSONAL_INSTALLERS=https://raw.githubusercontent.com/bottlesdevs/programs/9a2330a669beff6e413913b7cc03bd883db23fae/ \
               --env "TMPDIR=$EAGLE_WORK/scratch" --env "TMP=$EAGLE_WORK/scratch" --env "TEMP=$EAGLE_WORK/scratch" \
               --env DISPLAY --env XAUTHORITY --env LIBGL_ALWAYS_SOFTWARE=1 --env GDK_BACKEND=x11 \
