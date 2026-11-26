@@ -320,6 +320,10 @@ try:
     config = created.data['config']
     prefix = Path(ManagerUtils.get_bottle_path(config))
     assert config.Runner == runner.name
+    if os.environ.get('OFFICE_BUILTIN_GRAPHICS') == 'true':
+        checked('disable-dxvk', manager.set_graphics_component(config, 'dxvk', enabled=False))
+        assert not config.Parameters.dxvk and not config.Parameters.vkd3d
+    record('graphics-selection', dxvk=config.Parameters.dxvk, vkd3d=config.Parameters.vkd3d)
     if outlook_control:
         from bottles.backend.wine.winecfg import WineCfg
         import inspect
